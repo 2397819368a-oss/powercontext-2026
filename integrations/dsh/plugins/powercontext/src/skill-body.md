@@ -5,7 +5,8 @@ detour. Explicit operations still require their actual MCP tool and result. Read
 needed; a self-contained tool call need not load a Skill. Use the host's Skill loader with names actually present in its
 catalog.
 
-PowerContext model tools in DSH are native MCP tools named `mcp__powercontext__<operation>`. Before calling an operation, check that its exact MCP name appears in the current tool catalog. If a tool
+PowerContext model tools in DSH are native MCP tools named `mcp__powercontext__<operation>`. There are no `pc_*` HTTP
+tool wrappers. Before calling an operation, check that its exact MCP name appears in the current tool catalog. If a tool
 is absent, report that workflow unavailable and incomplete; never simulate it or substitute another persistence operation.
 
 | Intent / 意图 | MCP operation and optional domain Skill |
