@@ -35,7 +35,11 @@ export const pluginRoot = resolve(import.meta.dirname, '../..')
 
 async function listen(handler) {
   const server = createServer((req, res) => {
-    Promise.resolve(handler(req, res)).catch(() => {
+    Promise.resolve(handler(req, res)).catch(error => {
+      if (res.headersSent || res.writableEnded) {
+        res.destroy()
+        return
+      }
       res.writeHead(500)
       res.end('test fixture failed')
     })
@@ -51,10 +55,15 @@ async function listen(handler) {
 }
 
 async function bodyOf(req) {
+  const buffer = await rawBodyOf(req)
+  const text = buffer.toString()
+  return text ? JSON.parse(text) : undefined
+}
+
+async function rawBodyOf(req) {
   const chunks = []
   for await (const chunk of req) chunks.push(chunk)
-  const text = Buffer.concat(chunks).toString()
-  return text ? JSON.parse(text) : undefined
+  return Buffer.concat(chunks)
 }
 
 function json(res, value, status = 200) {
@@ -65,6 +74,7 @@ function json(res, value, status = 200) {
 export async function environment({ realModel } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'pc-dsh-runtime-'))
   const modelRequests = []
+  let scopeIdForModel = ''
   const model = await listen(async (req, res) => {
     const body = await bodyOf(req)
     modelRequests.push(body)
@@ -115,6 +125,8 @@ export async function environment({ realModel } = {}) {
     const needsTool = (skillMatch || JSON.stringify(body.messages).includes('RUN_PC_SEARCH'))
       && !body.messages.some(message => message.role === 'tool')
     const content = JSON.stringify(body.messages).includes(CANARY) ? CANARY : 'Task completed.'
+    const requestedScopeId = JSON.stringify(body.messages).includes('RUN_PC_SEARCH_MISSING_SCOPE')
+      ? 'scp_missing_runtime_fixture' : scopeIdForModel
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     const chunk = (delta, finish_reason = null) => `data: ${JSON.stringify({
       id: 'dsh-fixture', object: 'chat.completion.chunk', model: body.model, created: 0,
@@ -125,7 +137,9 @@ export async function environment({ realModel } = {}) {
         index: 0, id: 'fixture-search', type: 'function',
         function: skillMatch
           ? { name: 'skill', arguments: JSON.stringify({ name: skillMatch[1] }) }
-          : { name: 'pc_search', arguments: JSON.stringify({ query: 'aurora deployment color' }) },
+          : { name: 'mcp__powercontext__search_memory', arguments: JSON.stringify({
+            scope_id: requestedScopeId, query: 'aurora deployment color',
+          }) },
       }] }) + chunk({}, 'tool_calls') + 'data: [DONE]\n\n')
     } else {
       res.end(chunk({ role: 'assistant', content }) + chunk({}, 'stop') + 'data: [DONE]\n\n')
@@ -144,9 +158,30 @@ export async function environment({ realModel } = {}) {
     throw error
   }
   const calls = []
+  const mcpCalls = []
   let fault
   const proxy = await listen(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname
+    if (path === '/mcp' || path.startsWith('/mcp/')) {
+      const rawBody = await rawBodyOf(req)
+      const requestHeaders = new Headers(req.headers)
+      for (const header of ['connection', 'content-length', 'host', 'transfer-encoding']) requestHeaders.delete(header)
+      const mcpCall = { path, method: req.method, body: rawBody.length ? JSON.parse(rawBody.toString()) : undefined }
+      mcpCalls.push(mcpCall)
+      const upstream = await fetch(server.baseUrl + req.url, {
+        method: req.method,
+        headers: requestHeaders,
+        ...(rawBody.length ? { body: rawBody } : {}),
+      })
+      const responseHeaders = Object.fromEntries(upstream.headers)
+      for (const header of ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']) {
+        delete responseHeaders[header]
+      }
+      res.writeHead(upstream.status, responseHeaders)
+      if (upstream.body) for await (const chunk of upstream.body) res.write(chunk)
+      res.end()
+      return
+    }
     const body = await bodyOf(req)
     const call = { path, body }
     calls.push(call)
@@ -186,6 +221,7 @@ export async function environment({ realModel } = {}) {
     return value
   }
   const { scope_id: scopeId } = await api('/v1/scopes/default')
+  scopeIdForModel = scopeId
   const harnesses = []
   function harness(config = {}, options = {}) {
     const { initializeTimeoutMs = 30000, maxTokens = 128 } = options
@@ -225,7 +261,9 @@ export function apply(ctx) {
         baseUrl: proxy.url, timeoutMs: 15000, requestTimeoutMs: 5000, flushOnCapture: true, ...config,
       } }] },
     ]))
-    const processEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('POWERCONTEXT_DSH_')))
+    // Keep the runtime isolated from the developer's shared client endpoint; the patch owns this fixture's URL.
+    const processEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+      !key.startsWith('POWERCONTEXT_DSH_') && key !== 'POWERCONTEXT_CLIENT_SERVER_URL'))
     const env = { ...processEnv, DSH_HOME: dshHome, DSH_PROFILE: 'sdk', DEEPSEEK_API_KEY: 'runtime-fixture',
       DEEPSEEK_BASE_URL: model.url + '/v1', DSH_TELEMETRY_DISABLED: '1', ...options.env }
     const instance = new DeepSeekHarness({
@@ -253,7 +291,7 @@ export function apply(ctx) {
     return { instance, dshHome, workspace, installed, patch, env, diagnostics, doctor, status }
   }
   return {
-    home, api, scopeId, calls, modelRequests, harness, baseUrl: proxy.url,
+    home, api, scopeId, calls, mcpCalls, modelRequests, harness, baseUrl: proxy.url,
     setFault(value) { fault = value },
     async close() {
       const results = await Promise.allSettled(harnesses.map(instance => instance.close()))

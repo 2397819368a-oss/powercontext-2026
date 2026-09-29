@@ -9,7 +9,7 @@ uv tool install --force "powercontext[cli,server]==1.3.0"
 powercontext setup dsh --source oceanbase/powercontext --ref powercontext-v1.3.0
 ```
 
-`setup dsh` calls `dsh plugin --profile web add`. The plugin talks HTTP only. It does not use MCP.
+`setup dsh` calls `dsh plugin --profile web add`. The model-facing PowerContext surface is registered through DSH's native `@deepseek-ai/dsh-mcp-client`.
 For development, install the CLI/Server and this built plugin from the same checkout and record its commit:
 
 ```bash
@@ -23,14 +23,22 @@ reuses the cached checkout without fetching; update a local checkout and reinsta
 Use [the DSH setup guide](../../../../docs/en/docs/integrations/dsh.md) for generation/processing configuration.
 Run `powercontext server run --env-file powercontext.env` in one terminal, then set
 `POWERCONTEXT_DSH_BASE_URL` in another terminal and run `dsh web`. Restart DSH after changing installation or environment.
-Release 1.1.0 includes direct-operation Scope failure handling and the layered Doctor and snapshot behavior below.
+Release 1.1.0 includes MCP/Scope failure handling and the layered Doctor and snapshot behavior below.
 
 Before each model step it:
 
 1. recalls bounded context with `POST /v1/context/prepare`;
 2. captures the current user input with `POST /v1/sources/content`.
 
-Named `pc_*` tools expose the agent-safe Memory, handoff, experience, skill, and read-only review operations. DSH requests one-time user approval before named mutations run. Review mutations remain explicit human `/pc review` commands; destructive and administrative OpenAPI operations are not model tools.
+The model-facing operation surface is native MCP at `${POWERCONTEXT_DSH_BASE_URL}/mcp`. DSH exposes the Server tools
+as `mcp__powercontext__<operation>`, including Memory, Work Contract, Handoff, Experience, Skill, candidate review,
+external Skill, Scope organization, persistent Scope binding, and artifact publication. The MCP Server annotations and
+host own mutation approval. Scope-dependent calls must use the exact `scope_id` returned by
+`mcp__powercontext__resolve_scope_binding`; the plugin does not rewrite MCP arguments.
+
+The automatic pre-step and Source capture above are host lifecycle hooks, not model-facing tools, so they retain the
+plugin's bounded HTTP client. `/pc` commands are local diagnostics and explicit administrative controls; they also retain
+their existing HTTP client and are not substitutes for the MCP operation surface.
 
 `/pc doctor` checks the running plugin configuration, health, capabilities, declared routes, current Scope and
 read-only prepare independently. Failures identify the operation, a specific code, available HTTP status/request ID,
@@ -47,7 +55,8 @@ headroom. Doctor reports both `request_timeout_ms` and `readiness_request_timeou
 probe budgets above these defaults, increase `requestTimeoutMs` accordingly. Other requests retain their
 configured deadline (1000 ms by default), and caller cancellation still stops readiness immediately.
 
-The operations table in `src/operations.generated.ts` is generated from the repository `openapi/powercontext.yaml`. From the PowerContext root:
+The operations table used by the lifecycle client in `src/operations.generated.ts` is generated from the repository
+`openapi/powercontext.yaml`. From the PowerContext root:
 
 ```bash
 make js-api-generate

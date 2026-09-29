@@ -21,11 +21,11 @@ import { resolveConfig, type PluginConfig } from './config.ts'
 import { createDiagnosticEmitter } from './diagnostics.ts'
 import { PLUGIN_NAME } from './errors.ts'
 import type { PluginRuntime } from './invoke.ts'
+import { registerMcp } from './mcp.ts'
 import { loadPeer } from './peers.ts'
 import { runRecallPreStep, type PromptMessage } from './recall.ts'
 import { resolveScopeId } from './scope.ts'
 import { registerGuidance, registerSkill } from './skill.ts'
-import { registerTools } from './tools.ts'
 import { RuntimeStatus } from './status.ts'
 
 export const name = PLUGIN_NAME
@@ -59,8 +59,6 @@ type CreateUserMessage = (input: {
     sections: Array<{ name: string; text: string }>
   }
 }) => unknown
-
-type DefineTool = (definition: Record<string, unknown>) => unknown
 
 function createRuntime(ctx: Context, config: PluginConfig): PluginRuntime {
   const resolved = resolveConfig(config)
@@ -116,11 +114,10 @@ function registerRecall(ctx: Context, runtime: PluginRuntime, createUserMessage:
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
-  const toolsMod = await loadPeer<{ defineTool: DefineTool }>('@deepseek-ai/dsh-tools')
   const llmMod = await loadPeer<{ createUserMessage: CreateUserMessage }>('@deepseek-ai/dsh-llm')
   const runtime = createRuntime(ctx, config)
+  await registerMcp(ctx, runtime.config)
   registerGuidance(ctx)
-  registerTools(ctx, runtime, toolsMod.defineTool)
   registerRecall(ctx, runtime, llmMod.createUserMessage)
   registerCommands(ctx, runtime)
   registerSkill(ctx)

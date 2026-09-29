@@ -116,8 +116,8 @@ configure the test model through environment-backed credentials. Test the shippe
    names the failed stage, existing prepared content survives capture/flush failure, and empty/failure results add no notice.
 4. Cancel during a held Scope request. Confirm no prepare/capture/flush follows cancellation. Restart or reload the
    plugin and check that one ordinary prompt still produces one automatic capture and one snapshot at most.
-5. Use an unrelated Scope, then exercise `pc_search`, `/pc doctor`, `/pc capabilities`, and bare `/pc`.
-   Verify the existing direct-call behavior and absence of cross-Scope content.
+5. Use an unrelated Scope, then exercise the native `mcp__powercontext__search_memory` tool, `/pc doctor`,
+   `/pc capabilities`, and bare `/pc`. Verify the MCP call and absence of cross-Scope content.
 
 Record package versions/commit, OS/Node/Python, model identity, sanitized configuration, per-scenario outcomes,
 request/session evidence, and screenshots in the PR. Test the installed older DSH separately through a supported

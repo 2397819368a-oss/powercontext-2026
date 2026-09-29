@@ -80,6 +80,9 @@ setup 不求值无关的界面和模型表达式。启用的 include 文件必�
 `DSH_HOME` 未设置、为空或仅包含空白时使用 `~/.dsh`；非空路径保留开头和末尾的空格。
 配置检查、凭据保存与读取、插件依赖查找都遵循这两条规则。
 
+Setup 不会启动 Server。安装完成后重启 DSH。
+面向模型的 PowerContext 能力通过 DSH 原生的 `@deepseek-ai/dsh-mcp-client` 注册。
+
 ## 启动 Server 和宿主
 
 需要自动将 Source 提取为 Memory 时，生成并校验 Server 配置：
@@ -212,10 +215,18 @@ flush 或修改绑定。Doctor 探测和手动操作也不会覆盖自动执行�
 
 ## 理解插件行为
 
-插件通过两条路径访问同一个 Server：
+插件通过三条有明确边界的路径访问同一个 Server：
 
 - 每轮模型开口前，先请求 Runtime 准备一个最终、有界的上下文值，再把用户输入采集为 Source 证据；
-- 具名 `pc_*` 工具通过公开 HTTP API 记忆、检索、修订、停用和审计 Memory。
+- DSH 原生 MCP client 连接 `/mcp`，并将 Server 工具以 `mcp__powercontext__<operation>` 暴露给模型；
+- `/pc` 命令和自动生命周期阶段使用有界 HTTP client 执行宿主控制与诊断。
+
+MCP 面覆盖完整 PowerContext profile：Memory 读写、Source 采集、Work Contract、Handoff 与确认、任务结果、
+Experience、托管和外部 Skill、候选审查、Scope 管理、持久 Scope binding 以及 Artifact 发布；同时还暴露
+profile 契约之外的 Server MCP 工具。插件不会注册 Pi/Hermes 风格的直接 HTTP 操作工具。
+
+需要 `scope_id` 的 MCP 操作应先调用 `mcp__powercontext__resolve_scope_binding`，传入 `allow_default: true`
+（以及可用的 binding key），再只使用返回的准确 Scope ID。生命周期 hook 的 Scope 解析不会重写模型提供的 MCP 参数。
 
 插件按 `POWERCONTEXT_DSH_SCOPE_ID`、session workspace 持久 binding、Server 默认 Scope 的顺序解析一个由
 Server 管理的 Scope。workspace 路径只会哈希为外部 binding key。缺少 workspace 时使用 Server 默认 Scope，
@@ -223,10 +234,11 @@ Server 管理的 Scope。workspace 路径只会哈希为外部 binding key。缺
 
 插件在模型分析提示词前只调用一次 `POST /v1/context/prepare`。显式 `remember_memory` 不需要模型。
 
-## 排查工具和命令的直接调用失败
+## 排查 MCP 和命令的直接调用失败
 
-Scope 解析失败时，具名工具和依赖 Scope 的 `/pc` 命令会返回受控失败，并在执行请求的操作前停止。
-插件不会因此创建 binding 或换用其他 Scope 重试。取消信号和现有的单请求超时也适用于 Scope 解析。
+Scope 解析失败时，原生 MCP 工具和依赖 Scope 的 `/pc` 命令会返回受控失败，并在执行请求的操作前停止。
+MCP 调用必须使用 `resolve_scope_binding` 选择的准确 Scope；插件不会因此创建 binding 或切换其他 Scope。
+取消信号和现有的单请求超时也适用于生命周期 Scope 解析。
 
 在 DeepSeek Harness 内：
 
@@ -341,7 +353,7 @@ powercontext doctor dsh
 | `POWERCONTEXT_DSH_BASE_URL` | `http://127.0.0.1:8000` | 插件使用的 Server 地址 |
 | `POWERCONTEXT_DSH_ALLOW_INSECURE_HTTP` | `false` | 显式允许非环回明文 HTTP |
 | `POWERCONTEXT_DSH_SCOPE_ID` | 未设置 | 在 workspace binding 和 Server 默认值之前显式选择已有 Scope |
-| `POWERCONTEXT_DSH_AUTHORIZATION` | 未设置 | 插件 HTTP 请求使用的完整 `Bearer <token>` header |
+| `POWERCONTEXT_DSH_AUTHORIZATION` | 未设置 | MCP 与生命周期 HTTP 请求使用的完整 `Bearer <token>` header |
 | `POWERCONTEXT_DSH_CAPTURE_PROMPTS` | `true` | 把用户提示词采集为 Source 证据 |
 | `POWERCONTEXT_DSH_FLUSH_ON_CAPTURE` | `false` | 采集后等待 Source 处理 |
 

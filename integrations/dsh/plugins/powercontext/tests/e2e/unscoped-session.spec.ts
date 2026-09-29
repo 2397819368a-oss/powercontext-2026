@@ -21,7 +21,6 @@ import { resolveConfig } from '../../src/config.ts'
 import type { PluginRuntime } from '../../src/invoke.ts'
 import { runRecallPreStep } from '../../src/recall.ts'
 import { resolveScopeId } from '../../src/scope.ts'
-import { registerTools } from '../../src/tools.ts'
 import { startPowerContextServer } from '../../scripts/e2e-server.mjs'
 
 let scopeId = ''
@@ -34,11 +33,6 @@ type PcHandler = (invocation: {
   signal: AbortSignal
   agent: { session: { header: { cwd?: string } } }
 }) => Promise<{ kind: string; text: string }>
-
-type RegisteredTool = {
-  name: string
-  execute: (args: Record<string, unknown>, exec: unknown) => Promise<unknown>
-}
 
 function sessionWithoutCwd() {
   return { session: { header: { id: 'session-unscoped', cwd: undefined } } }
@@ -110,21 +104,6 @@ function pcHandler(runtime: PluginRuntime): PcHandler {
   return handler
 }
 
-function toolNamed(runtime: PluginRuntime, name: string): RegisteredTool {
-  const registered: RegisteredTool[] = []
-  registerTools(
-    {
-      tools: { register: (tool) => registered.push(tool as RegisteredTool) },
-      on: () => undefined,
-    },
-    runtime,
-    (definition) => definition,
-  )
-  const tool = registered.find((entry) => entry.name === name)
-  if (!tool) throw new Error(`expected tool ${name}`)
-  return tool
-}
-
 async function recallWithoutCwd(runtime: PluginRuntime, query: string) {
   const messages = [{ content: [{ type: 'text', text: query }], source: { kind: 'user' as const } }]
   const next = async () => ({ kind: 'enter' as const, messages })
@@ -167,15 +146,10 @@ describe('plugin runtime with header.cwd === undefined', () => {
     const { fetchImpl, calls } = trackingFetch()
     const { runtime, events } = createPluginRuntime(server.baseUrl, undefined, fetchImpl)
     const command = pcHandler(runtime)
-    const search = toolNamed(runtime, 'pc_search')
 
     const recalled = await recallWithoutCwd(runtime, TEXT)
     const pc = await command({
       rawInput: 'search optional cwd',
-      signal: AbortSignal.timeout(5000),
-      agent: sessionWithoutCwd(),
-    })
-    const tool = await search.execute({ query: 'optional cwd' }, {
       signal: AbortSignal.timeout(5000),
       agent: sessionWithoutCwd(),
     })
@@ -186,7 +160,6 @@ describe('plugin runtime with header.cwd === undefined', () => {
     })
     expect(events.some((event) => event.event === 'context_prepare')).toBe(true)
     expect(pc.kind).toBe('success')
-    expect(tool).toMatchObject({ ok: true })
     expect(await runtime.resolveScope(undefined)).toMatch(/^scp_/)
     expect(calls.some((call) => call.path === '/v1/scope-bindings/resolve')).toBe(true)
     expect(calls.every((call) => !String(call.body?.scope_id ?? '').startsWith('local:'))).toBe(true)
@@ -196,7 +169,6 @@ describe('plugin runtime with header.cwd === undefined', () => {
     const { fetchImpl, calls } = trackingFetch()
     const { runtime } = createPluginRuntime(server.baseUrl, scopeId, fetchImpl)
     const command = pcHandler(runtime)
-    const search = toolNamed(runtime, 'pc_search')
 
     const remembered = await command({
       rawInput: `remember ${TEXT}`,
@@ -204,13 +176,6 @@ describe('plugin runtime with header.cwd === undefined', () => {
       agent: sessionWithoutCwd(),
     })
     expect(remembered.kind).toBe('success')
-
-    const found = await search.execute({ query: 'optional cwd harness working directory' }, {
-      signal: AbortSignal.timeout(5000),
-      agent: sessionWithoutCwd(),
-    }) as { ok: boolean; data?: { hits?: Array<{ memory: { text: string } }> } }
-    expect(found.ok).toBe(true)
-    expect(found.data?.hits?.some((hit) => hit.memory.text === TEXT)).toBe(true)
 
     const recalled = await recallWithoutCwd(runtime, 'optional cwd harness working directory')
     expect(recalled.kind).toBe('enter')
@@ -230,8 +195,6 @@ describe('plugin runtime with header.cwd === undefined', () => {
     const command = pcHandler(runtime)
     const invocation = () => ({ signal: AbortSignal.timeout(5000), agent: sessionWithoutCwd() })
 
-    const remembered = await toolNamed(runtime, 'pc_remember').execute({ kind: 'agent-note', text: TEXT }, invocation())
-    expect(remembered).toMatchObject({ ok: false, code: 'not_found', error_code: 'scope_not_found', status: 404 })
     const searched = await command({ ...invocation(), rawInput: 'search optional cwd' })
     expect(searched.kind).toBe('error')
     expect(JSON.parse(searched.text)).toMatchObject({ code: 'not_found', error_code: 'scope_not_found' })

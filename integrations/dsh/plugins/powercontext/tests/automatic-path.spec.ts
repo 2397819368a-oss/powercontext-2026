@@ -24,7 +24,7 @@ const peers = vi.hoisted(() => ({ createUserMessage: vi.fn((input: unknown) => i
 vi.mock('../src/peers.ts', () => ({
   loadPeer: async (name: string) => name === '@deepseek-ai/dsh-llm'
     ? peers
-    : { defineTool: (input: unknown) => input },
+    : { apply: async () => undefined },
 }))
 
 const SCOPE = '/v1/scope-bindings/resolve'

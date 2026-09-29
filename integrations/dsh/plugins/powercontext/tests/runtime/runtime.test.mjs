@@ -38,7 +38,7 @@ test('documented setup installs the matched plugin, diagnoses the running host a
     const request = env.modelRequests.find(r => r.stream)
     const catalog = new Set(request.tools.map(tool => tool.function.name))
     const system = request.messages.filter(message => message.role === 'system')
-    const references = JSON.stringify(system).match(/\bpc_[a-z_]+\b/g) ?? []
+    const references = JSON.stringify(system).match(/\bmcp__powercontext__[a-z0-9_]+\b/g) ?? []
     assert.ok(references.length > 0, 'PowerContext guidance must reach the model before any Skill load')
     for (const name of references) assert.ok(catalog.has(name), `guidance refers to unavailable DSH tool: ${name}`)
     if (process.env.POWERCONTEXT_GUIDANCE_EXPORT) {
@@ -49,7 +49,7 @@ test('documented setup installs the matched plugin, diagnoses the running host a
         guidance: system.map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).join('\n'),
         skill: skills.find(skill => skill.name === 'powercontext-project-context'), skills,
         host_skill_tools: request.tools.map(tool => tool.function).filter(tool => tool.name.includes('skill')),
-        tools: request.tools.map(tool => tool.function).filter(tool => tool.name.startsWith('pc_')),
+        tools: request.tools.map(tool => tool.function).filter(tool => tool.name.startsWith('mcp__powercontext__')),
       }, null, 2))
     }
     assert.equal(injected(first).length, 0)
@@ -118,21 +118,19 @@ test('documented setup installs the matched plugin, diagnoses the running host a
   } finally { await env.close() }
 })
 
-test('Scope faults leave real DSH conversations running and preserve direct-tool errors', { timeout: 120000 }, async () => {
+test('Scope faults leave real DSH conversations running and preserve native MCP tool errors', { timeout: 120000 }, async () => {
   const env = await environment()
   try {
     const { instance, diagnostics } = env.harness({ scopeId: 'scp_missing_runtime_fixture' })
-    const run = await instance.run('RUN_PC_SEARCH')
+    const run = await instance.run('RUN_PC_SEARCH_MISSING_SCOPE')
     assert.ok(run.finalResponse)
     assert.equal(injected(run).length, 0)
-    assert.ok(env.calls.length >= 2)
+    assert.ok(env.calls.length >= 1)
     assert.ok(env.calls.every(call => call.path === '/v1/scope-bindings/resolve' && call.status === 404))
+    assert.ok(env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === 'search_memory'))
     const tool = env.modelRequests.filter(r => r.stream).at(-1).messages.find(message => message.role === 'tool')
-    assert.ok(tool.content.startsWith('{'), tool.content)
-    const result = JSON.parse(tool.content)
-    assert.equal(result.ok, false)
-    assert.equal(result.code, 'not_found')
-    assert.equal(result.error_code, 'scope_not_found')
+    assert.match(tool.content, /Error calling tool 'search_memory': HTTP error 404:/)
+    assert.match(tool.content, /scope_not_found/)
     assert.ok(diagnostics().some(event => event.event === 'scope_resolve' && event.error_code === 'scope_not_found'))
     for (const status of [404, 401, 503]) {
       env.setFault({ path: '/v1/scope-bindings/resolve', status })
