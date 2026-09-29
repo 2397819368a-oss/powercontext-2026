@@ -16,7 +16,9 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { ResolvedConfig } from './config.ts'
+import { OPERATIONS } from './operations.generated.ts'
 import { loadPeer } from './peers.ts'
+import { formatScopeRouting } from './scope.ts'
 
 export const POWERCONTEXT_MCP_SERVER_NAME = 'powercontext'
 
@@ -31,6 +33,100 @@ export interface DshMcpConfig {
 
 type PeerLoader = <T>(specifier: string) => Promise<T>
 type DshMcpClient = { apply: (ctx: Context, config: DshMcpConfig) => Promise<void> }
+type PreToolDecision = { kind: 'allow' } | { kind: 'deny'; reason: string } | { kind: 'ask'; reason?: string }
+
+export interface McpScopeResolutionRequest {
+  sessionId?: string
+  cwd?: string
+  signal: AbortSignal
+}
+
+export type McpScopeResolver = (request: McpScopeResolutionRequest) => Promise<string | undefined>
+
+const MCP_TOOL_PREFIX = `mcp__${POWERCONTEXT_MCP_SERVER_NAME}__`
+// MCP ToolAnnotations are advisory; the native DSH MCP client does not turn them into approval prompts.
+// Keep the mutation boundary here so tools/pre-execute remains the actual host approval gate.
+const MUTATING_MCP_OPERATIONS = new Set([
+  'generate_experience', 'propose_experience', 'generate_skill', 'propose_skill',
+  'scan_external_skills', 'import_external_skill',
+  'create_dream_run', 'capture_content_source', 'create_work_contract', 'handoff_current_work',
+  'acknowledge_handoff', 'record_task_outcome', 'activate_handoff', 'finalize_handoff', 'commit_handoff',
+  'remember_memory', 'revise_memory_entry', 'retire_memory_entry',
+  'approve_artifact_candidate', 'reject_artifact_candidate', 'revise_artifact_candidate', 'publish_artifact',
+  'create_scope', 'set_scope_binding', 'clear_scope_binding',
+])
+
+type McpToolExecution = {
+  name: string
+  arguments: unknown
+  signal: AbortSignal
+  agent?: { session?: { header?: { id?: string; cwd?: string } } }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function rawOperation(name: string): string | undefined {
+  if (!name.startsWith(MCP_TOOL_PREFIX)) return undefined
+  const operation = name.slice(MCP_TOOL_PREFIX.length)
+  return Object.prototype.hasOwnProperty.call(OPERATIONS, operation) ? operation : undefined
+}
+
+function usesScope(operation: string): 'current' | 'selection' | 'none' {
+  return OPERATIONS[operation as keyof typeof OPERATIONS].scopeMode
+}
+
+function matchesScope(argumentsValue: unknown, mode: 'current' | 'selection', scopeId: string): boolean {
+  if (!isRecord(argumentsValue)) return false
+  if (mode === 'current') return argumentsValue.scope_id === scopeId
+  const selection = argumentsValue.selection
+  if (!isRecord(selection) || selection.mode !== 'exact' || !Array.isArray(selection.scope_ids)) return false
+  return selection.scope_ids.length === 1 && selection.scope_ids[0] === scopeId
+}
+
+export function registerMcpPolicy(
+  ctx: { on(event: string, handler: (...args: never[]) => unknown): unknown },
+  resolveScope: McpScopeResolver,
+): void {
+  ctx.on('tools/pre-execute', (async (
+    exec: McpToolExecution,
+    next: () => Promise<PreToolDecision>,
+  ): Promise<PreToolDecision> => {
+    const operation = rawOperation(exec.name)
+    if (!operation) return next()
+
+    const mode = usesScope(operation)
+    if (mode !== 'none') {
+      const cwd = exec.agent?.session?.header?.cwd
+      let scopeId: string | undefined
+      try {
+        scopeId = await resolveScope({
+          sessionId: exec.agent?.session?.header?.id,
+          cwd,
+          signal: exec.signal,
+        })
+      } catch {
+        // Preserve the Server's own safe error when the host cannot resolve a Scope.
+        // A resolved Scope is required before this hook rejects a cross-Scope call.
+      }
+      if (scopeId && !matchesScope(exec.arguments, mode, scopeId)) {
+        return {
+          kind: 'deny',
+          reason: `${formatScopeRouting(scopeId, cwd)}\nNo MCP request was sent because the call did not use the host Scope.`,
+        }
+      }
+    }
+
+    if (MUTATING_MCP_OPERATIONS.has(operation)) {
+      return {
+        kind: 'ask',
+        reason: `PowerContext MCP tool "${exec.name}" changes durable project context. Approve it only when the user explicitly requested this operation.`,
+      }
+    }
+    return next()
+  }) as never)
+}
 
 export function mcpEndpoint(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/mcp`

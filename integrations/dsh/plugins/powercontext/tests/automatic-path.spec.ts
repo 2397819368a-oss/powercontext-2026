@@ -91,6 +91,20 @@ function successfulRequest(path: string) {
   return response({ current_cursor: 1 })
 }
 
+function messageInSection(messages: unknown[] | undefined, sectionName: string) {
+  const message = messages?.find((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return false
+    const source = (candidate as { source?: unknown }).source
+    if (!source || typeof source !== 'object') return false
+    const sections = (source as { sections?: unknown }).sections
+    return Array.isArray(sections) && sections.some((section) => (
+      section && typeof section === 'object' && (section as { name?: unknown }).name === sectionName
+    ))
+  })
+  expect(message).toBeDefined()
+  return message as { content: Array<{ text: string }>; source: unknown }
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -200,7 +214,9 @@ describe('registered automatic path', () => {
   it('keeps capture independent after a prepare request timeout', async () => {
     const h = await fixture((path, init) => path === PREPARE ? waitForAbort(init.signal!) : successfulRequest(path),
       { requestTimeoutMs: 20 })
-    expect(await h.run()).toEqual({ kind: 'enter', messages: [userMessage] })
+    const result = await h.run()
+    expect(result.messages).toHaveLength(2)
+    expect(messageInSection(result.messages, 'PowerContext Scope routing').content[0].text).toContain('"scope-test"')
     expect(h.requests.map(({ path }) => path)).toContain(CAPTURE)
     expect(h.diagnostics()[0]).toMatchObject({ event: 'context_prepare', outcome: 'server_unavailable' })
   })
@@ -219,8 +235,8 @@ describe('registered automatic path', () => {
   it.each([CAPTURE, FLUSH])('keeps prepared content when %s fails', async (stage) => {
     const h = await fixture((path) => path === stage ? failure(503) : successfulRequest(path), { flushOnCapture: true })
     const result = await h.run()
-    expect(result.messages).toHaveLength(2)
-    expect(JSON.stringify(result.messages)).toContain(TEXT)
+    expect(result.messages).toHaveLength(3)
+    expect(messageInSection(result.messages, 'PowerContext').content[0].text).toContain(TEXT)
     expect(h.diagnostics()[0]).toMatchObject({ event: stage === CAPTURE ? 'capture_content_source' : 'flush_memory' })
     expect(h.requests.filter(({ path }) => path === CAPTURE)).toHaveLength(1)
   })
@@ -234,8 +250,8 @@ describe('registered automatic path', () => {
       throw new Error(PRIVATE)
     })
     const result = await h.run()
-    expect(result.messages).toHaveLength(2)
-    expect(JSON.stringify(result.messages)).toContain(TEXT)
+    expect(result.messages).toHaveLength(3)
+    expect(messageInSection(result.messages, 'PowerContext').content[0].text).toContain(TEXT)
     expect(JSON.stringify(result.messages)).not.toContain(PRIVATE)
   })
 
@@ -245,8 +261,8 @@ describe('registered automatic path', () => {
     const result = await h.run({ next })
     expect(result).toHaveProperty('startsRequestSeries', true)
     expect(next).toHaveBeenCalledOnce()
-    expect(result.messages).toHaveLength(2)
-    const message = result.messages![1] as { source: unknown; content: Array<{ text: string }> }
+    expect(result.messages).toHaveLength(3)
+    const message = messageInSection(result.messages, 'PowerContext')
     expect(message.source).toEqual({
       kind: 'plugin', plugin: 'powercontext-dsh', form: 'snapshot',
       sections: [{ name: 'PowerContext', text: message.content[0].text }],
@@ -321,7 +337,9 @@ describe('registered automatic path', () => {
     () => response({ schema: 'powercontext.prepared-context.v1', status: 'ready', content: TEXT, content_bytes: 1 }),
   ])('rejects invalid prepared content while preserving capture', async (invalid) => {
     const h = await fixture((path) => path === PREPARE ? invalid() : successfulRequest(path))
-    expect(await h.run()).toEqual({ kind: 'enter', messages: [userMessage] })
+    const result = await h.run()
+    expect(result.messages).toHaveLength(2)
+    expect(messageInSection(result.messages, 'PowerContext Scope routing').content[0].text).toContain('"scope-test"')
     expect(h.diagnostics()[0]).toMatchObject({ event: 'context_prepare', outcome: 'invalid_response' })
     expect(h.requests.map(({ path }) => path)).toContain(CAPTURE)
   })

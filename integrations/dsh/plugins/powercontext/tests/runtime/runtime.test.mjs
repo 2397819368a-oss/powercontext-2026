@@ -15,8 +15,9 @@
  */
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { environment, injected, CANARY } from './fixture.mjs'
 import { installIntoHome } from './setup-fixture.mjs'
@@ -29,7 +30,7 @@ test('documented setup installs the matched plugin, diagnoses the running host a
     assert.ok(installation.setup.includes('powercontext-dsh'))
     assert.equal(installation.doctor.checks.plugin.checks.registration, 'present')
     assert.equal(installation.doctor.checks.plugin.checks.running_host_configuration, 'not_observed')
-    const { instance, dshHome, doctor, status } = env.harness({ baseUrl: 'http://127.0.0.1:1' }, {
+    const { instance, dshHome, doctor, status, workspace } = env.harness({ baseUrl: 'http://127.0.0.1:1' }, {
       plugin: installation.plugin, commands: true,
       env: { POWERCONTEXT_DSH_BASE_URL: env.baseUrl },
     })
@@ -38,6 +39,11 @@ test('documented setup installs the matched plugin, diagnoses the running host a
     const request = env.modelRequests.find(r => r.stream)
     const catalog = new Set(request.tools.map(tool => tool.function.name))
     const system = request.messages.filter(message => message.role === 'system')
+    const routing = request.messages.find(message => JSON.stringify(message).includes('PowerContext host Scope routing'))
+    assert.ok(routing, 'host-resolved Scope routing must reach the model')
+    assert.ok(JSON.stringify(routing).includes(env.scopeId))
+    const bindingId = createHash('sha256').update(resolve(workspace)).digest('hex')
+    assert.ok(JSON.stringify(routing).includes(bindingId), 'host workspace binding key must reach the model')
     const references = JSON.stringify(system).match(/\bmcp__powercontext__[a-z0-9_]+\b/g) ?? []
     assert.ok(references.length > 0, 'PowerContext guidance must reach the model before any Skill load')
     for (const name of references) assert.ok(catalog.has(name), `guidance refers to unavailable DSH tool: ${name}`)

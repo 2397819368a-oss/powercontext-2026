@@ -15,7 +15,16 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { mcpConfig, mcpEndpoint, POWERCONTEXT_MCP_SERVER_NAME, registerMcp } from '../src/mcp.ts'
+import { mcpConfig, mcpEndpoint, POWERCONTEXT_MCP_SERVER_NAME, registerMcp, registerMcpPolicy } from '../src/mcp.ts'
+
+type PolicyHook = (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>
+
+function policyHook(scopeId = 'scope-a'): PolicyHook {
+  let hook: PolicyHook | undefined
+  registerMcpPolicy({ on: (_event, listener) => { hook = listener as unknown as PolicyHook } }, async () => scopeId)
+  if (!hook) throw new Error('MCP policy hook was not registered')
+  return hook
+}
 
 describe('PowerContext MCP bridge', () => {
   it('derives the streamable HTTP endpoint from the normalized Server URL', () => {
@@ -50,5 +59,40 @@ describe('PowerContext MCP bridge', () => {
       serverName: POWERCONTEXT_MCP_SERVER_NAME,
       url: 'https://powercontext.example/mcp',
     }))
+  })
+
+  it('asks before candidate approval even when the MCP server only advertises annotations', async () => {
+    const next = vi.fn(async () => ({ kind: 'allow' as const }))
+    const result = await policyHook()({
+      name: 'mcp__powercontext__approve_artifact_candidate',
+      arguments: { scope_id: 'scope-a', candidate_id: 'candidate-1' },
+      signal: new AbortController().signal,
+    }, next)
+    expect(result).toMatchObject({ kind: 'ask' })
+    expect((result as { reason: string }).reason).toContain('explicitly requested')
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('refuses a native MCP call that names a different host-resolved Scope', async () => {
+    const next = vi.fn(async () => ({ kind: 'allow' as const }))
+    const result = await policyHook()({
+      name: 'mcp__powercontext__search_memory',
+      arguments: { scope_id: 'scope-b', query: 'Aurora' },
+      signal: new AbortController().signal,
+    }, next)
+    expect(result).toMatchObject({ kind: 'deny' })
+    expect((result as { reason: string }).reason).toContain('"scope-a"')
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('allows a read-only native MCP call with the exact host-resolved Scope', async () => {
+    const next = vi.fn(async () => ({ kind: 'allow' as const }))
+    const result = await policyHook()({
+      name: 'mcp__powercontext__search_memory',
+      arguments: { scope_id: 'scope-a', query: 'Aurora' },
+      signal: new AbortController().signal,
+    }, next)
+    expect(result).toEqual({ kind: 'allow' })
+    expect(next).toHaveBeenCalledOnce()
   })
 })

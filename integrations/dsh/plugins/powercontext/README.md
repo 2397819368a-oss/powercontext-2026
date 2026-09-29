@@ -33,8 +33,9 @@ Before each model step it:
 The model-facing operation surface is native MCP at `${POWERCONTEXT_DSH_BASE_URL}/mcp`. DSH exposes the Server tools
 as `mcp__powercontext__<operation>`, including Memory, Work Contract, Handoff, Experience, Skill, candidate review,
 external Skill, Scope organization, persistent Scope binding, and artifact publication. The MCP Server annotations and
-host own mutation approval. Scope-dependent calls must use the exact `scope_id` returned by
-`mcp__powercontext__resolve_scope_binding`; the plugin does not rewrite MCP arguments.
+the DSH pre-execute policy preserve the host approval boundary, including candidate review mutations. Scope-dependent
+calls must use the exact host-resolved `scope_id` and workspace binding key exposed in the current-turn routing
+metadata; the plugin refuses calls for another Scope instead of rewriting MCP arguments.
 
 The automatic pre-step and Source capture above are host lifecycle hooks, not model-facing tools, so they retain the
 plugin's bounded HTTP client. `/pc` commands are local diagnostics and explicit administrative controls; they also retain

@@ -33,8 +33,9 @@ Current instructions and live repository state outrank historical evidence. Pres
 - Use \`mcp__powercontext__get_memory_entry\` with the exact returned \`citation\` when full immutable
   entry details are needed.
 
-Resolve the current Scope with \`mcp__powercontext__resolve_scope_binding\` and pass its exact \`scope_id\` to
-operations that require one. Never derive a Scope from a directory or invent an identifier.
+Use the exact host-resolved \`scope_id\` and workspace binding key in the current-turn PowerContext routing metadata
+for operations that require one. Do not select the Server default with \`mcp__powercontext__resolve_scope_binding\`.
+Never derive a Scope from a directory or invent an identifier.
 
 ## Write only on request
 

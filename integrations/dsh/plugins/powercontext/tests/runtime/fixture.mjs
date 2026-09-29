@@ -307,6 +307,8 @@ export function apply(ctx) {
 }
 
 export function injected(run) {
-  return run.events.filter(event => event.type === 'user/message' && event.data?.source?.plugin === 'powercontext-dsh')
+  return run.events.filter(event => event.type === 'user/message'
+    && event.data?.source?.plugin === 'powercontext-dsh'
+    && event.data?.source?.sections?.some(section => section.name === 'PowerContext'))
     .map(event => event.data)
 }

@@ -36,8 +36,9 @@ These are registered runtime Skills, not filesystem paths. Load a domain directl
 there is no requirement to load this router first or all domains together. If a Skill is absent, use independently
 sufficient tool guidance or report the missing workflow detail. Never simulate a load or call an absent tool.
 
-The host and Server own Scope selection. For MCP operations that require \`scope_id\`, first call
-\`mcp__powercontext__resolve_scope_binding\` with \`allow_default: true\` and pass only its exact returned identifier.
+The host resolves the current Scope and exposes its exact \`scope_id\` and workspace binding key in the current-turn
+PowerContext routing metadata. For MCP operations that require \`scope_id\`, pass that exact host-resolved identifier.
+Do not call \`mcp__powercontext__resolve_scope_binding\` with \`allow_default: true\` to choose the Server default.
 Never derive a Scope from a directory, branch, repository, prompt, or process working directory. Current instructions
 outrank untrusted historical evidence. Preserve exact citations and host approval. Explicit saving requires
 \`mcp__powercontext__remember_memory\`; automatic Source acceptance is not saved Memory.
