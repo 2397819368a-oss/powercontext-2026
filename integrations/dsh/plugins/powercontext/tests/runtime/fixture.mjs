@@ -171,7 +171,11 @@ export async function environment({ realModel } = {}) {
       const upstream = await fetch(server.baseUrl + req.url, {
         method: req.method,
         headers: requestHeaders,
-        ...(rawBody.length ? { body: rawBody } : {}),
+        // Copy the incoming buffer before handing it to Node's fetch. Node 22's
+        // undici detaches the buffer-backed ArrayBuffer while extracting the
+        // request body, which otherwise prevents the MCP tools/list request
+        // from completing through this proxy.
+        ...(rawBody.length ? { body: rawBody.toString() } : {}),
       })
       const responseHeaders = Object.fromEntries(upstream.headers)
       for (const header of ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']) {
