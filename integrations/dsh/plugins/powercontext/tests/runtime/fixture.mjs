@@ -122,7 +122,8 @@ export async function environment({ realModel } = {}) {
       return
     }
     const skillMatch = JSON.stringify(body.messages).match(/LOAD_PC_SKILL:(powercontext-(?:memory|handoff|review))/)
-    const needsTool = (skillMatch || JSON.stringify(body.messages).includes('RUN_PC_SEARCH'))
+    const getScope = JSON.stringify(body.messages).includes('RUN_PC_GET_SCOPE')
+    const needsTool = (skillMatch || getScope || JSON.stringify(body.messages).includes('RUN_PC_SEARCH'))
       && !body.messages.some(message => message.role === 'tool')
     const content = JSON.stringify(body.messages).includes(CANARY) ? CANARY : 'Task completed.'
     const requestedScopeId = JSON.stringify(body.messages).includes('RUN_PC_SEARCH_MISSING_SCOPE')
@@ -137,6 +138,8 @@ export async function environment({ realModel } = {}) {
         index: 0, id: 'fixture-search', type: 'function',
         function: skillMatch
           ? { name: 'skill', arguments: JSON.stringify({ name: skillMatch[1] }) }
+          : getScope
+          ? { name: 'mcp__powercontext__get_scope', arguments: JSON.stringify({ scope_id: requestedScopeId }) }
           : { name: 'mcp__powercontext__search_memory', arguments: JSON.stringify({
             scope_id: requestedScopeId, query: 'aurora deployment color',
           }) },

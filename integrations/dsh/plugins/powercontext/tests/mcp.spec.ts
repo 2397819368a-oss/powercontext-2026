@@ -95,4 +95,35 @@ describe('PowerContext MCP bridge', () => {
     expect(result).toEqual({ kind: 'allow' })
     expect(next).toHaveBeenCalledOnce()
   })
+
+  it.each(['get_scope', 'list_dream_runs', 'get_dream_run', 'create_dream_run'])(
+    'refuses another Scope in the path arguments of native MCP %s', async (operation) => {
+      const next = vi.fn(async () => ({ kind: 'allow' as const }))
+      const result = await policyHook()({
+        name: `mcp__powercontext__${operation}`,
+        arguments: { scope_id: 'scope-b', run_id: 'run-1' },
+        signal: new AbortController().signal,
+      }, next)
+      expect(result).toMatchObject({ kind: 'deny' })
+      expect((result as { reason: string }).reason).toContain('"scope-a"')
+      expect(next).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    ['get_scope', 'allow'],
+    ['list_dream_runs', 'allow'],
+    ['get_dream_run', 'allow'],
+    ['create_dream_run', 'ask'],
+  ])('preserves the approval policy for native MCP %s in the host Scope', async (operation, decision) => {
+    const next = vi.fn(async () => ({ kind: 'allow' as const }))
+    const result = await policyHook()({
+      name: `mcp__powercontext__${operation}`,
+      arguments: { scope_id: 'scope-a', run_id: 'run-1' },
+      signal: new AbortController().signal,
+    }, next)
+    expect(result).toMatchObject({ kind: decision })
+    if (decision === 'ask') expect(next).not.toHaveBeenCalled()
+    else expect(next).toHaveBeenCalledOnce()
+  })
 })

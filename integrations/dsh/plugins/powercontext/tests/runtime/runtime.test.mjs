@@ -246,6 +246,31 @@ test('real DSH does not recall or capture into another configured Scope', { time
   } finally { await env.close() }
 })
 
+test('real DSH enforces the host Scope for native MCP path arguments before dispatch', { timeout: 120000 }, async () => {
+  const env = await environment()
+  try {
+    const other = await env.api('/v1/scopes', {
+      title: 'Isolated MCP Scope', summary: 'Path Scope isolation fixture', idempotency_key: 'runtime-mcp-isolated',
+    })
+    const isolated = env.harness({ scopeId: other.scope_id }).instance
+    const denied = await isolated.run('RUN_PC_GET_SCOPE')
+    assert.ok(denied.finalResponse)
+    assert.ok(!env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === 'get_scope'))
+    const denial = env.modelRequests.filter(request => request.stream).at(-1).messages.find(message => message.role === 'tool')
+    assert.ok(denial, 'the native DSH host must return the denied tool result to the model')
+    assert.ok(denial.content.includes(other.scope_id))
+    assert.match(denial.content, /did not use the host Scope/)
+
+    const matched = env.harness().instance
+    const allowed = await matched.run('RUN_PC_GET_SCOPE')
+    assert.ok(allowed.finalResponse)
+    const call = env.mcpCalls.find(call => call.body?.method === 'tools/call' && call.body.params?.name === 'get_scope')
+    assert.equal(call?.body.params.arguments.scope_id, env.scopeId)
+    const result = env.modelRequests.filter(request => request.stream).at(-1).messages.find(message => message.role === 'tool')
+    assert.ok(result?.content.includes(env.scopeId))
+  } finally { await env.close() }
+})
+
 
 test('real DSH discovers bilingual domains and loads only the requested Skill', { timeout: 120000 }, async () => {
   const env = await environment()

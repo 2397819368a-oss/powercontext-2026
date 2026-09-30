@@ -3317,7 +3317,9 @@ function rawOperation(name$1) {
 	return Object.prototype.hasOwnProperty.call(OPERATIONS, operation) ? operation : void 0;
 }
 function usesScope(operation) {
-	return OPERATIONS[operation].scopeMode;
+	const metadata = OPERATIONS[operation];
+	if (metadata.pathParameters.some((parameter) => parameter === "scope_id")) return "current";
+	return metadata.scopeMode;
 }
 function matchesScope(argumentsValue, mode, scopeId) {
 	if (!isRecord(argumentsValue)) return false;

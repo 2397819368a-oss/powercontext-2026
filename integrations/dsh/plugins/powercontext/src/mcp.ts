@@ -74,7 +74,10 @@ function rawOperation(name: string): string | undefined {
 }
 
 function usesScope(operation: string): 'current' | 'selection' | 'none' {
-  return OPERATIONS[operation as keyof typeof OPERATIONS].scopeMode
+  const metadata = OPERATIONS[operation as keyof typeof OPERATIONS]
+  // scopeMode describes implicit Scope resolution; path scope_id still binds an MCP call to the host Scope.
+  if (metadata.pathParameters.some(parameter => parameter === 'scope_id')) return 'current'
+  return metadata.scopeMode
 }
 
 function matchesScope(argumentsValue: unknown, mode: 'current' | 'selection', scopeId: string): boolean {
