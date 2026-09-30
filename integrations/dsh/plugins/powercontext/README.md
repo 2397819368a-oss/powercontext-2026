@@ -23,7 +23,8 @@ reuses the cached checkout without fetching; update a local checkout and reinsta
 Use [the DSH setup guide](../../../../docs/en/docs/integrations/dsh.md) for generation/processing configuration.
 Run `powercontext server run --env-file powercontext.env` in one terminal, then set
 `POWERCONTEXT_DSH_BASE_URL` in another terminal and run `dsh web`. Restart DSH after changing installation or environment.
-Release 1.1.0 includes MCP/Scope failure handling and the layered Doctor and snapshot behavior below.
+Release 1.1.0 includes direct-operation Scope failure handling, MCP/Scope failure handling, and the layered Doctor and
+snapshot behavior below.
 
 Before each model step it:
 
