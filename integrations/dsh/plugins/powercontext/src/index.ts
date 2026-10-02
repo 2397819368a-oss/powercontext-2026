@@ -96,10 +96,11 @@ function createSessionScopeResolver(runtime: PluginRuntime): {
   const resolve = async (request: McpScopeResolutionRequest, refresh: boolean): Promise<string | undefined> => {
     const key = keyFor(request.sessionId, request.cwd)
     const cached = cache.get(key)
-    if (!refresh && cached?.cwd === request.cwd) return cached.scopeId
+    if (!refresh && cached && cached.cwd === request.cwd) return cached.scopeId
+    // A failed refresh must not leave a previous turn's Scope available to MCP calls.
+    cache.delete(key)
     const scopeId = await runtime.resolveScope(request.cwd, request.signal)
     if (scopeId) cache.set(key, { cwd: request.cwd, scopeId })
-    else cache.delete(key)
     return scopeId
   }
   return {
@@ -158,10 +159,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const llmMod = await loadPeer<{ createUserMessage: CreateUserMessage }>('@deepseek-ai/dsh-llm')
   const runtime = createRuntime(ctx, config)
   const sessionScope = createSessionScopeResolver(runtime)
-  await registerMcp(ctx, runtime.config)
   registerMcpPolicy(ctx, sessionScope.forTool)
   registerGuidance(ctx)
   registerRecall(ctx, runtime, llmMod.createUserMessage, sessionScope.forPreStep)
   registerCommands(ctx, runtime)
   registerSkill(ctx)
+  await registerMcp(ctx, runtime.config)
 }

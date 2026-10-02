@@ -67,7 +67,7 @@ Use Handoff when work must move to another task, session, or model.
 2. Call \`mcp__powercontext__handoff_current_work\` with the checked objective, state, disposition, next action,
    and exact Source evidence. It returns the canonical temporary prepared handoff.
 3. For an explicitly requested boundary-trigger activation, use
-   \`mcp__powercontext__activate_handoff\`; its \`generated\` status provides a Draft in \`data.draft\` and
+   \`mcp__powercontext__activate_handoff\`; its \`generated\` status provides a Draft in top-level \`draft\` and
    \`ignored\` means the Source was already consumed. Do not use activation after \`handoff_current_work\`.
 4. If the low-level activation flow was used, call \`mcp__powercontext__finalize_handoff\` with the inspected Draft.
 5. The receiving task calls \`mcp__powercontext__continue_handoff\` with \`selection: "prepared"\`
@@ -76,9 +76,9 @@ Use Handoff when work must move to another task, session, or model.
 Call \`mcp__powercontext__commit_handoff\` only when the user explicitly wants a durable
 milestone.
 
-For the lower-level Handoff flow, \`mcp__powercontext__activate_handoff\` returns the Draft in \`data.draft\`.
-Pass only that Draft to \`mcp__powercontext__finalize_handoff\`, never the \`{ok, data}\` wrapper. Return
-\`finalize.data\` unchanged, including \`schema\`, \`scope_id\`,
+For the lower-level Handoff flow, \`mcp__powercontext__activate_handoff\` returns the Draft in top-level \`draft\`.
+Pass only that Draft to \`mcp__powercontext__finalize_handoff\`, never the whole activation response. Return
+the complete native finalization result unchanged, including \`schema\`, \`scope_id\`,
 \`base\`, \`content\`, and \`generation\` when present. Do not return an unfinished Draft or only \`content\`.
 For a preview, draft text from current inspected facts without calling any Handoff or Source tool. Do not claim that a prepared carrier or durable milestone exists. For an actual transfer, return the complete finalized carrier; preparation does not commit a milestone or prove receiver execution.
 `,

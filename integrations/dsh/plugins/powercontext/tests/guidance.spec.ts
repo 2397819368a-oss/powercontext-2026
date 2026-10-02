@@ -40,4 +40,11 @@ it('exposes native MCP guidance', () => {
       expect(tool.startsWith('mcp__powercontext__'), tool).toBe(true)
     }
   }
+  const handoff = skills.find(skill => skill.name === 'powercontext-handoff')!.content
+  expect(handoff).toContain('top-level `draft`')
+  expect(handoff).toContain('complete native finalization result unchanged')
+  expect(sections[0].text).toContain('complete native finalize_handoff result unchanged')
+  for (const guidance of [sections[0].text, handoff]) {
+    expect(guidance).not.toMatch(/data\.draft|finalize(?:_handoff)?\.data/)
+  }
 })

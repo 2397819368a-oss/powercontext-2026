@@ -52,7 +52,7 @@ These tests launch the real `dsh --profile sdk` subprocess and a real PowerConte
 Only the built distributable plugin files are installed. Host tool registration, pre-step processing, message
 construction, model request assembly, and session persistence are not replaced. A loopback model fixture provides
 scripted OpenAI-compatible streaming replies and Server inference decisions. A loopback proxy can inject HTTP
-failures at individual PowerContext endpoints.
+failures at individual PowerContext endpoints or hold the native MCP initialization response.
 
 The setup scenario first runs `powercontext setup dsh --source <this checkout>` with the pinned DSH executable
 and a clean DSH home. It verifies Web-profile registration through `powercontext doctor dsh --json`, then loads
@@ -80,7 +80,8 @@ The scenarios cover:
 - automatic Source capture, Server processing into Memory, fresh-session recall, model input, and durable snapshot metadata;
 - clean CLI installation, standalone observation limits, and in-host Doctor configuration/route/authentication checks;
 - Source idempotency, no duplicate snapshot injection, and matching section/content text;
-- Scope business and route failures, authentication failure, unavailable Server, continued conversation, and a real named tool result;
+- Scope business and route failures, authentication failure, unavailable Server, continued conversation, and denied cross-Scope MCP calls before dispatch;
+- stalled MCP startup, continued ordinary conversation, late native tool registration, and cleanup of pending handshakes;
 - independent prepare/capture/flush failure, recovery, host restart, and configured Scope isolation.
 
 The registered-entry unit tests in `../automatic-path.spec.ts` cover cancellation, deadlines, writer failures

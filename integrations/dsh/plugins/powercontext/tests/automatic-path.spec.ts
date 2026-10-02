@@ -52,6 +52,9 @@ async function fixture(
   const logger = { warn: vi.fn(), debug: vi.fn() }
   type Hook = (payload: unknown, next: () => Promise<PreStepDecision>) => Promise<PreStepDecision>
   let hook: Hook | undefined
+  type ToolDecision = { kind: 'allow' } | { kind: 'deny'; reason: string } | { kind: 'ask'; reason?: string }
+  type ToolHook = (payload: unknown, next: () => Promise<ToolDecision>) => Promise<ToolDecision>
+  let toolHook: ToolHook | undefined
   const registry = { register: () => () => {}, section: () => () => {} }
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname
@@ -61,7 +64,10 @@ async function fixture(
   await apply({
     tools: registry,
     get: () => registry,
-    on: (name: string, listener: Hook) => { if (name === 'agent/pre-step') hook = listener },
+    on: (name: string, listener: Hook & ToolHook) => {
+      if (name === 'agent/pre-step') hook = listener
+      if (name === 'tools/pre-execute') toolHook = listener
+    },
     logger,
   } as unknown as Context, {
     baseUrl: 'http://127.0.0.1:8765',
@@ -81,7 +87,14 @@ async function fixture(
       signal: options.signal ?? new AbortController().signal,
     }, options.next ?? (async () => ({ kind: 'enter', messages })))
   }
-  return { run, requests, logger, diagnostics: () => logger.warn.mock.calls.map(([line]) => JSON.parse(line)) }
+  if (!toolHook) throw new Error('MCP policy hook was not registered')
+  const search = () => toolHook!({
+    name: 'mcp__powercontext__search_memory',
+    arguments: { scope_id: 'scope-test', query: 'Aurora' },
+    signal: new AbortController().signal,
+    agent: { session: { header: { id: 'test-session' } } },
+  }, async () => ({ kind: 'allow' }))
+  return { run, search, requests, logger, diagnostics: () => logger.warn.mock.calls.map(([line]) => JSON.parse(line)) }
 }
 
 function successfulRequest(path: string) {
@@ -129,6 +142,26 @@ describe('registered automatic path', () => {
     expect(diagnostics[0].recovery).toContain('Do not automatically create a replacement Scope')
     expect(diagnostics[0].recovery).not.toContain('retry')
     expect(JSON.stringify(diagnostics)).not.toContain(PRIVATE)
+  })
+
+  it('resolves a no-workspace MCP call without requiring an earlier automatic step', async () => {
+    const h = await fixture(successfulRequest)
+    expect(await h.search()).toEqual({ kind: 'allow' })
+    expect(h.requests[0].path).toBe(SCOPE)
+    expect(h.requests[0].body.binding_keys).toEqual([])
+  })
+
+  it('does not reuse a previous turn Scope after resolution fails and recovers when it returns', async () => {
+    let unavailable = false
+    const h = await fixture(path => unavailable && path === SCOPE ? failure(503) : successfulRequest(path))
+    await h.run()
+    expect(await h.search()).toEqual({ kind: 'allow' })
+    unavailable = true
+    expect(await h.run()).toEqual({ kind: 'enter', messages: [userMessage] })
+    expect(await h.search()).toMatchObject({ kind: 'deny', reason: expect.stringContaining('host Scope could not be resolved') })
+    unavailable = false
+    await h.run()
+    expect(await h.search()).toEqual({ kind: 'allow' })
   })
 
   it.each([

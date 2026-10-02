@@ -225,8 +225,12 @@ MCP 面覆盖完整 PowerContext profile：Memory 读写、Source 采集、Work 
 Experience、托管和外部 Skill、候选审查、Scope 管理、持久 Scope binding 以及 Artifact 发布；同时还暴露
 profile 契约之外的 Server MCP 工具。插件不会注册 Pi/Hermes 风格的直接 HTTP 操作工具。
 
-需要 `scope_id` 的 MCP 操作应先调用 `mcp__powercontext__resolve_scope_binding`，传入 `allow_default: true`
-（以及可用的 binding key），再只使用返回的准确 Scope ID。生命周期 hook 的 Scope 解析不会重写模型提供的 MCP 参数。
+依赖 Scope 的 MCP 操作（包括路径参数中的 `scope_id`）必须使用本轮路由元数据中暴露的宿主解析结果。
+不要通过 `mcp__powercontext__resolve_scope_binding` 和 `allow_default: true` 另选 Server 默认 Scope。
+插件会拒绝其他 Scope，而不会重写 MCP 参数；自动生命周期 hook 与模型操作使用相同的项目上下文。
+
+插件启动时，对可选的原生 MCP 初始化最多等待五秒。握手停滞不会阻止普通 DSH 对话，同一个 client 可以在后台
+完成连接。工具注册完成前不可用；选择 MCP 操作前应检查当前工具目录。
 
 插件按 `POWERCONTEXT_DSH_SCOPE_ID`、session workspace 持久 binding、Server 默认 Scope 的顺序解析一个由
 Server 管理的 Scope。workspace 路径只会哈希为外部 binding key。缺少 workspace 时使用 Server 默认 Scope，
@@ -236,9 +240,9 @@ Server 管理的 Scope。workspace 路径只会哈希为外部 binding key。缺
 
 ## 排查 MCP 和命令的直接调用失败
 
-Scope 解析失败时，原生 MCP 工具和依赖 Scope 的 `/pc` 命令会返回受控失败，并在执行请求的操作前停止。
-MCP 调用必须使用 `resolve_scope_binding` 选择的准确 Scope；插件不会因此创建 binding 或切换其他 Scope。
-取消信号和现有的单请求超时也适用于生命周期 Scope 解析。
+宿主 Scope 解析失败或未返回 Scope 时，依赖 Scope 的原生 MCP 工具和 `/pc` 命令会在发送操作前返回受控失败。
+刷新失败会清除该会话缓存的 Scope，MCP 调用不能通过上一轮的值绕过失败。普通对话继续，不会因此创建 binding
+或切换其他 Scope。取消信号和现有的单请求超时也适用于生命周期 Scope 解析。
 
 在 DeepSeek Harness 内：
 

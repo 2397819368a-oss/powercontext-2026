@@ -18,6 +18,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { setTimeout } from 'node:timers/promises'
 import { test } from 'node:test'
 import { environment, injected, CANARY } from './fixture.mjs'
 import { installIntoHome } from './setup-fixture.mjs'
@@ -124,27 +125,31 @@ test('documented setup installs the matched plugin, diagnoses the running host a
   } finally { await env.close() }
 })
 
-test('Scope faults leave real DSH conversations running and preserve native MCP tool errors', { timeout: 120000 }, async () => {
+test('Scope resolution failures deny cross-Scope MCP calls while real DSH conversations continue', { timeout: 120000 }, async () => {
   const env = await environment()
   try {
+    await env.api('/v1/memory/remember', { scope_id: env.scopeId, kind: 'decision', text: CANARY })
     const { instance, diagnostics } = env.harness({ scopeId: 'scp_missing_runtime_fixture' })
-    const run = await instance.run('RUN_PC_SEARCH_MISSING_SCOPE')
+    const run = await instance.run('RUN_PC_SEARCH')
     assert.ok(run.finalResponse)
     assert.equal(injected(run).length, 0)
     assert.ok(env.calls.length >= 1)
     assert.ok(env.calls.every(call => call.path === '/v1/scope-bindings/resolve' && call.status === 404))
-    assert.ok(env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === 'search_memory'))
+    assert.ok(!env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === 'search_memory'))
     const tool = env.modelRequests.filter(r => r.stream).at(-1).messages.find(message => message.role === 'tool')
-    assert.match(tool.content, /Error calling tool 'search_memory': HTTP error 404:/)
-    assert.match(tool.content, /scope_not_found/)
+    assert.match(tool.content, /host Scope could not be resolved/)
+    assert.ok(!JSON.stringify(env.modelRequests.filter(r => r.stream).at(-1)).includes(CANARY))
     assert.ok(diagnostics().some(event => event.event === 'scope_resolve' && event.error_code === 'scope_not_found'))
     for (const status of [404, 401, 503]) {
       env.setFault({ path: '/v1/scope-bindings/resolve', status })
       const start = env.calls.length
-      const next = await instance.run('Reply with a short acknowledgement.')
+      const next = await instance.run('RUN_PC_SEARCH')
       assert.ok(next.finalResponse)
       assert.equal(injected(next).length, 0)
       assert.ok(env.calls.slice(start).every(call => call.path === '/v1/scope-bindings/resolve'))
+      const input = env.modelRequests.filter(r => r.stream).at(-1)
+      assert.match(input.messages.find(message => message.role === 'tool').content, /host Scope could not be resolved/)
+      assert.ok(!JSON.stringify(input).includes(CANARY))
       assert.ok(!JSON.stringify(env.modelRequests.filter(r => r.stream).at(-1)).includes('private-response-marker'))
     }
     for (const outcome of ['version_mismatch', 'authentication_failed', 'server_unavailable']) {
@@ -152,6 +157,57 @@ test('Scope faults leave real DSH conversations running and preserve native MCP 
     }
     assert.ok(!JSON.stringify(diagnostics()).includes('private-response-marker'))
     assert.ok(!JSON.stringify(diagnostics()).includes('/v1/'))
+    const configured = await env.api('/v1/scopes', {
+      title: 'Configured MCP Scope', summary: 'Resolver failure fixture', idempotency_key: 'runtime-mcp-resolver',
+    })
+    env.setFault({ path: '/v1/scope-bindings/resolve', status: 503 })
+    const unavailable = env.harness({ scopeId: configured.scope_id }).instance
+    assert.ok((await unavailable.run('RUN_PC_SEARCH')).finalResponse)
+    const denied = env.modelRequests.filter(r => r.stream).at(-1)
+    assert.match(denied.messages.find(message => message.role === 'tool').content, /host Scope could not be resolved/)
+    assert.ok(!JSON.stringify(denied).includes(CANARY))
+    assert.ok(!env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === 'search_memory'))
+
+    env.setFault(undefined)
+    const recovered = await env.harness().instance.run('RUN_PC_SEARCH')
+    assert.ok(recovered.finalResponse)
+    assert.ok(env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === 'search_memory'))
+    const result = env.modelRequests.filter(r => r.stream).at(-1).messages.find(message => message.role === 'tool')
+    assert.ok(result.content.includes(CANARY))
+  } finally { await env.close() }
+})
+
+test('a stalled native MCP handshake does not block real DSH startup and can finish later', { timeout: 120000 }, async () => {
+  const env = await environment()
+  try {
+    env.setFault({ path: '/mcp', hold: true })
+    const { instance, diagnostics } = env.harness()
+    const run = await instance.run('Reply with a short acknowledgement.')
+    assert.ok(run.finalResponse, 'ordinary conversation must reach the model before MCP initialization completes')
+    assert.ok(env.mcpCalls.some(call => call.body?.method === 'initialize'))
+    const initial = env.modelRequests.find(request => request.stream)
+    assert.ok(!initial.tools.some(tool => tool.function.name.startsWith('mcp__powercontext__')))
+    assert.ok(diagnostics().some(event => event.event === 'mcp_connect' && event.outcome === 'pending'))
+
+    env.setFault(undefined)
+    const deadline = Date.now() + 10000
+    let catalog = []
+    do {
+      assert.ok((await instance.run('Reply with a short acknowledgement.')).finalResponse)
+      catalog = env.modelRequests.filter(request => request.stream).at(-1).tools
+      if (catalog.some(tool => tool.function.name === 'mcp__powercontext__get_scope')) break
+      await setTimeout(100)
+    } while (Date.now() < deadline)
+    assert.ok(catalog.some(tool => tool.function.name === 'mcp__powercontext__get_scope'), 'the same native client must publish tools after late initialization')
+    assert.ok((await instance.run('RUN_PC_GET_SCOPE')).finalResponse)
+    assert.ok(env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === 'get_scope'))
+    await instance.close()
+
+    env.setFault({ path: '/mcp', hold: true })
+    const pending = env.harness().instance
+    assert.ok((await pending.run('Reply with a short acknowledgement.')).finalResponse)
+    await pending.close()
+    assert.ok(env.mcpCalls.findLast(call => call.body?.method === 'initialize').closed, 'closing the host must close its stalled MCP connection')
   } finally { await env.close() }
 })
 

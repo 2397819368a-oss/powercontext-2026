@@ -126,8 +126,7 @@ export async function environment({ realModel } = {}) {
     const needsTool = (skillMatch || getScope || JSON.stringify(body.messages).includes('RUN_PC_SEARCH'))
       && !body.messages.some(message => message.role === 'tool')
     const content = JSON.stringify(body.messages).includes(CANARY) ? CANARY : 'Task completed.'
-    const requestedScopeId = JSON.stringify(body.messages).includes('RUN_PC_SEARCH_MISSING_SCOPE')
-      ? 'scp_missing_runtime_fixture' : scopeIdForModel
+    const requestedScopeId = scopeIdForModel
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     const chunk = (delta, finish_reason = null) => `data: ${JSON.stringify({
       id: 'dsh-fixture', object: 'chat.completion.chunk', model: body.model, created: 0,
@@ -163,6 +162,7 @@ export async function environment({ realModel } = {}) {
   const calls = []
   const mcpCalls = []
   let fault
+  const stalledInitializations = new Set()
   const proxy = await listen(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname
     if (path === '/mcp' || path.startsWith('/mcp/')) {
@@ -171,6 +171,19 @@ export async function environment({ realModel } = {}) {
       for (const header of ['connection', 'content-length', 'host', 'transfer-encoding']) requestHeaders.delete(header)
       const mcpCall = { path, method: req.method, body: rawBody.length ? JSON.parse(rawBody.toString()) : undefined }
       mcpCalls.push(mcpCall)
+      if (fault?.path === '/mcp' && fault.hold && mcpCall.body?.method === 'initialize') {
+        await new Promise((resolve) => {
+          const release = () => {
+            stalledInitializations.delete(release)
+            res.off('close', closed)
+            resolve()
+          }
+          const closed = () => { mcpCall.closed = true; release() }
+          stalledInitializations.add(release)
+          res.once('close', closed)
+        })
+        if (res.destroyed) return
+      }
       const upstream = await fetch(server.baseUrl + req.url, {
         method: req.method,
         headers: requestHeaders,
@@ -299,7 +312,12 @@ export function apply(ctx) {
   }
   return {
     home, api, scopeId, calls, mcpCalls, modelRequests, harness, baseUrl: proxy.url,
-    setFault(value) { fault = value },
+    setFault(value) {
+      fault = value
+      if (fault?.path !== '/mcp' || !fault.hold) {
+        for (const release of stalledInitializations) release()
+      }
+    },
     async close() {
       const results = await Promise.allSettled(harnesses.map(instance => instance.close()))
       results.push(...await Promise.allSettled([proxy.close(), server.stop(), model.close()]))

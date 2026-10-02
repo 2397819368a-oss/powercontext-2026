@@ -46,9 +46,9 @@ Native MCP annotations and the host's own approval behavior for mutations. Prese
 results; never bypass an approval channel or claim a write succeeded without its result.
 A request for a temporary Handoff requires a finalized prepared carrier: do not stop at Draft generation.
 mcp__powercontext__handoff_current_work returns a temporary prepared handoff; commit only for an explicitly requested
-durable milestone. For a low-level flow, pass only the exact Draft returned by
-mcp__powercontext__activate_handoff to mcp__powercontext__finalize_handoff, never the whole response, and return
-finalize_handoff.data unchanged.
+durable milestone. For a low-level flow, pass only the exact top-level draft returned by
+mcp__powercontext__activate_handoff to mcp__powercontext__finalize_handoff, never the whole activation response.
+Return the complete native finalize_handoff result unchanged, including schema, scope_id, base, content, and generation.
 Handoff preparation requires exact returned Source or Artifact citations, not raw facts or invented references. When
 inspected current facts have no Source reference, call mcp__powercontext__capture_content_source first and use its
 returned source as boundary evidence.

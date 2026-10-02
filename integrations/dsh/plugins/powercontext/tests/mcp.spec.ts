@@ -14,17 +14,20 @@
  * limitations under the License.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mcpConfig, mcpEndpoint, POWERCONTEXT_MCP_SERVER_NAME, registerMcp, registerMcpPolicy } from '../src/mcp.ts'
+import type { McpScopeResolver } from '../src/mcp.ts'
 
 type PolicyHook = (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>
 
-function policyHook(scopeId = 'scope-a'): PolicyHook {
+function policyHook(resolveScope: McpScopeResolver = async () => 'scope-a'): PolicyHook {
   let hook: PolicyHook | undefined
-  registerMcpPolicy({ on: (_event, listener) => { hook = listener as unknown as PolicyHook } }, async () => scopeId)
+  registerMcpPolicy({ on: (_event, listener) => { hook = listener as unknown as PolicyHook } }, resolveScope)
   if (!hook) throw new Error('MCP policy hook was not registered')
   return hook
 }
+
+afterEach(() => vi.useRealTimers())
 
 describe('PowerContext MCP bridge', () => {
   it('derives the streamable HTTP endpoint from the normalized Server URL', () => {
@@ -60,6 +63,62 @@ describe('PowerContext MCP bridge', () => {
       url: 'https://powercontext.example/mcp',
     }))
   })
+
+  it('lets startup finish within five seconds and allows late native MCP registration', async () => {
+    vi.useFakeTimers()
+    let complete!: () => void
+    let toolsAvailable = false
+    const load = async <T>() => ({ apply: async () => {
+      await new Promise<void>(resolve => { complete = resolve })
+      toolsAvailable = true
+    } }) as T
+    let hostReady = false
+    const startup = registerMcp({} as never, {
+      baseUrl: 'https://powercontext.example', authorization: undefined,
+    }, load).then(() => { hostReady = true })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(hostReady).toBe(true)
+    expect(toolsAvailable).toBe(false)
+    complete()
+    await vi.advanceTimersByTimeAsync(0)
+    await startup
+    expect(toolsAvailable).toBe(true)
+  })
+
+  it('handles a late MCP initialization failure without rejecting host startup', async () => {
+    vi.useFakeTimers()
+    let fail!: (error: Error) => void
+    const warn = vi.fn()
+    const load = async <T>() => ({ apply: () => new Promise<void>((_resolve, reject) => { fail = reject }) }) as T
+    const startup = registerMcp({ logger: { warn } } as never, {
+      baseUrl: 'https://powercontext.example', authorization: undefined,
+    }, load)
+    await vi.advanceTimersByTimeAsync(5000)
+    await expect(startup).resolves.toBeUndefined()
+    fail(new Error('private-fixture-marker'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(warn.mock.calls.map(([line]) => JSON.parse(line))).toContainEqual(expect.objectContaining({
+      event: 'mcp_connect', outcome: 'invalid_response',
+    }))
+    expect(warn.mock.calls.map(([line]) => line).join('\n')).not.toContain('private-fixture-marker')
+  })
+
+  it.each(['search_memory', 'get_scope', 'get_handoff_report'])(
+    'denies %s when the host Scope is unavailable', async (operation) => {
+      for (const resolveScope of [async () => undefined, async () => { throw new Error('private-fixture-marker') }]) {
+        const next = vi.fn(async () => ({ kind: 'allow' as const }))
+        const result = await policyHook(resolveScope)({
+          name: `mcp__powercontext__${operation}`,
+          arguments: { scope_id: 'scope-b', selection: { mode: 'exact', scope_ids: ['scope-b'] } },
+          signal: new AbortController().signal,
+        }, next)
+        expect(result).toMatchObject({ kind: 'deny' })
+        expect((result as { reason: string }).reason).toContain('host Scope could not be resolved')
+        expect((result as { reason: string }).reason).not.toContain('private-fixture-marker')
+        expect(next).not.toHaveBeenCalled()
+      }
+    },
+  )
 
   it('asks before candidate approval even when the MCP server only advertises annotations', async () => {
     const next = vi.fn(async () => ({ kind: 'allow' as const }))

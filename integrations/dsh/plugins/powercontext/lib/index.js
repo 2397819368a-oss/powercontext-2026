@@ -3281,6 +3281,7 @@ async function loadPeer(specifier) {
 //#region src/mcp.ts
 const POWERCONTEXT_MCP_SERVER_NAME = "powercontext";
 const MCP_TOOL_PREFIX = `mcp__${POWERCONTEXT_MCP_SERVER_NAME}__`;
+const MCP_STARTUP_WAIT_MS = 5e3;
 const MUTATING_MCP_OPERATIONS = new Set([
 	"generate_experience",
 	"propose_experience",
@@ -3343,7 +3344,11 @@ function registerMcpPolicy(ctx, resolveScope) {
 					signal: exec.signal
 				});
 			} catch {}
-			if (scopeId && !matchesScope(exec.arguments, mode, scopeId)) return {
+			if (!scopeId) return {
+				kind: "deny",
+				reason: "PowerContext host Scope could not be resolved. No MCP request was sent. Continue ordinary work and use /pc doctor to diagnose Scope resolution before retrying."
+			};
+			if (!matchesScope(exec.arguments, mode, scopeId)) return {
 				kind: "deny",
 				reason: `${formatScopeRouting(scopeId, cwd)}\nNo MCP request was sent because the call did not use the host Scope.`
 			};
@@ -3369,7 +3374,29 @@ function mcpConfig(config) {
 	};
 }
 async function registerMcp(ctx, config, load = loadPeer) {
-	await (await load("@deepseek-ai/dsh-mcp-client")).apply(ctx, mcpConfig(config));
+	const log = (event) => ctx.logger.warn(JSON.stringify({
+		component: "powercontext.dsh",
+		...event
+	}));
+	const initializing = (async () => {
+		await (await load("@deepseek-ai/dsh-mcp-client")).apply(ctx, mcpConfig(config));
+	})().catch((error) => reportFailure(log, "mcp_connect", error));
+	let startupTimeout;
+	const deadline = new Promise((resolve$1) => {
+		startupTimeout = setTimeout(() => {
+			logSafely(log, {
+				event: "mcp_connect",
+				outcome: "pending",
+				recovery: "/pc doctor"
+			});
+			resolve$1();
+		}, MCP_STARTUP_WAIT_MS);
+	});
+	try {
+		await Promise.race([initializing, deadline]);
+	} finally {
+		clearTimeout(startupTimeout);
+	}
 }
 
 //#endregion
@@ -3748,7 +3775,7 @@ Use Handoff when work must move to another task, session, or model.
 2. Call \`mcp__powercontext__handoff_current_work\` with the checked objective, state, disposition, next action,
    and exact Source evidence. It returns the canonical temporary prepared handoff.
 3. For an explicitly requested boundary-trigger activation, use
-   \`mcp__powercontext__activate_handoff\`; its \`generated\` status provides a Draft in \`data.draft\` and
+   \`mcp__powercontext__activate_handoff\`; its \`generated\` status provides a Draft in top-level \`draft\` and
    \`ignored\` means the Source was already consumed. Do not use activation after \`handoff_current_work\`.
 4. If the low-level activation flow was used, call \`mcp__powercontext__finalize_handoff\` with the inspected Draft.
 5. The receiving task calls \`mcp__powercontext__continue_handoff\` with \`selection: "prepared"\`
@@ -3757,9 +3784,9 @@ Use Handoff when work must move to another task, session, or model.
 Call \`mcp__powercontext__commit_handoff\` only when the user explicitly wants a durable
 milestone.
 
-For the lower-level Handoff flow, \`mcp__powercontext__activate_handoff\` returns the Draft in \`data.draft\`.
-Pass only that Draft to \`mcp__powercontext__finalize_handoff\`, never the \`{ok, data}\` wrapper. Return
-\`finalize.data\` unchanged, including \`schema\`, \`scope_id\`,
+For the lower-level Handoff flow, \`mcp__powercontext__activate_handoff\` returns the Draft in top-level \`draft\`.
+Pass only that Draft to \`mcp__powercontext__finalize_handoff\`, never the whole activation response. Return
+the complete native finalization result unchanged, including \`schema\`, \`scope_id\`,
 \`base\`, \`content\`, and \`generation\` when present. Do not return an unfinished Draft or only \`content\`.
 For a preview, draft text from current inspected facts without calling any Handoff or Source tool. Do not claim that a prepared carrier or durable milestone exists. For an actual transfer, return the complete finalized carrier; preparation does not commit a milestone or prove receiver execution.
 `
@@ -3852,9 +3879,9 @@ Native MCP annotations and the host's own approval behavior for mutations. Prese
 results; never bypass an approval channel or claim a write succeeded without its result.
 A request for a temporary Handoff requires a finalized prepared carrier: do not stop at Draft generation.
 mcp__powercontext__handoff_current_work returns a temporary prepared handoff; commit only for an explicitly requested
-durable milestone. For a low-level flow, pass only the exact Draft returned by
-mcp__powercontext__activate_handoff to mcp__powercontext__finalize_handoff, never the whole response, and return
-finalize_handoff.data unchanged.
+durable milestone. For a low-level flow, pass only the exact top-level draft returned by
+mcp__powercontext__activate_handoff to mcp__powercontext__finalize_handoff, never the whole activation response.
+Return the complete native finalize_handoff result unchanged, including schema, scope_id, base, content, and generation.
 Handoff preparation requires exact returned Source or Artifact citations, not raw facts or invented references. When
 inspected current facts have no Source reference, call mcp__powercontext__capture_content_source first and use its
 returned source as boundary evidence.
@@ -3944,13 +3971,13 @@ function createSessionScopeResolver(runtime) {
 	const resolve$1 = async (request, refresh) => {
 		const key = keyFor(request.sessionId, request.cwd);
 		const cached = cache.get(key);
-		if (!refresh && cached?.cwd === request.cwd) return cached.scopeId;
+		if (!refresh && cached && cached.cwd === request.cwd) return cached.scopeId;
+		cache.delete(key);
 		const scopeId = await runtime.resolveScope(request.cwd, request.signal);
 		if (scopeId) cache.set(key, {
 			cwd: request.cwd,
 			scopeId
 		});
-		else cache.delete(key);
 		return scopeId;
 	};
 	return {
@@ -4013,12 +4040,12 @@ async function apply(ctx, config) {
 	const llmMod = await loadPeer("@deepseek-ai/dsh-llm");
 	const runtime = createRuntime(ctx, config);
 	const sessionScope = createSessionScopeResolver(runtime);
-	await registerMcp(ctx, runtime.config);
 	registerMcpPolicy(ctx, sessionScope.forTool);
 	registerGuidance(ctx);
 	registerRecall(ctx, runtime, llmMod.createUserMessage, sessionScope.forPreStep);
 	registerCommands(ctx, runtime);
 	registerSkill(ctx);
+	await registerMcp(ctx, runtime.config);
 }
 
 //#endregion

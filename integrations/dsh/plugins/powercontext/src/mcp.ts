@@ -16,6 +16,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { ResolvedConfig } from './config.ts'
+import { logSafely, reportFailure } from './diagnostics.ts'
 import { OPERATIONS } from './operations.generated.ts'
 import { loadPeer } from './peers.ts'
 import { formatScopeRouting } from './scope.ts'
@@ -44,6 +45,7 @@ export interface McpScopeResolutionRequest {
 export type McpScopeResolver = (request: McpScopeResolutionRequest) => Promise<string | undefined>
 
 const MCP_TOOL_PREFIX = `mcp__${POWERCONTEXT_MCP_SERVER_NAME}__`
+const MCP_STARTUP_WAIT_MS = 5000
 // MCP ToolAnnotations are advisory; the native DSH MCP client does not turn them into approval prompts.
 // Keep the mutation boundary here so tools/pre-execute remains the actual host approval gate.
 const MUTATING_MCP_OPERATIONS = new Set([
@@ -110,10 +112,15 @@ export function registerMcpPolicy(
           signal: exec.signal,
         })
       } catch {
-        // Preserve the Server's own safe error when the host cannot resolve a Scope.
-        // A resolved Scope is required before this hook rejects a cross-Scope call.
+        // Server authorization cannot establish that a model-supplied Scope belongs to this session.
       }
-      if (scopeId && !matchesScope(exec.arguments, mode, scopeId)) {
+      if (!scopeId) {
+        return {
+          kind: 'deny',
+          reason: 'PowerContext host Scope could not be resolved. No MCP request was sent. Continue ordinary work and use /pc doctor to diagnose Scope resolution before retrying.',
+        }
+      }
+      if (!matchesScope(exec.arguments, mode, scopeId)) {
         return {
           kind: 'deny',
           reason: `${formatScopeRouting(scopeId, cwd)}\nNo MCP request was sent because the call did not use the host Scope.`,
@@ -152,6 +159,22 @@ export async function registerMcp(
   config: Pick<ResolvedConfig, 'baseUrl' | 'authorization'>,
   load: PeerLoader = loadPeer,
 ): Promise<void> {
-  const client = await load<DshMcpClient>('@deepseek-ai/dsh-mcp-client')
-  await client.apply(ctx, mcpConfig(config))
+  const log = (event: Record<string, unknown>) => ctx.logger.warn(JSON.stringify({ component: 'powercontext.dsh', ...event }))
+  const initializing = (async () => {
+    const client = await load<DshMcpClient>('@deepseek-ai/dsh-mcp-client')
+    await client.apply(ctx, mcpConfig(config))
+  })().catch(error => reportFailure(log, 'mcp_connect', error))
+  let startupTimeout: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<void>((resolve) => {
+    startupTimeout = setTimeout(() => {
+      logSafely(log, { event: 'mcp_connect', outcome: 'pending', recovery: '/pc doctor' })
+      resolve()
+    }, MCP_STARTUP_WAIT_MS)
+  })
+  try {
+    // The native client owns connection cleanup and may publish its tools after host startup.
+    await Promise.race([initializing, deadline])
+  } finally {
+    clearTimeout(startupTimeout)
+  }
 }

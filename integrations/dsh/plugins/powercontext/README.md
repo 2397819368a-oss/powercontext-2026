@@ -36,7 +36,13 @@ as `mcp__powercontext__<operation>`, including Memory, Work Contract, Handoff, E
 external Skill, Scope organization, persistent Scope binding, and artifact publication. The MCP Server annotations and
 the DSH pre-execute policy preserve the host approval boundary, including candidate review mutations. Scope-dependent
 calls must use the exact host-resolved `scope_id` and workspace binding key exposed in the current-turn routing
-metadata; the plugin refuses calls for another Scope instead of rewriting MCP arguments.
+metadata; the plugin refuses calls for another Scope instead of rewriting MCP arguments. If the host Scope cannot
+be resolved, Scope-dependent MCP calls are denied before dispatch; a failed refresh invalidates the session's cached Scope.
+
+Optional MCP initialization waits at most five seconds during plugin startup. A stalled handshake leaves ordinary
+DSH conversations available while the same native client continues connecting in the background. Its tools become
+available only after registration completes; check the current tool catalog before calling them. Closing DSH also
+closes pending native MCP connections.
 
 The automatic pre-step and Source capture above are host lifecycle hooks, not model-facing tools, so they retain the
 plugin's bounded HTTP client. `/pc` commands are local diagnostics and explicit administrative controls; they also retain

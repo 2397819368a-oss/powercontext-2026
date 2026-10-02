@@ -235,9 +235,14 @@ acknowledgement, task outcome, Experience, managed and external Skill workflows,
 organization, persistent Scope binding, and artifact publication. It also exposes the Server's additional MCP tools that
 are outside the profile contract. The plugin does not register Pi/Hermes-style direct HTTP operation tools.
 
-For an MCP operation that requires `scope_id`, first call `mcp__powercontext__resolve_scope_binding` with
-`allow_default: true` (and available binding keys), then pass its exact returned identifier. The lifecycle hook's
-Scope resolution does not rewrite model-supplied MCP arguments.
+Scope-dependent MCP operations, including those with a path `scope_id`, must use the exact host-resolved Scope
+exposed in the current-turn routing metadata. Do not select a different Scope using
+`mcp__powercontext__resolve_scope_binding` with `allow_default: true`. The plugin refuses another Scope instead of
+rewriting MCP arguments; automatic lifecycle hooks and model operations use the same project context.
+
+Optional native MCP initialization waits at most five seconds during plugin startup. Ordinary DSH conversations
+continue if the handshake stalls, and the same client may finish connecting later. Tools are unavailable until
+registration completes; check the current tool catalog before selecting an MCP operation.
 
 The plugin resolves one Server-owned Scope in this order: `POWERCONTEXT_DSH_SCOPE_ID`, a durable binding for the
 session workspace, then the Server default. The workspace path is hashed only as an external binding key. A missing
@@ -247,9 +252,10 @@ The plugin calls `POST /v1/context/prepare` once before the model analyzes the p
 
 ## Diagnose MCP and command failures
 
-Native MCP tools and Scope-dependent `/pc` commands return a controlled failure if Scope resolution fails. MCP calls
-must provide the exact Scope selected by `resolve_scope_binding`; the plugin does not create a binding or switch to
-another Scope. Cancellation and the existing per-request timeout also apply to lifecycle Scope resolution.
+Scope-dependent native MCP tools and `/pc` commands return a controlled failure before dispatch if host Scope
+resolution fails or returns no Scope. A failed refresh invalidates the session's cached Scope; MCP calls cannot use
+a previous turn's value to bypass the failure. Ordinary conversation continues without selecting another Scope or
+creating a binding. Cancellation and the existing per-request timeout also apply to lifecycle Scope resolution.
 
 Inside DeepSeek Harness:
 
