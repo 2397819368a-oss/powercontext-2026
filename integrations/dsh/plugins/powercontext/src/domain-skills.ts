@@ -61,22 +61,19 @@ Current instructions and live repository state outrank historical evidence. Pres
 
 Use Handoff when work must move to another task, session, or model.
 
-1. Call \`mcp__powercontext__capture_content_source\` with a concise account of the current state and a
-   unique \`source_id\`. Include the objective, verified progress, blockers, and
-   next action that the receiver needs.
-2. Call \`mcp__powercontext__handoff_current_work\` with the checked objective, state, disposition, next action,
-   and exact Source evidence. It returns the canonical temporary prepared handoff.
-3. For an explicitly requested boundary-trigger activation, use
-   \`mcp__powercontext__activate_handoff\`; its \`generated\` status provides a Draft in top-level \`draft\` and
-   \`ignored\` means the Source was already consumed. Do not use activation after \`handoff_current_work\`.
-4. If the low-level activation flow was used, call \`mcp__powercontext__finalize_handoff\` with the inspected Draft.
-5. The receiving task calls \`mcp__powercontext__continue_handoff\` with \`selection: "prepared"\`
-   and that exact value.
+1. Call \`mcp__powercontext__handoff_current_work\` with the checked objective, state, disposition, next action,
+   and exact evidence. This high-level operation captures its own boundary; do not capture a preliminary Source.
+2. Its native result is \`{boundary, handoff}\`. Extract only the complete \`handoff\` member for transfer;
+   do not return the enclosing result or only its content.
+3. The receiving task calls \`mcp__powercontext__continue_handoff\` with \`selection: "prepared"\`
+   and \`prepared\` equal to that exact \`handoff\` member.
 
 Call \`mcp__powercontext__commit_handoff\` only when the user explicitly wants a durable
 milestone.
 
-For the lower-level Handoff flow, \`mcp__powercontext__activate_handoff\` returns the Draft in top-level \`draft\`.
+For an explicitly requested lower-level boundary-trigger flow, capture the Source first, then call
+\`mcp__powercontext__activate_handoff\`. Its \`generated\` status provides a Draft in top-level \`draft\`;
+\`ignored\` means the Source was already consumed. Do not activate after \`handoff_current_work\`.
 Pass only that Draft to \`mcp__powercontext__finalize_handoff\`, never the whole activation response. Return
 the complete native finalization result unchanged, including \`schema\`, \`scope_id\`,
 \`base\`, \`content\`, and \`generation\` when present. Do not return an unfinished Draft or only \`content\`.

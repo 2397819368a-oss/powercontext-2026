@@ -71,7 +71,7 @@ function json(res, value, status = 200) {
   res.end(JSON.stringify(value))
 }
 
-export async function environment({ realModel } = {}) {
+export async function environment({ realModel, fullCatalog = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'pc-dsh-runtime-'))
   const modelRequests = []
   let scopeIdForModel = ''
@@ -123,7 +123,8 @@ export async function environment({ realModel } = {}) {
     }
     const skillMatch = JSON.stringify(body.messages).match(/LOAD_PC_SKILL:(powercontext-(?:memory|handoff|review))/)
     const getScope = JSON.stringify(body.messages).includes('RUN_PC_GET_SCOPE')
-    const needsTool = (skillMatch || getScope || JSON.stringify(body.messages).includes('RUN_PC_SEARCH'))
+    const secretWrite = JSON.stringify(body.messages).match(/RUN_PC_SECRET:(remember_memory|revise_memory_entry|capture_content_source)/)?.[1]
+    const needsTool = (skillMatch || getScope || secretWrite || JSON.stringify(body.messages).includes('RUN_PC_SEARCH'))
       && !body.messages.some(message => message.role === 'tool')
     const content = JSON.stringify(body.messages).includes(CANARY) ? CANARY : 'Task completed.'
     const requestedScopeId = scopeIdForModel
@@ -137,6 +138,11 @@ export async function environment({ realModel } = {}) {
         index: 0, id: 'fixture-search', type: 'function',
         function: skillMatch
           ? { name: 'skill', arguments: JSON.stringify({ name: skillMatch[1] }) }
+          : secretWrite
+          ? { name: `mcp__powercontext__${secretWrite}`, arguments: JSON.stringify({
+            scope_id: requestedScopeId, text: 'api_key=FAKE_REVIEW_MARKER', kind: 'decision',
+            source_id: 'secret-fixture', memory_id: 'secret-fixture', expected_version: 1,
+          }) }
           : getScope
           ? { name: 'mcp__powercontext__get_scope', arguments: JSON.stringify({ scope_id: requestedScopeId }) }
           : { name: 'mcp__powercontext__search_memory', arguments: JSON.stringify({
@@ -151,6 +157,7 @@ export async function environment({ realModel } = {}) {
   try {
     server = await startPowerContextServer({ env: {
     OPENAI_API_KEY: 'runtime-fixture',
+    ...(fullCatalog ? { POWERCONTEXT_SERVER_HANDOFF_REPORT_ENABLED: 'true' } : {}),
     POWERCONTEXT_SERVER_INFERENCE: JSON.stringify({
       generation_model: `openai-chat:${realModel?.model ?? 'fixture'}`, generation_base_url: model.url + '/v1',
     }),
@@ -184,6 +191,10 @@ export async function environment({ realModel } = {}) {
         })
         if (res.destroyed) return
       }
+      if (fault?.path === '/mcp' && fault.redirectTo && mcpCall.body?.method === 'tools/call') {
+        res.writeHead(307, { Location: fault.redirectTo }).end()
+        return
+      }
       const upstream = await fetch(server.baseUrl + req.url, {
         method: req.method,
         headers: requestHeaders,
@@ -198,7 +209,18 @@ export async function environment({ realModel } = {}) {
         delete responseHeaders[header]
       }
       res.writeHead(upstream.status, responseHeaders)
-      if (upstream.body) for await (const chunk of upstream.body) res.write(chunk)
+      const catalogChunks = []
+      if (upstream.body) for await (const chunk of upstream.body) {
+        if (mcpCall.body?.method === 'tools/list') catalogChunks.push(Buffer.from(chunk))
+        res.write(chunk)
+      }
+      if (catalogChunks.length) {
+        const text = Buffer.concat(catalogChunks).toString()
+        const messages = upstream.headers.get('content-type')?.includes('text/event-stream')
+          ? text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+          : [JSON.parse(text)]
+        mcpCall.result = messages.find(message => message.result?.tools)?.result
+      }
       res.end()
       return
     }

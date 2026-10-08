@@ -24,6 +24,8 @@ import type { PreStepDecision } from '../src/recall.ts'
 import { operationFailure } from '../src/doctor.ts'
 import { toToolResult } from '../src/invoke.ts'
 
+vi.mock('../src/mcp-transport.ts', () => ({ protectMcpEndpoint: async (_ctx: unknown, endpoint: string) => endpoint }))
+
 vi.mock('../src/peers.ts', () => ({ loadPeer: async (name: string) => name === '@deepseek-ai/dsh-llm'
   ? { createUserMessage: (value: unknown) => value } : { apply: async () => undefined } }))
 

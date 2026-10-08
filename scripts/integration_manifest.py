@@ -469,9 +469,9 @@ def tool_surface_errors(manifest: IntegrationManifest, repository_root: Path = R
 
 def _probe_toolset(probe: ToolSurfaceProbe, root: Path) -> set[str]:
     if probe is ToolSurfaceProbe.SERVER_MCP:
-        from powercontext.server.mcp import _MCP_OPERATION_IDS
+        from mcp_catalog import server_mcp_tools
 
-        return set(_MCP_OPERATION_IDS)
+        return {tool.name for tool in server_mcp_tools()}
     if probe is ToolSurfaceProbe.JSON_PROMPT_HOOK:
         return _prompt_hook_ids(root)
     if probe in {ToolSurfaceProbe.KIMI_CODE_MCP, ToolSurfaceProbe.KIMI_CODE_PROMPT_HOOK}:
@@ -497,9 +497,14 @@ def _probe_toolset(probe: ToolSurfaceProbe, root: Path) -> set[str]:
         source = _read(root, "integrations/dsh/plugins/powercontext/src/mcp.ts")
         if "@deepseek-ai/dsh-mcp-client" not in source or "mcpEndpoint" not in source:
             raise ValueError("DSH MCP bridge is incomplete")
-        from powercontext.server.mcp import _MCP_OPERATION_IDS
-
-        return {f"mcp__powercontext__{operation}" for operation in _MCP_OPERATION_IDS}
+        catalog = _read(root, "integrations/dsh/plugins/powercontext/src/mcp-operations.generated.ts")
+        match = re.search(r"export const MCP_OPERATIONS = (\{[\s\S]*?\}) as const", catalog)
+        if match is None:
+            raise ValueError("DSH MCP catalog is missing")
+        operations = json.loads(match[1])
+        if not isinstance(operations, dict) or not operations:
+            raise ValueError("DSH MCP catalog is empty")
+        return {f"mcp__powercontext__{operation}" for operation in operations}
     if probe is ToolSurfaceProbe.DSH_LIFECYCLE:
         index = _read(root, "integrations/dsh/plugins/powercontext/src/index.ts")
         recall = _read(root, "integrations/dsh/plugins/powercontext/src/recall.ts")

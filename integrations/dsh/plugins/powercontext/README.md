@@ -31,13 +31,24 @@ Before each model step it:
 1. recalls bounded context with `POST /v1/context/prepare`;
 2. captures the current user input with `POST /v1/sources/content`.
 
-The model-facing operation surface is native MCP at `${POWERCONTEXT_DSH_BASE_URL}/mcp`. DSH exposes the Server tools
+The model-facing operation surface is native MCP at `${POWERCONTEXT_DSH_BASE_URL}/mcp/`. DSH exposes the Server tools
 as `mcp__powercontext__<operation>`, including Memory, Work Contract, Handoff, Experience, Skill, candidate review,
 external Skill, Scope organization, persistent Scope binding, and artifact publication. The MCP Server annotations and
 the DSH pre-execute policy preserve the host approval boundary, including candidate review mutations. Scope-dependent
 calls must use the exact host-resolved `scope_id` and workspace binding key exposed in the current-turn routing
 metadata; the plugin refuses calls for another Scope instead of rewriting MCP arguments. If the host Scope cannot
 be resolved, Scope-dependent MCP calls are denied before dispatch; a failed refresh invalidates the session's cached Scope.
+
+The native client connects through a process-local streaming boundary that forwards MCP frames only to the configured
+endpoint and rejects every redirect. It preserves native discovery, session headers, streaming and connection cleanup;
+it does not register HTTP operation tools or change the host's global fetch. Content writes that contain likely secrets
+are rejected with `secret_rejected` before approval or dispatch. The plugin's MCP catalog and approval classification
+are generated from the Server's public `tools/list` results, separately from the lifecycle HTTP operations table.
+
+`handoff_current_work` captures its own boundary and returns `{boundary, handoff}`. Transfer only the complete
+`handoff` member to `continue_handoff` with `selection: "prepared"`; do not capture a preliminary Source. For the
+separate low-level capture/activate/finalize flow, use activation's top-level `draft` and transfer the complete native
+finalization result unchanged.
 
 Optional MCP initialization waits at most five seconds during plugin startup. A stalled handshake leaves ordinary
 DSH conversations available while the same native client continues connecting in the background. Its tools become
@@ -52,8 +63,8 @@ their existing HTTP client and are not substitutes for the MCP operation surface
 read-only prepare independently. Failures identify the operation, a specific code, available HTTP status/request ID,
 safe dependency statuses and recovery actions. The endpoint summary omits credentials and path text. A successful
 report does not prove capture or processing: write routes are declared by OpenAPI but never executed by Doctor.
-Doctor also reports native MCP catalog visibility separately. The documented DSH installation remains HTTP-only, so
-an unavailable or unconfigured native MCP catalog does not make the HTTP plugin health check fail.
+Doctor also reports the exact visible native MCP tool names separately. An unavailable catalog does not fail healthy
+lifecycle HTTP checks, but HTTP health alone does not establish that model-facing MCP tools are available.
 Standalone `powercontext doctor dsh` verifies Web-profile registration and explicitly cannot observe the running
 host's overrides. A healthy Server with extraction disabled may return valid empty recall.
 

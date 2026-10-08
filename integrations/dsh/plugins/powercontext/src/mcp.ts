@@ -17,9 +17,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ResolvedConfig } from './config.ts'
 import { logSafely, reportFailure } from './diagnostics.ts'
+import { MCP_OPERATIONS } from './mcp-operations.generated.ts'
+import { protectMcpEndpoint } from './mcp-transport.ts'
 import { OPERATIONS } from './operations.generated.ts'
 import { loadPeer } from './peers.ts'
 import { formatScopeRouting } from './scope.ts'
+import { hasSecretContent } from './secrets.ts'
 
 export const POWERCONTEXT_MCP_SERVER_NAME = 'powercontext'
 
@@ -48,15 +51,8 @@ const MCP_TOOL_PREFIX = `mcp__${POWERCONTEXT_MCP_SERVER_NAME}__`
 const MCP_STARTUP_WAIT_MS = 5000
 // MCP ToolAnnotations are advisory; the native DSH MCP client does not turn them into approval prompts.
 // Keep the mutation boundary here so tools/pre-execute remains the actual host approval gate.
-const MUTATING_MCP_OPERATIONS = new Set([
-  'generate_experience', 'propose_experience', 'generate_skill', 'propose_skill',
-  'scan_external_skills', 'import_external_skill',
-  'create_dream_run', 'capture_content_source', 'create_work_contract', 'handoff_current_work',
-  'acknowledge_handoff', 'record_task_outcome', 'activate_handoff', 'finalize_handoff', 'commit_handoff',
-  'remember_memory', 'revise_memory_entry', 'retire_memory_entry',
-  'approve_artifact_candidate', 'reject_artifact_candidate', 'revise_artifact_candidate', 'publish_artifact',
-  'create_scope', 'set_scope_binding', 'clear_scope_binding',
-])
+const MUTATING_MCP_OPERATIONS = new Set(Object.entries(MCP_OPERATIONS)
+  .filter(([, metadata]) => !metadata.readOnly).map(([operation]) => operation))
 
 type McpToolExecution = {
   name: string
@@ -72,7 +68,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function rawOperation(name: string): string | undefined {
   if (!name.startsWith(MCP_TOOL_PREFIX)) return undefined
   const operation = name.slice(MCP_TOOL_PREFIX.length)
-  return Object.prototype.hasOwnProperty.call(OPERATIONS, operation) ? operation : undefined
+  return Object.prototype.hasOwnProperty.call(MCP_OPERATIONS, operation) ? operation : undefined
 }
 
 function usesScope(operation: string): 'current' | 'selection' | 'none' {
@@ -99,7 +95,13 @@ export function registerMcpPolicy(
     next: () => Promise<PreToolDecision>,
   ): Promise<PreToolDecision> => {
     const operation = rawOperation(exec.name)
-    if (!operation) return next()
+    if (!operation) return exec.name.startsWith(MCP_TOOL_PREFIX)
+      ? { kind: 'deny', reason: 'This PowerContext MCP operation is unavailable in the plugin catalog. No MCP request was sent; install a matching plugin and Server.' }
+      : next()
+
+    if (hasSecretContent(operation, exec.arguments)) {
+      return { kind: 'deny', reason: 'secret_rejected: PowerContext refuses to send likely secret content. No MCP request was sent.' }
+    }
 
     const mode = usesScope(operation)
     if (mode !== 'none') {
@@ -139,7 +141,8 @@ export function registerMcpPolicy(
 }
 
 export function mcpEndpoint(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/mcp`
+  // Use the canonical mount path directly instead of relying on the Server's slash redirect.
+  return `${baseUrl.replace(/\/+$/, '')}/mcp/`
 }
 
 export function mcpConfig(config: Pick<ResolvedConfig, 'baseUrl' | 'authorization'>): DshMcpConfig {
@@ -162,7 +165,9 @@ export async function registerMcp(
   const log = (event: Record<string, unknown>) => ctx.logger.warn(JSON.stringify({ component: 'powercontext.dsh', ...event }))
   const initializing = (async () => {
     const client = await load<DshMcpClient>('@deepseek-ai/dsh-mcp-client')
-    await client.apply(ctx, mcpConfig(config))
+    const nativeConfig = mcpConfig(config)
+    nativeConfig.url = await protectMcpEndpoint(ctx, nativeConfig.url)
+    await client.apply(ctx, nativeConfig)
   })().catch(error => reportFailure(log, 'mcp_connect', error))
   let startupTimeout: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<void>((resolve) => {

@@ -294,6 +294,9 @@ capabilities = ["handoff"]
 id = "mcp__powercontext__activate_handoff"
 capabilities = ["handoff"]
 [[toolsets.tools]]
+id = "mcp__powercontext__prepare_handoff_hint"
+capabilities = ["handoff"]
+[[toolsets.tools]]
 id = "mcp__powercontext__finalize_handoff"
 capabilities = ["handoff"]
 [[toolsets.tools]]

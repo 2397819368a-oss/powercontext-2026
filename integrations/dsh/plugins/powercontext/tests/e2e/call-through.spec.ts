@@ -22,6 +22,8 @@ import { GUIDANCE } from '../../src/skill.ts'
 import { PROJECT_CONTEXT_SKILL } from '../../src/skill-body.ts'
 import { startPowerContextServer } from '../../scripts/e2e-server.mjs'
 
+vi.mock('../../src/mcp-transport.ts', () => ({ protectMcpEndpoint: async (_ctx: unknown, endpoint: string) => endpoint }))
+
 vi.mock('../../src/peers.ts', () => ({
   loadPeer: async (specifier: string) => {
     if (specifier === '@deepseek-ai/dsh-mcp-client') {

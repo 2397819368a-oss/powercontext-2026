@@ -15,7 +15,14 @@
  */
 
 const SECRET_MARKERS = ['sk-', 'api_key', 'BEGIN PRIVATE']
+const CONTENT_WRITES = new Set(['remember_memory', 'capture_content_source', 'revise_memory_entry'])
 
 export function containsSecret(text: string): boolean {
   return SECRET_MARKERS.some((marker) => text.includes(marker))
+}
+
+export function hasSecretContent(operation: string, payload: unknown): boolean {
+  if (!CONTENT_WRITES.has(operation) || !payload || typeof payload !== 'object') return false
+  const content = payload as { text?: unknown; content?: unknown }
+  return [content.text, content.content].some(value => typeof value === 'string' && containsSecret(value))
 }

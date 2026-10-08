@@ -118,9 +118,10 @@ Server 使用其他监听地址时同步修改 URL。鉴权使用 `POWERCONTEXT_
 路由声明、当前 Scope 和只读 prepare 操作。Scope 失败不会遮蔽健康检查。
 端点摘要仅显示 origin、配置来源和是否存在路径前缀，不打印凭据、前缀正文、查询参数或 fragment。
 
-Doctor 会单独报告当前宿主的原生 MCP 工具目录。文档中的 DSH 安装仍是仅 HTTP 的插件，因此
-`native_mcp_unconfigured` 不会使原本健康的 HTTP 插件检查失败。若已发现其他原生 MCP 工具但没有
-`mcp__powercontext__*`，Doctor 会报告 `native_mcp_powercontext_missing` 并给出恢复操作。
+Doctor 会单独报告当前宿主的原生 MCP 工具目录及实际可见的工具名称。`native_mcp_unconfigured` 表示当前
+没有可见的原生 MCP 工具，初始化可能仍在等待或已经失败。若已发现其他原生 MCP 工具但没有
+`mcp__powercontext__*`，Doctor 会报告 `native_mcp_powercontext_missing`。这些结果不会使原本健康的
+生命周期 HTTP 检查失败，但 HTTP 健康不代表面向模型的 MCP 操作已经可用。
 
 失败项提供操作名、稳定 code、可用的 HTTP status/request ID 和具体恢复操作。
 协议错误还提供 `protocol_issue`，指出 JSON、状态码或 PreparedContext 字段违反的具体规则。
@@ -218,7 +219,7 @@ flush 或修改绑定。Doctor 探测和手动操作也不会覆盖自动执行�
 插件通过三条有明确边界的路径访问同一个 Server：
 
 - 每轮模型开口前，先请求 Runtime 准备一个最终、有界的上下文值，再把用户输入采集为 Source 证据；
-- DSH 原生 MCP client 连接 `/mcp`，并将 Server 工具以 `mcp__powercontext__<operation>` 暴露给模型；
+- DSH 原生 MCP client 连接 `/mcp/`，并将 Server 工具以 `mcp__powercontext__<operation>` 暴露给模型；
 - `/pc` 命令和自动生命周期阶段使用有界 HTTP client 执行宿主控制与诊断。
 
 MCP 面覆盖完整 PowerContext profile：Memory 读写、Source 采集、Work Contract、Handoff 与确认、任务结果、
@@ -231,6 +232,15 @@ profile 契约之外的 Server MCP 工具。插件不会注册 Pi/Hermes 风格�
 
 插件启动时，对可选的原生 MCP 初始化最多等待五秒。握手停滞不会阻止普通 DSH 对话，同一个 client 可以在后台
 完成连接。工具注册完成前不可用；选择 MCP 操作前应检查当前工具目录。
+
+原生 MCP 消息经过本进程内的流式转发边界，只能发往配置的固定端点；初始化和工具调用中的所有重定向都会被拒绝。
+工具发现和 session 仍由原生 client 管理。包含疑似秘密的内容写入会在审批和发送前以 `secret_rejected` 拒绝。
+插件的 MCP 目录和写操作审批分类由 Server 公开的 `tools/list` 生成，不使用 HTTP 工具表冒充 MCP 目录。
+
+`mcp__powercontext__handoff_current_work` 自行采集边界并返回 `{boundary, handoff}`，不需要预先采集 Source。
+只传递完整的 `handoff` 成员，再以 `selection: "prepared"` 将该原值交给 `mcp__powercontext__continue_handoff`。
+独立的底层 capture/activate/finalize 流程则把 activation 顶层的 `draft` 交给 finalization，完整保留并传递原生
+finalization 结果，不额外包装或只提取其中的内容。
 
 插件按 `POWERCONTEXT_DSH_SCOPE_ID`、session workspace 持久 binding、Server 默认 Scope 的顺序解析一个由
 Server 管理的 Scope。workspace 路径只会哈希为外部 binding key。缺少 workspace 时使用 Server 默认 Scope，

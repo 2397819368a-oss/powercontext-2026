@@ -42,15 +42,17 @@ and preview-only requests do not authorize a write. Never store secrets or dupli
 Summarizing or drafting from facts supplied in the current turn needs no retrieval or Scope resolution. An empty
 search does not authorize an inventory. If inventory or Handoff is unavailable, do not emulate it with Memory search
 or storage.
-Native MCP annotations and the host's own approval behavior for mutations. Preserve exact citations and returned
+The plugin requires host approval for mutations; MCP annotations alone do not grant approval. Preserve exact citations and returned
 results; never bypass an approval channel or claim a write succeeded without its result.
 A request for a temporary Handoff requires a finalized prepared carrier: do not stop at Draft generation.
-mcp__powercontext__handoff_current_work returns a temporary prepared handoff; commit only for an explicitly requested
-durable milestone. For a low-level flow, pass only the exact top-level draft returned by
+mcp__powercontext__handoff_current_work captures its own boundary and returns {boundary, handoff}; do not capture a
+preliminary Source. Transfer only its complete \`handoff\` member, and pass that exact member as prepared with
+selection: "prepared" to mcp__powercontext__continue_handoff. Commit only for an explicitly requested durable
+milestone. For a low-level flow, pass only the exact top-level draft returned by
 mcp__powercontext__activate_handoff to mcp__powercontext__finalize_handoff, never the whole activation response.
 Return the complete native finalize_handoff result unchanged, including schema, scope_id, base, content, and generation.
-Handoff preparation requires exact returned Source or Artifact citations, not raw facts or invented references. When
-inspected current facts have no Source reference, call mcp__powercontext__capture_content_source first and use its
+The low-level flow requires exact returned Source or Artifact citations, not raw facts or invented references. When
+its inspected facts have no Source reference, call mcp__powercontext__capture_content_source first and use its
 returned source as boundary evidence.
 Use mcp__powercontext__list_artifact_candidates / mcp__powercontext__get_artifact_candidate to inspect candidates.
 Generated candidates are not approved artifacts. Review decisions belong to the human /pc review command; never

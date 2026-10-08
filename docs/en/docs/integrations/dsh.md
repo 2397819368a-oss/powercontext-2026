@@ -122,9 +122,11 @@ liveness, readiness, capabilities, declared routes, the current Scope, and a rea
 A Scope failure leaves health results available. The endpoint summary shows only its origin, configuration source
 and whether a path prefix exists; credentials, prefix text, query strings and fragments are not printed.
 
-Doctor reports the active host's native MCP catalog separately. The documented DSH installation is HTTP-only, so
-`native_mcp_unconfigured` does not fail an otherwise healthy HTTP plugin. If other native MCP tools are visible
-but `mcp__powercontext__*` is absent, Doctor reports `native_mcp_powercontext_missing` with a recovery action.
+Doctor reports the active host's native MCP catalog separately, including the exact visible tool names.
+`native_mcp_unconfigured` means no native MCP tools are visible; initialization may still be pending or have failed.
+If other native MCP tools are visible but `mcp__powercontext__*` is absent, Doctor reports
+`native_mcp_powercontext_missing`. These results do not fail otherwise healthy lifecycle HTTP checks, but HTTP
+health alone does not establish that model-facing MCP operations are available.
 
 Each failed check identifies the operation, a stable code, HTTP status/request ID when available, and a recovery
 action. Protocol errors also include `protocol_issue`, identifying the violated JSON, status or PreparedContext field rule.
@@ -227,7 +229,7 @@ See the [runtime test procedure](https://github.com/oceanbase/powercontext/blob/
 The plugin has three deliberately different paths to the same Server:
 
 - before each model step it asks the Runtime to prepare one final, bounded context value, then independently captures the user's prompt as Source evidence;
-- DSH's native MCP client connects to `/mcp` and exposes the Server tools as `mcp__powercontext__<operation>`;
+- DSH's native MCP client connects to `/mcp/` and exposes the Server tools as `mcp__powercontext__<operation>`;
 - `/pc` commands and automatic lifecycle stages use the bounded HTTP client for host control and diagnostics.
 
 The MCP surface covers the full PowerContext profile: Memory read/write, Source capture, Work Contract, Handoff and
@@ -243,6 +245,16 @@ rewriting MCP arguments; automatic lifecycle hooks and model operations use the 
 Optional native MCP initialization waits at most five seconds during plugin startup. Ordinary DSH conversations
 continue if the handshake stalls, and the same client may finish connecting later. Tools are unavailable until
 registration completes; check the current tool catalog before selecting an MCP operation.
+
+Native MCP frames pass through a process-local streaming boundary to the fixed configured endpoint; all redirects
+are rejected, including during initialization and tool calls. The native client still owns discovery and sessions.
+The plugin rejects likely secret content with `secret_rejected` before write approval or dispatch. Its MCP catalog
+and mutation approval classification are generated from the Server's public `tools/list`, not the HTTP tool table.
+
+`mcp__powercontext__handoff_current_work` captures its own boundary and returns `{boundary, handoff}`. Transfer only
+the complete `handoff` member, then pass that exact value to `mcp__powercontext__continue_handoff` with
+`selection: "prepared"`. No preliminary Source capture is needed. In the separate low-level capture/activate/finalize
+flow, pass activation's top-level `draft` to finalization and transfer the complete native finalization result unchanged.
 
 The plugin resolves one Server-owned Scope in this order: `POWERCONTEXT_DSH_SCOPE_ID`, a durable binding for the
 session workspace, then the Server default. The workspace path is hashed only as an external binding key. A missing

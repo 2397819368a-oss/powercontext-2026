@@ -20,6 +20,7 @@ import { registerCommands } from '../../src/commands.ts'
 import { resolveConfig } from '../../src/config.ts'
 import type { PluginRuntime } from '../../src/invoke.ts'
 import { runRecallPreStep } from '../../src/recall.ts'
+import { registerMcpPolicy } from '../../src/mcp.ts'
 import { resolveScopeId } from '../../src/scope.ts'
 import { startPowerContextServer } from '../../scripts/e2e-server.mjs'
 
@@ -104,6 +105,48 @@ function pcHandler(runtime: PluginRuntime): PcHandler {
   return handler
 }
 
+function mcpPolicy(runtime: PluginRuntime) {
+  type Hook = (exec: unknown, next: () => Promise<{ kind: 'allow' }>) => Promise<{ kind: string; reason?: string }>
+  let handler: Hook | undefined
+  registerMcpPolicy({ on: (_event, hook) => { handler = hook as unknown as Hook } },
+    ({ cwd, signal }) => runtime.resolveScope(cwd, signal))
+  if (!handler) throw new Error('expected native MCP policy')
+  return (operation: string, args: JsonObject) => handler!({
+    name: `mcp__powercontext__${operation}`, arguments: args, agent: sessionWithoutCwd(),
+    signal: AbortSignal.timeout(5000),
+  }, async () => ({ kind: 'allow' }))
+}
+
+// Exercise the live Server's public MCP wire contract without a dependency on the separate DSH runtime package.
+async function mcpSearch(baseUrl: string, args: JsonObject): Promise<unknown> {
+  let session = ''
+  const request = async (id: number, method: string, params: unknown) => {
+    const response = await fetch(`${baseUrl}/mcp/`, {
+      method: 'POST', signal: AbortSignal.timeout(5000),
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
+        ...(session ? { 'Mcp-Session-Id': session, 'Mcp-Protocol-Version': '2025-03-26' } : {}) },
+      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+    })
+    expect(response.ok).toBe(true)
+    session = response.headers.get('mcp-session-id') ?? session
+    const text = await response.text()
+    const messages = response.headers.get('content-type')?.includes('text/event-stream')
+      ? text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+      : [JSON.parse(text)]
+    return messages.find(message => message.id === id).result
+  }
+  try {
+    await request(1, 'initialize', {
+      protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'dsh-live-regression', version: '1' },
+    })
+    const result = await request(2, 'tools/call', { name: 'search_memory', arguments: args })
+    expect(result.isError).not.toBe(true)
+    return result.structuredContent ?? JSON.parse(result.content.find((block: { type: string }) => block.type === 'text').text)
+  } finally {
+    if (session) await fetch(`${baseUrl}/mcp/`, { method: 'DELETE', headers: { 'Mcp-Session-Id': session }, signal: AbortSignal.timeout(5000) })
+  }
+}
+
 async function recallWithoutCwd(runtime: PluginRuntime, query: string) {
   const messages = [{ content: [{ type: 'text', text: query }], source: { kind: 'user' as const } }]
   const next = async () => ({ kind: 'enter' as const, messages })
@@ -161,6 +204,9 @@ describe('plugin runtime with header.cwd === undefined', () => {
     expect(events.some((event) => event.event === 'context_prepare')).toBe(true)
     expect(pc.kind).toBe('success')
     expect(await runtime.resolveScope(undefined)).toMatch(/^scp_/)
+    const search = { scope_id: await runtime.resolveScope(undefined), query: 'optional cwd' }
+    expect(await mcpPolicy(runtime)('search_memory', search)).toEqual({ kind: 'allow' })
+    expect(await mcpSearch(server.baseUrl, search)).toMatchObject({ hits: expect.any(Array) })
     expect(calls.some((call) => call.path === '/v1/scope-bindings/resolve')).toBe(true)
     expect(calls.every((call) => !String(call.body?.scope_id ?? '').startsWith('local:'))).toBe(true)
   })
@@ -176,6 +222,11 @@ describe('plugin runtime with header.cwd === undefined', () => {
       agent: sessionWithoutCwd(),
     })
     expect(remembered.kind).toBe('success')
+    const search = { scope_id: scopeId, query: TEXT }
+    expect(await mcpPolicy(runtime)('search_memory', search)).toEqual({ kind: 'allow' })
+    expect(await mcpSearch(server.baseUrl, search)).toMatchObject({ hits: expect.arrayContaining([
+      expect.objectContaining({ text: TEXT }),
+    ]) })
 
     const recalled = await recallWithoutCwd(runtime, 'optional cwd harness working directory')
     expect(recalled.kind).toBe('enter')
@@ -197,7 +248,11 @@ describe('plugin runtime with header.cwd === undefined', () => {
 
     const searched = await command({ ...invocation(), rawInput: 'search optional cwd' })
     expect(searched.kind).toBe('error')
-    expect(JSON.parse(searched.text)).toMatchObject({ code: 'not_found', error_code: 'scope_not_found' })
+    expect(JSON.parse(searched.text)).toMatchObject({ code: 'not_found', error_code: 'scope_not_found', status: 404 })
+    const denied = await mcpPolicy(runtime)('remember_memory', { scope_id: scopeId, text: TEXT })
+    expect(denied).toMatchObject({ kind: 'deny', reason: expect.stringContaining('host Scope could not be resolved') })
+    expect(denied.reason).toContain('No MCP request was sent')
+    expect(calls.some(call => call.path.startsWith('/mcp') || call.path === '/v1/memory/remember')).toBe(false)
 
     const status = await command({ ...invocation(), rawInput: '' })
     expect(status.kind).toBe('error')

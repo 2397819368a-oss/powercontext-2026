@@ -18,7 +18,9 @@ import { createRequire } from "node:module";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { createServer, request } from "node:http";
+import { request as request$1 } from "node:https";
 import { pathToFileURL } from "node:url";
 
 //#region src/errors.ts
@@ -1827,11 +1829,11 @@ var PowerContextClient = class {
 			throw this.wrapTransport(path, error, init.signal);
 		}
 	}
-	buildInit(spec, request, signal, requestTimeoutMs = this.requestTimeoutMs) {
+	buildInit(spec, request$2, signal, requestTimeoutMs = this.requestTimeoutMs) {
 		const headers = {
 			Accept: "application/json",
 			"User-Agent": PLUGIN_USER_AGENT,
-			...request.headers
+			...request$2.headers
 		};
 		if (this.authorization) headers.Authorization = this.authorization;
 		const init = {
@@ -1842,7 +1844,7 @@ var PowerContextClient = class {
 		};
 		if (spec.location === "body") {
 			headers["Content-Type"] = "application/json";
-			init.body = JSON.stringify(request.body ?? {});
+			init.body = JSON.stringify(request$2.body ?? {});
 		}
 		return init;
 	}
@@ -2428,7 +2430,7 @@ function nativeMcpCatalog(catalog, scope) {
 		tools: powerContextTools
 	};
 	if (mcpTools.length) return check(operation, "native_mcp_powercontext_missing", "Native MCP tools are registered, but none belong to the PowerContext server.", "Check the native PowerContext MCP client name, startup logs and tool-registration configuration.", "degraded");
-	return check(operation, "native_mcp_unconfigured", "No native MCP tools are registered in the active DSH tool catalog.", "The HTTP PowerContext plugin remains supported. Configure a native MCP client only when native MCP tools are required.", "skipped");
+	return check(operation, "native_mcp_unconfigured", "No native MCP tools are registered in the active DSH tool catalog.", "MCP initialization may still be pending or have failed. Retry /pc doctor and inspect the PowerContext MCP startup logs and endpoint configuration.", "skipped");
 }
 async function diagnoseServer(runtime, cwd, signal, toolCatalog, toolScope) {
 	const config = configuration(runtime.config, cwd);
@@ -2580,19 +2582,22 @@ const SECRET_MARKERS = [
 	"api_key",
 	"BEGIN PRIVATE"
 ];
+const CONTENT_WRITES = new Set([
+	"remember_memory",
+	"capture_content_source",
+	"revise_memory_entry"
+]);
 function containsSecret(text) {
 	return SECRET_MARKERS.some((marker) => text.includes(marker));
+}
+function hasSecretContent(operation, payload) {
+	if (!CONTENT_WRITES.has(operation) || !payload || typeof payload !== "object") return false;
+	const content = payload;
+	return [content.text, content.content].some((value) => typeof value === "string" && containsSecret(value));
 }
 
 //#endregion
 //#region src/invoke.ts
-const WRITE_OPS = new Set([
-	"remember_memory",
-	"capture_content_source",
-	"revise_memory_entry",
-	"replace_artifact",
-	"change_atomic_memory_lifecycle"
-]);
 function requestIdField(requestId$1) {
 	return requestId$1 === void 0 ? {} : { request_id: requestId$1 };
 }
@@ -2830,16 +2835,11 @@ function encodeSuccess(result) {
 		data: result.value
 	};
 }
-function hasSecret(value) {
-	if (typeof value === "string") return containsSecret(value);
-	if (Array.isArray(value)) return value.some(hasSecret);
-	return Boolean(value && typeof value === "object" && Object.values(value).some(hasSecret));
-}
 async function invokeOperation(client, operationId, payload, scopeId, signal, onFailure) {
 	if (!(operationId in OPERATIONS)) return toToolResult(new UnknownOperationError(operationId));
 	const id = operationId;
 	const body = injectScope(id, payload, scopeId);
-	if (WRITE_OPS.has(id) && hasSecret(body)) return toToolResult(new SecretRejectedError());
+	if (hasSecretContent(id, body)) return toToolResult(new SecretRejectedError());
 	try {
 		if (signal?.aborted) throw new TransportError("", signal.reason);
 		return encodeSuccess(await requestMemoryOperation(client, id, body, scopeId, signal) ?? await client.request(id, body, signal));
@@ -3258,6 +3258,149 @@ function resolveConfig(config = {}, env = process.env) {
 }
 
 //#endregion
+//#region src/mcp-operations.generated.ts
+const MCP_OPERATIONS = {
+	"acknowledge_handoff": { "readOnly": false },
+	"activate_handoff": { "readOnly": false },
+	"approve_artifact_candidate": { "readOnly": false },
+	"capture_content_source": { "readOnly": false },
+	"clear_scope_binding": { "readOnly": false },
+	"commit_handoff": { "readOnly": false },
+	"continue_handoff": { "readOnly": true },
+	"create_dream_run": { "readOnly": false },
+	"create_scope": { "readOnly": false },
+	"create_work_contract": { "readOnly": false },
+	"finalize_handoff": { "readOnly": false },
+	"generate_experience": { "readOnly": false },
+	"generate_skill": { "readOnly": false },
+	"get_artifact_candidate": { "readOnly": true },
+	"get_dream_run": { "readOnly": true },
+	"get_experience": { "readOnly": true },
+	"get_handoff_report": { "readOnly": true },
+	"get_memory_capacity": { "readOnly": true },
+	"get_memory_entry": { "readOnly": true },
+	"get_scope": { "readOnly": true },
+	"get_skill": { "readOnly": true },
+	"get_topic_memory": { "readOnly": true },
+	"handoff_current_work": { "readOnly": false },
+	"import_external_skill": { "readOnly": false },
+	"list_artifact_candidates": { "readOnly": true },
+	"list_dream_runs": { "readOnly": true },
+	"list_external_skills": { "readOnly": true },
+	"list_managed_skills": { "readOnly": true },
+	"list_memory_entries": { "readOnly": true },
+	"list_scopes": { "readOnly": true },
+	"prepare_handoff_hint": { "readOnly": true },
+	"propose_experience": { "readOnly": false },
+	"propose_skill": { "readOnly": false },
+	"publish_artifact": { "readOnly": false },
+	"query_code": { "readOnly": true },
+	"record_task_outcome": { "readOnly": false },
+	"reject_artifact_candidate": { "readOnly": false },
+	"remember_memory": { "readOnly": false },
+	"resolve_external_skill": { "readOnly": true },
+	"resolve_scope_binding": { "readOnly": true },
+	"retire_memory_entry": { "readOnly": false },
+	"revise_artifact_candidate": { "readOnly": false },
+	"revise_memory_entry": { "readOnly": false },
+	"scan_external_skills": { "readOnly": false },
+	"search_memory": { "readOnly": true },
+	"search_topic_memory": { "readOnly": true },
+	"set_scope_binding": { "readOnly": false }
+};
+
+//#endregion
+//#region src/mcp-transport.ts
+function headersForForwarding(headers) {
+	const forwarded = { ...headers };
+	const connectionHeaders = String(headers.connection ?? "").split(",").map((header) => header.trim().toLowerCase());
+	for (const header of [
+		...connectionHeaders,
+		"host",
+		"connection",
+		"keep-alive",
+		"proxy-authenticate",
+		"proxy-authorization",
+		"te",
+		"trailer",
+		"transfer-encoding",
+		"upgrade"
+	]) delete forwarded[header];
+	return forwarded;
+}
+function fail(res, code) {
+	if (res.destroyed) return;
+	if (res.headersSent) {
+		res.destroy();
+		return;
+	}
+	res.writeHead(502, { "Content-Type": "application/json" });
+	res.end(JSON.stringify({ error: {
+		code,
+		message: "PowerContext MCP transport refused the response. No redirect was followed."
+	} }));
+}
+async function protectMcpEndpoint(ctx, endpoint) {
+	const target = new URL(endpoint);
+	if (!["http:", "https:"].includes(target.protocol)) throw new Error("Unsupported PowerContext MCP transport");
+	const forward = target.protocol === "https:" ? request$1 : request;
+	const path = `/mcp/${randomUUID()}`;
+	const upstreams = /* @__PURE__ */ new Set();
+	const server = createServer((req, res) => {
+		if (req.url !== path || ![
+			"GET",
+			"POST",
+			"DELETE"
+		].includes(req.method ?? "")) {
+			res.writeHead(404).end();
+			return;
+		}
+		const upstream = forward(target, {
+			method: req.method,
+			headers: headersForForwarding(req.headers),
+			rejectUnauthorized: true
+		}, (response) => {
+			if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
+				response.resume();
+				fail(res, "redirect_rejected");
+				return;
+			}
+			res.writeHead(response.statusCode ?? 502, headersForForwarding(response.headers));
+			response.on("error", () => res.destroy());
+			response.pipe(res);
+		});
+		upstreams.add(upstream);
+		upstream.once("close", () => upstreams.delete(upstream));
+		upstream.on("error", () => fail(res, "mcp_transport_unavailable"));
+		req.once("aborted", () => upstream.destroy());
+		req.on("error", () => upstream.destroy());
+		res.once("close", () => upstream.destroy());
+		req.pipe(upstream);
+	});
+	await new Promise((resolve$1, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			server.off("error", reject);
+			resolve$1();
+		});
+	});
+	const close = async () => {
+		for (const upstream of upstreams) upstream.destroy();
+		server.closeAllConnections();
+		if (server.listening) await new Promise((resolve$1, reject) => server.close((error) => error ? reject(error) : resolve$1()));
+	};
+	try {
+		ctx.effect(() => close);
+	} catch (error) {
+		await close();
+		throw error;
+	}
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("PowerContext MCP relay is unavailable");
+	return `http://127.0.0.1:${address.port}${path}`;
+}
+
+//#endregion
 //#region src/peers.ts
 function profileNodeModulesDir(env = process.env) {
 	const configuredHome = env.DSH_HOME;
@@ -3282,40 +3425,14 @@ async function loadPeer(specifier) {
 const POWERCONTEXT_MCP_SERVER_NAME = "powercontext";
 const MCP_TOOL_PREFIX = `mcp__${POWERCONTEXT_MCP_SERVER_NAME}__`;
 const MCP_STARTUP_WAIT_MS = 5e3;
-const MUTATING_MCP_OPERATIONS = new Set([
-	"generate_experience",
-	"propose_experience",
-	"generate_skill",
-	"propose_skill",
-	"scan_external_skills",
-	"import_external_skill",
-	"create_dream_run",
-	"capture_content_source",
-	"create_work_contract",
-	"handoff_current_work",
-	"acknowledge_handoff",
-	"record_task_outcome",
-	"activate_handoff",
-	"finalize_handoff",
-	"commit_handoff",
-	"remember_memory",
-	"revise_memory_entry",
-	"retire_memory_entry",
-	"approve_artifact_candidate",
-	"reject_artifact_candidate",
-	"revise_artifact_candidate",
-	"publish_artifact",
-	"create_scope",
-	"set_scope_binding",
-	"clear_scope_binding"
-]);
+const MUTATING_MCP_OPERATIONS = new Set(Object.entries(MCP_OPERATIONS).filter(([, metadata]) => !metadata.readOnly).map(([operation]) => operation));
 function isRecord(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function rawOperation(name$1) {
 	if (!name$1.startsWith(MCP_TOOL_PREFIX)) return void 0;
 	const operation = name$1.slice(MCP_TOOL_PREFIX.length);
-	return Object.prototype.hasOwnProperty.call(OPERATIONS, operation) ? operation : void 0;
+	return Object.prototype.hasOwnProperty.call(MCP_OPERATIONS, operation) ? operation : void 0;
 }
 function usesScope(operation) {
 	const metadata = OPERATIONS[operation];
@@ -3332,7 +3449,14 @@ function matchesScope(argumentsValue, mode, scopeId) {
 function registerMcpPolicy(ctx, resolveScope) {
 	ctx.on("tools/pre-execute", (async (exec, next) => {
 		const operation = rawOperation(exec.name);
-		if (!operation) return next();
+		if (!operation) return exec.name.startsWith(MCP_TOOL_PREFIX) ? {
+			kind: "deny",
+			reason: "This PowerContext MCP operation is unavailable in the plugin catalog. No MCP request was sent; install a matching plugin and Server."
+		} : next();
+		if (hasSecretContent(operation, exec.arguments)) return {
+			kind: "deny",
+			reason: "secret_rejected: PowerContext refuses to send likely secret content. No MCP request was sent."
+		};
 		const mode = usesScope(operation);
 		if (mode !== "none") {
 			const cwd = exec.agent?.session?.header?.cwd;
@@ -3361,7 +3485,7 @@ function registerMcpPolicy(ctx, resolveScope) {
 	}));
 }
 function mcpEndpoint(baseUrl) {
-	return `${baseUrl.replace(/\/+$/, "")}/mcp`;
+	return `${baseUrl.replace(/\/+$/, "")}/mcp/`;
 }
 function mcpConfig(config) {
 	return {
@@ -3379,7 +3503,10 @@ async function registerMcp(ctx, config, load = loadPeer) {
 		...event
 	}));
 	const initializing = (async () => {
-		await (await load("@deepseek-ai/dsh-mcp-client")).apply(ctx, mcpConfig(config));
+		const client = await load("@deepseek-ai/dsh-mcp-client");
+		const nativeConfig = mcpConfig(config);
+		nativeConfig.url = await protectMcpEndpoint(ctx, nativeConfig.url);
+		await client.apply(ctx, nativeConfig);
 	})().catch((error) => reportFailure(log, "mcp_connect", error));
 	let startupTimeout;
 	const deadline = new Promise((resolve$1) => {
@@ -3769,22 +3896,19 @@ Current instructions and live repository state outrank historical evidence. Pres
 
 Use Handoff when work must move to another task, session, or model.
 
-1. Call \`mcp__powercontext__capture_content_source\` with a concise account of the current state and a
-   unique \`source_id\`. Include the objective, verified progress, blockers, and
-   next action that the receiver needs.
-2. Call \`mcp__powercontext__handoff_current_work\` with the checked objective, state, disposition, next action,
-   and exact Source evidence. It returns the canonical temporary prepared handoff.
-3. For an explicitly requested boundary-trigger activation, use
-   \`mcp__powercontext__activate_handoff\`; its \`generated\` status provides a Draft in top-level \`draft\` and
-   \`ignored\` means the Source was already consumed. Do not use activation after \`handoff_current_work\`.
-4. If the low-level activation flow was used, call \`mcp__powercontext__finalize_handoff\` with the inspected Draft.
-5. The receiving task calls \`mcp__powercontext__continue_handoff\` with \`selection: "prepared"\`
-   and that exact value.
+1. Call \`mcp__powercontext__handoff_current_work\` with the checked objective, state, disposition, next action,
+   and exact evidence. This high-level operation captures its own boundary; do not capture a preliminary Source.
+2. Its native result is \`{boundary, handoff}\`. Extract only the complete \`handoff\` member for transfer;
+   do not return the enclosing result or only its content.
+3. The receiving task calls \`mcp__powercontext__continue_handoff\` with \`selection: "prepared"\`
+   and \`prepared\` equal to that exact \`handoff\` member.
 
 Call \`mcp__powercontext__commit_handoff\` only when the user explicitly wants a durable
 milestone.
 
-For the lower-level Handoff flow, \`mcp__powercontext__activate_handoff\` returns the Draft in top-level \`draft\`.
+For an explicitly requested lower-level boundary-trigger flow, capture the Source first, then call
+\`mcp__powercontext__activate_handoff\`. Its \`generated\` status provides a Draft in top-level \`draft\`;
+\`ignored\` means the Source was already consumed. Do not activate after \`handoff_current_work\`.
 Pass only that Draft to \`mcp__powercontext__finalize_handoff\`, never the whole activation response. Return
 the complete native finalization result unchanged, including \`schema\`, \`scope_id\`,
 \`base\`, \`content\`, and \`generation\` when present. Do not return an unfinished Draft or only \`content\`.
@@ -3875,15 +3999,17 @@ and preview-only requests do not authorize a write. Never store secrets or dupli
 Summarizing or drafting from facts supplied in the current turn needs no retrieval or Scope resolution. An empty
 search does not authorize an inventory. If inventory or Handoff is unavailable, do not emulate it with Memory search
 or storage.
-Native MCP annotations and the host's own approval behavior for mutations. Preserve exact citations and returned
+The plugin requires host approval for mutations; MCP annotations alone do not grant approval. Preserve exact citations and returned
 results; never bypass an approval channel or claim a write succeeded without its result.
 A request for a temporary Handoff requires a finalized prepared carrier: do not stop at Draft generation.
-mcp__powercontext__handoff_current_work returns a temporary prepared handoff; commit only for an explicitly requested
-durable milestone. For a low-level flow, pass only the exact top-level draft returned by
+mcp__powercontext__handoff_current_work captures its own boundary and returns {boundary, handoff}; do not capture a
+preliminary Source. Transfer only its complete \`handoff\` member, and pass that exact member as prepared with
+selection: "prepared" to mcp__powercontext__continue_handoff. Commit only for an explicitly requested durable
+milestone. For a low-level flow, pass only the exact top-level draft returned by
 mcp__powercontext__activate_handoff to mcp__powercontext__finalize_handoff, never the whole activation response.
 Return the complete native finalize_handoff result unchanged, including schema, scope_id, base, content, and generation.
-Handoff preparation requires exact returned Source or Artifact citations, not raw facts or invented references. When
-inspected current facts have no Source reference, call mcp__powercontext__capture_content_source first and use its
+The low-level flow requires exact returned Source or Artifact citations, not raw facts or invented references. When
+its inspected facts have no Source reference, call mcp__powercontext__capture_content_source first and use its
 returned source as boundary evidence.
 Use mcp__powercontext__list_artifact_candidates / mcp__powercontext__get_artifact_candidate to inspect candidates.
 Generated candidates are not approved artifacts. Review decisions belong to the human /pc review command; never
@@ -3968,21 +4094,21 @@ function createRuntime(ctx, config) {
 function createSessionScopeResolver(runtime) {
 	const cache = /* @__PURE__ */ new Map();
 	const keyFor = (sessionId, cwd) => sessionId ? `session:${sessionId}` : `cwd:${cwd ?? ""}`;
-	const resolve$1 = async (request, refresh) => {
-		const key = keyFor(request.sessionId, request.cwd);
+	const resolve$1 = async (request$2, refresh) => {
+		const key = keyFor(request$2.sessionId, request$2.cwd);
 		const cached = cache.get(key);
-		if (!refresh && cached && cached.cwd === request.cwd) return cached.scopeId;
+		if (!refresh && cached && cached.cwd === request$2.cwd) return cached.scopeId;
 		cache.delete(key);
-		const scopeId = await runtime.resolveScope(request.cwd, request.signal);
+		const scopeId = await runtime.resolveScope(request$2.cwd, request$2.signal);
 		if (scopeId) cache.set(key, {
-			cwd: request.cwd,
+			cwd: request$2.cwd,
 			scopeId
 		});
 		return scopeId;
 	};
 	return {
-		forPreStep: (request) => resolve$1(request, true),
-		forTool: (request) => resolve$1(request, false)
+		forPreStep: (request$2) => resolve$1(request$2, true),
+		forTool: (request$2) => resolve$1(request$2, false)
 	};
 }
 function registerRecall(ctx, runtime, createUserMessage, resolveSessionScope) {

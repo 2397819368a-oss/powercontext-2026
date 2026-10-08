@@ -17,6 +17,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mcpConfig, mcpEndpoint, POWERCONTEXT_MCP_SERVER_NAME, registerMcp, registerMcpPolicy } from '../src/mcp.ts'
 import type { McpScopeResolver } from '../src/mcp.ts'
+import { MCP_OPERATIONS } from '../src/mcp-operations.generated.ts'
+
+vi.mock('../src/mcp-transport.ts', () => ({ protectMcpEndpoint: async (_ctx: unknown, endpoint: string) => endpoint }))
 
 type PolicyHook = (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>
 
@@ -31,8 +34,8 @@ afterEach(() => vi.useRealTimers())
 
 describe('PowerContext MCP bridge', () => {
   it('derives the streamable HTTP endpoint from the normalized Server URL', () => {
-    expect(mcpEndpoint('https://powercontext.example/')).toBe('https://powercontext.example/mcp')
-    expect(mcpEndpoint('https://powercontext.example')).toBe('https://powercontext.example/mcp')
+    expect(mcpEndpoint('https://powercontext.example/')).toBe('https://powercontext.example/mcp/')
+    expect(mcpEndpoint('https://powercontext.example')).toBe('https://powercontext.example/mcp/')
   })
 
   it('passes the configured authorization to the native DSH MCP client', () => {
@@ -42,7 +45,7 @@ describe('PowerContext MCP bridge', () => {
     })).toEqual({
       transport: 'streamable-http',
       serverName: POWERCONTEXT_MCP_SERVER_NAME,
-      url: 'https://powercontext.example/mcp',
+      url: 'https://powercontext.example/mcp/',
       headers: { Authorization: 'Bearer test-token' },
       failOnStartupError: false,
       toolCallTimeoutMs: 60_000,
@@ -55,12 +58,13 @@ describe('PowerContext MCP bridge', () => {
     const load = vi.fn(async <T>(_specifier: string) => ({ apply }) as T)
     const ctx = {} as never
 
-    await registerMcp(ctx, { baseUrl: 'https://powercontext.example', authorization: undefined }, load)
+    await registerMcp(ctx, { baseUrl: 'https://powercontext.example', authorization: undefined },
+      async <T>(specifier: string) => await load(specifier) as T)
 
     expect(load).toHaveBeenCalledWith('@deepseek-ai/dsh-mcp-client')
     expect(apply).toHaveBeenCalledWith(ctx, expect.objectContaining({
       serverName: POWERCONTEXT_MCP_SERVER_NAME,
-      url: 'https://powercontext.example/mcp',
+      url: 'https://powercontext.example/mcp/',
     }))
   })
 
@@ -129,6 +133,38 @@ describe('PowerContext MCP bridge', () => {
     }, next)
     expect(result).toMatchObject({ kind: 'ask' })
     expect((result as { reason: string }).reason).toContain('explicitly requested')
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it.each(['remember_memory', 'revise_memory_entry', 'capture_content_source'])(
+    'rejects secret content in %s before Scope resolution or approval', async (operation) => {
+      const resolveScope = vi.fn(async () => 'scope-a')
+      const next = vi.fn(async () => ({ kind: 'allow' as const }))
+      const result = await policyHook(resolveScope)({
+        name: `mcp__powercontext__${operation}`,
+        arguments: { scope_id: 'scope-a', text: 'api_key=FAKE_REVIEW_MARKER' },
+        signal: new AbortController().signal,
+      }, next)
+      expect(result).toMatchObject({ kind: 'deny', reason: expect.stringContaining('secret_rejected') })
+      expect(resolveScope).not.toHaveBeenCalled()
+      expect(next).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(Object.entries(MCP_OPERATIONS))('applies the MCP annotation approval boundary for %s', async (operation, metadata) => {
+    const next = vi.fn(async () => ({ kind: 'allow' as const }))
+    const result = await policyHook()({
+      name: `mcp__powercontext__${operation}`,
+      arguments: { scope_id: 'scope-a', selection: { mode: 'exact', scope_ids: ['scope-a'] } },
+      signal: new AbortController().signal,
+    }, next)
+    expect(result).toMatchObject({ kind: metadata.readOnly ? 'allow' : 'ask' })
+  })
+
+  it.each(['prepare_handoff', 'unknown_future_operation'])('refuses %s outside the native MCP catalog', async (operation) => {
+    const next = vi.fn(async () => ({ kind: 'allow' as const }))
+    const result = await policyHook()({ name: `mcp__powercontext__${operation}`, arguments: {} }, next)
+    expect(result).toMatchObject({ kind: 'deny', reason: expect.stringContaining('unavailable') })
     expect(next).not.toHaveBeenCalled()
   })
 

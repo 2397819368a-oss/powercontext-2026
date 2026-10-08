@@ -21,6 +21,8 @@ import type { PluginConfig } from '../src/config.ts'
 import type { PreStepDecision, PromptMessage } from '../src/recall.ts'
 
 const peers = vi.hoisted(() => ({ createUserMessage: vi.fn((input: unknown) => input) }))
+vi.mock('../src/mcp-transport.ts', () => ({ protectMcpEndpoint: async (_ctx: unknown, endpoint: string) => endpoint }))
+
 vi.mock('../src/peers.ts', () => ({
   loadPeer: async (name: string) => name === '@deepseek-ai/dsh-llm'
     ? peers
@@ -239,8 +241,11 @@ describe('registered automatic path', () => {
 
     const result = await h.run({ next })
 
+    if (!('messages' in result) || !result.messages) throw new Error('downstream step did not enter')
     expect(h.requests.map(({ path }) => path)).toEqual([SCOPE, PREPARE, CAPTURE])
-    expect(result.messages).toHaveLength(2)
+    expect(result.messages).toHaveLength(3)
+    expect(result.messages[0]).toEqual(userMessage)
+    expect(messageInSection(result.messages, 'PowerContext Scope routing').content[0].text).toContain('"scope-test"')
     expect(JSON.stringify(result.messages)).toContain(TEXT)
   })
 
@@ -359,8 +364,14 @@ describe('registered automatic path', () => {
       schema: 'powercontext.prepared-context.v1', status: 'empty', content: null, content_bytes: 0,
     }) : successfulRequest(path))
     const injected = { content: [{ type: 'text', text: 'Historical context only' }], source: { kind: 'plugin' } }
-    expect(await h.run({ messages: [injected] })).toEqual({ kind: 'enter', messages: [injected] })
+    const result = await h.run({ messages: [injected] })
+    expect(result.kind).toBe('enter')
+    if (!('messages' in result) || !result.messages) throw new Error('downstream step did not enter')
+    expect(result.messages).toHaveLength(2)
+    expect(result.messages[0]).toEqual(injected)
+    expect(messageInSection(result.messages, 'PowerContext Scope routing').content[0].text).toContain('"scope-test"')
     expect(h.diagnostics()).toEqual([])
+    expect(h.requests.map(({ path }) => path)).toEqual([SCOPE, PREPARE])
     expect(h.requests.map(({ path }) => path)).not.toContain(CAPTURE)
   })
 
