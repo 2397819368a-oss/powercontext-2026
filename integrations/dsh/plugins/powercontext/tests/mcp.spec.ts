@@ -136,13 +136,17 @@ describe('PowerContext MCP bridge', () => {
     expect(next).not.toHaveBeenCalled()
   })
 
-  it.each(['remember_memory', 'revise_memory_entry', 'capture_content_source'])(
-    'rejects secret content in %s before Scope resolution or approval', async (operation) => {
+  it.each([
+    ['remember_memory', { text: 'api_key=FAKE_REVIEW_MARKER' }],
+    ['revise_memory_entry', { text: 'api_key=FAKE_REVIEW_MARKER' }],
+    ['capture_content_source', { content: 'api_key=FAKE_REVIEW_MARKER' }],
+  ])(
+    'rejects secret content in %s before Scope resolution or approval', async (operation, content) => {
       const resolveScope = vi.fn(async () => 'scope-a')
       const next = vi.fn(async () => ({ kind: 'allow' as const }))
       const result = await policyHook(resolveScope)({
         name: `mcp__powercontext__${operation}`,
-        arguments: { scope_id: 'scope-a', text: 'api_key=FAKE_REVIEW_MARKER' },
+        arguments: { scope_id: 'scope-a', ...content },
         signal: new AbortController().signal,
       }, next)
       expect(result).toMatchObject({ kind: 'deny', reason: expect.stringContaining('secret_rejected') })
@@ -150,6 +154,48 @@ describe('PowerContext MCP bridge', () => {
       expect(next).not.toHaveBeenCalled()
     },
   )
+
+  it.each([
+    ['handoff_current_work', { handoff: { state: [{ text: 'api_key=FAKE_HANDOFF_SECRET_CANARY', evidence: [] }] } }],
+    ['handoff_current_work', { handoff: { omissions: ['-----BEGIN PRIVATE KEY-----'] } }],
+    ['activate_handoff', { objective: 'api_key=FAKE_HANDOFF_SECRET_CANARY' }],
+    ['finalize_handoff', { draft: { next_action: { text: 'sk-FAKE_HANDOFF_SECRET_CANARY', evidence: [] } } }],
+    ['commit_handoff', { handoff: { content: { state: [{ text: 'api_key=FAKE_HANDOFF_SECRET_CANARY' }] } } }],
+  ])('rejects nested or objective secret content in %s before Scope resolution or approval', async (operation, content) => {
+    const resolveScope = vi.fn(async () => 'scope-a')
+    const next = vi.fn(async () => ({ kind: 'allow' as const }))
+    const result = await policyHook(resolveScope)({
+      name: `mcp__powercontext__${operation}`,
+      arguments: { scope_id: 'scope-a', ...content },
+      signal: new AbortController().signal,
+    }, next)
+    expect(result).toMatchObject({ kind: 'deny', reason: expect.stringContaining('secret_rejected') })
+    expect((result as { reason: string }).reason).not.toContain('FAKE_HANDOFF_SECRET_CANARY')
+    expect(resolveScope).not.toHaveBeenCalled()
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['handoff_current_work', { handoff: { state: [{ text: 'Check the deployment', evidence: [] }], omissions: [] } }],
+    ['finalize_handoff', { draft: { next_action: { text: 'Check the deployment', evidence: [] } } }],
+    ['commit_handoff', { handoff: { content: { state: [{ text: 'Check the deployment' }] } } }],
+  ])('keeps ordinary Handoff content in %s subject to write approval', async (operation, content) => {
+    const result = await policyHook()({
+      name: `mcp__powercontext__${operation}`,
+      arguments: { scope_id: 'scope-a', ...content },
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'allow' }))
+    expect(result).toMatchObject({ kind: 'ask' })
+  })
+
+  it('does not reject a read-only search for a secret marker', async () => {
+    const result = await policyHook()({
+      name: 'mcp__powercontext__search_memory',
+      arguments: { scope_id: 'scope-a', query: 'api_key' },
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'allow' }))
+    expect(result).toEqual({ kind: 'allow' })
+  })
 
   it.each(Object.entries(MCP_OPERATIONS))('applies the MCP annotation approval boundary for %s', async (operation, metadata) => {
     const next = vi.fn(async () => ({ kind: 'allow' as const }))

@@ -234,7 +234,8 @@ profile 契约之外的 Server MCP 工具。插件不会注册 Pi/Hermes 风格�
 完成连接。工具注册完成前不可用；选择 MCP 操作前应检查当前工具目录。
 
 原生 MCP 消息经过本进程内的流式转发边界，只能发往配置的固定端点；初始化和工具调用中的所有重定向都会被拒绝。
-工具发现和 session 仍由原生 client 管理。包含疑似秘密的内容写入会在审批和发送前以 `secret_rejected` 拒绝。
+工具发现和 session 仍由原生 client 管理。HTTP 失败仅返回受控的状态码和错误码，不转发上游响应正文或诊断头。
+包含疑似秘密的内容写入（包括嵌套的 Handoff 状态、Draft 和准备载体）会在审批和发送前以 `secret_rejected` 拒绝。
 插件的 MCP 目录和写操作审批分类由 Server 公开的 `tools/list` 生成，不使用 HTTP 工具表冒充 MCP 目录。
 
 `mcp__powercontext__handoff_current_work` 自行采集边界并返回 `{boundary, handoff}`，不需要预先采集 Source。

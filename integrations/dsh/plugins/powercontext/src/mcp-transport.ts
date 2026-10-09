@@ -27,11 +27,27 @@ function headersForForwarding(headers: IncomingHttpHeaders): IncomingHttpHeaders
   return forwarded
 }
 
-function fail(res: ServerResponse, code: string): void {
+function httpFailureCode(status: number): string {
+  switch (status) {
+    case 401: return 'authentication_failed'
+    case 403: return 'authorization_failed'
+    case 404: return 'not_found'
+    case 409: return 'conflict'
+    case 400:
+    case 422: return 'invalid_request'
+    case 429: return 'rate_limited'
+    default: return status >= 500 ? 'unavailable' : 'http_error'
+  }
+}
+
+function fail(res: ServerResponse, code: string, status = 502): void {
   if (res.destroyed) return
   if (res.headersSent) { res.destroy(); return }
-  res.writeHead(502, { 'Content-Type': 'application/json' })
-  res.end(JSON.stringify({ error: { code, message: 'PowerContext MCP transport refused the response. No redirect was followed.' } }))
+  res.writeHead(status, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ error: {
+    code, status,
+    message: 'PowerContext MCP request failed. Upstream diagnostics were suppressed; do not assume the operation completed.',
+  } }))
 }
 
 export async function protectMcpEndpoint(ctx: Pick<Context, 'effect'>, endpoint: string): Promise<string> {
@@ -50,13 +66,21 @@ export async function protectMcpEndpoint(ctx: Pick<Context, 'effect'>, endpoint:
     const upstream = forward(target, {
       method: req.method, headers: headersForForwarding(req.headers), rejectUnauthorized: true,
     }, (response) => {
+      response.on('error', () => res.destroy())
       if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
         response.resume()
         fail(res, 'redirect_rejected')
         return
       }
+      const status = response.statusCode ?? 502
+      if (status < 200 || status >= 400) {
+        // Native MCP clients include HTTP error bodies in tool failures. Never relay upstream
+        // diagnostics or error headers; keep the status for native auth and session recovery.
+        response.resume()
+        fail(res, httpFailureCode(status), status)
+        return
+      }
       res.writeHead(response.statusCode ?? 502, headersForForwarding(response.headers))
-      response.on('error', () => res.destroy())
       response.pipe(res)
     })
     upstreams.add(upstream)

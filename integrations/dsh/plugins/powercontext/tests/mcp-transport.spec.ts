@@ -59,6 +59,45 @@ it.each([301, 302, 303, 307, 308])('refuses MCP redirects (%s) without forwardin
   expect(received).toEqual([])
 })
 
+it.each([
+  [401, 'authentication_failed'],
+  [404, 'not_found'],
+  [503, 'unavailable'],
+] as const)('replaces HTTP %s diagnostics with controlled status and code', async (status, code) => {
+  const marker = 'private-response-marker: api_key=FAKE_NATIVE_ERROR_CANARY'
+  const configured = await endpoint((_req, res) => {
+    res.writeHead(status, 'private-reason-phrase', {
+      'Content-Type': 'text/html', 'X-Private-Diagnostic': marker, 'Mcp-Session-Id': marker,
+    })
+    res.end(`<html>${marker}</html>`)
+  })
+  const response = await fetch(await protectedEndpoint(configured), { method: 'POST', body: '{}' })
+  expect(response.status).toBe(status)
+  expect(response.statusText).not.toContain('private-reason-phrase')
+  expect(response.headers.get('content-type')).toBe('application/json')
+  expect(response.headers.has('x-private-diagnostic')).toBe(false)
+  expect(response.headers.has('mcp-session-id')).toBe(false)
+  const body = await response.text()
+  expect(JSON.parse(body)).toMatchObject({ error: { code, status } })
+  expect(body).not.toContain('private-response-marker')
+  expect(body).not.toContain('FAKE_NATIVE_ERROR_CANARY')
+})
+
+it('rejects a stalled HTTP error body without waiting for or forwarding its diagnostics', async () => {
+  let closed!: () => void
+  const disconnected = new Promise<void>(resolve => { closed = resolve })
+  const configured = await endpoint((_req, res) => {
+    res.once('close', closed)
+    res.writeHead(503, { 'Content-Type': 'application/json' })
+    res.flushHeaders()
+    res.write('{"error":{"message":"api_key=FAKE_NATIVE_ERROR_CANARY')
+  })
+  const response = await fetch(await protectedEndpoint(configured), { signal: AbortSignal.timeout(1000) })
+  expect(response.status).toBe(503)
+  expect(await response.json()).toMatchObject({ error: { code: 'unavailable', status: 503 } })
+  await disconnected
+})
+
 it('preserves native MCP SSE frames, session headers and authorization at the configured endpoint', async () => {
   const frames = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
   let authorization: string | undefined

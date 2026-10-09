@@ -82,6 +82,8 @@ The scenarios cover:
 - Source idempotency, no duplicate snapshot injection, and matching section/content text;
 - Scope business and route failures, authentication failure, unavailable Server, continued conversation, and denied cross-Scope MCP calls before dispatch;
 - stalled MCP startup, continued ordinary conversation, late native tool registration, and cleanup of pending handshakes;
+- secret-content rejection before native write approval/dispatch, including nested Handoff state, Drafts and prepared carriers;
+- native MCP HTTP failure redaction in the next model request, controlled status/code information and subsequent recovery;
 - independent prepare/capture/flush failure, recovery, host restart, and configured Scope isolation.
 
 The registered-entry unit tests in `../automatic-path.spec.ts` cover cancellation, deadlines, writer failures

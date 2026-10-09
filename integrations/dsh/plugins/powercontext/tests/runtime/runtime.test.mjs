@@ -21,7 +21,7 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { test } from 'node:test'
-import { environment, injected, CANARY } from './fixture.mjs'
+import { environment, injected, CANARY, NATIVE_ERROR_CANARY } from './fixture.mjs'
 import { installIntoHome } from './setup-fixture.mjs'
 import { registerSkill } from '../../src/skill.ts'
 import { MCP_OPERATIONS } from '../../src/mcp-operations.generated.ts'
@@ -141,18 +141,44 @@ test('documented setup installs the matched plugin, diagnoses the running host a
   } finally { await env.close() }
 })
 
-test('real DSH rejects secret native writes before approval or MCP dispatch', { timeout: 120000 }, async () => {
+test('real DSH rejects secret native writes including nested Handoff content before approval or MCP dispatch', { timeout: 120000 }, async () => {
   const env = await environment()
   try {
-    const { instance } = env.harness()
-    for (const operation of ['remember_memory', 'revise_memory_entry', 'capture_content_source']) {
+    const { instance } = env.harness({ capturePrompts: false })
+    for (const operation of ['remember_memory', 'revise_memory_entry', 'capture_content_source',
+      'handoff_current_work', 'activate_handoff', 'finalize_handoff', 'commit_handoff']) {
       assert.ok((await instance.run(`RUN_PC_SECRET:${operation}`)).finalResponse)
       const input = env.modelRequests.filter(request => request.stream).at(-1)
       assert.match(input.messages.find(message => message.role === 'tool').content, /secret_rejected/)
       assert.ok(!env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === operation))
     }
+    assert.ok(!env.calls.some(call => call.path === '/v1/sources/content'))
     const memory = await env.api('/v1/memory/entries/list', { scope_id: env.scopeId })
     assert.ok(!JSON.stringify(memory).includes('FAKE_REVIEW_MARKER'))
+  } finally { await env.close() }
+})
+
+test('real DSH receives controlled MCP HTTP failures without upstream diagnostics and can recover', { timeout: 120000 }, async () => {
+  const env = await environment()
+  try {
+    await env.api('/v1/memory/remember', { scope_id: env.scopeId, kind: 'decision', text: CANARY })
+    const { instance, diagnostics } = env.harness({ capturePrompts: false })
+    for (const [status, code] of [[503, 'unavailable'], [422, 'invalid_request']]) {
+      env.setFault({ path: '/mcp', status })
+      assert.ok((await instance.run('RUN_PC_SEARCH')).finalResponse)
+      assert.ok(env.mcpCalls.some(call => call.status === status && call.body?.params?.name === 'search_memory'))
+      const input = env.modelRequests.filter(request => request.stream).at(-1)
+      const result = input.messages.find(message => message.role === 'tool')
+      assert.match(result.content, new RegExp(code))
+      assert.match(result.content, new RegExp(`"status":${status}`))
+      assert.ok(!JSON.stringify(input.messages).includes(NATIVE_ERROR_CANARY))
+      assert.doesNotMatch(JSON.stringify(input.messages), /private-response-marker|FAKE_NATIVE_ERROR_CANARY/)
+      assert.doesNotMatch(JSON.stringify(diagnostics()), /private-response-marker|FAKE_NATIVE_ERROR_CANARY/)
+    }
+    env.setFault(undefined)
+    assert.ok((await instance.run('RUN_PC_SEARCH')).finalResponse)
+    const input = env.modelRequests.filter(request => request.stream).at(-1)
+    assert.ok(input.messages.find(message => message.role === 'tool').content.includes(CANARY))
   } finally { await env.close() }
 })
 

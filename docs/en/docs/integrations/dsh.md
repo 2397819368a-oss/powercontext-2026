@@ -248,8 +248,10 @@ registration completes; check the current tool catalog before selecting an MCP o
 
 Native MCP frames pass through a process-local streaming boundary to the fixed configured endpoint; all redirects
 are rejected, including during initialization and tool calls. The native client still owns discovery and sessions.
-The plugin rejects likely secret content with `secret_rejected` before write approval or dispatch. Its MCP catalog
-and mutation approval classification are generated from the Server's public `tools/list`, not the HTTP tool table.
+HTTP failures expose controlled status/code information without upstream response bodies or diagnostic headers.
+The plugin rejects likely secret content, including nested Handoff state, Drafts and prepared carriers, with
+`secret_rejected` before write approval or dispatch. Its MCP catalog and mutation approval classification are generated
+from the Server's public `tools/list`, not the HTTP tool table.
 
 `mcp__powercontext__handoff_current_work` captures its own boundary and returns `{boundary, handoff}`. Transfer only
 the complete `handoff` member, then pass that exact value to `mcp__powercontext__continue_handoff` with

@@ -31,6 +31,7 @@ const sdkRequire = createRequire(process.env.DSH_TEST_SDK_ROOT
   : import.meta.resolve('@deepseek-ai/dsh-sdk-client'))
 export const dshBin = join(dirname(sdkRequire.resolve('@deepseek-ai/dsh/package.json')), 'lib/bin.js')
 export const CANARY = 'The aurora deployment color is violet-cedar-1457.'
+export const NATIVE_ERROR_CANARY = 'private-response-marker: api_key=FAKE_NATIVE_ERROR_CANARY'
 export const pluginRoot = resolve(import.meta.dirname, '../..')
 
 async function listen(handler) {
@@ -69,6 +70,30 @@ async function rawBodyOf(req) {
 function json(res, value, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(value))
+}
+
+function secretArguments(operation, scopeId) {
+  const text = 'api_key=FAKE_REVIEW_MARKER'
+  const source = { name: 'content', source_id: 'secret-fixture' }
+  const draft = {
+    objective: 'Continue the review', disposition: 'blocked', next_action: null, omissions: [],
+    state: [{ text, citations: [{ kind: 'source', source_ref: source }] }],
+  }
+  switch (operation) {
+    case 'handoff_current_work': return { scope_id: scopeId, source_id: source.source_id, handoff: {
+      schema: 'powercontext.current-work-handoff.v1', trust: 'untrusted_input', ...draft,
+      state: [{ text, basis: 'declared', evidence: [] }],
+    } }
+    case 'activate_handoff': return { scope_id: scopeId, boundary_source: source, objective: text }
+    case 'finalize_handoff': return { scope_id: scopeId, draft }
+    case 'commit_handoff': return { scope_id: scopeId, handoff: {
+      schema: 'powercontext.prepared-handoff.v1', scope_id: scopeId, base: null,
+      content: { schema: 'powercontext.handoff.v1', ...draft },
+    } }
+    case 'capture_content_source': return { scope_id: scopeId, source_id: source.source_id, content: text }
+    case 'revise_memory_entry': return { scope_id: scopeId, memory_id: 'secret-fixture', text, expected_version: 1 }
+    default: return { scope_id: scopeId, text, kind: 'decision' }
+  }
 }
 
 export async function environment({ realModel, fullCatalog = false } = {}) {
@@ -123,7 +148,7 @@ export async function environment({ realModel, fullCatalog = false } = {}) {
     }
     const skillMatch = JSON.stringify(body.messages).match(/LOAD_PC_SKILL:(powercontext-(?:memory|handoff|review))/)
     const getScope = JSON.stringify(body.messages).includes('RUN_PC_GET_SCOPE')
-    const secretWrite = JSON.stringify(body.messages).match(/RUN_PC_SECRET:(remember_memory|revise_memory_entry|capture_content_source)/)?.[1]
+    const secretWrite = JSON.stringify(body.messages).match(/RUN_PC_SECRET:(remember_memory|revise_memory_entry|capture_content_source|handoff_current_work|activate_handoff|finalize_handoff|commit_handoff)/)?.[1]
     const needsTool = (skillMatch || getScope || secretWrite || JSON.stringify(body.messages).includes('RUN_PC_SEARCH'))
       && !body.messages.some(message => message.role === 'tool')
     const content = JSON.stringify(body.messages).includes(CANARY) ? CANARY : 'Task completed.'
@@ -139,10 +164,7 @@ export async function environment({ realModel, fullCatalog = false } = {}) {
         function: skillMatch
           ? { name: 'skill', arguments: JSON.stringify({ name: skillMatch[1] }) }
           : secretWrite
-          ? { name: `mcp__powercontext__${secretWrite}`, arguments: JSON.stringify({
-            scope_id: requestedScopeId, text: 'api_key=FAKE_REVIEW_MARKER', kind: 'decision',
-            source_id: 'secret-fixture', memory_id: 'secret-fixture', expected_version: 1,
-          }) }
+          ? { name: `mcp__powercontext__${secretWrite}`, arguments: JSON.stringify(secretArguments(secretWrite, requestedScopeId)) }
           : getScope
           ? { name: 'mcp__powercontext__get_scope', arguments: JSON.stringify({ scope_id: requestedScopeId }) }
           : { name: 'mcp__powercontext__search_memory', arguments: JSON.stringify({
@@ -193,6 +215,12 @@ export async function environment({ realModel, fullCatalog = false } = {}) {
       }
       if (fault?.path === '/mcp' && fault.redirectTo && mcpCall.body?.method === 'tools/call') {
         res.writeHead(307, { Location: fault.redirectTo }).end()
+        return
+      }
+      if (fault?.path === '/mcp' && fault.status && mcpCall.body?.method === 'tools/call') {
+        mcpCall.status = fault.status
+        res.writeHead(fault.status, { 'Content-Type': 'text/plain', 'X-Private-Diagnostic': NATIVE_ERROR_CANARY })
+        res.end(NATIVE_ERROR_CANARY)
         return
       }
       const upstream = await fetch(server.baseUrl + req.url, {

@@ -2582,18 +2582,29 @@ const SECRET_MARKERS = [
 	"api_key",
 	"BEGIN PRIVATE"
 ];
-const CONTENT_WRITES = new Set([
-	"remember_memory",
-	"capture_content_source",
-	"revise_memory_entry"
+const CONTENT_FIELDS = new Map([
+	["remember_memory", ["text", "content"]],
+	["capture_content_source", ["text", "content"]],
+	["revise_memory_entry", ["text", "content"]],
+	["handoff_current_work", ["handoff"]],
+	["activate_handoff", ["objective"]],
+	["prepare_handoff", ["objective"]],
+	["finalize_handoff", ["draft"]],
+	["commit_handoff", ["handoff"]]
 ]);
 function containsSecret(text) {
 	return SECRET_MARKERS.some((marker) => text.includes(marker));
 }
+function containsSecretValue(value) {
+	if (typeof value === "string") return containsSecret(value);
+	if (!value || typeof value !== "object") return false;
+	return Object.values(value).some(containsSecretValue);
+}
 function hasSecretContent(operation, payload) {
-	if (!CONTENT_WRITES.has(operation) || !payload || typeof payload !== "object") return false;
+	const fields = CONTENT_FIELDS.get(operation);
+	if (!fields || !payload || typeof payload !== "object") return false;
 	const content = payload;
-	return [content.text, content.content].some((value) => typeof value === "string" && containsSecret(value));
+	return fields.some((field) => containsSecretValue(content[field]));
 }
 
 //#endregion
@@ -3328,16 +3339,29 @@ function headersForForwarding(headers) {
 	]) delete forwarded[header];
 	return forwarded;
 }
-function fail(res, code) {
+function httpFailureCode(status) {
+	switch (status) {
+		case 401: return "authentication_failed";
+		case 403: return "authorization_failed";
+		case 404: return "not_found";
+		case 409: return "conflict";
+		case 400:
+		case 422: return "invalid_request";
+		case 429: return "rate_limited";
+		default: return status >= 500 ? "unavailable" : "http_error";
+	}
+}
+function fail(res, code, status = 502) {
 	if (res.destroyed) return;
 	if (res.headersSent) {
 		res.destroy();
 		return;
 	}
-	res.writeHead(502, { "Content-Type": "application/json" });
+	res.writeHead(status, { "Content-Type": "application/json" });
 	res.end(JSON.stringify({ error: {
 		code,
-		message: "PowerContext MCP transport refused the response. No redirect was followed."
+		status,
+		message: "PowerContext MCP request failed. Upstream diagnostics were suppressed; do not assume the operation completed."
 	} }));
 }
 async function protectMcpEndpoint(ctx, endpoint) {
@@ -3360,13 +3384,19 @@ async function protectMcpEndpoint(ctx, endpoint) {
 			headers: headersForForwarding(req.headers),
 			rejectUnauthorized: true
 		}, (response) => {
+			response.on("error", () => res.destroy());
 			if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
 				response.resume();
 				fail(res, "redirect_rejected");
 				return;
 			}
+			const status = response.statusCode ?? 502;
+			if (status < 200 || status >= 400) {
+				response.resume();
+				fail(res, httpFailureCode(status), status);
+				return;
+			}
 			res.writeHead(response.statusCode ?? 502, headersForForwarding(response.headers));
-			response.on("error", () => res.destroy());
 			response.pipe(res);
 		});
 		upstreams.add(upstream);
