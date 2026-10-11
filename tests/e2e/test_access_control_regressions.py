@@ -28,7 +28,15 @@ import pytest
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import InferenceConfig, RuntimeConfig
 from powercontext.server.authentication import AuthenticationResult, ProviderReadiness
-from powercontext.server.authz import AccessAuditContext, AccessUnavailableError, PrincipalRef, ResourceRef
+from powercontext.server.authz import (
+    AccessAction,
+    AccessAuditContext,
+    AccessDecision,
+    AccessUnavailableError,
+    BuiltinAuthorizationProvider,
+    PrincipalRef,
+    ResourceRef,
+)
 from powercontext.server.authz.composition import open_builtin_access_control, open_casbin_access_control
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import AccessControlConfig, McpConfig, MetricsConfig, ServerSettings
@@ -1257,6 +1265,54 @@ def test_atomic_state_read_keeps_content_and_lifecycle_in_one_snapshot(tmp_path,
             assert current.json()["artifact"]["revision"] == 2
             assert current.json()["state"] == "forgotten"
             assert current.json()["state_version"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_atomic_lifecycle_respects_a_custom_builtin_provider_denial(tmp_path):
+    class DenyArtifactWrite(BuiltinAuthorizationProvider):
+        async def check_batch(self, requests, /):
+            decisions = await super().check_batch(requests)
+            return tuple(
+                AccessDecision(False, "custom-denial", decision.policy_revision)
+                if request.action is AccessAction.ARTIFACT_WRITE
+                else decision
+                for request, decision in zip(requests, decisions, strict=True)
+            )
+
+    async def scenario():
+        async with _server(tmp_path) as (_, client, access):
+            scope_id = await _scope(client)
+            remembered = await client.post(
+                "/v1/memory/remember", json={"scope_id": scope_id, "kind": "fact", "text": "Alpha scope fact."}
+            )
+            assert remembered.status_code == 200, remembered.text
+            identity = remembered.json()["records"][0]["artifact"]["artifact_id"]
+            path = f"/v1/scopes/{scope_id}/artifacts/atomic-memory/{identity}"
+            current = await client.get(path)
+            assert current.status_code == 200, current.text
+
+            access.provider = DenyArtifactWrite(access.provider._repository, deployment_id=access.deployment_id)
+            edited = await client.put(
+                path, headers={"If-Match": current.headers["ETag"]}, json={"content": {"kind": "fact", "text": "Beta."}}
+            )
+            assert edited.status_code == 403, edited.text
+            forgotten = await client.post(
+                "/v1/atomic-memory/lifecycle",
+                json={
+                    "scope_id": scope_id,
+                    "target": {
+                        "artifact": {"family": "atomic-memory", "artifact_id": identity, "revision": 1},
+                        "state_version": 0,
+                    },
+                    "state": "forgotten",
+                },
+            )
+            assert forgotten.status_code == 403, forgotten.text
+            state = await client.get(path + "/state")
+            assert state.status_code == 200, state.text
+            assert state.json()["state"] == "active"
+            assert state.json()["state_version"] == 0
 
     asyncio.run(scenario())
 

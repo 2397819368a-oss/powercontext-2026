@@ -352,13 +352,6 @@ def _collection_citation(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _holds_collection_citation(value: Any) -> bool:
-    if _collection_citation(value) is not None:
-        return True
-    items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
-    return any(_holds_collection_citation(item) for item in items)
-
-
 async def _convert_citations(
     context: _Context,
     connection: AsyncConnection,
@@ -1260,9 +1253,7 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
     cited = "(memory_citations IS NOT NULL AND LENGTH(memory_citations) > 2) OR "
     checks = {
         "pc_artifacts": (
-            "SELECT COUNT(*) FROM pc_artifacts WHERE "  # noqa: S608
-            + (cited if "pc_artifacts" in citation_tables else "")
-            + "(family = 'handoff' AND CAST(content AS CHAR) LIKE '%memory_citation%')",
+            "SELECT COUNT(*) FROM pc_artifacts WHERE memory_citations IS NOT NULL AND LENGTH(memory_citations) > 2",
             "Artifacts still hold legacy Memory citations",
         ),
         "pc_artifact_candidate_versions": (
@@ -1283,17 +1274,19 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
     ):
         issues.append("unfinished Dream runs still carry legacy entry citation fields")
     for table, (sql, message) in checks.items():
-        if table in tables and await count(sql):
+        if table in tables and (table != "pc_artifacts" or table in citation_tables) and await count(sql):
             issues.append(message)
     if "pc_artifacts" in tables:
+        # The text match only narrows the rows; free text may mention these names, so judge parsed fields.
         for row in await rows(
             connection,
             "pc_artifacts",
             ("content",),
-            "WHERE family = 'handoff' AND CAST(content AS CHAR) LIKE '%\"memory\"%'",
+            "WHERE family = 'handoff' AND (CAST(content AS CHAR) LIKE '%\"memory\"%' "
+            "OR CAST(content AS CHAR) LIKE '%memory_citation%')",
         ):
-            if _holds_collection_citation(json.loads(bytes(row["content"]))):
-                issues.append("Handoffs still cite whole legacy Memory collections")
+            if _holds_memory_reference(json.loads(bytes(row["content"]))):
+                issues.append("Handoffs still hold legacy Memory references")
                 break
     if "pc_sources" in tables:
         for row in await rows(
@@ -1313,7 +1306,7 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
                 current["unavailable_evidence"] = [
                     item for item in current.get("unavailable_evidence", ()) if _collection_citation(item) is None
                 ]
-            if "memory_citation" in content or _holds_collection_citation(current):
+            if _holds_memory_reference(current):
                 issues.append("structured Work Sources still hold legacy Memory citations")
                 break
     return issues

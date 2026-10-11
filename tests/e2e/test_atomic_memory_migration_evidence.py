@@ -960,6 +960,49 @@ def test_handoff_supported_only_by_a_collection_blocks_before_any_change(migrati
     asyncio.run(scenario())
 
 
+def test_work_text_mentioning_legacy_field_names_migrates_unchanged(migration_backend: MigrationBackend) -> None:
+    config = migration_backend.config
+    mention = "Please verify the memory_citation parser before accepting this Handoff."
+    receipt_source = SourceRef(source_type="content", source_id="mention-receipt")
+    unavailable = {"kind": "artifact", "artifact_ref": EA.model_dump(mode="json")}
+
+    async def seeded(contexts, connection) -> None:
+        content = _handoff_content(HandoffSourceCitation(source_ref=A).model_dump())
+        content["state"][0]["text"] = mention
+        await _insert_handoff(connection, "mention-handoff", content)
+        await _scope_row(connection)
+        await _work_source(
+            contexts,
+            connection,
+            receipt_source,
+            "handoff-receipt",
+            "powercontext.handoff-receipt.v1",
+            {**_legacy_receipt(unavailable), "message": mention},
+        )
+
+    async def scenario() -> None:
+        await _seed_and_migrate(config, seeded)
+        async with (
+            open_builtin_contexts(BuiltinConfig(database=config)) as contexts,
+            contexts.database.transaction() as connection,
+        ):
+            handoff = await contexts.repositories.artifacts.get(
+                connection, SCOPE, ArtifactRef(family="handoff", artifact_id="mention-handoff", revision=1)
+            )
+            assert handoff.content.state[0].text == mention
+            payload = await connection.scalar(
+                select(SOURCES_TABLE.c.payload).where(
+                    SOURCES_TABLE.c.scope_id == SCOPE, SOURCES_TABLE.c.source_id == receipt_source.source_id
+                )
+            )
+            assert isinstance(payload, bytes | bytearray | memoryview)
+            assert json.loads(json.loads(bytes(payload))["value"]["content"])["message"] == mention
+            report = await verify_atomic_memory_migration(connection, index=contexts.atomic_memory.index)
+            assert report.ready, report.errors
+
+    asyncio.run(scenario())
+
+
 def test_collections_citing_each_other_are_removed_regardless_of_identifier_order(
     migration_backend: MigrationBackend,
 ) -> None:
