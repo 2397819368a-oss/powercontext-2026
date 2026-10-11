@@ -34,7 +34,8 @@ from sqlalchemy import create_engine, event, select, update
 from sqlalchemy.engine import make_url
 
 from powercontext.artifacts import ArtifactRef
-from powercontext.builtin.artifacts.memory import EmbeddingProfile, MemoryEntryInput
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
+from powercontext.builtin.artifacts.memory import EmbeddingProfile
 from powercontext.builtin.artifacts.skill import capture_skill_directory, package_file
 from powercontext.builtin.inference import EmbeddingResult
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
@@ -50,14 +51,13 @@ from powercontext.builtin.runtime import (
     HandoffDraft,
     HandoffSourceCitation,
     HandoffStatement,
-    RememberMemoryRequest,
     SubmitSourceObservation,
     open_builtin_contexts,
     open_builtin_runtime,
 )
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.builtin.sources import ContentCapture
-from powercontext.builtin.tags import MemoryEntryTagTarget, TagFilter
+from powercontext.builtin.tags import ArtifactTagTarget, TagFilter
 from powercontext.builtin.work import AcknowledgeHandoff, ReceiverChecks
 from powercontext.sources import (
     AdapterSourceDefinition,
@@ -123,12 +123,11 @@ def test_sqlite_portable_archive_restores_revisions_lineage_and_handoff_receipts
                     metadata={"origin": "portable-archive-e2e"},
                 )
             )
-            memory = await source_runtime.memory.for_scope(scope_id).remember(
-                RememberMemoryRequest(
-                    entries=(MemoryEntryInput(kind="decision", text="Use the portable archive for migration."),)
-                )
-            )
-            assert memory.entry is not None
+            assert source_runtime.atomic_memory is not None
+            memory = await source_runtime.atomic_memory.for_scope(scope_id).create((
+                AtomicMemoryContent(kind="decision", text="Use the portable archive for migration."),
+            ))
+            assert memory.records
             handoffs = source_runtime.handoff.for_scope(scope_id)
             prepared = await handoffs.finalize(
                 HandoffDraft(
@@ -202,13 +201,12 @@ def test_archive_restores_tagged_memory_vector_search_and_survives_restart(
             scope = await source.scopes.create(
                 ScopeDraft(title="Archive", summary="Vector recovery", idempotency_key="archive-vector")
             )
-            service = (await source.get(scope.scope_id)).artifacts.memory
-            memory = await service.remember(
-                memory=None, entries=(MemoryEntryInput(kind="fact", text="Portable vector recovery."),), mode="append"
+            memory = await source.records.create_artifact(
+                scope.scope_id,
+                "atomic-memory",
+                ArtifactWrite(content={"kind": "fact", "text": "Portable vector recovery."}),
             )
-            assert memory is not None
-            entry = memory.content.manifest.entries[0]
-            tag_target = MemoryEntryTagTarget(artifact_id=memory.artifact_id, entry_id=entry.entry_id)
+            tag_target = ArtifactTagTarget(family="atomic-memory", artifact_id=memory.artifact_id)
             empty = await source.records.get_tags(scope.scope_id, tag_target)
             tagged = await source.records.replace_tags(
                 scope.scope_id, tag_target, ("archive",), expected_etag=empty.etag
@@ -223,12 +221,10 @@ def test_archive_restores_tagged_memory_vector_search_and_survives_restart(
             assert receipt.projections_ready
             assert await target.records.get_tags(scope.scope_id, tag_target) == tagged
         async with open_builtin_contexts(target_config, embedding_model=Embedding()) as target:
-            service = (await target.get(scope.scope_id)).artifacts.memory
-            for mode in ("fts", "vector", "hybrid"):
-                result = await service.search(
-                    "portable", memories=(memory,), mode=mode, tag_filter=TagFilter(tags=("archive",))
-                )
-                assert [hit.entry_id for hit in result.hits] == [entry.entry_id]
+            service = target.atomic_memory.for_scope(scope.scope_id)
+            for mode in ("text", "vector", "hybrid"):
+                result = await service.search("portable", mode=mode, tag_filter=TagFilter(tags=("archive",)))
+                assert [hit.hit.artifact_ref.artifact_id for hit in result.hits] == [memory.artifact_id]
 
     asyncio.run(scenario())
 
@@ -599,9 +595,6 @@ async def _replay_recurrence(contexts, scope_id):
     from powercontext.builtin.evidence.resolver import EvidenceResolver
     from powercontext.builtin.runtime.recurrence import RelationalRecurrenceLedger
 
-    async def no_memory(*_args):
-        raise AssertionError("fixture has no Memory citations")  # noqa: TRY003
-
     repositories = contexts.repositories
     ledger = RelationalRecurrenceLedger(
         database=contexts.database,
@@ -613,7 +606,6 @@ async def _replay_recurrence(contexts, scope_id):
             scope_id=scope_id,
             sources=repositories.sources,
             artifacts=repositories.artifacts,
-            memory_reader=no_memory,
         ),
     )
     async with contexts.database.transaction() as connection:

@@ -270,7 +270,7 @@ _SPECS: dict[RecordType, _RecordSpec] = {
     "artifact_revision": _RecordSpec(
         ARTIFACTS_TABLE,
         ("scope_id", "family", "artifact_id", "revision"),
-        ("content", "memory_citations"),
+        ("content",),
     ),
     "artifact_lineage_source": _RecordSpec(
         ARTIFACT_LINEAGE_SOURCES_TABLE,
@@ -329,7 +329,6 @@ _SPECS: dict[RecordType, _RecordSpec] = {
             "proposal",
             "source_refs",
             "artifact_refs",
-            "memory_citations",
             "target_family",
             "target_artifact_id",
             "target_revision",
@@ -1244,7 +1243,7 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
         ):
             raise BundleFormatError("Skill package has invalid digest")
     elif kind == "artifact_revision":
-        bytes_values("content", "memory_citations", nullable=("memory_citations",))
+        bytes_values("content")
     elif kind == "artifact_lineage_source":
         strings("source_type", "source_id")
     elif kind == "artifact_lineage_artifact":
@@ -1284,7 +1283,7 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             "reason",
             nullable=("target_family", "target_artifact_id", "reason"),
         )
-        bytes_values("proposal", "source_refs", "artifact_refs", "memory_citations", nullable=("memory_citations",))
+        bytes_values("proposal", "source_refs", "artifact_refs")
         target = (payload["target_family"], payload["target_artifact_id"], payload["target_revision"])
         if target != (None, None, None) and (
             target[0] is None
@@ -1710,7 +1709,6 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
         ):
             raise BundleFormatError("candidate head references missing result revision")
     _validate_embedded_references(record, contains)
-    _validate_memory_citations(record, contains)
 
 
 def _contains_memory_entry_target(
@@ -1961,58 +1959,6 @@ def _reference_items(value: object, kind: Literal["source", "artifact"], /) -> t
             raise BundleFormatError(f"{kind} reference has invalid fields")
         references.append(cast(Mapping[str, object], item))
     return tuple(references)
-
-
-def _validate_memory_citations(
-    record: _Record,
-    contains: Callable[[str, Mapping[str, object]], bool],
-    /,
-) -> None:
-    if record.record_type not in {"artifact_revision", "candidate_version"}:
-        return
-    encoded_value = record.payload["memory_citations"]
-    if encoded_value is None:
-        return
-    encoded = cast(dict[str, object], encoded_value).get("base64") if isinstance(encoded_value, dict) else None
-    if not isinstance(encoded, str):
-        raise BundleFormatError("memory citations are not encoded bytes")
-    try:
-        citations = json.loads(base64.b64decode(encoded, validate=True), parse_constant=_reject_json_constant)
-    except (ValueError, json.JSONDecodeError) as error:
-        raise BundleFormatError("memory citations are not valid JSON") from error
-    if not isinstance(citations, list):
-        raise BundleFormatError("memory citations must be an array")
-    scope_id = record.identity["scope_id"]
-    for citation in citations:
-        if not isinstance(citation, dict) or set(citation) != {"memory_ref", "entry_id", "entry_version_id"}:
-            raise BundleFormatError("memory citation has invalid fields")
-        memory_ref = citation["memory_ref"]
-        if (
-            not isinstance(memory_ref, dict)
-            or set(memory_ref) != {"family", "artifact_id", "revision"}
-            or not isinstance(citation["entry_id"], str)
-            or not isinstance(citation["entry_version_id"], str)
-        ):
-            raise BundleFormatError("memory citation has invalid fields")
-        artifact_exists = contains(
-            "artifact_revision",
-            {
-                "scope_id": scope_id,
-                "family": memory_ref["family"],
-                "artifact_id": memory_ref["artifact_id"],
-                "revision": memory_ref["revision"],
-            },
-        )
-        version_exists = contains(
-            "memory_entry_version",
-            {
-                "scope_id": scope_id,
-                "memory_artifact_id": memory_ref["artifact_id"],
-                "entry_version_id": citation["entry_version_id"],
-            },
-        )
-        if not artifact_exists or not version_exists:
-            raise BundleFormatError("memory citation references missing version")
 
 
 def _required_artifact_families(records: Iterable[_Record]) -> set[str]:

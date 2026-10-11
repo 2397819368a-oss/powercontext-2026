@@ -33,7 +33,7 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from jsonschema.protocols import Validator
 from referencing import Registry
 from referencing.exceptions import Unresolvable
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef
@@ -267,7 +267,7 @@ _MEMORY_COMMIT_MEMORY_CHANGED = "powercontext.memory.commit.memory_changed"
 _MEMORY_COMMIT_ENTRY_VERSION_COUNT = "powercontext.memory.commit.entry_version_count"
 
 
-BUILTIN_ARTIFACT_TYPES = (Handoff, Memory, AtomicMemory, Experience, Skill, Profile, Prompt, TopicMemory)
+BUILTIN_ARTIFACT_TYPES = (Handoff, AtomicMemory, Experience, Skill, Profile, Prompt, TopicMemory)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1378,29 +1378,35 @@ class RelationalContexts:
         """Rebuild target-local search projections after a logical restore."""
 
         for scope_id in scope_ids:
-            services = self._services_for(scope_id)
-            _, catalog = services.sources()
-            await services.memory(catalog).rebuild_projections(self._embedding_model)
             async with self.database.transaction() as connection:
-                memory_refs = tuple(
-                    ArtifactRef(family=Memory.family, artifact_id=str(artifact_id), revision=int(revision))
-                    for artifact_id, revision in (
-                        await connection.execute(
-                            select(ARTIFACT_HEADS_TABLE.c.artifact_id, ARTIFACT_HEADS_TABLE.c.revision)
-                            .where(
-                                ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
-                                ARTIFACT_HEADS_TABLE.c.family == Memory.family,
-                            )
-                            .order_by(ARTIFACT_HEADS_TABLE.c.artifact_id)
-                        )
-                    ).all()
+                await self.atomic_memory_index.initialize(connection)
+                await connection.execute(
+                    self.atomic_memory_index.table.delete().where(self.atomic_memory_index.table.c.scope_id == scope_id)
                 )
-                if self.index.capabilities.vector and memory_refs:
-                    model = self._embedding_model
-                    if model is None or not await self.index.vector_complete(
-                        connection, scope_id, memory_refs, model.profile
-                    ):
-                        raise RuntimeError("restored Memory vector projection is incomplete")  # noqa: TRY003
+            atomic_memories = self.atomic_memory.for_scope(scope_id)
+            cursor = None
+            rebuilt = 0
+            while True:
+                page = await atomic_memories.list(limit=100, cursor=cursor)
+                for record in page.items:
+                    prepared = await self.atomic_memory.publisher.prepare(record.artifact.content)
+                    async with self.database.transaction() as connection:
+                        await self.atomic_memory.publisher.publish(connection, scope_id, record, prepared)
+                    rebuilt += 1
+                cursor = page.next_cursor
+                if cursor is None:
+                    break
+            async with self.database.transaction() as connection:
+                projected = int(
+                    await connection.scalar(
+                        select(func.count())
+                        .select_from(self.atomic_memory_index.table)
+                        .where(self.atomic_memory_index.table.c.scope_id == scope_id)
+                    )
+                    or 0
+                )
+                if projected != rebuilt:
+                    raise RuntimeError("restored Atomic Memory projection is incomplete")  # noqa: TRY003
                 topic_heads = tuple(
                     (
                         await connection.execute(

@@ -653,7 +653,6 @@ class ArtifactRepository:
     ) -> Artifact[Any]:
         family = str(row["family"])
         artifact_type = self._artifact_type(family)
-        lineage = lineage.model_copy(update={"memory_citations": load_memory_citations(row.get("memory_citations"))})
         content = self.decode_content(
             family,
             stored_bytes(row["content"], column="payload"),
