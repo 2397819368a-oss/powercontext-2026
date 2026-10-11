@@ -1295,7 +1295,10 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
             ("payload",),
             "WHERE source_type = 'content' AND CAST(payload AS CHAR) LIKE '%memory%'",
         ):
-            value = json.loads(bytes(row["payload"]))["value"]
+            value = json.loads(bytes(row["payload"])).get("value")
+            if not isinstance(value, dict):
+                # Legacy Sources predate the stored envelope and carry no Work payload.
+                continue
             model = _WORK_MODELS.get(str((value.get("metadata") or {}).get("kind")))
             if model is None:
                 continue

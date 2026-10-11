@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import Engine, ForeignKeyConstraint, MetaData, event, insert, inspect, select, text, tuple_
+import rfc8785
+from sqlalchemy import Engine, ForeignKeyConstraint, MetaData, event, insert, inspect, select, text, tuple_, update
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
@@ -991,6 +992,44 @@ def test_work_text_mentioning_legacy_field_names_migrates_unchanged(migration_ba
             )
             assert isinstance(payload, bytes | bytearray | memoryview)
             assert json.loads(json.loads(bytes(payload))["value"]["content"])["message"] == mention
+            report = await verify_atomic_memory_migration(connection, index=contexts.atomic_memory.index)
+            assert report.ready, report.errors
+
+    asyncio.run(scenario())
+
+
+def test_unenveloped_source_mentioning_memory_migrates_unchanged(migration_backend: MigrationBackend) -> None:
+    config = migration_backend.config
+    mention = "Restore durable memory context before accepting this Handoff."
+    capture = SourceRef(source_type="content", source_id="unenveloped-capture")
+
+    async def seeded(contexts, connection) -> None:
+        await contexts.repositories.sources.add(
+            connection,
+            SCOPE,
+            ContentSource(name=capture.source_id, materialization=SourceMaterialization.CAPTURED, content=mention),
+        )
+        payload = await connection.scalar(
+            select(SOURCES_TABLE.c.payload).where(
+                SOURCES_TABLE.c.scope_id == SCOPE, SOURCES_TABLE.c.source_id == capture.source_id
+            )
+        )
+        assert isinstance(payload, bytes)
+        # Sources captured before the stored envelope existed keep the value itself.
+        await connection.execute(
+            update(SOURCES_TABLE)
+            .where(SOURCES_TABLE.c.scope_id == SCOPE, SOURCES_TABLE.c.source_id == capture.source_id)
+            .values(payload=rfc8785.dumps(json.loads(bytes(payload))["value"]))
+        )
+
+    async def scenario() -> None:
+        await _seed_and_migrate(config, seeded)
+        async with (
+            open_builtin_contexts(BuiltinConfig(database=config)) as contexts,
+            contexts.database.transaction() as connection,
+        ):
+            stored = (await contexts.repositories.sources.get(connection, SCOPE, capture)).value
+            assert isinstance(stored, ContentSource) and stored.content == mention
             report = await verify_atomic_memory_migration(connection, index=contexts.atomic_memory.index)
             assert report.ready, report.errors
 
