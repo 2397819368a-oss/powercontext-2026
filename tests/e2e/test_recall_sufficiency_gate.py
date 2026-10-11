@@ -47,9 +47,10 @@ from powercontext.builtin.artifacts.topic_memory import (
     prepare_topic_memory_projection,
 )
 from powercontext.builtin.inference import EmbeddingResult, InferenceUnavailableError
+from powercontext.builtin.persistence.records import RelationalRecordService
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.statistics import StatisticsRepository
-from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE, MEMORY_ENTRY_HEADS_TABLE, RECALL_EFFORT_DAILY_TABLE
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE, RECALL_EFFORT_DAILY_TABLE
 from powercontext.builtin.runtime import (
     BuiltinConfig,
     PrepareContextRequest,
@@ -131,6 +132,8 @@ class _RecallRoundLog:
                 reuse=reuse,
                 topic_reuse=topic_reuse,
             )
+            log.calls[-1]["memory_recoverable"] = result.memory_recoverable
+            log.calls[-1]["memory_texts"] = tuple(hit.text for group in result.memory for hit in group.hits)
             if log.force_recoverable_family is None:
                 return result
             return _RecallRoundOutcome(
@@ -236,7 +239,7 @@ async def _revision_state(runtime: BuiltinRuntime, scope_id: str) -> tuple[list[
     provider = cast(Any, runtime._provider)
     async with provider.database.transaction() as connection:
         snapshots = []
-        for table in (ARTIFACTS_TABLE, MEMORY_ENTRY_HEADS_TABLE):
+        for table in (ARTIFACTS_TABLE, ARTIFACT_HEADS_TABLE):
             snapshots.append((await connection.execute(select(table).where(table.c.scope_id == scope_id))).all())
         return tuple(snapshots)
 
@@ -314,25 +317,26 @@ def test_sqlite_vector_prepare_reports_cosine_and_expands_past_a_weak_top(tmp_pa
         assert effort is not None
         assert effort.assessment == "weak-top-1"
         assert effort.rounds == 2
+        assert effort.candidates_by_round == (1, 2)
         assert effort.signals is not None
         assert effort.signals.top_score == pytest.approx(0.31, abs=0.005)
         assert len(log.calls) == 2
         assert "unrelated vector evidence" in (build.context.content or "")
         # Atomic Memory reports recoverability as an existence probe, not pre-admission counts.
-        assert all(count.family != MEMORY_FAMILY for count in effort.admission_by_family)
+        assert effort.admission_by_family == ()
+        assert [call["memory_recoverable"] for call in log.calls] == [True, False]
 
     asyncio.run(scenario())
 
 
-def test_strong_vector_hit_is_delivered_beside_a_window_of_weak_dual_channel_hits(tmp_path, monkeypatch) -> None:
-    """Atomic Memory qualifies and limits each channel before fusion, so a strong vector-only
-    hit competes in the fused window with weak dual-channel hits; the gate scores its cosine
-    relevance rather than its fused rank, and the committed candidates deliver it."""
+def test_bounded_expansion_surfaces_a_strong_hit_hidden_by_the_fusion_limit(tmp_path, monkeypatch) -> None:
+    """The fused window is capped before the gate sees hits, so a weak top cannot be
+    declared unimprovable: a strong vector-only hit outside the window gains an FTS
+    channel under the lowered floor and RRF moves it into view."""
     embedding_profile = EmbeddingProfile(
         profile_id="recall-gate-hidden", model="deterministic", dimension=2, distance="l2", normalization="unit"
     )
-    # One fewer weak hit than the window, so a fused-rank tie cannot cut the strong hit.
-    weak_texts = tuple(f"alpha beta gamma weak {index:02d}" for index in range(15))
+    weak_texts = tuple(f"beta gamma weak {index:02d}" for index in range(16))
     strong_text = "alpha window hidden"
     cosines = {_QUERY: 1.0, strong_text: 0.90}
     cosines.update({text: 0.31 + index * 0.001 for index, text in enumerate(weak_texts)})
@@ -371,19 +375,37 @@ def test_strong_vector_hit_is_delivered_beside_a_window_of_weak_dual_channel_hit
             embedding_model=DeterministicEmbedding(),
         ) as runtime:
             scope_id = await _create_scope(runtime, "hidden-hit")
+            # Each channel is capped at sixteen. The weakest vector row and the
+            # strong vector-only row tie for the last fused slot; stable IDs put
+            # the FTS-only weak row first. Under the lower lexical floor, the
+            # strong row's rare alpha term ranks first and gives it both channels.
+            records = cast(RelationalRecordService, runtime._records())
+            original_id_factory = records._id_factory
+            ids = iter(f"hidden-memory-{index:02d}" for index in range(17))
+            monkeypatch.setattr(
+                records,
+                "_id_factory",
+                lambda kind: next(ids) if kind == "atomic-memory" else original_id_factory(kind),
+            )
             await _seed(runtime, scope_id, [*weak_texts, strong_text])
             _, effort = await _prepare_build(runtime, scope_id, _memory_request())
 
-        # The fused rank of the vector-only hit trails every dual-channel weak hit, but the
-        # gate reads its 0.90 cosine relevance, so round zero is already sufficient.
+        # Round 0: fifteen dual-channel and one FTS-only weak hit fill the window and truncate
+        # the vector-only 0.90 hit, so the gate sees a weak top. Round 1's lower lexical
+        # floor admits the strong hit's FTS row; the dual-channel hit then enters the
+        # window, the top score reflects it, and the committed candidates keep the latest
+        # round's fused order so the surfaced hit is actually delivered to the Builder.
         assert effort is not None
         assert effort.assessment == REASON_SUFFICIENT
-        assert effort.rounds == 1
-        assert effort.candidates_by_round == (16,)
+        assert effort.rounds == 2
+        assert effort.candidates_by_round == (16, 17)
         assert effort.signals is not None
         assert effort.signals.top_score == pytest.approx(0.90, abs=0.005)
-        assert len(log.calls) == 1
+        assert len(log.calls) == 2
+        assert strong_text not in log.calls[0]["memory_texts"]
+        assert strong_text in log.calls[1]["memory_texts"]
         assert any(strong_text in hit.text for group in delivered for hit in group.hits)
+        assert [call["memory_recoverable"] for call in log.calls] == [True, False]
 
     asyncio.run(scenario())
 
@@ -450,7 +472,7 @@ def test_expansion_fts_only_hit_preserves_round_zero_scored_family(tmp_path, mon
     asyncio.run(scenario())
 
 
-def test_scoped_first_hit_rule_applies_per_scope_through_the_runtime(tmp_path) -> None:
+def test_scoped_first_hit_rule_applies_per_scope_through_the_runtime(tmp_path, monkeypatch) -> None:
     embedding_profile = EmbeddingProfile(
         profile_id="recall-gate-scopes", model="deterministic", dimension=2, distance="l2", normalization="unit"
     )
@@ -461,6 +483,9 @@ def test_scoped_first_hit_rule_applies_per_scope_through_the_runtime(tmp_path) -
         async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
             vectors = {_QUERY: (1.0, 0.0), "alpha beta gamma vector evidence": (0.31, math.sqrt(1 - 0.31**2))}
             return EmbeddingResult(vectors=tuple(vectors.get(text, (0.0, 1.0)) for text in map(_embedded_body, texts)))
+
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
 
     async def scenario() -> None:
         database = tmp_path / "scoped-first-hit.db"
@@ -486,6 +511,7 @@ def test_scoped_first_hit_rule_applies_per_scope_through_the_runtime(tmp_path) -
         # lower round-two floor would add, so expansion stops; the weak-top-1 reason is kept.
         assert effort.rounds == 2
         assert effort.candidates_by_round == (2, 3)
+        assert [call["memory_recoverable"] for call in log.calls] == [True, False]
         assert effort.signals is not None
         assert effort.signals.scored_families == 1
         assert effort.signals.top_score == pytest.approx(0.31, abs=0.005)

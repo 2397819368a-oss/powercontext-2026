@@ -26,7 +26,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.inference import InferenceUsage
-from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_STATES_TABLE
+from powercontext.builtin.persistence.atomic_memory import atomic_memory_state_expression
 from powercontext.builtin.persistence.database import SELECTION_BATCH_SIZE
 from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentError
 from powercontext.builtin.persistence.tables import (
@@ -157,18 +157,9 @@ class StatisticsRepository:
             # SQL so neither content nor lineage is expanded in the runtime.
             for scope, memory_kind, state, total in (
                 await connection.execute(
-                    select(
-                        ATOMIC_MEMORY_STATES_TABLE.c.scope_id, kind, ATOMIC_MEMORY_STATES_TABLE.c.state, func.count()
-                    )
+                    select(ARTIFACT_HEADS_TABLE.c.scope_id, kind, atomic_memory_state_expression(), func.count())
                     .select_from(
-                        ATOMIC_MEMORY_STATES_TABLE.join(
-                            ARTIFACT_HEADS_TABLE,
-                            and_(
-                                ARTIFACT_HEADS_TABLE.c.scope_id == ATOMIC_MEMORY_STATES_TABLE.c.scope_id,
-                                ARTIFACT_HEADS_TABLE.c.artifact_id == ATOMIC_MEMORY_STATES_TABLE.c.artifact_id,
-                                ARTIFACT_HEADS_TABLE.c.family == "atomic-memory",
-                            ),
-                        ).join(
+                        ARTIFACT_HEADS_TABLE.join(
                             ARTIFACTS_TABLE,
                             and_(
                                 ARTIFACTS_TABLE.c.scope_id == ARTIFACT_HEADS_TABLE.c.scope_id,
@@ -178,9 +169,9 @@ class StatisticsRepository:
                             ),
                         )
                     )
-                    .where(ATOMIC_MEMORY_STATES_TABLE.c.scope_id.in_(batch))
-                    .group_by(ATOMIC_MEMORY_STATES_TABLE.c.scope_id, kind, ATOMIC_MEMORY_STATES_TABLE.c.state)
-                    .order_by(ATOMIC_MEMORY_STATES_TABLE.c.scope_id, kind, ATOMIC_MEMORY_STATES_TABLE.c.state)
+                    .where(ARTIFACT_HEADS_TABLE.c.scope_id.in_(batch), ARTIFACT_HEADS_TABLE.c.family == "atomic-memory")
+                    .group_by(ARTIFACT_HEADS_TABLE.c.scope_id, kind, atomic_memory_state_expression())
+                    .order_by(ARTIFACT_HEADS_TABLE.c.scope_id, kind, atomic_memory_state_expression())
                 )
             ).all():
                 memories[str(scope)].append((str(memory_kind), str(state), int(total)))

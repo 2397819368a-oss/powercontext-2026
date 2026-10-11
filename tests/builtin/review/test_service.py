@@ -85,6 +85,9 @@ class _FailingExperienceIndex:
     async def initialize(self, _connection: AsyncConnection, /) -> None:
         pass
 
+    async def remove(self, _connection: AsyncConnection, _scope_id: str, _artifact_id: str, /) -> None:
+        raise _InjectedExperienceProjectionError
+
     async def replace(
         self,
         _connection: AsyncConnection,

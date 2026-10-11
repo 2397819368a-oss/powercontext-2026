@@ -163,7 +163,29 @@ def test_apply_and_rebuild_retain_writable_sqlite_initialization(tmp_path, monke
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        assert {"pc_atomic_memory_states", "pc_atomic_memory_current", "pc_atomic_memory_current_fts"} <= tables
+        assert {"pc_atomic_memory_current", "pc_atomic_memory_current_fts"} <= tables
+        assert "pc_atomic_memory_states" not in tables
+
+
+@pytest.mark.parametrize("action", ["plan", "verify"])
+def test_inspection_rejects_unreleased_atomic_state_table_without_writes(
+    tmp_path, monkeypatch, maintenance_cli, action
+):
+    database = tmp_path / "unreleased.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE pc_atomic_memory_states(artifact_id TEXT, state TEXT)")
+        connection.execute("INSERT INTO pc_atomic_memory_states VALUES ('retained', 'merged')")
+        connection.commit()
+    original = database.read_bytes()
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", f"sqlite+aiosqlite:///{database}")
+
+    result = CliRunner().invoke(maintenance_cli, ["server", "atomic-memory-migrate", "--action", action])
+
+    assert result.exit_code == 1, result.output
+    report = json.loads(result.output)
+    assert report["ready"] is False
+    assert any("unsupported unreleased" in error and "pc_atomic_memory_states" in error for error in report["errors"])
+    assert database.read_bytes() == original
 
 
 def test_obsolete_development_projection_requires_explicit_rebuild(tmp_path, monkeypatch, maintenance_cli):
@@ -192,7 +214,6 @@ def test_obsolete_development_projection_requires_explicit_rebuild(tmp_path, mon
             for name in [
                 "pc_artifacts",
                 "pc_artifact_heads",
-                "pc_atomic_memory_states",
                 "pc_access_owners",
                 "pc_access_relationships",
             ]

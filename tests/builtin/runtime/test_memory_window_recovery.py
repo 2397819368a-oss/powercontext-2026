@@ -21,8 +21,6 @@ import pytest
 
 from powercontext.builtin.artifacts.atomic_memory.extraction import AtomicMemoryCandidate, AtomicMemoryExtractionOutput
 from powercontext.builtin.inference import GenerationResult, InferenceTimeoutError, InferenceUnavailableError
-from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_TABLES
-from powercontext.builtin.persistence.schema import create_tables
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.runtime.composition import _initialize_atomic_memory_authority
@@ -58,7 +56,6 @@ async def _ready_contexts(profile, **kwargs):
     contexts = RelationalContexts(database=profile.database, **kwargs)
     async with profile.database.transaction() as connection:
         await _initialize_atomic_memory_authority(connection)
-        await create_tables(connection, ATOMIC_MEMORY_TABLES)
         await contexts.atomic_memory.index.initialize(connection)
     return contexts
 

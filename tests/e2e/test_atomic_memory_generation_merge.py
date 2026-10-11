@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryCandidate,
     AtomicMemoryEvidence,
@@ -467,5 +469,54 @@ def test_source_flush_automatically_merges_existing_memories_and_preserves_histo
             assert tuple(hit.hit.artifact_ref for hit in (await memory.search("Database rollout")).hits) == (
                 merged.ref,
             )
+
+    asyncio.run(scenario())
+
+
+def test_failed_merge_projection_rolls_back_entire_source_window_and_recomputes(tmp_path: Path, monkeypatch) -> None:
+    pipeline = AtomicMemoryGenerationPipeline(
+        extractor=_PolicyExtractor(), reconciler=_PolicyReconciler(), estimator=character_token_estimator()
+    )
+    config = BuiltinConfig(
+        database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'merge-rollback.db'}"),
+        runtime=RuntimeConfig(atomic_memory_related_mode="fts"),
+    )
+
+    async def scenario() -> None:
+        async with open_builtin_contexts(config, candidate_pipeline=pipeline) as contexts:
+            context = await contexts.get(SCOPE)
+            application = contexts.atomic_memory
+            memory = application.for_scope(SCOPE)
+            for source_id, text in (("canary-rule", CANARY), ("pause-rule", PAUSE)):
+                await contexts.records.capture_source(SCOPE, "content", source_id, text, {})
+                await context.triggers.flush(limit=1)
+            originals = (await memory.list()).items
+            await contexts.records.capture_source(SCOPE, "content", "consolidate-rules", CONSOLIDATION, {})
+            remove = application.publisher.remove
+
+            async def fail_projection(connection, scope_id, artifact_id):
+                await remove(connection, scope_id, artifact_id)
+                if artifact_id == originals[-1].ref.artifact_id:
+                    raise RuntimeError("projection publication failed")  # noqa: TRY003
+
+            with monkeypatch.context() as patch:
+                patch.setattr(application.publisher, "remove", fail_projection)
+                with pytest.raises(RuntimeError, match="projection publication failed"):
+                    await context.triggers.flush(limit=1)
+            assert (await context.triggers.cursor()).sequence == 2
+            assert (await memory.list(states=("active", "forgotten", "merged", "retired"))).items == originals
+            assert {
+                (hit.hit.artifact_ref.artifact_id, hit.hit.artifact_ref.revision)
+                for hit in (await memory.search("Database rollout")).hits
+            } == {(original.ref.artifact_id, original.ref.revision) for original in originals}
+            retry = await context.triggers.flush(limit=1)
+            assert retry.previous_cursor == 2 and retry.current_cursor == 3
+            (result,) = (await memory.list()).items
+            assert result.artifact.content.text == POLICY
+            assert result.artifact.lineage.sources == (SourceRef(source_type="content", source_id="consolidate-rules"),)
+            for original in originals:
+                frozen = await memory.get(original.ref.artifact_id)
+                assert frozen.state.merged_into_id == result.ref.artifact_id
+                assert frozen.artifact == original.artifact
 
     asyncio.run(scenario())

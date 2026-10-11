@@ -30,7 +30,6 @@ from powercontext.builtin.artifacts.experience import Experience
 from powercontext.builtin.artifacts.handoff import Handoff
 from powercontext.builtin.artifacts.skill import Skill
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
-from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_STATES_TABLE
 from powercontext.builtin.persistence.experience_index import ExperienceIndex, NoExperienceIndex
 from powercontext.builtin.persistence.family_management import (
     ExperienceManagementWriter,
@@ -448,8 +447,20 @@ def test_artifact_create_is_atomic_and_binds_its_system_source() -> None:
                 }
                 lineage = (await connection.execute(select(ARTIFACT_LINEAGE_SOURCES_TABLE))).mappings().one()
                 assert lineage["ordinal"] == 0
-                state = (await connection.execute(select(ATOMIC_MEMORY_STATES_TABLE))).mappings().one()
-                assert (state["artifact_id"], state["state"], state["state_version"]) == ("mem-1", "active", 0)
+                state = (
+                    (
+                        await connection.execute(
+                            select(ARTIFACT_HEADS_TABLE).where(ARTIFACT_HEADS_TABLE.c.family == "atomic-memory")
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                assert (state["artifact_id"], state["lifecycle_state"], state["governance_generation"]) == (
+                    "mem-1",
+                    "active",
+                    0,
+                )
                 projection = (await connection.execute(select(contexts.atomic_memory.index.table))).mappings().one()
                 assert (projection["kind"], projection["text"]) == ("preference", "用户偏好使用中文回答")
                 assert projection["searchable_text"]

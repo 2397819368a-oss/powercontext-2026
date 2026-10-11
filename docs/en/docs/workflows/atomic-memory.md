@@ -145,10 +145,14 @@ Restore directly through `POST /v1/atomic-memory/restorations`:
 {"scope_id": "S", "target": {"artifact_id": "B"}}
 ```
 
-Restoring forgotten content makes it active. Restoring an already active memory without a revision returns unchanged.
+Restoring forgotten content makes it active. Restoring an already active memory without a selected revision returns
+`changed: false` and appends no revision.
 Restoring a merged input undoes the later merges that froze it. For A+B→C followed by C+D→E, restoring B makes
 A, B and D active and retires C and E. Ordinary downstream Artifacts and Source cursors are not rolled back.
-Supplying `target.revision` saves that historical content as a new revision of the target.
+Every memory actually restored or retired appends a revision under its existing Artifact identity, numbered as its current
+revision plus one. Restored inputs use their frozen content; supplying `target.revision` uses that historical content for the
+target's new revision. Existing revisions and the original merge relationships remain intact, and exact historical reads
+continue to return the original content. Current reads and search follow the restored revisions.
 
 Inspect the impact first through `POST /v1/atomic-memory/restoration-previews`:
 
@@ -170,8 +174,19 @@ After inspecting it, send the original token to restorations with the same princ
 ```
 
 Success returns `changed`, exact resulting `restored` references, `retired` and `undo_merge_results`.
+When `changed: true`, both `restored` and `retired` reference the newly appended revisions of the objects actually changed.
+A no-op returns `changed: false` and retains the current primary Artifact reference in `restored`, without appending a revision.
 To undo the merge that created C, use `operation: "undo_merge"` and `target: {"artifact_id": "C"}`.
 That operation cannot also select a content revision.
+
+The public Python runtime can read the exact historical group result using the operation's primary new revision:
+
+```python
+outcome = await runtime.artifact_merge.for_scope("S", "atomic-memory").restoration_outcome("B", revision=2)
+```
+
+Replace `2` with the primary revision produced by that operation. The method returns `None` if that revision has no stored
+restoration outcome and requires read permission for every affected Artifact.
 
 | Error | HTTP status | Action |
 | --- | --- | --- |
@@ -182,7 +197,7 @@ That operation cannot also select a content revision.
 | `atomic_memory_changed` | 409 | Read the changed content/state before deciding to retry |
 | `invalid_memory_relation` | 409 | Investigate inconsistent stored relationships |
 
-Restore and merge have no `idempotency_key` or durable receipt for replaying an earlier response. A direct restoration
+Restore and merge have no `idempotency_key` and do not automatically replay an earlier response. A direct restoration
 interprets the relationships current on each invocation; repeating it after another merge can undo that newer merge.
 Replaying a successful request with a token can return `preview_stale`. If the connection fails during commit, inspect
 current states before deciding to preview again. The Python SDK does not blindly retry writes with an unknown outcome.

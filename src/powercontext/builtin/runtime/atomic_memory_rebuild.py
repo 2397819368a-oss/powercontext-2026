@@ -42,8 +42,10 @@ from powercontext.builtin.persistence.atomic_memory_index import (
     load_atomic_memory_tags,
 )
 from powercontext.builtin.persistence.atomic_memory_index_schema import ATOMIC_MEMORY_PROJECTION_FORMAT
-from powercontext.builtin.persistence.atomic_memory_readiness import atomic_memory_readiness_issues
-from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_STATES_TABLE
+from powercontext.builtin.persistence.atomic_memory_readiness import (
+    atomic_memory_readiness_issues,
+    ensure_supported_atomic_memory_schema,
+)
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE
@@ -57,11 +59,11 @@ class AtomicMemoryProjectionRebuildReport(BaseModel):
 
 
 async def _require_authority(connection: AsyncConnection) -> None:
+    await ensure_supported_atomic_memory_schema(connection)
     tables = set(await connection.run_sync(lambda sync: inspect(sync).get_table_names()))
     required = {
         "pc_artifact_heads",
         "pc_artifacts",
-        "pc_atomic_memory_states",
         "pc_artifact_tags",
         "pc_access_owners",
         "pc_access_relationships",
@@ -74,20 +76,7 @@ async def _require_authority(connection: AsyncConnection) -> None:
     issues = await atomic_memory_readiness_issues(connection, tables)
     if issues:
         raise AtomicMemoryIndexError("migration-pending", "Atomic Memory migration is not ready: " + "; ".join(issues))
-    heads, states = ARTIFACT_HEADS_TABLE, ATOMIC_MEMORY_STATES_TABLE
-    relation = and_(heads.c.scope_id == states.c.scope_id, heads.c.artifact_id == states.c.artifact_id)
-    missing_state = await connection.scalar(
-        select(heads.c.artifact_id)
-        .where(heads.c.family == AtomicMemory.family, ~exists(select(states.c.artifact_id).where(relation)))
-        .limit(1)
-    )
-    missing_head = await connection.scalar(
-        select(states.c.artifact_id)
-        .where(~exists(select(heads.c.artifact_id).where(relation, heads.c.family == AtomicMemory.family)))
-        .limit(1)
-    )
-    if missing_state is not None or missing_head is not None:
-        raise AtomicMemoryIndexError("authority-orphan", "Atomic Memory has an orphan head or Family state")
+    heads = ARTIFACT_HEADS_TABLE
     artifacts = ARTIFACTS_TABLE
     identity = and_(
         artifacts.c.scope_id == heads.c.scope_id,
@@ -139,21 +128,14 @@ async def _record(
 
 def _obsolete_current(index: AtomicMemoryIndex):
     current = index.table
-    states, heads = ATOMIC_MEMORY_STATES_TABLE, ARTIFACT_HEADS_TABLE
+    heads = ARTIFACT_HEADS_TABLE
     return ~exists(
-        select(states.c.artifact_id)
-        .join(
-            heads,
-            and_(
-                heads.c.scope_id == states.c.scope_id,
-                heads.c.artifact_id == states.c.artifact_id,
-                heads.c.family == AtomicMemory.family,
-            ),
-        )
-        .where(
-            states.c.scope_id == current.c.scope_id,
-            states.c.artifact_id == current.c.artifact_id,
-            states.c.state == "active",
+        select(heads.c.artifact_id).where(
+            heads.c.scope_id == current.c.scope_id,
+            heads.c.artifact_id == current.c.artifact_id,
+            heads.c.family == AtomicMemory.family,
+            heads.c.lifecycle_state == "active",
+            heads.c.merged_into_id.is_(None),
         )
     )
 

@@ -130,7 +130,53 @@ def test_sqlite_startup_rejects_unmigrated_memory_with_legacy_artifact_head_colu
                 connection.execute("SELECT COUNT(*) FROM pc_artifacts WHERE family = 'atomic-memory'").fetchone()[0]
                 == 0
             )
-            assert connection.execute("SELECT COUNT(*) FROM pc_atomic_memory_states").fetchone()[0] == 0
+            assert (
+                connection.execute("SELECT name FROM sqlite_master WHERE name = 'pc_atomic_memory_states'").fetchone()
+                is None
+            )
             assert connection.execute("SELECT COUNT(*) FROM pc_atomic_memory_current").fetchone()[0] == 0
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("entrypoint", ["startup", "apply", "authority"])
+def test_unreleased_atomic_state_table_is_rejected_without_data_loss(tmp_path: Path, entrypoint: str) -> None:
+    database = tmp_path / "unreleased.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE pc_atomic_memory_states(artifact_id TEXT, state TEXT)")
+        connection.execute("INSERT INTO pc_atomic_memory_states VALUES ('retained', 'merged')")
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")
+
+    async def scenario() -> None:
+        with pytest.raises(AtomicMemoryMigrationError, match=r"unsupported unreleased.*pc_atomic_memory_states"):
+            if entrypoint == "startup":
+                async with open_builtin_contexts(BuiltinConfig(database=config)):
+                    pytest.fail("Unreleased Atomic Memory authority must be rejected")
+            else:
+                from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
+                    apply_atomic_memory_migration,
+                    assert_atomic_memory_migration_ready,
+                    verify_atomic_memory_migration_authority,
+                )
+                from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
+
+                async with SQLiteProfile.open(config, tables=()) as profile:
+                    if entrypoint == "apply":
+                        await apply_atomic_memory_migration(
+                            profile.database, SQLiteAtomicMemoryIndex(), maintenance_confirmed=True
+                        )
+                    else:
+                        async with profile.database.transaction() as connection:
+                            report = await verify_atomic_memory_migration_authority(connection)
+                            assert not report.ready
+                            assert any("unsupported unreleased" in error for error in report.errors)
+                            await assert_atomic_memory_migration_ready(connection)
+
+    asyncio.run(scenario())
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT * FROM pc_atomic_memory_states").fetchall() == [("retained", "merged")]
+        current = connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'pc_atomic_memory_current'"
+        ).fetchone()
+        if current is not None:
+            assert connection.execute("SELECT COUNT(*) FROM pc_atomic_memory_current").fetchone()[0] == 0

@@ -40,7 +40,7 @@ from typing import Any, ClassVar, Literal
 
 import rfc8785
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
-from sqlalchemy import BigInteger, CheckConstraint, Column, Index, MetaData, Table, text
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import Artifact
@@ -57,22 +57,23 @@ from powercontext.builtin.persistence.atomic_memory_index import (
 from powercontext.builtin.persistence.atomic_memory_readiness import (
     AtomicMemoryMigrationError,
     assert_atomic_memory_migration_ready,
+    ensure_supported_atomic_memory_schema,
 )
 from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
 from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
     ARCHIVE_TABLE_NAME,
     LEGACY_CITATION_COLUMN,
     LegacyCollection,
     archive_collection,
     ensure_archive_table,
-    frozen_identity,
     load_collections,
 )
 from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
     BINDING_COLUMNS as _BINDING_COLUMNS,
 )
 from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
-    HEAD_COLUMNS as _HEAD_COLUMNS,
+    HEAD_COLUMNS as _LEGACY_HEAD_COLUMNS,
 )
 from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
     IDEMPOTENCY_COLUMNS as _IDEMPOTENCY_COLUMNS,
@@ -193,28 +194,7 @@ class _Inventory:
     collections: Mapping[tuple[str, str], LegacyCollection] = field(default_factory=dict)
 
 
-# Only the two Family tables are new. A separate metadata and fixed types keep
-# the domain conversion stable when runtime declarations evolve.
-_STATE_METADATA = MetaData()
-
-
-_STATES = Table(
-    "pc_atomic_memory_states",
-    _STATE_METADATA,
-    Column("scope_id", frozen_identity(256), primary_key=True),
-    Column("artifact_id", frozen_identity(128), primary_key=True),
-    Column("state", frozen_identity(16), nullable=False),
-    Column("state_version", BigInteger, nullable=False),
-    Column("merged_into_id", frozen_identity(128)),
-    CheckConstraint("state IN ('active', 'forgotten', 'merged', 'retired')", name="ck_pc_atomic_memory_state"),
-    CheckConstraint("state_version >= 0", name="ck_pc_atomic_memory_state_version"),
-    CheckConstraint(
-        "(state = 'merged' AND merged_into_id IS NOT NULL AND merged_into_id <> artifact_id) "
-        "OR (state <> 'merged' AND merged_into_id IS NULL)",
-        name="ck_pc_atomic_memory_merge_target",
-    ),
-)
-Index("ix_pc_atomic_memory_states_management", _STATES.c.scope_id, _STATES.c.state)
+_HEAD_COLUMNS = (*_LEGACY_HEAD_COLUMNS, "merged_into_id")
 
 _LINEAGE_ARTIFACT_COLUMNS = (
     "scope_id",
@@ -225,6 +205,7 @@ _LINEAGE_ARTIFACT_COLUMNS = (
     "upstream_family",
     "upstream_artifact_id",
     "upstream_revision",
+    "is_merge_input",
 )
 _VERSION_COLUMNS = (
     "scope_id",
@@ -327,6 +308,19 @@ _PROCESSING_COLUMNS = {
         "reason",
     },
 }
+
+
+async def _merge_schema_errors(connection: AsyncConnection, tables: set[str]) -> tuple[str, ...]:
+    missing = []
+    for table, column in (
+        ("pc_artifact_heads", "merged_into_id"),
+        ("pc_artifact_lineage_artifacts", "is_merge_input"),
+    ):
+        if table in tables:
+            columns = await connection.run_sync(lambda value, table_name=table: inspect(value).get_columns(table_name))
+            if column not in {item["name"] for item in columns}:
+                missing.append(f"{table}.{column}")
+    return () if not missing else ("Artifact merge columns require explicit upgrade: " + ", ".join(missing),)
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -870,17 +864,23 @@ async def plan_atomic_memory_migration(
 ) -> AtomicMemoryMigrationReport:
     """Scan every legacy container, entry version and legacy reference without changing data."""
 
+    try:
+        await ensure_supported_atomic_memory_schema(connection)
+    except AtomicMemoryMigrationError as error:
+        return AtomicMemoryMigrationReport(action="plan", errors=error.errors)
     inventory = await _inventory(connection)
     tables = await _tables(connection)
-    pending = len(inventory.entries)
-    if "pc_atomic_memory_states" in tables:
-        pending = 0
-        for entry in inventory.entries:
-            present = await connection.scalar(
-                text("SELECT 1 FROM pc_atomic_memory_states WHERE scope_id = :scope AND artifact_id = :id"),
-                {"scope": entry.scope_id, "id": entry.artifact_id},
-            )
-            pending += present is None
+    pending = 0
+    for entry in inventory.entries:
+        present = await connection.scalar(
+            text(
+                "SELECT 1 FROM pc_artifact_heads WHERE scope_id = :scope AND family = 'atomic-memory' "
+                "AND artifact_id = :id"
+            ),
+            {"scope": entry.scope_id, "id": entry.artifact_id},
+        )
+        pending += present is None
+    schema_errors = await _merge_schema_errors(connection, tables)
     reference_counts: dict[str, int] = {}
     reference_errors: tuple[str, ...] = ()
     if not inventory.errors:
@@ -888,7 +888,7 @@ async def plan_atomic_memory_migration(
             dict(inventory.collections), dict(decisions or {}), connection=connection
         )
     verification = await verify_atomic_memory_migration(connection, index=index) if pending == 0 else None
-    errors = (inventory.errors if verification is None else verification.errors) + reference_errors
+    errors = (inventory.errors + schema_errors if verification is None else verification.errors) + reference_errors
     return AtomicMemoryMigrationReport(
         action="plan",
         ready=verification is not None and verification.ready and not reference_errors,
@@ -972,6 +972,7 @@ async def _insert_lineage(connection: AsyncConnection, entry: _Entry, row: Mappi
                 "upstream_family": ref["family"],
                 "upstream_artifact_id": ref["artifact_id"],
                 "upstream_revision": ref["revision"],
+                "is_merge_input": False,
             },
         )
 
@@ -992,12 +993,14 @@ async def _imported_lineage(
     refs = await _rows(
         connection,
         "pc_artifact_lineage_artifacts",
-        ("ordinal", "upstream_family", "upstream_artifact_id", "upstream_revision"),
+        ("ordinal", "upstream_family", "upstream_artifact_id", "upstream_revision", "is_merge_input"),
         f"{where} ORDER BY ordinal",
         scope=entry.scope_id,
         id=entry.artifact_id,
         revision=revision,
     )
+    if any(item["is_merge_input"] for item in refs):
+        raise AtomicMemoryMigrationError((f"{entry.entry_id}@{revision}: imported exact evidence differs",))
     if [item["ordinal"] for item in sources] != list(range(len(sources))) or [item["ordinal"] for item in refs] != list(
         range(len(refs))
     ):
@@ -1051,9 +1054,7 @@ async def _history_issues(connection: AsyncConnection, entry: _Entry, *, repair:
     return errors
 
 
-async def _head_and_state(
-    connection: AsyncConnection, entry: _Entry
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+async def _head(connection: AsyncConnection, entry: _Entry) -> dict[str, Any] | None:
     heads = await _rows(
         connection,
         "pc_artifact_heads",
@@ -1062,22 +1063,26 @@ async def _head_and_state(
         scope=entry.scope_id,
         id=entry.artifact_id,
     )
-    states = await _rows(
-        connection,
-        "pc_atomic_memory_states",
-        ("scope_id", "artifact_id", "state", "state_version", "merged_into_id"),
-        "WHERE scope_id = :scope AND artifact_id = :id",
-        scope=entry.scope_id,
-        id=entry.artifact_id,
+    return None if not heads else heads[0]
+
+
+def _head_state(head: Mapping[str, Any]) -> str:
+    lifecycle = head["lifecycle_state"]
+    target = head["merged_into_id"]
+    _require(lifecycle in {"active", "deprecated", "retired"}, "invalid Atomic Memory lifecycle")
+    _require(
+        target is None or (lifecycle == "deprecated" and target != head["artifact_id"]),
+        "invalid merge destination",
     )
-    return (None if not heads else heads[0], None if not states else states[0])
+    _require(head["replacement_artifact_id"] is None, "Atomic Memory has an unsupported governance replacement")
+    return "merged" if target is not None else "forgotten" if lifecycle == "deprecated" else lifecycle
 
 
 async def _import_entry(connection: AsyncConnection, entry: _Entry) -> bool:
-    head, state = await _head_and_state(connection, entry)
+    head = await _head(connection, entry)
     if head is not None:
         errors = await _history_issues(connection, entry, repair=True)
-        if errors or state is None or head["revision"] < entry.tail["version"]:
+        if errors or head["revision"] < entry.tail["version"]:
             raise AtomicMemoryMigrationError(tuple(errors) or (f"{entry.entry_id}: existing target is incomplete",))
         # A completed import may since have been revised, merged or retagged.
         # Its head and mutable metadata never return to the legacy snapshot.
@@ -1088,10 +1093,8 @@ async def _import_entry(connection: AsyncConnection, entry: _Entry) -> bool:
         ),
         {"scope": entry.scope_id, "id": entry.artifact_id},
     )
-    if existing or state is not None:
-        raise AtomicMemoryMigrationError((
-            f"{entry.entry_id}: target has orphan content or state; no overwrite allowed",
-        ))
+    if existing:
+        raise AtomicMemoryMigrationError((f"{entry.entry_id}: target has orphan content; no overwrite allowed",))
     for row in entry.versions:
         await _insert(
             connection,
@@ -1120,17 +1123,6 @@ async def _import_entry(connection: AsyncConnection, entry: _Entry) -> bool:
             "lifecycle_state": summary,
             "replacement_artifact_id": None,
             "governance_generation": entry.state_version,
-        },
-    )
-    await _insert(
-        connection,
-        "pc_atomic_memory_states",
-        ("scope_id", "artifact_id", "state", "state_version", "merged_into_id"),
-        {
-            "scope_id": entry.scope_id,
-            "artifact_id": entry.artifact_id,
-            "state": entry.state,
-            "state_version": entry.state_version,
             "merged_into_id": None,
         },
     )
@@ -1211,6 +1203,8 @@ async def apply_atomic_memory_migration(  # noqa: C901 - One ordered offline mai
         raise AtomicMemoryMigrationError(("apply requires stopped old writers and --maintenance-confirmed",))
     started = perf_counter()
     async with database.transaction() as connection:
+        await ensure_supported_atomic_memory_schema(connection)
+    async with database.transaction() as connection:
         inventory = await _inventory(connection)
         reference_errors: tuple[str, ...] = ()
         if not inventory.errors:
@@ -1225,7 +1219,9 @@ async def apply_atomic_memory_migration(  # noqa: C901 - One ordered offline mai
             processing_snapshot_hash=inventory.processing_snapshot_hash,
         )
     async with database.transaction() as connection:
-        await connection.run_sync(lambda value: _STATE_METADATA.create_all(value, tables=[_STATES], checkfirst=True))
+        await ensure_supported_atomic_memory_schema(connection)
+        if "pc_artifact_heads" in await _tables(connection):
+            await ensure_artifact_head_searchable_text(connection)
         await ensure_archive_table(connection)
         rebuilt_projection = await drop_obsolete_atomic_memory_projection(connection, index.table)
         await index.initialize(connection)
@@ -1245,7 +1241,7 @@ async def apply_atomic_memory_migration(  # noqa: C901 - One ordered offline mai
     migrated_grant_receipts = 0
     for entry in archived_inventory.entries:
         async with database.transaction() as connection:
-            head, _state = await _head_and_state(connection, entry)
+            head = await _head(connection, entry)
         prepared: PreparedAtomicMemoryProjection | None = None
         if head is None and entry.state == "active":
             prepared = await publisher.prepare(_content(entry.tail))
@@ -1374,15 +1370,22 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
     collections_removed: bool = True,
 ) -> AtomicMemoryMigrationReport:
 
+    try:
+        await ensure_supported_atomic_memory_schema(connection)
+    except AtomicMemoryMigrationError as error:
+        return AtomicMemoryMigrationReport(action="verify", errors=error.errors)
     inventory = await _inventory(connection)
     errors = list(inventory.errors)
     tables = await _tables(connection)
     errors.extend(await residual_issues(connection, tables, thorough=thorough, collections_removed=collections_removed))
-    required = {"pc_atomic_memory_states"}
+    schema_errors = await _merge_schema_errors(connection, tables)
+    required = {"pc_artifact_heads", "pc_artifact_lineage_artifacts"}
     if check_projection:
         required.add("pc_atomic_memory_current")
-    if inventory.entries and not required <= tables:
-        errors.append("Atomic Memory Family state/current tables are absent")
+    if schema_errors or (inventory.entries and not required <= tables):
+        errors.extend(schema_errors)
+        if inventory.entries and not required <= tables:
+            errors.append("Atomic Memory head/lineage/current tables are absent")
         return AtomicMemoryMigrationReport(
             action="verify",
             errors=tuple(errors),
@@ -1396,26 +1399,18 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
         previous_errors = len(errors)
         try:
             errors.extend(f"{prefix}: {issue}" for issue in await _history_issues(connection, entry))
-            head, state = await _head_and_state(connection, entry)
-            _require(head is not None and state is not None, "mapped head or Family state is missing")
-            if head is None or state is None:
-                raise ValueError("mapped head or Family state is missing")  # noqa: TRY003, TRY301
+            head = await _head(connection, entry)
+            _require(head is not None, "mapped head is missing")
+            if head is None:
+                raise ValueError("mapped head is missing")  # noqa: TRY003, TRY301
+            state = _head_state(head)
             _require(head["revision"] >= entry.tail["version"], "mapped head is behind imported history")
             _require(
-                state["state_version"] >= entry.state_version, "mapped lifecycle generation is behind legacy history"
+                head["governance_generation"] >= entry.state_version,
+                "mapped lifecycle generation is behind legacy history",
             )
-            if head["revision"] == entry.tail["version"] and state["state_version"] == entry.state_version:
-                _require(state["state"] == entry.state, "initial mapped lifecycle differs")
-            summary = (
-                "active" if state["state"] == "active" else "retired" if state["state"] == "retired" else "deprecated"
-            )
-            _require(
-                head["lifecycle_state"] == summary
-                and head["governance_generation"] == state["state_version"]
-                and head["replacement_artifact_id"] is None,
-                "public governance summary disagrees with Family state",
-            )
-            _require((state["state"] == "merged") == (state["merged_into_id"] is not None), "invalid merge destination")
+            if head["revision"] == entry.tail["version"] and head["governance_generation"] == entry.state_version:
+                _require(state == entry.state, "initial mapped lifecycle differs")
             legacy_bindings = await _rows(
                 connection,
                 "pc_access_relationships",
@@ -1455,7 +1450,7 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
                 .mappings()
                 .one_or_none()
             )
-            if state["state"] != "active":
+            if state != "active":
                 _require(projection is None, "nonactive memory remains in current projection")
             else:
                 _require(projection is not None, "active memory has no current projection")
@@ -1475,7 +1470,7 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
                 content = _decode(content_row["content"])
                 _require(
                     projection["revision"] == head["revision"]
-                    and projection["state_version"] == state["state_version"],
+                    and projection["state_version"] == head["governance_generation"],
                     "projection versions differ",
                 )
                 _require(

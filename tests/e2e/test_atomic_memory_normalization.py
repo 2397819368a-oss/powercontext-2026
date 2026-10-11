@@ -245,7 +245,7 @@ def test_atomic_memory_rejects_new_text_that_expands_past_limit_without_writes(t
                 for table in (
                     "pc_artifacts",
                     "pc_artifact_heads",
-                    "pc_atomic_memory_states",
+                    "pc_artifact_lineage_artifacts",
                     "pc_atomic_memory_current",
                 )
             }

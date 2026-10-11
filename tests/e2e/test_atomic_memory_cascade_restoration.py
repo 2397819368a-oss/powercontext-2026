@@ -135,23 +135,36 @@ def test_one_request_unwinds_successive_merges_to_exact_frozen_inputs(tmp_path: 
             assert result.changed
             assert result.undo_merge_results == (e.ref.artifact_id, c.ref.artifact_id)
             assert {_ref_identity(ref) for ref in result.restored} == {
-                _ref_identity(record.ref) for record in (a, b, d)
+                (record.ref.family, record.ref.artifact_id, record.ref.revision + 1) for record in (a, b, d)
             }
-            assert {_ref_identity(ref) for ref in result.retired} == {_ref_identity(c.ref), _ref_identity(e.ref)}
+            assert {_ref_identity(ref) for ref in result.retired} == {
+                (record.ref.family, record.ref.artifact_id, record.ref.revision + 1) for record in (c, e)
+            }
             assert {record.ref.artifact_id for record in result.records} == {
                 record.ref.artifact_id for record in (a, b, c, d, e)
             }
+            current_records = {}
+            restored_inputs = []
             for frozen in (a, b, d):
                 restored = await memory.get(frozen.ref.artifact_id)
-                assert restored.artifact == frozen.artifact
+                assert restored.ref.revision == frozen.ref.revision + 1
+                assert restored.artifact.content == frozen.artifact.content.without_creation()
+                assert restored.artifact.lineage.artifacts == (frozen.ref,)
                 assert restored.state.state == "active"
                 assert restored.state.merged_into_id is None
+                current_records[restored.ref.artifact_id] = restored
+                restored_inputs.append(restored)
             for merged in (c, e):
                 retired = await memory.get(merged.ref.artifact_id)
-                assert retired.artifact == merged.artifact
+                assert retired.ref.revision == merged.ref.revision + 1
+                assert retired.artifact.content == merged.artifact.content.without_creation()
+                assert retired.artifact.lineage.artifacts == (merged.ref,)
                 assert retired.state.state == "retired"
                 assert retired.state.merged_into_id is None
-            await _assert_active_visibility(memory, (a, b, d))
+                current_records[retired.ref.artifact_id] = retired
+            assert {record.ref.artifact_id: record for record in result.records} == current_records
+            assert result.primary == current_records[result.primary_artifact_id]
+            await _assert_active_visibility(memory, tuple(restored_inputs))
             await _assert_immutable_history(contexts, chain)
 
     asyncio.run(scenario())
@@ -181,9 +194,11 @@ def test_restoring_merged_result_history_only_unwinds_its_downstream_merge(tmp_p
             assert result.undo_merge_results == (e.ref.artifact_id,)
             assert {_ref_identity(ref) for ref in result.restored} == {
                 _ref_identity(restored.ref),
-                _ref_identity(d.ref),
+                (d.ref.family, d.ref.artifact_id, d.ref.revision + 1),
             }
-            assert result.retired == (e.ref,)
+            assert result.retired == (
+                ArtifactRef(family=e.ref.family, artifact_id=e.ref.artifact_id, revision=e.ref.revision + 1),
+            )
             assert {record.ref.artifact_id for record in result.records} == {
                 record.ref.artifact_id for record in (c, d, e)
             }
@@ -193,13 +208,21 @@ def test_restoring_merged_result_history_only_unwinds_its_downstream_merge(tmp_p
                 assert current.state.state == "merged"
                 assert current.state.merged_into_id == c.ref.artifact_id
             current_d = await memory.get(d.ref.artifact_id)
-            assert current_d.artifact == d.artifact
+            assert current_d.ref.revision == d.ref.revision + 1
+            assert current_d.artifact.content == d.artifact.content.without_creation()
+            assert current_d.artifact.lineage.artifacts == (d.ref,)
             assert current_d.state.state == "active"
             assert current_d.state.merged_into_id is None
             retired = await memory.get(e.ref.artifact_id)
-            assert retired.artifact == e.artifact
+            assert retired.ref.revision == e.ref.revision + 1
+            assert retired.artifact.content == e.artifact.content.without_creation()
+            assert retired.artifact.lineage.artifacts == (e.ref,)
             assert retired.state.state == "retired"
-            await _assert_active_visibility(memory, (restored, d))
+            assert retired.state.merged_into_id is None
+            assert {record.ref.artifact_id: record for record in result.records} == {
+                record.ref.artifact_id: record for record in (restored, current_d, retired)
+            }
+            await _assert_active_visibility(memory, (restored, current_d))
             await _assert_immutable_history(contexts, chain)
 
     asyncio.run(scenario())

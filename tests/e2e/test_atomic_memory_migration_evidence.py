@@ -271,6 +271,8 @@ def test_legacy_entry_write_source_retains_target_and_stays_out_of_projection(mi
 def test_merge_keeps_migrated_input_history_without_unrelated_collection_sources(migrated) -> None:
     async def scenario() -> None:
         async with open_builtin_contexts(BuiltinConfig(database=migrated[0])) as contexts:
+            async with contexts.database.transaction() as connection:
+                imported = await _imported_snapshot(connection)
             memory = contexts.atomic_memory.for_scope(SCOPE)
             alpha = await memory.get(_atomic("alpha", 2).artifact_id)
             (created,) = await contexts.records.create_atomic_memories(
@@ -284,6 +286,15 @@ def test_merge_keeps_migrated_input_history_without_unrelated_collection_sources
                 resolved = await _resolver(contexts).resolve(connection, artifacts=(merged.primary.ref,))
                 assert _projected_sources(resolved) == (A, C)
                 assert any(node.artifact == alpha.ref and node.historical for node in resolved.manifest.nodes)
+                heads = tuple((await connection.execute(select(ARTIFACT_HEADS_TABLE))).all())
+            repeated = await apply_atomic_memory_migration(
+                contexts.database, contexts.atomic_memory.index, maintenance_confirmed=True
+            )
+            assert repeated.ready, repeated.errors
+            assert repeated.counts["imported_entries"] == 0
+            async with contexts.database.transaction() as connection:
+                assert tuple((await connection.execute(select(ARTIFACT_HEADS_TABLE))).all()) == heads
+                assert await _imported_snapshot(connection) == imported
 
     asyncio.run(scenario())
 

@@ -563,11 +563,11 @@ class RelationalAtomicMemoryIndex:
         floor: AdmissionFloor,
         /,
     ) -> bool:
-        """Probe at most one eligible row admitted only by the permitted lower floor.
+        """Probe at most one eligible row gaining a channel under the lower floor.
 
         Qualification precedes LIMIT. This is an existence signal, not an invented
-        pre-admission collection count. Cross-channel admission excludes a row
-        already admitted by either channel, even if the delivered pool was capped.
+        pre-admission collection count. Gaining a second channel can change fusion
+        order and surface a row outside the delivered pool's cap.
         The same current row carries its body, vectors and content filters.
         """
 
@@ -612,10 +612,10 @@ class RelationalAtomicMemoryIndex:
             recoverable.append(f"({similarity} >= :probe_lower_similarity)")
         if not recoverable:
             return False
+        new_channels = [f"({lower} AND NOT {admitted})" for admitted, lower in zip(current, recoverable, strict=True)]
         statement = text(
             "SELECT 1 FROM pc_atomic_memory_current WHERE scope_id = :scope_id "  # noqa: S608
-            f"AND ({eligibility}) AND ({' OR '.join(recoverable)}) "
-            f"AND NOT ({' OR '.join(current)}) LIMIT 1"
+            f"AND ({eligibility}) AND ({' OR '.join(new_channels)}) LIMIT 1"
         )
         if request.mode in {"vector", "hybrid"} and dialect == "mysql":
             statement = statement.bindparams(bindparam("probe_vector", type_=self.table.c.embedding.type))

@@ -138,9 +138,11 @@ Atomic Memory 将每条事实、偏好或决策保存为独立的 `atomic-memory
 {"scope_id": "S", "target": {"artifact_id": "B"}}
 ```
 
-恢复 forgotten 使其重新在役；恢复已经 active 且未指定 revision 的记忆返回未变化。
+恢复 forgotten 使其重新在役；恢复已经 active 且未指定 revision 的记忆返回 `changed: false`，不追加版本。
 恢复 merged 会撤销冻结该目标的后续合并。例如 A+B→C、C+D→E，恢复 B 会让 A、B、D 在役，C、E 退役。
-普通下游 Artifact 和 Source cursor 不随之回滚。指定 `target.revision` 时，将所选历史正文保存为目标的新 revision。
+普通下游 Artifact 和 Source cursor 不随之回滚。每个实际恢复或退役的记忆均在原 Artifact 身份下追加新 revision，
+版本号为其当前 revision 加一。恢复输入使用被冻结时的正文；指定 `target.revision` 时，目标的新版本使用所选历史正文。
+旧版本和原始合并关系保留，精确历史读取仍返回原内容；当前读取和检索跟随恢复后的新版本。
 
 先查看影响范围可调用 `POST /v1/atomic-memory/restoration-previews`：
 
@@ -162,8 +164,18 @@ operation 和 target 向 restorations 提交原 token：
 ```
 
 成功响应返回 `changed`、恢复后的精确 `restored` 引用、`retired` 和 `undo_merge_results`。
+`changed: true` 时，`restored` 和 `retired` 均引用实际变化对象所追加的新版本。
+no-op 返回 `changed: false`，`restored` 保留当前主制品的引用，不追加版本。
 若要撤销创建结果 C 的合并，改用 `operation: "undo_merge"`、`target: {"artifact_id": "C"}`；
 该操作不能同时指定内容 revision。
+
+公共 Python runtime 可以按本次操作的主新版本查询精确的整组历史结果：
+
+```python
+outcome = await runtime.artifact_merge.for_scope("S", "atomic-memory").restoration_outcome("B", revision=2)
+```
+
+将 `2` 替换为本次操作产生的主版本。该版本没有保存恢复结果时返回 `None`；读取需要所有受影响制品的读取权限。
 
 | 错误 | HTTP 状态 | 处理 |
 | --- | --- | --- |
@@ -174,7 +186,7 @@ operation 和 target 向 restorations 提交原 token：
 | `atomic_memory_changed` | 409 | 当前内容或状态已变，重新读取后决定是否重试 |
 | `invalid_memory_relation` | 409 | 关系数据不一致，需要排查存储数据 |
 
-恢复与合并没有 `idempotency_key`，不返回某次旧请求的持久回执。不带 token 的恢复按每次调用时的当前关系解释；
+恢复与合并没有 `idempotency_key`，不会自动重放某次旧请求的响应。不带 token 的恢复按每次调用时的当前关系解释；
 目标后来又被合并，重复请求可能撤销新的合并。携带 token 的成功请求重发也可能返回 `preview_stale`。
 连接在提交时中断，应先读取各对象状态确认结果，再决定是否重新预览。Python SDK 不盲目重试结果未知的写入。
 签名密钥、有效期及直接恢复重试预算见[配置](../operate/configuration.md#atomic-memory)。

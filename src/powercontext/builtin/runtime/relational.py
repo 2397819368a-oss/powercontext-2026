@@ -1108,6 +1108,7 @@ class RelationalContexts:
                             ARTIFACT_HEADS_TABLE.c.scope_id == scope,
                             ARTIFACT_HEADS_TABLE.c.family == Skill.family,
                             ARTIFACT_HEADS_TABLE.c.lifecycle_state.in_(states),
+                            ARTIFACT_HEADS_TABLE.c.merged_into_id.is_(None),
                         )
                         .order_by(ARTIFACT_HEADS_TABLE.c.artifact_id)
                         .limit(limit)

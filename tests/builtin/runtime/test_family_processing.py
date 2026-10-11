@@ -31,11 +31,9 @@ from powercontext.builtin.artifacts.experience import ExperienceCandidateInput, 
 from powercontext.builtin.inference import InferenceTimeoutError
 from powercontext.builtin.inference.models import GenerationResult, InferenceUsage
 from powercontext.builtin.inference.usage import UsageReportingStructuredGenerator
-from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_TABLES
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.processing_migration import bootstrap_processing_schema
-from powercontext.builtin.persistence.schema import create_tables
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.supervision import ArtifactProcessingFence, ArtifactProcessingLeaseRepository
 from powercontext.builtin.persistence.tables import (
@@ -143,7 +141,6 @@ async def prepare(profile, family):
     )
     async with profile.database.transaction() as connection:
         await _initialize_atomic_memory_authority(connection)
-        await create_tables(connection, ATOMIC_MEMORY_TABLES)
         await contexts.atomic_memory.index.initialize(connection)
     contexts.profiles.generator = ProfileGenerator()
     scope = (

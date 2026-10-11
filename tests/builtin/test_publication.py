@@ -45,6 +45,9 @@ class _FailingExperienceIndex:
     async def initialize(self, _connection, /) -> None:
         pass
 
+    async def remove(self, _connection, _scope_id, _artifact_id, /) -> None:
+        raise _IndexUnavailableError
+
     async def replace(self, _connection, _scope_id, _experience, /) -> None:
         raise _IndexUnavailableError
 

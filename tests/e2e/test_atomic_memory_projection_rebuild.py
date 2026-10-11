@@ -116,7 +116,7 @@ def test_public_migration_residual_blocks_startup_and_rebuild(tmp_path: Path, re
 
 @pytest.mark.parametrize(
     "corruption",
-    ["missing_state", "missing_head", "missing_head_and_state", "head_behind", "summary", "content"],
+    ["missing_head", "orphan_history", "head_behind", "content"],
 )
 def test_rebuild_rejects_damaged_current_authority_without_legacy_history(tmp_path: Path, corruption: str) -> None:
     config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'authority.db'}")
@@ -129,30 +129,24 @@ def test_rebuild_rejects_damaged_current_authority_without_legacy_history(tmp_pa
                 await connection.execute(text("DROP TABLE pc_memory_entry_heads"))
                 await connection.execute(text("DROP TABLE pc_memory_entry_versions"))
                 identity = {"scope": SCOPE, "id": _atomic("alpha", 2).artifact_id}
-                if corruption == "missing_state":
-                    statement = "DELETE FROM pc_atomic_memory_states WHERE scope_id = :scope AND artifact_id = :id"
-                elif corruption in {"missing_head", "missing_head_and_state"}:
-                    if corruption == "missing_head_and_state":
+                if corruption in {"missing_head", "orphan_history"}:
+                    if corruption == "orphan_history":
                         await connection.execute(
-                            text("DELETE FROM pc_atomic_memory_states WHERE scope_id = :scope AND artifact_id = :id"),
+                            text("DELETE FROM pc_atomic_memory_current WHERE scope_id = :scope AND artifact_id = :id"),
                             identity,
                         )
                     statement = "DELETE FROM pc_artifact_heads WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id"
                 elif corruption == "head_behind":
                     statement = "UPDATE pc_artifact_heads SET revision = 1 WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id"
-                elif corruption == "summary":
-                    statement = "UPDATE pc_artifact_heads SET governance_generation = governance_generation + 1 WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id"
                 else:
                     statement = "UPDATE pc_artifacts SET content = :bad WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id AND revision = 2"
                     identity["bad"] = b"{}"
                 await connection.execute(text(statement), identity)
                 before = (await connection.execute(select(ARTIFACTS_TABLE))).all()
             expected = {
-                "missing_state": "orphan head or Family state",
-                "missing_head": "orphan head or Family state",
-                "missing_head_and_state": "history has no head",
+                "missing_head": "history has no head",
+                "orphan_history": "history has no head",
                 "head_behind": "head does not select its latest revision",
-                "summary": "governance summary disagree",
                 "content": "invalid stored artifact payload",
             }
             with pytest.raises(

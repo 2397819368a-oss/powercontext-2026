@@ -31,12 +31,14 @@ from powercontext.artifacts import (
     ArtifactLineage,
     ArtifactRef,
 )
+from powercontext.builtin.persistence.artifact_governance import ArtifactGovernance, InvalidArtifactLifecycleError
 from powercontext.builtin.persistence.codec import dump_model, load_model, stored_bytes, validate_json_model
 from powercontext.builtin.persistence.errors import (
     IdentityMismatchError,
     InvalidPublicationLineageError,
     InvalidRepositoryArgumentError,
     RepositoryNotFoundError,
+    StoredPayloadConflictError,
 )
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
@@ -90,6 +92,12 @@ class ArtifactRepository:
 
         return frozenset(self._by_family)
 
+    @property
+    def source_repository(self) -> Any | None:
+        """Expose the composed Source repository to services recording revision provenance."""
+
+        return self._sources
+
     async def create(
         self,
         connection: AsyncConnection,
@@ -135,6 +143,105 @@ class ArtifactRepository:
             raise conflict from None
         return artifact
 
+    async def create_merge_result(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        artifact_id: str,
+        draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
+        inputs: Sequence[tuple[ArtifactRef, int]],
+        /,
+    ) -> Artifact[Any]:
+        """Create a result with explicit exact input membership; the caller freezes its inputs."""
+
+        refs = tuple(ref for ref, _ in inputs)
+        identities = {ref.artifact_id for ref in refs}
+        if (
+            len(refs) < 2
+            or len(identities) != len(refs)
+            or artifact_id in identities
+            or any(ref.family != draft.family for ref in refs)
+            or any(ref not in draft.artifacts for ref in refs)
+            or any(sum(item == ref for item in draft.artifacts) != 1 for ref in refs)
+        ):
+            raise InvalidArtifactLifecycleError("merge inputs must be distinct exact references in the result Family")  # noqa: TRY003
+        await self.lock_heads(connection, scope_id, refs)
+        for ref, generation in inputs:
+            head = (
+                (
+                    await connection.execute(
+                        select(ARTIFACT_HEADS_TABLE).where(
+                            ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
+                            ARTIFACT_HEADS_TABLE.c.family == ref.family,
+                            ARTIFACT_HEADS_TABLE.c.artifact_id == ref.artifact_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                head is None
+                or head["revision"] != ref.revision
+                or head["governance_generation"] != generation
+                or head["lifecycle_state"] != "active"
+                or head["merged_into_id"] is not None
+            ):
+                raise InvalidArtifactLifecycleError(  # noqa: TRY003
+                    "merge inputs must retain their expected active head and generation"
+                )
+        result = await self.create(connection, scope_id, artifact_id, draft)
+        await connection.execute(
+            update(ARTIFACT_LINEAGE_ARTIFACTS_TABLE)
+            .where(
+                ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.scope_id == scope_id,
+                ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.family == result.family,
+                ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.artifact_id == result.artifact_id,
+                ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.revision == 1,
+                tuple_(
+                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.upstream_family,
+                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.upstream_artifact_id,
+                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.upstream_revision,
+                ).in_(tuple((ref.family, ref.artifact_id, ref.revision) for ref in refs)),
+            )
+            .values(is_merge_input=True)
+        )
+        return result
+
+    async def merge_inputs(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        result: ArtifactRef,
+        /,
+    ) -> tuple[ArtifactRef, ...]:
+        """Read selected creation inputs in their immutable lineage ordinal order."""
+
+        if result.revision != 1:
+            return ()
+        await self.get(connection, scope_id, result)
+        rows = (
+            await connection.execute(
+                select(ARTIFACT_LINEAGE_ARTIFACTS_TABLE)
+                .where(
+                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.scope_id == scope_id,
+                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.family == result.family,
+                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.artifact_id == result.artifact_id,
+                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.revision == 1,
+                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.is_merge_input.is_(True),
+                )
+                .order_by(ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.ordinal)
+            )
+        ).mappings()
+        return tuple(
+            ArtifactRef(
+                family=str(row["upstream_family"]),
+                artifact_id=str(row["upstream_artifact_id"]),
+                revision=int(row["upstream_revision"]),
+            )
+            for row in rows
+        )
+
     async def revise(
         self,
         connection: AsyncConnection,
@@ -145,6 +252,36 @@ class ArtifactRepository:
     ) -> Artifact[Any]:
         """Commit a next revision only when ``artifact`` remains the head."""
 
+        return await self._revise(connection, scope_id, artifact, draft)
+
+    async def revise_for_restoration(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        artifact: Artifact[Any],
+        draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
+        expected: ArtifactGovernance,
+        /,
+    ) -> Artifact[Any]:
+        """Append to a frozen input under the restoration service's exact governance dependency.
+
+        The caller must apply its validated final group state in the same
+        transaction. Already retired identities remain immutable.
+        """
+
+        if expected.artifact != artifact.as_ref():
+            raise StoredPayloadConflictError("artifact-governance", (scope_id, artifact.family, artifact.artifact_id))
+        return await self._revise(connection, scope_id, artifact, draft, restoration=expected)
+
+    async def _revise(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        artifact: Artifact[Any],
+        draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
+        *,
+        restoration: ArtifactGovernance | None = None,
+    ) -> Artifact[Any]:
         _require_scope(scope_id)
         artifact_type = self._artifact_type(artifact.family)
         if type(artifact) is not artifact_type or draft.family != artifact.family:
@@ -170,6 +307,28 @@ class ArtifactRepository:
         if locked.rowcount != 1:
             current = await self.latest(connection, scope_id, artifact.family, artifact.artifact_id)
             raise RevisionConflictError(artifact, current)
+        head = (
+            (
+                await connection.execute(
+                    select(ARTIFACT_HEADS_TABLE).where(
+                        ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
+                        ARTIFACT_HEADS_TABLE.c.family == artifact.family,
+                        ARTIFACT_HEADS_TABLE.c.artifact_id == artifact.artifact_id,
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if restoration is not None and (
+            head["lifecycle_state"] != restoration.lifecycle_state.value
+            or head["merged_into_id"] != restoration.merged_into_id
+            or head["replacement_artifact_id"] != restoration.replacement_artifact_id
+            or head["governance_generation"] != restoration.governance_generation
+        ):
+            raise StoredPayloadConflictError("artifact-governance", (scope_id, artifact.family, artifact.artifact_id))
+        if head["lifecycle_state"] == "retired" or (head["merged_into_id"] is not None and restoration is None):
+            raise InvalidArtifactLifecycleError("frozen and retired Artifact identities cannot be revised")  # noqa: TRY003
 
         ref = ArtifactRef(
             family=artifact.family,

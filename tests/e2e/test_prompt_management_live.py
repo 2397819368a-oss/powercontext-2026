@@ -27,7 +27,6 @@ import pytest
 from sqlalchemy import delete, select, text
 from sqlalchemy.sql.ddl import sort_tables
 
-from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_TABLES
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.runtime import CaptureSource
@@ -100,7 +99,6 @@ async def _cleanup(contexts: RelationalContexts, scopes: list[str]) -> None:
         tables = sort_tables((
             *BUILTIN_TABLES,
             *ACCESS_TABLES,
-            *ATOMIC_MEMORY_TABLES,
             *contexts.atomic_memory.index.tables,
         ))
         scoped_tables = [table for table in tables if "scope_id" in table.c]

@@ -59,7 +59,9 @@ Validation requires versions continuous from 1, consistent predecessor IDs, cont
 manifest references. The current manifest pointer, or the last pointer before compaction, must identify
 that entry's chain tail. Unexplained absence, missing changes, duplicate identities, skipped versions and
 lagging heads block conversion. Legacy active, inactive and compacted entries become active, forgotten and
-retired respectively. Family state versions and common head governance summaries agree.
+retired respectively. Lifecycle is authoritative in `pc_artifact_heads`: these states use `lifecycle_state`
+values `active`, `deprecated` and `retired`, respectively, and newly imported heads have no `merged_into_id`.
+Atomic Memory reads the head's `governance_generation` as its `state_version`.
 
 A formal Owner on an exact legacy entry resource becomes the new memory's Owner. Without enforced access,
 an entry without an Owner migrates without one. Several Owners on one entry or an invalid Owner block
@@ -177,9 +179,9 @@ Cursors, CAS generations, high-water marks, pending/flush requests, accepted tas
 unchanged. Family `memory` and binding `memory-source-window` remain scheduling aliases. Old leases are
 invalidated and their fences advance before maintenance completes. Consumed Sources are not extracted again.
 
-Each entry's history, head, state, Owner, tags, grant conversion and current projection commit together.
+Each entry's history, head, Owner, tags, grant conversion and current projection commit together.
 Embedding preparation occurs outside the transaction. Repeat apply with the same configuration after an
-interruption. Existing targets must match the exact imported history; differing data or orphan content/state
+interruption. Existing targets must match the exact imported history; differing data or orphan content
 is rejected without overwriting authority. Subsequent revisions or lifecycle changes never cause the task
 to reset a target's head, state or tags.
 
@@ -207,7 +209,7 @@ powercontext server atomic-memory-rebuild-projection --env-file .env --maintenan
 ```
 
 This command checks that legacy objects, columns and foreign keys have been removed from public storage and
-that Atomic heads, content and states are valid. It rebuilds only active current rows and removes nonactive
+that Atomic heads, content revisions and head lifecycle data are valid. It rebuilds only active current rows and removes nonactive
 or orphan current rows. Heads, content revisions, lifecycle states, retained history and Source/processing
 progress keep their exact identities and values. Rebuilding reads neither the archive nor legacy entry tables.
 The offline migration `verify` command checks whether legacy history was imported completely; projection
@@ -254,4 +256,4 @@ A current table created during development of this branch (with copied read gran
 to no release and is rejected at initialization. Before migration completes, apply drops and recreates that
 derived table and its report asks for a projection rebuild; after migration, stop writers and run the
 projection rebuild command above. Either way only that derived table is rebuilt from retained authority;
-Artifact history, Family state and grant records are unchanged.
+Artifact history, head lifecycle data and grant records are unchanged.

@@ -24,8 +24,9 @@ from time import perf_counter
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import insert, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
+from typing_extensions import override
 
 from powercontext.artifacts import ArtifactRef, ArtifactSearchContractError, ArtifactSearchMatch
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
@@ -57,7 +58,7 @@ from powercontext.builtin.inference import (
     embed_query,
 )
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
-from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository
+from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository, atomic_memory_state_expression
 from powercontext.builtin.persistence.atomic_memory_index import (
     AtomicMemoryIndex,
     AtomicMemoryIndexError,
@@ -71,24 +72,21 @@ from powercontext.builtin.persistence.atomic_memory_index import (
     combine_atomic_memory_channels,
 )
 from powercontext.builtin.persistence.atomic_memory_index_schema import ATOMIC_MEMORY_PROJECTION_FORMAT
-from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_STATES_TABLE
 from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
-from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACT_TAGS_TABLE
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 from powercontext.builtin.persistence.tags import tag_predicate
 from powercontext.builtin.records import BaseOperationNotSupportedError, InvalidBaseAccessRequestError
-from powercontext.builtin.tags import TagFilter, normalize_tags
+from powercontext.builtin.runtime.artifact_merge import ArtifactMergeAccess, merge_artifact_tags
+from powercontext.builtin.tags import TagFilter
 
 
-class AtomicMemoryAccess:
-    """Apply the shared access service; a missing context means access control is disabled."""
+class AtomicMemoryAccess(ArtifactMergeAccess):
+    def __init__(self) -> None:
+        super().__init__("atomic-memory")
 
-    @staticmethod
-    def subject(context: ArtifactSearchExecutionContext | None) -> str:
-        principal = None if context is None else context.principal
-        return "" if principal is None else f"{principal.type}:{principal.id}"
-
+    @override
     async def authorize(
         self,
         connection: AsyncConnection,
@@ -97,35 +95,27 @@ class AtomicMemoryAccess:
         action: str,
         ref: ArtifactRef | None = None,
     ) -> None:
-        from powercontext.server.authz import AccessAction, AccessDeniedError, ResourceRef
+        # Artifact reads with deferred audit retain their snapshot-bound policy.
+        # Other decisions use the shared transaction-bound policy.
+        if (
+            action == "read"
+            and ref is not None
+            and ref.family not in {"prompt", "topic-memory"}
+            and context is not None
+            and context.access is not None
+            and context.access._deferred_decisions.get() is not None
+        ):
+            from powercontext.server.authz import AccessAction, ResourceRef
 
-        if context is None:
-            return
-        if context.access is None:
-            if not context.trusted_local:
-                raise AccessDeniedError
-            return
-        # Prompt and Topic Memory are Scope-owned and have no Artifact owner.
-        if action == "read" and (ref is None or ref.family in {"prompt", "topic-memory"}):
-            await context.access.require_scope_read(
-                context.principal, scope_id, connection=connection, context=context.audit
+            access = self._read_access(context.access, connection)
+            await access.require(
+                context.principal,
+                AccessAction.ARTIFACT_READ,
+                ResourceRef.artifact(scope_id, family=ref.family, artifact_id=ref.artifact_id),
+                context=context.audit,
             )
             return
-        # Pure reads defer audit until their snapshot closes. Mutation inspection
-        # retains transaction-bound audit so a point read cannot invalidate its later writes.
-        access = (
-            self._read_access(context.access, connection)
-            if action == "read" and context.access._deferred_decisions.get() is not None
-            else context.access.with_connection(connection)
-        )
-        if ref is None or action == "create":
-            permission = AccessAction.SCOPE_READ if action == "read" else AccessAction.SCOPE_CONTRIBUTE
-            resource = ResourceRef.scope(scope_id)
-            await access.bootstrap_static_scope(context.principal, scope_id, context=context.audit)
-        else:
-            permission = AccessAction.ARTIFACT_READ if action == "read" else AccessAction.ARTIFACT_WRITE
-            resource = ResourceRef.artifact(scope_id, family=ref.family, artifact_id=ref.artifact_id)
-        await access.require(context.principal, permission, resource, context=context.audit)
+        await super().authorize(connection, scope_id, context, action, ref)
 
     @staticmethod
     def _read_access(access, connection: AsyncConnection):
@@ -160,22 +150,6 @@ class AtomicMemoryAccess:
         )
         bound._deferred_decisions = access._deferred_decisions
         return bound
-
-    async def authorize_sources(self, connection: AsyncConnection, scope_id: str, context, sources) -> None:
-        if sources:
-            await self.authorize(connection, scope_id, context, "read")
-
-    async def establish_owner(self, connection: AsyncConnection, scope_id: str, artifact_id: str, context) -> None:
-        if context is None or context.access is None:
-            return
-        from powercontext.server.authz import ResourceRef
-
-        await context.access.with_connection(connection).establish_artifact_owner(
-            ResourceRef.artifact(scope_id, family="atomic-memory", artifact_id=artifact_id),
-            context.principal,
-            idempotency_key=f"atomic-memory-owner:{scope_id}:{artifact_id}",
-            context=context.audit,
-        )
 
     async def filters(
         self, connection: AsyncConnection, scope_id: str, context, *, tags: TagFilter | None = None
@@ -285,40 +259,7 @@ class AtomicMemoryApplication:
         return ScopedAtomicMemory(self, scope_id)
 
     async def merge_tags(self, connection, scope_id: str, result_id: str, input_ids: tuple[str, ...]) -> None:
-        from datetime import UTC, datetime
-        from hashlib import sha256
-
-        rows = (
-            await connection.execute(
-                select(ARTIFACT_TAGS_TABLE.c.tag_key, ARTIFACT_TAGS_TABLE.c.tag)
-                .where(
-                    ARTIFACT_TAGS_TABLE.c.scope_id == scope_id,
-                    ARTIFACT_TAGS_TABLE.c.family == "atomic-memory",
-                    ARTIFACT_TAGS_TABLE.c.artifact_id.in_(input_ids),
-                    ARTIFACT_TAGS_TABLE.c.target_type == "artifact",
-                )
-                .order_by(ARTIFACT_TAGS_TABLE.c.tag_key, ARTIFACT_TAGS_TABLE.c.artifact_id)
-                .with_for_update()
-            )
-        ).all()
-        labels: dict[str, str] = {}
-        for row in rows:
-            labels.setdefault(str(row.tag_key), str(row.tag))
-        labels = normalize_tags(tuple(labels.values()))
-        for key, label in labels.items():
-            await connection.execute(
-                insert(ARTIFACT_TAGS_TABLE).values(
-                    scope_id=scope_id,
-                    family="atomic-memory",
-                    artifact_id=result_id,
-                    target_type="artifact",
-                    target_id=result_id,
-                    tag_key=key,
-                    tag_key_hash=sha256(key.encode()).digest(),
-                    tag=label,
-                    assigned_at=datetime.now(UTC),
-                )
-            )
+        await merge_artifact_tags(connection, scope_id, result_id, input_ids, family=self.security.family)
 
 
 class ScopedAtomicMemory:
@@ -376,8 +317,7 @@ class ScopedAtomicMemory:
         items: list[AtomicMemoryRecord] = []
         last = after
         has_more = False
-        table = ATOMIC_MEMORY_STATES_TABLE
-        head = ARTIFACT_HEADS_TABLE
+        table = ARTIFACT_HEADS_TABLE
         async with (
             deferred_decision_audit(context),
             self.application.database.transaction(consistent_snapshot=True) as connection,
@@ -391,13 +331,12 @@ class ScopedAtomicMemory:
             while len(items) <= limit:
                 statement = (
                     select(table.c.artifact_id)
-                    .join(
-                        head,
-                        (head.c.scope_id == table.c.scope_id)
-                        & (head.c.artifact_id == table.c.artifact_id)
-                        & (head.c.family == "atomic-memory"),
+                    .where(
+                        table.c.scope_id == self.scope_id,
+                        table.c.family == "atomic-memory",
+                        table.c.artifact_id > last,
+                        atomic_memory_state_expression().in_(states),
                     )
-                    .where(table.c.scope_id == self.scope_id, table.c.artifact_id > last, table.c.state.in_(states))
                     .order_by(table.c.artifact_id)
                     .limit(100)
                 )
@@ -627,32 +566,18 @@ class ScopedAtomicMemory:
                 )
             ).mappings()
         }
-        states = {
-            row["artifact_id"]: row
-            for row in (
-                await connection.execute(
-                    select(ATOMIC_MEMORY_STATES_TABLE).where(
-                        ATOMIC_MEMORY_STATES_TABLE.c.scope_id == self.scope_id,
-                        ATOMIC_MEMORY_STATES_TABLE.c.artifact_id.in_(ids),
-                    )
-                )
-            ).mappings()
-        }
         for hit in hits:
             identity = hit.artifact_ref.artifact_id
-            projection, head, state = projected.get(identity), heads.get(identity), states.get(identity)
+            projection, head = projected.get(identity), heads.get(identity)
             if (
                 projection is None
                 or head is None
-                or state is None
                 or hit.artifact_ref.family != "atomic-memory"
                 or head["revision"] != hit.artifact_ref.revision
                 or projection["revision"] != hit.artifact_ref.revision
-                or state["state"] != "active"
-                or state["merged_into_id"] is not None
+                or head["merged_into_id"] is not None
                 or head["lifecycle_state"] != "active"
                 or head["replacement_artifact_id"] is not None
-                or state["state_version"] != hit.state_version
                 or projection["state_version"] != hit.state_version
                 or head["governance_generation"] != hit.state_version
             ):

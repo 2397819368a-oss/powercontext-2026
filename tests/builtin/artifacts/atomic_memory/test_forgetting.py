@@ -24,10 +24,9 @@ from sqlalchemy import func, select
 
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryStateValue
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
-from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_STATES_TABLE
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
 from powercontext.builtin.runtime.config import RuntimeConfig
@@ -52,7 +51,7 @@ async def atomic_row_counts(contexts, scope_id):
     async with contexts.database.connection() as connection:
         return tuple([
             await connection.scalar(select(func.count()).select_from(table).where(table.c.scope_id == scope_id))
-            for table in (ARTIFACTS_TABLE, ATOMIC_MEMORY_STATES_TABLE, contexts.atomic_memory.index.table)
+            for table in (ARTIFACTS_TABLE, ARTIFACT_HEADS_TABLE, contexts.atomic_memory.index.table)
         ])
 
 
@@ -105,9 +104,11 @@ def test_atomic_forgetting_preserves_history_tags_and_current_projection(databas
             assert await atomic_row_counts(contexts, scope_id) == (before[0], before[1], 1)
             restored = await memory.restore(tagged.artifact_id)
             assert restored.primary.state.state is AtomicMemoryStateValue.ACTIVE
-            assert restored.primary.ref.revision == 1
+            assert restored.primary.ref.revision == 2
+            assert restored.primary.artifact.content.text == fact(0)
+            assert (await memory.get(tagged.artifact_id, revision=1)).artifact.content.text == fact(0)
             assert await contexts.records.get_tags(scope_id, target) == tags
-            assert await atomic_row_counts(contexts, scope_id) == (*before[:2], 2)
+            assert await atomic_row_counts(contexts, scope_id) == (before[0] + 1, before[1], 2)
 
     asyncio.run(scenario())
 
@@ -207,8 +208,11 @@ def test_atomic_forgetting_preserves_tags_added_before_commit(database_config, m
             restored = await memory.restore(created[0].artifact_id)
             assert restored.primary.state.state is AtomicMemoryStateValue.ACTIVE
             hits = (await memory.search("Capacity project", tag_filter=TagFilter(tags=("newly protected",)))).hits
-            assert [hit.hit.artifact_ref for hit in hits] == [current.ref]
-            assert await atomic_row_counts(contexts, scope_id) == before
+            assert restored.primary.ref.revision == current.ref.revision + 1
+            assert restored.primary.artifact.content == current.artifact.content.without_creation()
+            assert [hit.hit.artifact_ref for hit in hits] == [restored.primary.ref]
+            assert (await memory.get(current.ref.artifact_id, revision=1)).artifact == current.artifact
+            assert await atomic_row_counts(contexts, scope_id) == (before[0] + 1, *before[1:])
             assert (await contexts.records.get_tags(scope_id, target)).tags == ("newly protected",)
 
     asyncio.run(scenario())

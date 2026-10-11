@@ -206,6 +206,7 @@ ARTIFACT_HEADS_TABLE = Table(
     Column("searchable_text", _entry_text_type()),
     Column("lifecycle_state", identity_string(16), nullable=False, server_default="active"),
     Column("replacement_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
+    Column("merged_into_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
     Column("governance_generation", BigInteger, nullable=False, server_default="0"),
     ForeignKeyConstraint(
         ("scope_id", "family", "artifact_id", "revision"),
@@ -229,6 +230,11 @@ ARTIFACT_HEADS_TABLE = Table(
     CheckConstraint(
         "replacement_artifact_id IS NULL OR lifecycle_state = 'deprecated'",
         name="ck_pc_artifact_heads_replacement_deprecated",
+    ),
+    CheckConstraint(
+        "merged_into_id IS NULL OR (lifecycle_state = 'deprecated' AND merged_into_id <> artifact_id "
+        "AND replacement_artifact_id IS NULL)",
+        name="ck_pc_artifact_heads_merge_target",
     ),
 )
 
@@ -270,6 +276,7 @@ ARTIFACT_LINEAGE_ARTIFACTS_TABLE = Table(
     Column("upstream_family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), nullable=False),
     Column("upstream_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), nullable=False),
     Column("upstream_revision", Integer, nullable=False),
+    Column("is_merge_input", Boolean, nullable=False, server_default="0"),
     ForeignKeyConstraint(
         ("scope_id", "family", "artifact_id", "revision"),
         (

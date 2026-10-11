@@ -574,6 +574,8 @@ class RelationalRecordService:
                     ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
                     ARTIFACT_HEADS_TABLE.c.family == family,
                     ARTIFACT_HEADS_TABLE.c.artifact_id > after,
+                    ARTIFACT_HEADS_TABLE.c.merged_into_id.is_(None),
+                    ARTIFACT_HEADS_TABLE.c.lifecycle_state != "retired",
                 )
                 .order_by(ARTIFACT_HEADS_TABLE.c.artifact_id)
                 .limit(limit + 1)

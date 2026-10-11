@@ -41,6 +41,16 @@ class AtomicMemoryMigrationError(PersistenceError):
         super().__init__("Atomic Memory offline migration is not ready: " + "; ".join(errors))
 
 
+async def ensure_supported_atomic_memory_schema(connection: AsyncConnection) -> None:
+    """Reject unreleased split authority without changing its evidence."""
+
+    tables = await connection.run_sync(lambda value: inspect(value).get_table_names())
+    if "pc_atomic_memory_states" in tables:
+        raise AtomicMemoryMigrationError((
+            "unsupported unreleased schema pc_atomic_memory_states; preserve the database and use a supported backup",
+        ))
+
+
 async def legacy_citation_columns(connection: AsyncConnection, tables: set[str]) -> list[str]:
     """Return public tables that still declare the retired citation column."""
 
@@ -112,6 +122,7 @@ async def atomic_memory_readiness_issues(
 async def assert_atomic_memory_migration_ready(connection: AsyncConnection) -> None:
     """Reject public migration residuals without reading frozen historical records."""
 
+    await ensure_supported_atomic_memory_schema(connection)
     errors = await atomic_memory_readiness_issues(connection)
     if errors:
         raise AtomicMemoryMigrationError(tuple(errors))

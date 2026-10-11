@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -36,8 +38,10 @@ from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
     apply_atomic_memory_migration,
     plan_atomic_memory_migration,
     verify_atomic_memory_migration,
+    verify_atomic_memory_migration_authority,
 )
 from powercontext.builtin.persistence.schema import create_tables
+from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE, MEMORY_ENTRY_VERSIONS_TABLE
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_runtime
 from powercontext.builtin.runtime.config import RuntimeConfig
@@ -98,7 +102,12 @@ async def _execute(migration_backend: MigrationBackend, statement: str, values: 
 
 
 async def _seed_legacy(
-    migration_backend: MigrationBackend, scope_id: str, *, revoked: bool = False, replacement: bool = False
+    migration_backend: MigrationBackend,
+    scope_id: str,
+    *,
+    revoked: bool = False,
+    replacement: bool = False,
+    artifact_evidence: bool = False,
 ):
     resources = tuple(
         ResourceRef.artifact(
@@ -106,11 +115,14 @@ async def _seed_legacy(
         )
         for entry_id in ("legacy-entry-1", "legacy-entry-2")
     )
+    evidence = (
+        [{"family": "experience", "artifact_id": "migration-evidence", "revision": 1}] if artifact_evidence else []
+    )
     versions = []
     for ordinal, resource in enumerate(resources, 1):
         assert resource.selector is not None
         entry_id = resource.selector.entry_id
-        value = {"kind": "fact", "text": f"Legacy fact {ordinal}.", "source_refs": [], "artifact_refs": []}
+        value = {"kind": "fact", "text": f"Legacy fact {ordinal}.", "source_refs": [], "artifact_refs": evidence}
         versions.append({
             **value,
             "entry_id": entry_id,
@@ -142,6 +154,33 @@ async def _seed_legacy(
         migration_profile(migration_backend.config) as profile,
         profile.database.transaction() as connection,
     ):
+        if artifact_evidence:
+            await connection.execute(
+                insert(ARTIFACTS_TABLE).values(
+                    scope_id=scope_id,
+                    family="experience",
+                    artifact_id="migration-evidence",
+                    revision=1,
+                    content=json.dumps({
+                        "situation": "Preserve migration evidence.",
+                        "action": "Verify exact imports.",
+                        "outcome": "Evidence remains readable.",
+                        "lesson": "Keep lineage separate from merge inputs.",
+                    }).encode(),
+                )
+            )
+            await connection.execute(
+                insert(ARTIFACT_HEADS_TABLE).values(
+                    scope_id=scope_id,
+                    family="experience",
+                    artifact_id="migration-evidence",
+                    revision=1,
+                    searchable_text=None,
+                    lifecycle_state="active",
+                    replacement_artifact_id=None,
+                    governance_generation=0,
+                )
+            )
         # Frozen legacy records exercise conversion independently of the current Memory models.
         await create_tables(connection, (MEMORY_ENTRY_VERSIONS_TABLE,))
         await connection.execute(
@@ -173,7 +212,7 @@ async def _seed_legacy(
                     "(:scope, 'memory', 'memory', :entry_id, :entry_version_id, 1, NULL, :kind, :text, "
                     ":source_refs, :artifact_refs, :entry_content_hash, 1)"
                 ),
-                {**version, "scope": scope_id, "source_refs": b"[]", "artifact_refs": b"[]"},
+                {**version, "scope": scope_id, "source_refs": b"[]", "artifact_refs": json.dumps(evidence).encode()},
             )
         repository = RelationalAccessRepository(profile.database, connection=connection)
         for resource in resources:
@@ -476,6 +515,130 @@ def test_server_startup_keeps_grant_projection_current(migration_backend: Migrat
             )
             assert response.status_code == 200, response.text
             await verify()
+
+    asyncio.run(scenario())
+
+
+def test_offline_inspection_and_apply_upgrade_released_common_columns(tmp_path: Path) -> None:
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'migration.db'}")
+    backend = MigrationBackend(config, tmp_path)
+    _prepare(backend, artifact_evidence=True)
+    database = tmp_path / "migration.db"
+    with sqlite3.connect(database) as connection:
+        for table, columns in (
+            (
+                "pc_artifact_heads",
+                "scope_id, family, artifact_id, revision, searchable_text, lifecycle_state, "
+                "replacement_artifact_id, governance_generation",
+            ),
+            (
+                "pc_artifact_lineage_artifacts",
+                "scope_id, family, artifact_id, revision, ordinal, "
+                "upstream_family, upstream_artifact_id, upstream_revision",
+            ),
+        ):
+            connection.execute(f"CREATE TABLE released AS SELECT {columns} FROM {table}")  # noqa: S608
+            connection.execute(f"DROP TABLE {table}")
+            connection.execute(f"ALTER TABLE released RENAME TO {table}")
+            if table == "pc_artifact_heads":
+                connection.execute(
+                    "CREATE UNIQUE INDEX released_head_identity ON pc_artifact_heads(scope_id, family, artifact_id)"
+                )
+        connection.execute("PRAGMA journal_mode = DELETE")
+    original = database.read_bytes()
+
+    async def inspect() -> None:
+        async with (
+            SQLiteProfile.open_readonly(config) as profile,
+            profile.database.transaction() as connection,
+        ):
+            plan = await plan_atomic_memory_migration(connection)
+            assert plan.counts["pending_entries"] == 2
+            assert not plan.ready
+            for report in (
+                await verify_atomic_memory_migration(connection),
+                await verify_atomic_memory_migration_authority(connection),
+            ):
+                assert not report.ready
+                assert any("merge columns" in error for error in report.errors), report.errors
+
+    asyncio.run(inspect())
+    assert database.read_bytes() == original
+    result = asyncio.run(_apply(backend))
+    assert result.ready, result.errors
+    assert result.counts["imported_entries"] == 2
+    with sqlite3.connect(database) as connection:
+        heads = connection.execute(
+            "SELECT lifecycle_state, governance_generation, merged_into_id, revision "
+            "FROM pc_artifact_heads WHERE family = 'atomic-memory' ORDER BY artifact_id"
+        ).fetchall()
+        assert heads == [("active", 0, None, 1), ("active", 0, None, 1)]
+        assert connection.execute(
+            "SELECT DISTINCT is_merge_input FROM pc_artifact_lineage_artifacts WHERE family = 'atomic-memory'"
+        ).fetchall() == [(0,)]
+        assert (
+            connection.execute("SELECT name FROM sqlite_master WHERE name = 'pc_atomic_memory_states'").fetchone()
+            is None
+        )
+
+
+def test_migration_replay_preserves_evolved_head_and_imported_history(tmp_path: Path) -> None:
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'migration.db'}")
+    backend = MigrationBackend(config, tmp_path)
+    _prepare(backend)
+    assert asyncio.run(_apply(backend)).ready
+    with sqlite3.connect(tmp_path / "migration.db") as connection:
+        target = connection.execute(
+            "SELECT artifact_id FROM pc_artifact_heads WHERE family = 'atomic-memory' ORDER BY artifact_id LIMIT 1"
+        ).fetchone()[0]
+        connection.execute(
+            "UPDATE pc_artifact_heads SET lifecycle_state = 'deprecated', governance_generation = 4 "
+            "WHERE family = 'atomic-memory' AND artifact_id = ?",
+            (target,),
+        )
+        connection.execute("DELETE FROM pc_atomic_memory_current WHERE artifact_id = ?", (target,))
+        connection.execute("DELETE FROM pc_atomic_memory_current_fts WHERE artifact_id = ?", (target,))
+    retained = {
+        table: _snapshot(backend, table)
+        for table in (
+            "pc_artifacts",
+            "pc_artifact_heads",
+            "pc_artifact_lineage_artifacts",
+            "pc_access_owners",
+            "pc_artifact_tags",
+            "pc_access_relationships",
+            "pc_access_idempotency",
+        )
+    }
+    repeated = asyncio.run(_apply(backend))
+    assert repeated.ready, repeated.errors
+    assert repeated.counts["imported_entries"] == 0
+    for table, rows in retained.items():
+        assert _snapshot(backend, table) == rows
+
+
+def test_verification_rejects_imported_evidence_marked_as_merge_input(tmp_path: Path) -> None:
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'migration.db'}")
+    backend = MigrationBackend(config, tmp_path)
+    _prepare(backend, artifact_evidence=True)
+    assert asyncio.run(_apply(backend)).ready
+    with sqlite3.connect(tmp_path / "migration.db") as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM pc_artifact_lineage_artifacts WHERE family = 'atomic-memory' AND is_merge_input = 0"
+            ).fetchone()[0]
+            == 2
+        )
+        connection.execute("UPDATE pc_artifact_lineage_artifacts SET is_merge_input = 1 WHERE family = 'atomic-memory'")
+
+    async def scenario() -> None:
+        async with (
+            SQLiteProfile.open_readonly(config) as profile,
+            profile.database.transaction() as connection,
+        ):
+            report = await verify_atomic_memory_migration(connection)
+            assert not report.ready
+            assert any("imported exact evidence differs" in error for error in report.errors), report.errors
 
     asyncio.run(scenario())
 

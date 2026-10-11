@@ -53,7 +53,9 @@ revision 不会产生该条记忆的新 revision。
 当前 manifest 或 compact 前最后一次出现的指针必须指向本 entry 的版本链末端。
 缺失变化记录、无法解释的缺席、重复身份、跳过版本或落后的 head 都会阻断；迁移不会选取最大版本
 来掩盖不一致。旧 active、inactive、compact 分别成为 active、forgotten、retired。
-状态版本计数与公共 head 的治理摘要同步。
+生命周期以 `pc_artifact_heads` 为权威：这三种状态分别使用 `lifecycle_state` 值 `active`、`deprecated`、
+`retired`，新导入的 head 不设置 `merged_into_id`。Atomic Memory 的 `state_version` 读取 head 的
+`governance_generation`。
 
 旧 entry 的精确资源身份上有正式 Owner 时，它迁为新记忆的 Owner；未启用鉴权的部署中没有 Owner 的
 entry 迁移后同样没有 Owner。同一 entry 有多个 Owner 或 Owner 不合法时会阻断，集合 Owner 不会分配给
@@ -156,9 +158,9 @@ Source Cursor、CAS generation、高水位、pending/flush 请求、已接受任
 `memory` Family 与 `memory-source-window` binding 继续作为调度兼容身份。
 迁移完成前失效旧 Lease 并推进 fence，已消费的 Source 不重新抽取。
 
-每条记忆的历史、head、状态、Owner、标签、授权转换与当前投影在同一个事务提交。
+每条记忆的历史、head、Owner、标签、授权转换与当前投影在同一个事务提交。
 向量准备在事务外完成。中途退出后，可以使用相同配置重复 apply；已提交对象先核验精确导入历史。
-与确定性身份对应的内容不同、存在孤立状态或历史时明确报错，不覆盖目标数据。
+与确定性身份对应的内容不同或存在孤立正文历史时明确报错，不覆盖目标数据。
 已经导入的对象后续产生新 revision 或生命周期变化时，迁移不回退其 head、状态或标签。
 
 如果已转换的授权仍保留旧资源摘要，plan 和 verify 会返回 `ready: false`，并在
@@ -179,7 +181,7 @@ API、宿主、Worker、自动重启和输入写入，然后使用目标部署�
 powercontext server atomic-memory-rebuild-projection --env-file .env --maintenance-confirmed
 ```
 
-命令检查公共表中的旧对象、旧列和外键已清理，且 Atomic 的 head、正文和状态有效。它只重建 active 的
+命令检查公共表中的旧对象、旧列和外键已清理，且 Atomic 的 head、正文 revision 和 head 生命周期数据有效。它只重建 active 的
 current 行，清除非 active 或孤立的 current 行；head、正文 revision、生命周期状态、保留历史及
 Source/处理进度保持原身份和原值。重建不读取归档或旧 entry 表；旧历史是否已完整导入，由停服迁移的
 `verify` 负责核验，投影重建不能补做缺失的历史导入。
@@ -219,4 +221,4 @@ plan、apply 和 verify 读取保留的全部旧历史和 Source/任务快照，
 本分支开发过程中创建的 current 表（含读取授权副本或 Owner 列）不属于任何发布版本，初始化时会被
 明确拒绝。迁移尚未完成时，apply 会删除并重建这张派生表，结果报告提示随后执行投影重建；迁移已完成
 时，停服后直接执行上述投影重建命令。两种方式都只重建这张派生表，并从正式记录恢复活跃记忆，
-不改变 Artifact 历史、Family 状态和授权记录。
+不改变 Artifact 历史、head 的生命周期数据和授权记录。

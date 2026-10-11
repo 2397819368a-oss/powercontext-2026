@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts import ArtifactLineage, ArtifactRef
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchOutcome,
@@ -65,6 +65,13 @@ from powercontext.builtin.artifacts.handoff import (
     PrepareHandoffHint,
 )
 from powercontext.builtin.artifacts.memory import EmbeddingProfile, MemoryQueryEmbedding
+from powercontext.builtin.artifacts.merge_models import (
+    ArtifactMergeMutationResult,
+    ArtifactMergeRead,
+    ArtifactMergeRecord,
+    ArtifactMergeRestorationPreview,
+    ArtifactMergeRestoreOperation,
+)
 from powercontext.builtin.artifacts.profile.service import RelationalProfileService
 from powercontext.builtin.artifacts.prompt import (
     GeneratePromptDemonstrations,
@@ -154,6 +161,7 @@ from powercontext.builtin.runtime._scope_cache import (
     ScopeCacheObserver,
     ScopeEvictor,
 )
+from powercontext.builtin.runtime.artifact_merge import ArtifactMergeApplication
 from powercontext.builtin.runtime.artifact_search import ArtifactSearchService
 from powercontext.builtin.runtime.atomic_memory import AtomicMemorySearchHit
 from powercontext.builtin.runtime.decision_model import DecisionModel
@@ -2587,6 +2595,88 @@ class AtomicMemoryRuntimeApplication:
         return ScopedAtomicMemoryApplication(self._runtime, self._application, scope_id)
 
 
+class ScopedArtifactMergeApplication:
+    """Keep shared merge operations inside the Runtime's Scope lease."""
+
+    def __init__(
+        self, runtime: BuiltinRuntime, application: ArtifactMergeApplication, scope_id: str, family: str
+    ) -> None:
+        self._runtime = runtime
+        self._scoped = application.for_scope(scope_id, family)
+        self.scope_id = self._scoped.scope_id
+        self.family = family
+
+    @staticmethod
+    def _context(context: Any) -> Any:
+        return _PREPARE_ATOMIC_CONTEXT.get() if context is None else context
+
+    async def get(self, artifact_id: str, *, revision: int | None = None, context: Any = None) -> ArtifactMergeRecord:
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._scoped.get(artifact_id, revision=revision, context=self._context(context))
+
+    async def restoration_outcome(self, artifact_id: str, *, revision: int, context: Any = None):
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._scoped.restoration_outcome(
+                artifact_id, revision=revision, context=self._context(context)
+            )
+
+    async def merge(
+        self,
+        inputs: Sequence[ArtifactMergeRead],
+        content: BaseModel,
+        *,
+        artifact_id: str | None = None,
+        lineage: ArtifactLineage | None = None,
+        context: Any = None,
+    ) -> ArtifactMergeMutationResult:
+        async with self._runtime._scoped_operation(self.scope_id, embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING):
+            return await self._scoped.merge(
+                inputs, content, artifact_id=artifact_id, lineage=lineage, context=self._context(context)
+            )
+
+    async def preview_restoration(
+        self,
+        artifact_id: str,
+        *,
+        operation: ArtifactMergeRestoreOperation = "restore",
+        revision: int | None = None,
+        context: Any = None,
+    ) -> ArtifactMergeRestorationPreview:
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._scoped.preview_restoration(
+                artifact_id, operation=operation, revision=revision, context=self._context(context)
+            )
+
+    async def restore(
+        self,
+        artifact_id: str,
+        *,
+        operation: ArtifactMergeRestoreOperation = "restore",
+        revision: int | None = None,
+        preview_token: str | None = None,
+        context: Any = None,
+    ) -> ArtifactMergeMutationResult:
+        async with self._runtime._scoped_operation(self.scope_id, embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING):
+            return await self._scoped.restore(
+                artifact_id,
+                operation=operation,
+                revision=revision,
+                preview_token=preview_token,
+                context=self._context(context),
+            )
+
+
+class ArtifactMergeRuntimeApplication:
+    """Select a registered Family; authenticated hosts supply the caller context."""
+
+    def __init__(self, runtime: BuiltinRuntime, application: ArtifactMergeApplication) -> None:
+        self._runtime = runtime
+        self._application = application
+
+    def for_scope(self, scope_id: str, family: str, /) -> ScopedArtifactMergeApplication:
+        return ScopedArtifactMergeApplication(self._runtime, self._application, scope_id, family)
+
+
 class ScopedTopicMemoryApplication:
     """Search, exactly read, and request processing for Topic Memory in one scope."""
 
@@ -2891,6 +2981,7 @@ class BuiltinRuntime:
         statistics_service: StatisticsServiceFactory | None = None,
         record_service: RecordService | None = None,
         atomic_memory_application=None,
+        artifact_merge_application: ArtifactMergeApplication | None = None,
         prompt_service: PromptService | None = None,
         recall_token_estimator: RecallTokenEstimator | None = None,
         recall_effort_sink: RecallEffortSink | None = None,
@@ -2962,6 +3053,11 @@ class BuiltinRuntime:
             None
             if atomic_memory_application is None
             else AtomicMemoryRuntimeApplication(self, atomic_memory_application)
+        )
+        self.artifact_merge = (
+            None
+            if artifact_merge_application is None
+            else ArtifactMergeRuntimeApplication(self, artifact_merge_application)
         )
         self._prompt_service = prompt_service
         self._recall_token_estimator = recall_token_estimator
