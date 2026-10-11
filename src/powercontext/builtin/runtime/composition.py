@@ -309,6 +309,8 @@ class _TracingDecisionModel:
         self._tracing = tracing
         self.policy_id = delegate.policy_id
         self.is_local_only = bool(getattr(delegate, "is_local_only", False))
+        self.provider_id = getattr(delegate, "provider_id", None)
+        self.backend_model_id = getattr(delegate, "backend_model_id", None)
 
     async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
         with self._tracing.stage(
@@ -1506,6 +1508,7 @@ async def _generation_decision(
 
     decision_provider_model = generation_provider_model
     decision_model = generation_model
+    decision_model_name = settings.decision_model or settings.generation_model
     inherits_generation = settings.decision_model is None
     decision_headers = (
         _merge_headers(settings.generation_headers, settings.decision_headers)
@@ -1514,7 +1517,6 @@ async def _generation_decision(
     )
     separate_decision_model = settings.decision_model is not None or bool(settings.decision_headers)
     if separate_decision_model:
-        decision_model_name = settings.decision_model or settings.generation_model
         if decision_model_name is None:
             raise BuiltinConfigurationError("decision-model")
         decision_provider_model, decision_model = await _open_pydantic_ai_model(
@@ -1555,6 +1557,10 @@ async def _generation_decision(
         is_local_only=_is_loopback_endpoint(
             settings.decision_base_url if settings.decision_model is not None else settings.generation_base_url
         ),
+        provider_id=None if decision_model_name is None else decision_model_name.partition(":")[0],
+        backend_model_id=None
+        if decision_model_name is None
+        else decision_model_name.partition(":")[2] or decision_model_name,
     )
 
     decision_readiness: ReadinessProbe | None = None

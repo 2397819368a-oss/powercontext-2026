@@ -76,6 +76,11 @@ class _RecordingDecisionModel(_StaticDecisionModel):
         return await super().evaluate(request)
 
 
+class _IdentifiedDecisionModel(_StaticDecisionModel):
+    provider_id = "test-provider"
+    backend_model_id = "test-model"
+
+
 class _FailingDecisionModel:
     """A backend whose every evaluation raises."""
 
@@ -160,6 +165,52 @@ def test_the_hold_direction_is_read_from_configuration() -> None:
         assessment = await gate.assess(_request(evidence=("source:task:1",)))
 
         assert assessment.verdict is MemoryWriteVerdict.HOLD
+
+    asyncio.run(scenario())
+
+
+def test_direct_gate_binds_its_effective_hold_direction_into_the_observation_version() -> None:
+    async def scenario() -> None:
+        sink = _RecordingObservationSink()
+        gate = DecisionMemoryWriteGate(_StaticDecisionModel(_verdict(DecisionOutcome.YES)), hold_on=DecisionOutcome.NO)
+
+        await gate.assess(_request(evidence=("source:task:1",), observation_sink=sink))
+
+        assert sink.observations[0].policy_version == "1;hold_on=no;threshold=none"
+
+    asyncio.run(scenario())
+
+
+def test_direct_gate_rejects_a_disabled_or_conflicting_policy() -> None:
+    disabled = memory_write_policy(mode=DecisionPolicyMode.DISABLED)
+    with pytest.raises(ValueError, match="disabled policy"):
+        DecisionMemoryWriteGate(_StaticDecisionModel(_verdict(DecisionOutcome.YES)), policy=disabled)
+
+    policy = memory_write_policy(hold_on=DecisionOutcome.NO)
+    with pytest.raises(ValueError, match="hold direction"):
+        DecisionMemoryWriteGate(
+            _StaticDecisionModel(_verdict(DecisionOutcome.YES)),
+            hold_on=DecisionOutcome.YES,
+            policy=policy,
+        )
+
+    threshold_policy = memory_write_policy(threshold=0.4)
+    with pytest.raises(ValueError, match="operational parameters"):
+        DecisionMemoryWriteGate(_StaticDecisionModel(_verdict(DecisionOutcome.YES)), policy=threshold_policy)
+
+
+def test_observation_records_backend_identity_and_evaluation_latency() -> None:
+    async def scenario() -> None:
+        sink = _RecordingObservationSink()
+        gate = DecisionMemoryWriteGate(_IdentifiedDecisionModel(_verdict(DecisionOutcome.NO)))
+
+        await gate.assess(_request(evidence=("source:task:1",), observation_sink=sink))
+
+        observation = sink.observations[0]
+        assert observation.provider_id == "test-provider"
+        assert observation.backend_model_id == "test-model"
+        assert observation.assessment.latency_ms is not None
+        assert observation.assessment.latency_ms >= 0
 
     asyncio.run(scenario())
 
@@ -589,5 +640,11 @@ def _request(
     *,
     candidates: tuple[str, ...] = ("Remember the contract change.",),
     evidence: tuple[str, ...] = (),
+    observation_sink: _RecordingObservationSink | None = None,
 ) -> MemoryWriteGateRequest:
-    return MemoryWriteGateRequest(candidates=candidates, evidence=evidence, expected_revision=1)
+    return MemoryWriteGateRequest(
+        candidates=candidates,
+        evidence=evidence,
+        expected_revision=1,
+        observation_sink=observation_sink,
+    )

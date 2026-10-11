@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from base64 import urlsafe_b64encode
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -102,6 +103,7 @@ from powercontext.builtin.artifacts.memory.protocols import (
 from powercontext.builtin.artifacts.memory.reranking import MemoryReranker
 from powercontext.builtin.artifacts.prompt.service import ScopedPrompts, current_prompt, prompt_operation
 from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor, analyze_fts_query, analyze_text
+from powercontext.builtin.decision_observations import DecisionObservation
 from powercontext.builtin.inference import (
     EmbeddingModel,
     EmbeddingVector,
@@ -176,6 +178,16 @@ class _GateCandidateEvidence:
 class _GateEvidenceProjection:
     entries: tuple[str, ...]
     rejection: MemoryWriteAssessment | None = None
+
+
+@dataclass(slots=True)
+class _PendingDecisionObservation:
+    """Capture a gate sidecar until the Memory owner knows the write outcome."""
+
+    observation: DecisionObservation | None = None
+
+    async def record(self, observation: DecisionObservation, /) -> None:
+        self.observation = observation
 
 
 @dataclass(slots=True)
@@ -543,36 +555,77 @@ class MemoryService:
             if not candidates:
                 return MemoryWritePlan(result=base, commit=None)
 
-            assessment = await self._assess_write(base, candidates, evidence, current_entries)
+            assessment, observation = await self._assess_write(base, candidates, evidence, current_entries)
             if assessment is not None and assessment.verdict is MemoryWriteVerdict.HOLD:
                 # A refused write stays visible: the caller reads the structured code and reason
                 # from the plan. The plan carries no commit, so nothing is written.
-                return MemoryWritePlan(result=base, commit=None, decision=assessment)
+                await self._record_decision_observation(
+                    observation,
+                    final_action="memory_write_held",
+                    incomplete_subject_count=len(observation.subject_refs) if observation is not None else 0,
+                )
+                return MemoryWritePlan(result=base, commit=None, decision=assessment, decision_observation=observation)
 
             flagged_reason = (
                 assessment.reason if assessment is not None and assessment.verdict is MemoryWriteVerdict.FLAG else None
             )
-            commit = await self._prepare_commit(
-                base=base,
-                candidates=candidates,
-                evidence=evidence,
-                current_entries=current_entries,
-                flagged_reason=flagged_reason,
-            )
+            try:
+                commit = await self._prepare_commit(
+                    base=base,
+                    candidates=candidates,
+                    evidence=evidence,
+                    current_entries=current_entries,
+                    flagged_reason=flagged_reason,
+                )
+            except Exception:
+                await self._record_decision_observation(
+                    observation,
+                    final_action="memory_write_failed",
+                    incomplete_subject_count=len(observation.subject_refs) if observation is not None else 0,
+                )
+                raise
             if commit is None:
-                return MemoryWritePlan(result=base, commit=None, decision=assessment)
-            return MemoryWritePlan(result=commit.memory, commit=commit, decision=assessment)
+                await self._record_decision_observation(
+                    observation,
+                    final_action="memory_write_unchanged",
+                    incomplete_subject_count=len(observation.subject_refs) if observation is not None else 0,
+                )
+                return MemoryWritePlan(result=base, commit=None, decision=assessment, decision_observation=observation)
+            return MemoryWritePlan(
+                result=commit.memory,
+                commit=commit,
+                decision=assessment,
+                decision_observation=observation,
+            )
 
     async def apply(self, plan: MemoryWritePlan, /) -> Memory | None:
         """Apply one prepared write through this service's transaction boundary."""
 
         if plan.commit is None:
             return plan.result
-        async with self._backend.begin() as unit_of_work:
-            committed = await unit_of_work.commit(plan.commit)
+        try:
+            async with self._backend.begin() as unit_of_work:
+                committed = await unit_of_work.commit(plan.commit)
+        except Exception:
+            await self._record_decision_observation(
+                plan.decision_observation,
+                final_action="memory_write_failed",
+                incomplete_subject_count=(
+                    len(plan.decision_observation.subject_refs) if plan.decision_observation is not None else 0
+                ),
+            )
+            raise
         if plan.result != committed:
             raise InvalidMemoryCitationError("memory-mismatch")
         self._cache_projections(committed, plan.commit.projections)
+        await self._record_decision_observation(
+            plan.decision_observation,
+            final_action="memory_write_applied",
+            operation_id=f"memory-write:{committed.artifact_id}@{committed.revision}",
+            subject_refs=tuple(
+                f"entry:{entry.entry_id}@{entry.entry_version_id}" for entry in plan.commit.entry_versions
+            ),
+        )
         return committed
 
     async def forget(
@@ -1375,12 +1428,13 @@ class MemoryService:
         candidates: tuple[MemoryEntryInput, ...],
         evidence: _OperationEvidence,
         current_entries: tuple[MemoryEntryVersion, ...] | None,
-    ) -> MemoryWriteAssessment | None:
+    ) -> tuple[MemoryWriteAssessment | None, DecisionObservation | None]:
         """Ask the configured gate about one candidate set; ``None`` means no gate is active."""
 
         if self._write_gate is None:
-            return None
+            return None, None
         projection = await self._gate_evidence(base, candidates, evidence, current_entries)
+        pending = _PendingDecisionObservation()
         request = MemoryWriteGateRequest(
             candidates=tuple(candidate.text for candidate in candidates),
             evidence=projection.entries,
@@ -1389,20 +1443,75 @@ class MemoryService:
             operation_id=_gate_operation_id(base),
             subject_refs=_gate_subject_refs(candidates),
             evidence_refs=tuple(_gate_evidence_ref(entry) for entry in projection.entries),
-            observation_sink=self._write_gate_observation_sink,
+            observation_sink=pending,
         )
         if projection.rejection is not None:
             if isinstance(self._write_gate, MemoryWriteGatePreflight):
-                return await self._write_gate.assess_preflight(request, projection.rejection)
+                try:
+                    return await self._write_gate.assess_preflight(request, projection.rejection), pending.observation
+                except Exception:
+                    return (
+                        MemoryWriteAssessment(
+                            verdict=MemoryWriteVerdict.ACCEPT,
+                            policy_id=self._write_gate.policy_id,
+                            used_fallback=True,
+                        ),
+                        pending.observation,
+                    )
             _log_gate_assessment(projection.rejection)
-            return projection.rejection
+            return projection.rejection, pending.observation
         try:
-            return await self._write_gate.assess(request)
+            return await self._write_gate.assess(request), pending.observation
         except Exception:
-            return MemoryWriteAssessment(
-                verdict=MemoryWriteVerdict.ACCEPT,
-                policy_id=self._write_gate.policy_id,
-                used_fallback=True,
+            return (
+                MemoryWriteAssessment(
+                    verdict=MemoryWriteVerdict.ACCEPT,
+                    policy_id=self._write_gate.policy_id,
+                    used_fallback=True,
+                ),
+                pending.observation,
+            )
+
+    async def _record_decision_observation(
+        self,
+        observation: DecisionObservation | None,
+        *,
+        final_action: str,
+        operation_id: str | None = None,
+        subject_refs: tuple[str, ...] | None = None,
+        incomplete_subject_count: int = 0,
+    ) -> None:
+        if observation is None or self._write_gate_observation_sink is None:
+            return
+        metadata = dict(observation.metadata)
+        if incomplete_subject_count:
+            metadata["incomplete_subject_count"] = incomplete_subject_count
+        finalized = observation.model_copy(
+            update={
+                "final_action": final_action,
+                "operation_id": observation.operation_id if operation_id is None else operation_id,
+                "subject_refs": ()
+                if incomplete_subject_count
+                else observation.subject_refs
+                if subject_refs is None
+                else subject_refs,
+                "metadata": metadata,
+            }
+        )
+        try:
+            await self._write_gate_observation_sink.record(finalized)
+        except Exception as error:
+            log_safely(
+                logger,
+                logging.WARNING,
+                "Decision observation sink failed",
+                extra={
+                    "event": "decision.observation_sink_failed",
+                    "consumer": finalized.consumer,
+                    "policy_id": finalized.policy_id,
+                    "operation_id": finalized.operation_id,
+                    "error_type": type(error).__name__,
+                },
             )
 
     async def _gate_evidence(
@@ -1454,7 +1563,7 @@ class MemoryService:
 
     def _source_gate_evidence(self, candidate_index: int, source: Source) -> _GateEvidenceEntry:
         ref = self._source_refs((source,))[0]
-        identity = _candidate_gate_identity(candidate_index, f"source:{ref.source_type}:{ref.source_id}")
+        identity = _candidate_gate_identity(candidate_index, _gate_source_reference(ref))
         content = _source_gate_content(source, self._source_resolver)
         if isinstance(content, str) and content.strip():
             return _bounded_gate_evidence(identity, content)
@@ -1464,12 +1573,12 @@ class MemoryService:
     def _artifact_gate_evidence(candidate_index: int, artifact: Artifact[object]) -> _GateEvidenceEntry:
         ref = artifact.as_ref()
         return _bounded_gate_evidence(
-            _candidate_gate_identity(candidate_index, f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}"),
+            _candidate_gate_identity(candidate_index, _gate_artifact_reference(ref)),
             _artifact_gate_content(artifact),
         )
 
     async def _source_ref_gate_evidence(self, candidate_index: int, ref: SourceRef) -> _GateEvidenceEntry:
-        identity = _candidate_gate_identity(candidate_index, f"source:{ref.source_type}:{ref.source_id}")
+        identity = _candidate_gate_identity(candidate_index, _gate_source_reference(ref))
         if self._source_resolver is None:
             return _incomplete_gate_evidence(identity)
         try:
@@ -1478,7 +1587,7 @@ class MemoryService:
             return _incomplete_gate_evidence(identity)
 
     async def _artifact_ref_gate_evidence(self, candidate_index: int, ref: ArtifactRef) -> _GateEvidenceEntry:
-        identity = _candidate_gate_identity(candidate_index, f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}")
+        identity = _candidate_gate_identity(candidate_index, _gate_artifact_reference(ref))
         if self._artifact_resolver is None:
             return _incomplete_gate_evidence(identity)
         try:
@@ -1849,6 +1958,23 @@ def _incomplete_gate_evidence(identity: str) -> _GateEvidenceEntry:
 
 def _candidate_gate_identity(candidate_index: int, identity: str) -> str:
     return f"candidate:{candidate_index} {identity}"
+
+
+def _gate_source_reference(reference: SourceRef, /) -> str:
+    """Encode source components so every supported identifier remains one safe reference token."""
+
+    return f"source:{_gate_reference_component(reference.source_type)}:{_gate_reference_component(reference.source_id)}"
+
+
+def _gate_artifact_reference(reference: ArtifactRef, /) -> str:
+    return (
+        f"artifact:{_gate_reference_component(reference.family)}:"
+        f"{_gate_reference_component(reference.artifact_id)}@{reference.revision}"
+    )
+
+
+def _gate_reference_component(value: str, /) -> str:
+    return urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
 
 
 def _gate_operation_id(base: Memory | None) -> str:

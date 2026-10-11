@@ -145,10 +145,18 @@ class LLMDecisionModel:
     policy_id = DECISION_INSTRUCTIONS_VERSION
 
     def __init__(
-        self, generator: StructuredGenerator[DecisionInput, DecisionOutput], /, *, is_local_only: bool = False
+        self,
+        generator: StructuredGenerator[DecisionInput, DecisionOutput],
+        /,
+        *,
+        is_local_only: bool = False,
+        provider_id: str | None = None,
+        backend_model_id: str | None = None,
     ) -> None:
         self._generator = generator
         self.is_local_only = is_local_only
+        self.provider_id = provider_id
+        self.backend_model_id = backend_model_id
 
     async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
         """Map the model's validated answer onto one portable result."""
@@ -181,6 +189,8 @@ class FailOpenDecisionModel:
         self._delegate = delegate
         self.policy_id = delegate.policy_id
         self.is_local_only = bool(getattr(delegate, "is_local_only", False))
+        self.provider_id = getattr(delegate, "provider_id", None)
+        self.backend_model_id = getattr(delegate, "backend_model_id", None)
         self._timeout_seconds = timeout_seconds
 
     async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:

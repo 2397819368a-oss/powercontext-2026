@@ -33,9 +33,9 @@ from powercontext.builtin.sources import validate_scope_id
 _KIND = "decision-observation"
 _SAFE_REASON = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 _SAFE_REFERENCE = re.compile(
-    r"(?:candidate|evidence):[0-9]+|(?:candidate:[0-9]+ )?(?:entry|source|artifact):[A-Za-z0-9_.:@-]{1,500}\Z"
+    r"(?:candidate|evidence):[0-9]+|(?:candidate:[0-9]+ )?(?:entry|source|artifact):[A-Za-z0-9_.:@-]{1,2200}\Z"
 )
-_SAFE_METADATA_KEYS = frozenset({"candidate_count", "evidence_count"})
+_SAFE_METADATA_KEYS = frozenset({"candidate_count", "evidence_count", "incomplete_subject_count"})
 
 
 class DecisionObservationRepository:

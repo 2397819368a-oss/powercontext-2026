@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+from time import perf_counter
 from typing import Literal
 
 from powercontext._logging import log_safely
@@ -135,18 +136,21 @@ def build_memory_write_gate(
     enabled; a disabled gate and a missing backend both resolve to ``None``.
     """
 
-    if not enabled or mode is DecisionPolicyMode.DISABLED or decision_model is None:
+    if not enabled or mode is DecisionPolicyMode.DISABLED:
+        return None
+    policy = memory_write_policy(
+        hold_on=DecisionOutcome(hold_on),
+        threshold=threshold,
+        mode=mode,
+        privacy_boundary=privacy_boundary,
+    )
+    if decision_model is None and privacy_boundary is not DecisionPrivacyBoundary.NO_EXTERNAL_CALL:
         return None
     return DecisionMemoryWriteGate(
         decision_model,
         hold_on=DecisionOutcome(hold_on),
         threshold=threshold,
-        policy=memory_write_policy(
-            hold_on=DecisionOutcome(hold_on),
-            threshold=threshold,
-            mode=mode,
-            privacy_boundary=privacy_boundary,
-        ),
+        policy=policy,
     )
 
 
@@ -162,26 +166,43 @@ class DecisionMemoryWriteGate:
 
     def __init__(
         self,
-        decision_model: DecisionModel,
+        decision_model: DecisionModel | None,
         /,
         *,
-        hold_on: DecisionOutcome = DecisionOutcome.YES,
+        hold_on: DecisionOutcome | None = None,
         threshold: float | None = None,
         policy: DecisionPolicy | None = None,
         allow_model_evaluation: bool | None = None,
     ) -> None:
         if hold_on is DecisionOutcome.ABSTAIN:
             raise ValueError("the hold direction cannot be abstain")  # noqa: TRY003
+        if policy is None:
+            resolved_hold_on = DecisionOutcome.YES if hold_on is None else hold_on
+            policy = memory_write_policy(
+                hold_on=resolved_hold_on,
+                threshold=threshold,
+                mode=DecisionPolicyMode.ENFORCING,
+                privacy_boundary=DecisionPrivacyBoundary.LOCAL_ONLY,
+            )
+        else:
+            if policy.mode is DecisionPolicyMode.DISABLED:
+                raise ValueError("a disabled policy cannot construct a memory write gate")  # noqa: TRY003
+            resolved_hold_on = _policy_hold_on(policy)
+            if hold_on is not None and hold_on is not resolved_hold_on:
+                raise ValueError("the hold direction must match the supplied policy")  # noqa: TRY003
+            if policy.version != _policy_version(resolved_hold_on, threshold):
+                raise ValueError("the operational parameters must match the supplied policy version")  # noqa: TRY003
         self._decision_model = decision_model
-        self._hold_on = hold_on
+        self._hold_on = resolved_hold_on
         self._threshold = threshold
-        self._policy = _MEMORY_WRITE_POLICY if policy is None else policy
+        self._policy = policy
         self._allow_model_evaluation = (
-            self._policy.privacy_boundary is DecisionPrivacyBoundary.LOCAL_ONLY
+            decision_model is not None
+            and self._policy.privacy_boundary is DecisionPrivacyBoundary.LOCAL_ONLY
             and bool(getattr(decision_model, "is_local_only", False))
             and allow_model_evaluation is not False
         )
-        self.policy_id = decision_model.policy_id
+        self.policy_id = "memory.write-gate.no-backend" if decision_model is None else decision_model.policy_id
 
     @property
     def mode(self) -> DecisionPolicyMode:
@@ -218,6 +239,17 @@ class DecisionMemoryWriteGate:
             await self._observe(request, policy_assessment, assessment)
             self._log(assessment)
             return assessment
+        if self._decision_model is None:
+            policy_assessment = unadjudicated_decision_assessment(self._policy, reason="decision_model_unavailable")
+            assessment = MemoryWriteAssessment(
+                verdict=MemoryWriteVerdict.ACCEPT,
+                policy_id=self.policy_id,
+                used_fallback=True,
+            )
+            await self._observe(request, policy_assessment, assessment)
+            self._log(assessment)
+            return assessment
+        started = perf_counter()
         decision = await self._decision_model.evaluate(
             DecisionRequest(
                 decision_kind=DecisionKind.MEMORY_WRITE_GATE.value,
@@ -226,10 +258,12 @@ class DecisionMemoryWriteGate:
                 evidence=request.evidence,
             )
         )
+        latency_ms = (perf_counter() - started) * 1000
         assessment = self._map(request, decision)
-        await self._observe(
-            request, _assess_memory_write_decision(decision, hold_on=self._hold_on, policy=self._policy), assessment
-        )
+        policy_assessment = _assess_memory_write_decision(
+            decision, hold_on=self._hold_on, policy=self._policy
+        ).model_copy(update={"latency_ms": latency_ms})
+        await self._observe(request, policy_assessment, assessment)
         self._log(assessment)
         return assessment
 
@@ -306,6 +340,8 @@ class DecisionMemoryWriteGate:
             or tuple(f"evidence:{index}" for index in range(1, len(request.evidence) + 1)),
             privacy_boundary=self._policy.privacy_boundary,
             privacy_outcome=self._privacy_outcome(policy_assessment),
+            provider_id=_model_identity(self._decision_model, "provider_id"),
+            backend_model_id=_model_identity(self._decision_model, "backend_model_id"),
             model_policy_id=None if policy_assessment.source.value == "none" else self.policy_id,
             assessment=_safe_observation_assessment(policy_assessment),
             final_action=f"memory_write_{assessment.verdict.value}",
@@ -400,6 +436,24 @@ def _policy_version(hold_on: DecisionOutcome, threshold: float | None) -> str:
 
     threshold_value = "none" if threshold is None else format(threshold, ".17g")
     return f"1;hold_on={hold_on.value};threshold={threshold_value}"
+
+
+def _policy_hold_on(policy: DecisionPolicy, /) -> DecisionOutcome:
+    """Validate and recover the one decision outcome that the policy maps to a hold."""
+
+    holding = [
+        DecisionOutcome(outcome)
+        for outcome, verdict in policy.outcome_mapping.items()
+        if verdict == DecisionVerdict.DENY.value
+    ]
+    if len(holding) != 1 or holding[0] is DecisionOutcome.ABSTAIN:
+        raise ValueError("the supplied policy must map exactly one decision outcome to deny")  # noqa: TRY003
+    return holding[0]
+
+
+def _model_identity(model: DecisionModel | None, attribute: str, /) -> str | None:
+    value = None if model is None else getattr(model, attribute, None)
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _bounded_subject(candidates: tuple[str, ...]) -> str:

@@ -133,8 +133,8 @@ class DecisionObservation(_StrictModel):
     policy_id: Annotated[str, Field(min_length=1, max_length=256)]
     policy_version: Annotated[str, Field(min_length=1, max_length=64)]
     mode: DecisionPolicyMode
-    subject_refs: tuple[Annotated[str, Field(min_length=1, max_length=512)], ...] = ()
-    evidence_refs: tuple[Annotated[str, Field(min_length=1, max_length=512)], ...] = ()
+    subject_refs: tuple[Annotated[str, Field(min_length=1, max_length=2200)], ...] = ()
+    evidence_refs: tuple[Annotated[str, Field(min_length=1, max_length=2200)], ...] = ()
     privacy_boundary: DecisionPrivacyBoundary
     privacy_outcome: Annotated[str | None, Field(min_length=1, max_length=128)] = None
     provider_id: Annotated[str | None, Field(min_length=1, max_length=128)] = None

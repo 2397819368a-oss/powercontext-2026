@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import ClassVar
 
@@ -32,7 +31,7 @@ from powercontext.builtin.artifacts.memory import (
     MemoryWriteRejectionCode,
     MemoryWriteVerdict,
 )
-from powercontext.builtin.artifacts.memory.errors import MemoryWriteRejectedError
+from powercontext.builtin.artifacts.memory.errors import MemoryCapacityExceededError, MemoryWriteRejectedError
 from powercontext.builtin.inference import InferenceUsage
 from powercontext.builtin.persistence import DecisionObservationRepository
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
@@ -54,7 +53,11 @@ from powercontext.builtin.runtime.decision_model import (
     FailOpenDecisionModel,
 )
 from powercontext.builtin.runtime.decision_policy import DecisionPolicyMode, DecisionPrivacyBoundary
-from powercontext.builtin.runtime.memory_write_gate import DecisionMemoryWriteGate, memory_write_policy
+from powercontext.builtin.runtime.memory_write_gate import (
+    DecisionMemoryWriteGate,
+    build_memory_write_gate,
+    memory_write_policy,
+)
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.builtin.sources import ContentCapture, ContentSource
 from powercontext.errors import ArtifactNotFoundError
@@ -138,6 +141,13 @@ class _FailingGate:
         raise ValueError("gate unavailable")  # noqa: TRY003
 
 
+class _FailingPreflightGate(_ScriptedGate):
+    async def assess_preflight(
+        self, request: MemoryWriteGateRequest, rejection: MemoryWriteAssessment, /
+    ) -> MemoryWriteAssessment:
+        raise ValueError("preflight unavailable")  # noqa: TRY003
+
+
 class _FailingDecisionModel:
     policy_id = "test.decision.failing.v1"
     is_local_only = True
@@ -154,6 +164,14 @@ class _InsufficientDecisionModel:
 
     async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
         return DecisionResult(DecisionOutcome.YES, self.policy_id, InferenceUsage(requests=1))
+
+
+class _SufficientDecisionModel:
+    policy_id = "test.decision.sufficient.v1"
+    is_local_only = True
+
+    async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
+        return DecisionResult(DecisionOutcome.NO, self.policy_id, InferenceUsage(requests=1))
 
 
 class _ContentCandidatePipeline:
@@ -270,9 +288,7 @@ def test_config_enables_the_gate_over_the_decision_backend(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
-def test_enabling_the_gate_without_a_backend_warns_and_passes_writes_through(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_enabling_the_gate_without_a_backend_passes_writes_through(tmp_path: Path) -> None:
     async def scenario() -> None:
         config = _config(tmp_path, RuntimeConfig(memory_write_gate_enabled=True), database="unavailable.db")
         async with open_builtin_runtime(config) as runtime:
@@ -283,11 +299,7 @@ def test_enabling_the_gate_without_a_backend_warns_and_passes_writes_through(
 
             assert written.memory_ref is not None
 
-    with caplog.at_level(logging.WARNING, logger="powercontext.builtin.runtime.composition"):
-        asyncio.run(scenario())
-
-    assert any("no decision backend is available" in message for message in caplog.messages)
-    assert "memory.write-gate.unavailable" in {getattr(record, "event", None) for record in caplog.records}
+    asyncio.run(scenario())
 
 
 def test_a_held_write_is_not_committed_and_stays_visible(tmp_path: Path) -> None:
@@ -404,7 +416,7 @@ def test_artifact_evidence_passes_content_to_the_gate(tmp_path: Path) -> None:
             )
             async with contexts.database.transaction() as connection:
                 stored = await contexts.repositories.artifacts.create(
-                    connection, "project", "experience-db-outcome", draft
+                    connection, "project", "experience/db \u4f1a", draft
                 )
             artifact = Experience.model_validate(stored.model_dump(mode="json"))
 
@@ -418,6 +430,7 @@ def test_artifact_evidence_passes_content_to_the_gate(tmp_path: Path) -> None:
             assert plan.commit is None
             evidence = "\n".join(gate.requests[-1].evidence)
             assert "Opposite outcome text must be visible to the judge." in evidence
+            assert "experience/db \u4f1a" not in evidence
 
     asyncio.run(scenario())
 
@@ -529,9 +542,9 @@ def test_gate_preserves_each_candidate_citation_mapping(tmp_path: Path) -> None:
             )
 
             evidence = "\n".join(gate.requests[-1].evidence)
-            assert "candidate:1 source:content:alpha" in evidence
+            assert "candidate:1 source:Y29udGVudA:YWxwaGE" in evidence
             assert "Alpha uses MySQL." in evidence
-            assert "candidate:2 source:content:beta" in evidence
+            assert "candidate:2 source:Y29udGVudA:YmV0YQ" in evidence
             assert "Beta uses PostgreSQL." in evidence
 
     asyncio.run(scenario())
@@ -557,7 +570,7 @@ def test_gate_request_carries_scope_operation_and_content_free_references(tmp_pa
             assert request.scope_id == "project"
             assert request.operation_id == "memory-write:new"
             assert request.subject_refs == ("candidate:1",)
-            assert request.evidence_refs == ("candidate:1 source:content:requirements",)
+            assert request.evidence_refs == ("candidate:1 source:Y29udGVudA:cmVxdWlyZW1lbnRz",)
             assert "MySQL 8" not in "\n".join(request.evidence_refs)
 
     asyncio.run(scenario())
@@ -590,13 +603,167 @@ def test_decision_gate_persists_a_content_free_observation_sidecar(
         assert [record.__dict__["error_type"] for record in failures] == []
         assert len(observations) == 1
         observation = observations[0]
-        assert observation.final_action == "memory_write_hold"
-        assert observation.subject_refs == ("candidate:1",)
-        assert observation.evidence_refs == ("candidate:1 source:content:private",)
+        assert observation.final_action == "memory_write_held"
+        assert observation.subject_refs == ()
+        assert observation.evidence_refs == ("candidate:1 source:Y29udGVudA:cHJpdmF0ZQ",)
+        assert observation.metadata["incomplete_subject_count"] == 1
         assert observation.assessment.reason is None
         payload = observation.model_dump_json()
         assert "secret claim" not in payload
         assert "secret evidence" not in payload
+
+    asyncio.run(scenario())
+
+
+def test_decision_observation_is_persisted_only_after_the_memory_commit(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = DecisionMemoryWriteGate(
+            _SufficientDecisionModel(),
+            policy=memory_write_policy(mode=DecisionPolicyMode.ENFORCING),
+        )
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            service = (await contexts.get("project")).artifacts.memory
+            plan = await service.plan_remember(
+                memory=None,
+                entries=(MemoryEntryInput(kind="fact", text="Commit the accepted claim."),),
+                mode="append",
+            )
+            async with contexts.database.transaction() as connection:
+                before = await DecisionObservationRepository().observations(connection, "project")
+
+            committed = await service.apply(plan)
+
+            async with contexts.database.transaction() as connection:
+                after = await DecisionObservationRepository().observations(connection, "project")
+
+        assert committed is not None
+        assert before == ()
+        assert len(after) == 1
+        assert after[0].final_action == "memory_write_applied"
+        assert after[0].subject_refs == (
+            f"entry:{plan.commit.entry_versions[0].entry_id}@{plan.commit.entry_versions[0].entry_version_id}",
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    ("https://example.test/page", "src/settings.py", "\u4f1a\u8bae\u8bb0\u5f55", "\u4f1a" * 256),
+)
+def test_decision_observation_keeps_supported_source_identities(tmp_path: Path, source_id: str) -> None:
+    async def scenario() -> None:
+        gate = DecisionMemoryWriteGate(
+            _SufficientDecisionModel(),
+            policy=memory_write_policy(mode=DecisionPolicyMode.ENFORCING),
+        )
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            context = await contexts.get("project")
+            source, _ = await context.sources.capture(
+                ContentCapture(source_id=source_id, content="Supported evidence.")
+            )
+            stored = await context.artifacts.memory.remember(
+                memory=None,
+                sources=(source,),
+                entries=(MemoryEntryInput(kind="fact", text="Supported claim.", sources=(source,)),),
+                mode="append",
+            )
+            async with contexts.database.transaction() as connection:
+                observations = await DecisionObservationRepository().observations(connection, "project")
+
+        assert stored is not None
+        assert len(observations) == 1
+        assert observations[0].final_action == "memory_write_applied"
+
+    asyncio.run(scenario())
+
+
+def test_failing_preflight_gate_fails_open_and_keeps_the_plan_committable(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _FailingPreflightGate(_assessment(MemoryWriteVerdict.HOLD))
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            context = await contexts.get("project")
+            source, _ = await context.sources.capture(
+                ContentCapture(source_id="over-budget", content=f"{'Evidence. ' * 500}Tail.")
+            )
+
+            plan = await context.artifacts.memory.plan_remember(
+                memory=None,
+                sources=(source,),
+                entries=(MemoryEntryInput(kind="fact", text="Tail.", sources=(source,)),),
+                mode="append",
+            )
+
+        assert plan.commit is not None
+        assert plan.decision is not None
+        assert plan.decision.verdict is MemoryWriteVerdict.ACCEPT
+        assert plan.decision.used_fallback is True
+
+    asyncio.run(scenario())
+
+
+def test_no_external_call_gate_without_a_backend_records_an_unadjudicated_observation(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = build_memory_write_gate(
+            None,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.NO_EXTERNAL_CALL,
+        )
+        assert gate is not None
+        async with open_builtin_contexts(
+            _config(tmp_path, database="no-backend.db"), memory_write_gate=gate
+        ) as contexts:
+            context = await contexts.get("project")
+            stored = await context.artifacts.memory.remember(
+                memory=None,
+                entries=(MemoryEntryInput(kind="note", text="No-call observation."),),
+                mode="append",
+            )
+            async with contexts.database.transaction() as connection:
+                observations = await DecisionObservationRepository().observations(connection, "project")
+
+        assert stored is not None
+        assert len(observations) == 1
+        assert observations[0].privacy_outcome == "no_external_call"
+        assert observations[0].assessment.coverage.value == "unadjudicated"
+
+    asyncio.run(scenario())
+
+
+def test_memory_capacity_failure_records_the_actual_failed_action(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = DecisionMemoryWriteGate(
+            _SufficientDecisionModel(),
+            policy=memory_write_policy(mode=DecisionPolicyMode.ENFORCING),
+        )
+        config = _config(
+            tmp_path,
+            RuntimeConfig(memory_max_active_entries=1, memory_max_manifest_entries=1),
+            database="capacity.db",
+        )
+        async with open_builtin_contexts(config, memory_write_gate=gate) as contexts:
+            context = await contexts.get("project")
+            first = await context.artifacts.memory.remember(
+                memory=None,
+                entries=(MemoryEntryInput(kind="note", text="First."),),
+                mode="append",
+            )
+            assert first is not None
+
+            with pytest.raises(MemoryCapacityExceededError):
+                await context.artifacts.memory.remember(
+                    memory=first,
+                    entries=(MemoryEntryInput(kind="note", text="Second."),),
+                    mode="append",
+                )
+            async with contexts.database.transaction() as connection:
+                observations = await DecisionObservationRepository().observations(connection, "project")
+
+        assert [observation.final_action for observation in observations] == [
+            "memory_write_applied",
+            "memory_write_failed",
+        ]
+        assert observations[-1].metadata["incomplete_subject_count"] == 1
 
     asyncio.run(scenario())
 
@@ -694,6 +861,7 @@ def test_mode_aware_gate_observes_projection_budget_rejections_without_holding(
                 entries=(MemoryEntryInput(kind="fact", text="Tail.", sources=(long_source,)),),
                 mode="append",
             )
+            await context.artifacts.memory.apply(plan)
             async with contexts.database.transaction() as connection:
                 observations = await DecisionObservationRepository().observations(connection, "project")
 
@@ -702,7 +870,7 @@ def test_mode_aware_gate_observes_projection_budget_rejections_without_holding(
         assert plan.decision.verdict is verdict
         assert len(observations) == 1
         assert observations[0].assessment.reason == "evidence_projection_budget"
-        assert observations[0].final_action == f"memory_write_{verdict.value}"
+        assert observations[0].final_action == "memory_write_applied"
 
     asyncio.run(scenario())
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -35,12 +35,10 @@ from powercontext.builtin.artifacts.memory.models import (
     MemoryRevisionChanges,
     MemoryUsedSearchMode,
 )
+from powercontext.builtin.decision_observations import DecisionObservation
 from powercontext.builtin.inference import EmbeddingModel, EmbeddingVector
 from powercontext.builtin.tags import TagFilter
 from powercontext.sources import Source
-
-if TYPE_CHECKING:
-    from powercontext.builtin.decision_observations import DecisionObservation
 
 
 class MemoryWriteObservationSink(Protocol):
@@ -162,6 +160,7 @@ class MemoryWritePlan(BaseModel):
     result: Memory | None
     commit: MemoryCommit | None
     decision: MemoryWriteAssessment | None = None
+    decision_observation: DecisionObservation | None = None
 
 
 class MemorySearchRequest(BaseModel):
