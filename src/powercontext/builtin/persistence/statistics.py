@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Relational reads and atomic daily model-usage increments."""
+"""Relational statistics reads and atomic daily usage increments."""
 
 from __future__ import annotations
 
@@ -20,32 +20,42 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import Text, and_, cast, func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.inference import InferenceUsage
+from powercontext.builtin.persistence.atomic_memory import atomic_memory_state_expression
 from powercontext.builtin.persistence.database import SELECTION_BATCH_SIZE
 from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentError
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_CANDIDATE_HEADS_TABLE,
     ARTIFACT_HEADS_TABLE,
+    ARTIFACTS_TABLE,
     MODEL_USAGE_DAILY_TABLE,
+    MYSQL_IDENTITY_COLLATION,
+    RECALL_EFFORT_DAILY_TABLE,
     RECALL_TOKEN_DAILY_TABLE,
     SOURCE_JOURNAL_HEADS_TABLE,
 )
 from powercontext.builtin.sources import validate_scope_id
-from powercontext.builtin.statistics import ModelUsageOperation, ModelUsagePurpose, RecallTokenMeasurement
+from powercontext.builtin.statistics import (
+    ModelUsageOperation,
+    ModelUsagePurpose,
+    RecallEffortMeasurement,
+    RecallTokenMeasurement,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class StoredInventoryCounts:
-    """Current relational head counts, before Memory manifest expansion."""
+    """Current relational head counts and grouped authoritative Atomic Memory counts."""
 
     sources: int
     artifacts: tuple[tuple[str, int], ...]
     candidates: tuple[tuple[str, str, int], ...]
+    memories: tuple[tuple[str, str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +103,12 @@ class StatisticsRepository:
         positions: dict[str, int] = {}
         artifacts: dict[str, list[tuple[str, int]]] = {scope: [] for scope in scopes}
         candidates: dict[str, list[tuple[str, str, int]]] = {scope: [] for scope in scopes}
+        memories: dict[str, list[tuple[str, str, int]]] = {scope: [] for scope in scopes}
+        kind = func.json_extract(cast(ARTIFACTS_TABLE.c.content, Text), "$.kind")
+        if connection.dialect.name == "mysql":
+            kind = func.json_unquote(kind).collate(MYSQL_IDENTITY_COLLATION)
+        else:
+            kind = kind.collate("BINARY")
         for batch in _batches(scopes):
             for scope, position in (
                 await connection.execute(
@@ -105,7 +121,10 @@ class StatisticsRepository:
             for scope, family, total in (
                 await connection.execute(
                     select(ARTIFACT_HEADS_TABLE.c.scope_id, ARTIFACT_HEADS_TABLE.c.family, func.count())
-                    .where(ARTIFACT_HEADS_TABLE.c.scope_id.in_(batch))
+                    .where(
+                        ARTIFACT_HEADS_TABLE.c.scope_id.in_(batch),
+                        ARTIFACT_HEADS_TABLE.c.family != "memory",
+                    )
                     .group_by(ARTIFACT_HEADS_TABLE.c.scope_id, ARTIFACT_HEADS_TABLE.c.family)
                     .order_by(ARTIFACT_HEADS_TABLE.c.scope_id, ARTIFACT_HEADS_TABLE.c.family)
                 )
@@ -133,11 +152,35 @@ class StatisticsRepository:
                 )
             ).all():
                 candidates[str(scope)].append((str(family), str(status), int(total)))
+            # The current search projection holds only active records. Count all
+            # four states against exact authoritative heads, extracting kind in
+            # SQL so neither content nor lineage is expanded in the runtime.
+            for scope, memory_kind, state, total in (
+                await connection.execute(
+                    select(ARTIFACT_HEADS_TABLE.c.scope_id, kind, atomic_memory_state_expression(), func.count())
+                    .select_from(
+                        ARTIFACT_HEADS_TABLE.join(
+                            ARTIFACTS_TABLE,
+                            and_(
+                                ARTIFACTS_TABLE.c.scope_id == ARTIFACT_HEADS_TABLE.c.scope_id,
+                                ARTIFACTS_TABLE.c.family == ARTIFACT_HEADS_TABLE.c.family,
+                                ARTIFACTS_TABLE.c.artifact_id == ARTIFACT_HEADS_TABLE.c.artifact_id,
+                                ARTIFACTS_TABLE.c.revision == ARTIFACT_HEADS_TABLE.c.revision,
+                            ),
+                        )
+                    )
+                    .where(ARTIFACT_HEADS_TABLE.c.scope_id.in_(batch), ARTIFACT_HEADS_TABLE.c.family == "atomic-memory")
+                    .group_by(ARTIFACT_HEADS_TABLE.c.scope_id, kind, atomic_memory_state_expression())
+                    .order_by(ARTIFACT_HEADS_TABLE.c.scope_id, kind, atomic_memory_state_expression())
+                )
+            ).all():
+                memories[str(scope)].append((str(memory_kind), str(state), int(total)))
         return {
             scope: StoredInventoryCounts(
                 sources=positions.get(scope, 0),
                 artifacts=tuple(artifacts[scope]),
                 candidates=tuple(candidates[scope]),
+                memories=tuple(memories[scope]),
             )
             for scope in scopes
         }
@@ -313,6 +356,39 @@ class StatisticsRepository:
                     "baseline_tokens",
                     "recalled_tokens",
                 )
+            })
+        else:
+            raise InvalidRepositoryArgumentError("dialect", f"unsupported database dialect: {dialect}")
+        await connection.execute(statement)
+
+    async def record_recall_effort(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        usage_date: date,
+        measurement: RecallEffortMeasurement,
+        /,
+    ) -> None:
+        """Atomically add one validated observation to its scope-local UTC daily key."""
+
+        scope = validate_scope_id(scope_id)
+        # Validate even an embedding caller's model_construct/model_copy value
+        # before issuing SQL; inconsistent counts must never be silently repaired.
+        values = RecallEffortMeasurement.model_validate(measurement.model_dump()).model_dump()
+        values.update(scope_id=scope, usage_date=usage_date)
+        keys = ("scope_id", "usage_date", "policy_id", "assessment")
+        counters = tuple(name for name in values if name not in keys)
+        dialect = connection.dialect.name
+        if dialect == "sqlite":
+            statement = sqlite_insert(RECALL_EFFORT_DAILY_TABLE).values(**values)
+            statement = statement.on_conflict_do_update(
+                index_elements=keys,
+                set_={name: RECALL_EFFORT_DAILY_TABLE.c[name] + statement.excluded[name] for name in counters},
+            )
+        elif dialect == "mysql":
+            statement = mysql_insert(RECALL_EFFORT_DAILY_TABLE).values(**values)
+            statement = statement.on_duplicate_key_update(**{
+                name: RECALL_EFFORT_DAILY_TABLE.c[name] + statement.inserted[name] for name in counters
             })
         else:
             raise InvalidRepositoryArgumentError("dialect", f"unsupported database dialect: {dialect}")

@@ -58,6 +58,75 @@ class ServerInfo(BaseModel):
     ]
 
 
+class AtomicMemoryState(StrEnum):
+    ACTIVE = "active"
+    FORGOTTEN = "forgotten"
+    MERGED = "merged"
+    RETIRED = "retired"
+
+
+class Family(StrEnum):
+    ATOMIC_MEMORY = "atomic-memory"
+
+
+class AtomicMemoryTarget(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    revision: Annotated[StrictInt | None, Field(ge=1)] = None
+
+
+class Tag(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(min_length=1)]
+
+
+class MatchedByEnum(StrEnum):
+    TEXT = "text"
+    VECTOR = "vector"
+
+
+class AtomicMemoryRestorationItem(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact_id: Annotated[StrictStr, Field(min_length=1)]
+    source_revision: Annotated[StrictInt, Field(ge=1)]
+    creates_revision: StrictBool
+
+
+class AtomicMemoryRestorationEndpoint(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact_id: Annotated[StrictStr, Field(min_length=1)]
+    revision: Annotated[StrictInt, Field(ge=1)]
+    state_version: Annotated[StrictInt, Field(ge=0)]
+
+
+class UndoMergeResult(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(min_length=1)]
+
+
+class AtomicMemoryContentSchema(StrEnum):
+    POWERCONTEXT_ATOMIC_MEMORY_V1 = "powercontext.atomic-memory.v1"
+
+
+class AtomicMemorySearchMode(StrEnum):
+    TEXT = "text"
+    VECTOR = "vector"
+    HYBRID = "hybrid"
+
+
+class AtomicMemoryRestorationOperation(StrEnum):
+    RESTORE = "restore"
+    UNDO_MERGE = "undo_merge"
+
+
+class AtomicMemoryLifecycleState(StrEnum):
+    FORGOTTEN = "forgotten"
+
+
 class SubjectType(StrEnum):
     USER = "user"
 
@@ -150,7 +219,7 @@ class ProfileCandidateProposal(BaseModel):
     created_at: AwareDatetime
 
 
-class Family(StrEnum):
+class Family1(StrEnum):
     PROFILE = "profile"
 
 
@@ -434,6 +503,17 @@ class ListDreamRunsRequest(BaseModel):
     limit: Annotated[StrictInt, Field(ge=1, le=100)] = 20
 
 
+class CreateDreamRunRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    operation: DreamOperation
+    artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
+    sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
+    target: ArtifactReference | None = None
+    idempotency_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^\\S(?:[\\s\\S]*\\S)?$")]
+
+
 class DreamBudget(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -471,6 +551,19 @@ class DreamEvidenceEdge(BaseModel):
     )
     derived_id: StrictStr
     upstream_id: StrictStr
+
+
+class DreamEvidenceNode(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    evidence_id: StrictStr
+    kind: DreamEvidenceKind
+    digest: StrictStr
+    source: DreamSourceReference | None = None
+    artifact: ArtifactReference | None = None
+    role: DreamEvidenceRole
+    historical: StrictBool = False
 
 
 class DreamRootEvidenceGroup(BaseModel):
@@ -945,15 +1038,11 @@ class HandoffArtifactCitation(BaseModel):
     artifact_ref: ArtifactReference
 
 
-class Kind1(StrEnum):
-    MEMORY = "memory"
-
-
 class Trust3(StrEnum):
     UNTRUSTED_HISTORY = "untrusted_history"
 
 
-class Kind2(StrEnum):
+class Kind1(StrEnum):
     SOURCE = "source"
 
 
@@ -1563,16 +1652,7 @@ class ListExternalSkillsRequest(BaseModel):
     include_unavailable: StrictBool = False
 
 
-class MemoryCitation(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    memory_ref: ArtifactReference
-    entry_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
-    entry_version_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
-
-
-class Kind3(StrEnum):
+class Kind2(StrEnum):
     CHANGES = "changes"
 
 
@@ -1583,7 +1663,7 @@ class CodeChangesOperation(BaseModel):
     kind: Literal["changes"]
 
 
-class Kind4(StrEnum):
+class Kind3(StrEnum):
     MAP = "map"
 
 
@@ -1604,7 +1684,7 @@ class CodeMapOperation(BaseModel):
         return self
 
 
-class Kind5(StrEnum):
+class Kind4(StrEnum):
     READ = "read"
 
 
@@ -1626,7 +1706,7 @@ class CodeReadOperation(BaseModel):
         return self
 
 
-class Kind6(StrEnum):
+class Kind5(StrEnum):
     CALLERS = "callers"
     CALLEES = "callees"
     IMPACT = "impact"
@@ -1650,7 +1730,7 @@ class CodeRelationOperation(BaseModel):
         return self
 
 
-class Kind7(StrEnum):
+class Kind6(StrEnum):
     SYMBOLS = "symbols"
     EXPLORE = "explore"
 
@@ -1672,7 +1752,7 @@ class CodeSearchOperation(BaseModel):
         return self
 
 
-class Kind8(StrEnum):
+class Kind7(StrEnum):
     STATUS = "status"
 
 
@@ -1683,7 +1763,7 @@ class CodeStatusOperation(BaseModel):
     kind: Literal["status"]
 
 
-class Kind9(StrEnum):
+class Kind8(StrEnum):
     AFFECTED_TESTS = "affected_tests"
     IMPACT_CHANGES = "impact_changes"
 
@@ -1867,7 +1947,10 @@ class RetireMemoryEntryRequest(BaseModel):
         extra="forbid",
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    citation: MemoryCitation
+    citation: Annotated[
+        dict[str, Any],
+        Field(description="Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."),
+    ]
     reason: Annotated[StrictStr | None, Field(max_length=512)] = None
 
 
@@ -1886,7 +1969,10 @@ class ReviseMemoryEntryRequest(BaseModel):
         extra="forbid",
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    citation: MemoryCitation
+    citation: Annotated[
+        dict[str, Any],
+        Field(description="Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."),
+    ]
     kind: Annotated[StrictStr, Field(max_length=128, min_length=1)]
     text: Annotated[StrictStr, Field(description="Must not exceed 8192 UTF-8 bytes after normalization.", min_length=1)]
     reason: Annotated[StrictStr | None, Field(max_length=512)] = None
@@ -2109,7 +2195,7 @@ class TopicMemoryWriteContent(BaseModel):
     detail: Annotated[StrictStr, Field(max_length=125000, min_length=1, pattern=".*\\S.*")]
 
 
-class Family1(StrEnum):
+class Family2(StrEnum):
     TOPIC_MEMORY = "topic-memory"
 
 
@@ -2128,23 +2214,23 @@ class ReplaceTopicMemoryArtifactRequest(BaseModel):
     content: TopicMemoryWriteContent
 
 
-class Family2(StrEnum):
+class Family3(StrEnum):
     PROMPT = "prompt"
 
 
-class Family3(StrEnum):
+class Family4(StrEnum):
     MEMORY = "memory"
 
 
-class Family4(StrEnum):
+class Family5(StrEnum):
     EXPERIENCE = "experience"
 
 
-class Family5(StrEnum):
+class Family6(StrEnum):
     SKILL = "skill"
 
 
-class Family6(StrEnum):
+class Family7(StrEnum):
     HANDOFF = "handoff"
 
 
@@ -2187,6 +2273,7 @@ class CreateSourceRequest(BaseModel):
 
 class TaggableArtifactFamily(StrEnum):
     MEMORY = "memory"
+    ATOMIC_MEMORY = "atomic-memory"
     EXPERIENCE = "experience"
     SKILL = "skill"
     HANDOFF = "handoff"
@@ -2222,7 +2309,7 @@ class Type1(StrEnum):
     MEMORY_ENTRY = "memory_entry"
 
 
-class Family7(StrEnum):
+class Family8(StrEnum):
     MEMORY = "memory"
 
 
@@ -2231,7 +2318,7 @@ class MemoryEntryTagTarget(BaseModel):
         extra="forbid",
     )
     type: Literal["memory_entry"]
-    family: Family7
+    family: Family8
     artifact_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
     entry_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
 
@@ -2240,7 +2327,7 @@ class TagTarget(RootModel[ArtifactTagTarget | MemoryEntryTagTarget]):
     root: Annotated[ArtifactTagTarget | MemoryEntryTagTarget, Field(discriminator="type")]
 
 
-class Tag(RootModel[StrictStr]):
+class Tag2(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(max_length=64, min_length=1)]
 
 
@@ -2248,7 +2335,7 @@ class TagFilter(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    tags: Annotated[list[Tag], Field(max_length=16, min_length=1)]
+    tags: Annotated[list[Tag2], Field(max_length=16, min_length=1)]
     match: TagMatch = TagMatch.ALL
 
 
@@ -2256,14 +2343,14 @@ class ReplaceArtifactTagsRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    tags: Annotated[list[Tag], Field(max_length=32, min_length=0)]
+    tags: Annotated[list[Tag2], Field(max_length=32, min_length=0)]
 
 
 class QueryArtifactTagsRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    tags: Annotated[list[Tag], Field(max_length=16, min_length=1)]
+    tags: Annotated[list[Tag2], Field(max_length=16, min_length=1)]
     match: TagMatch = TagMatch.ALL
     families: Annotated[
         list[TaggableArtifactFamily] | None,
@@ -2285,7 +2372,7 @@ class ArtifactTagSet(BaseModel):
     )
     scope_id: StrictStr
     target: TagTarget
-    tags: Annotated[list[Tag], Field(max_length=32, min_length=0)]
+    tags: Annotated[list[Tag2], Field(max_length=32, min_length=0)]
     tag_digest: Annotated[
         StrictStr,
         Field(
@@ -2301,7 +2388,7 @@ class TaggedTarget(BaseModel):
     )
     scope_id: StrictStr
     target: TagTarget
-    tags: Annotated[list[Tag], Field(max_length=32, min_length=0)]
+    tags: Annotated[list[Tag2], Field(max_length=32, min_length=0)]
     tag_digest: Annotated[
         StrictStr,
         Field(
@@ -2309,7 +2396,7 @@ class TaggedTarget(BaseModel):
             pattern="^sha256:[0-9a-f]{64}$",
         ),
     ]
-    reference: ArtifactReference | MemoryCitation
+    reference: ArtifactReference
 
 
 class ArtifactTagPage(BaseModel):
@@ -2367,6 +2454,8 @@ class ListSourcesRequest(BaseModel):
 class PromptKey(StrEnum):
     MEMORY_EXTRACT = "memory.extract"
     MEMORY_RERANK = "memory.rerank"
+    ATOMIC_MEMORY_EXTRACT = "atomic_memory.extract"
+    ATOMIC_MEMORY_RECONCILE = "atomic_memory.reconcile"
     EXPERIENCE_INCUBATE = "experience.incubate"
     EXPERIENCE_GENERATE = "experience.generate"
     SKILL_GENERATE = "skill.generate"
@@ -2564,6 +2653,7 @@ class CaptureStatus(StrEnum):
 
 class BaseArtifactFamily(StrEnum):
     MEMORY = "memory"
+    ATOMIC_MEMORY = "atomic-memory"
     EXPERIENCE = "experience"
     SKILL = "skill"
     HANDOFF = "handoff"
@@ -2574,6 +2664,7 @@ class BaseArtifactFamily(StrEnum):
 
 class ArtifactReadFamily(StrEnum):
     MEMORY = "memory"
+    ATOMIC_MEMORY = "atomic-memory"
     EXPERIENCE = "experience"
     SKILL = "skill"
     HANDOFF = "handoff"
@@ -2648,16 +2739,6 @@ class TopicMemoryMatchedBy(StrEnum):
 class TopicMemoryUsedSearchMode(StrEnum):
     FTS = "fts"
     HYBRID = "hybrid"
-
-
-class MemoryEntryState(StrEnum):
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-
-
-class MemoryMatchedBy(StrEnum):
-    FTS = "fts"
-    VECTOR = "vector"
 
 
 class MemorySearchMode(StrEnum):
@@ -3104,6 +3185,196 @@ class AccessAuditPage(BaseModel):
     next_cursor: Annotated[StrictStr | None, Field(max_length=2048)]
 
 
+class AtomicMemoryWriteContent(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_: Annotated[AtomicMemoryContentSchema, Field(alias="schema")] = (
+        AtomicMemoryContentSchema.POWERCONTEXT_ATOMIC_MEMORY_V1
+    )
+    kind: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    text: Annotated[
+        StrictStr,
+        Field(
+            description="Memory text is NFC-normalized and trimmed before enforcing an 8192 UTF-8 byte limit.",
+            min_length=1,
+        ),
+    ]
+
+
+class CreateAtomicMemoryArtifactRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    family: Literal["atomic-memory"]
+    content: AtomicMemoryWriteContent
+
+
+class ReplaceAtomicMemoryArtifactRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    content: AtomicMemoryWriteContent
+
+
+class AtomicMemoryStateResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact: ArtifactReference
+    state: AtomicMemoryState
+    state_version: Annotated[StrictInt, Field(ge=0)]
+    merged_into_id: Annotated[StrictStr | None, Field(...)]
+
+
+class AtomicMemoryRecord(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact: ArtifactReference
+    kind: Annotated[StrictStr, Field(min_length=1)]
+    text: Annotated[StrictStr, Field(min_length=1)]
+    state: AtomicMemoryState
+    state_version: Annotated[StrictInt, Field(ge=0)]
+    merged_into_id: Annotated[StrictStr | None, Field(...)]
+
+
+class AtomicMemoryInput(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact: ArtifactReference
+    state_version: Annotated[StrictInt, Field(ge=0)]
+
+
+class ListAtomicMemoryRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    states: list[AtomicMemoryState] | None = None
+    kind: Annotated[StrictStr | None, Field(min_length=1)] = None
+    tags: Annotated[list[Tag] | None, Field(max_length=16)] = None
+    tag_match: TagMatch | None = None
+    limit: Annotated[StrictInt, Field(ge=1, le=100)] = 50
+    cursor: Annotated[StrictStr | None, Field(max_length=4096)] = None
+
+
+class ListAtomicMemoryResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    items: list[AtomicMemoryRecord]
+    next_cursor: Annotated[StrictStr | None, Field(...)]
+
+
+class SearchAtomicMemoryRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    query: Annotated[StrictStr, Field(max_length=8192, min_length=1)]
+    mode: AtomicMemorySearchMode = AtomicMemorySearchMode.TEXT
+    kind: Annotated[StrictStr | None, Field(min_length=1)] = None
+    tags: Annotated[list[Tag] | None, Field(max_length=16)] = None
+    tag_match: TagMatch | None = None
+    limit: Annotated[StrictInt, Field(ge=1, le=100)] = 20
+
+
+class AtomicMemorySearchHit(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    memory: AtomicMemoryRecord
+    score: StrictFloat
+    matched_by: list[MatchedByEnum]
+
+
+class SearchAtomicMemoryResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    mode: AtomicMemorySearchMode
+    hits: list[AtomicMemorySearchHit]
+
+
+class MergeAtomicMemoryRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    inputs: Annotated[list[AtomicMemoryInput], Field(min_length=2)]
+    content: AtomicMemoryWriteContent
+    source_refs: list[SourceReference] | None = None
+    artifact_refs: list[ArtifactReference] | None = None
+
+
+class AtomicMemoryMutationResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    changed: StrictBool
+    records: list[AtomicMemoryRecord]
+
+
+class AtomicMemoryLifecycleRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    target: AtomicMemoryInput
+    state: AtomicMemoryLifecycleState
+
+
+class AtomicMemoryRestorationRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    target: AtomicMemoryTarget
+    operation: AtomicMemoryRestorationOperation = AtomicMemoryRestorationOperation.RESTORE
+    preview_token: StrictStr | None = None
+
+
+class AtomicMemoryRestorationPreviewRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    target: AtomicMemoryTarget
+    operation: AtomicMemoryRestorationOperation = AtomicMemoryRestorationOperation.RESTORE
+
+
+class AtomicMemoryRestorationPreview(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    preview_token: Annotated[StrictStr, Field(min_length=1)]
+    expires_at: AwareDatetime
+    endpoint: AtomicMemoryRestorationEndpoint
+    restore: list[AtomicMemoryRestorationItem]
+    retire: list[ArtifactReference]
+    undo_merge_results: list[UndoMergeResult]
+
+
+class AtomicMemoryRestorationResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    changed: StrictBool
+    restored: list[ArtifactReference]
+    retired: list[ArtifactReference]
+    undo_merge_results: list[UndoMergeResult]
+
+
+class LegacyMemoryTarget(RootModel[MemoryEntryTagTarget]):
+    root: MemoryEntryTagTarget
+
+
+class GetMemoryEntryResponse(RootModel[AtomicMemoryRecord]):
+    root: AtomicMemoryRecord
+
+
 class FlushProfileResponse(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -3165,7 +3436,6 @@ class ArtifactRevision(BaseModel):
     content: dict[str, Any]
     sources: list[SourceTypeReference]
     artifacts: list[ArtifactReference]
-    memory_citations: Annotated[list[MemoryCitation], Field(validate_default=True)] = []
     content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
 
 
@@ -3177,31 +3447,57 @@ class HandoffReceiptIdentity(BaseModel):
     receiver_identity_matches: StrictBool
 
 
-class CreateDreamRunRequest(BaseModel):
+class DreamInputManifest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    operation: DreamOperation
+    transform_version: StrictStr = "powercontext.dream.evidence.v1"
     artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
-    memory_citations: Annotated[list[MemoryCitation], Field(validate_default=True)] = []
     sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
-    target: ArtifactReference | None = None
-    idempotency_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^\\S(?:[\\s\\S]*\\S)?$")]
+    nodes: Annotated[list[DreamEvidenceNode], Field(validate_default=True)] = []
+    edges: Annotated[list[DreamEvidenceEdge], Field(validate_default=True)] = []
+    root_groups: Annotated[list[DreamRootEvidenceGroup], Field(validate_default=True)] = []
+    projection_digest: StrictStr
+    projection_bytes: StrictInt
+    incomplete: StrictBool = False
 
 
-class DreamEvidenceNode(BaseModel):
+class DreamRun(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    evidence_id: StrictStr
-    kind: DreamEvidenceKind
-    digest: StrictStr
-    source: DreamSourceReference | None = None
-    artifact: ArtifactReference | None = None
-    memory_citations: Annotated[list[MemoryCitation], Field(validate_default=True)] = []
-    role: DreamEvidenceRole
-    historical: StrictBool = False
-    current_entry_version_id: StrictStr | None = None
+    scope_id: StrictStr
+    run_id: StrictStr
+    operation: DreamOperation
+    status: DreamStatus = DreamStatus.QUEUED
+    outcome: DreamOutcome | None = None
+    target: ArtifactReference | None = None
+    candidate: DreamCandidateRef | None = None
+    reason: StrictStr | None = None
+    error: StrictStr | None = None
+    accepted_at: AwareDatetime
+    started_at: AwareDatetime | None = None
+    completed_at: AwareDatetime | None = None
+    attempt_count: StrictInt = 0
+    input_manifest: DreamInputManifest | None = None
+    usage: DreamUsage | None = None
+    budget: DreamBudget | None = None
+    prompt_version: StrictStr = "powercontext.dream.v1"
+    model_config_id: Annotated[StrictStr | None, Field(...)]
+    historical_data: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description="Original request and input manifest of a terminal run migrated from the legacy Memory format. Present only on such runs; never accepted as evidence."
+        ),
+    ] = None
+
+
+class DreamRunPage(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    runs: list[DreamRun]
+    next_cursor: StrictStr | None = None
 
 
 class ExtractionObservation(BaseModel):
@@ -3353,14 +3649,6 @@ class SourceObservationReceipt(BaseModel):
     )
     source: SourceReference
     position: Annotated[StrictInt, Field(ge=1)]
-
-
-class HandoffMemoryCitation(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    kind: Literal["memory"]
-    memory_citation: MemoryCitation
 
 
 class HandoffSourceCitation(BaseModel):
@@ -3525,11 +3813,15 @@ class FlushMemoryResponse(BaseModel):
     high_watermark: Annotated[StrictInt, Field(ge=0)]
     processed_source_count: Annotated[StrictInt, Field(ge=0)]
     memory: ArtifactReference | None = None
+    remaining_work: Annotated[
+        StrictBool, Field(description="More Source journal work remains after the committed window.")
+    ] = False
     held_count: Annotated[
-        StrictInt, Field(description="Number of source windows held by the Memory write gate.", ge=0)
+        StrictInt, Field(description="Compatibility field; Atomic Memory processing always returns zero.", ge=0)
     ] = 0
     hold_codes: Annotated[
-        list[StrictStr], Field(description="Structured Memory write gate refusal codes for held windows.")
+        list[StrictStr],
+        Field(description="Compatibility field; Atomic Memory processing always returns an empty array."),
     ] = []
 
 
@@ -3545,7 +3837,19 @@ class GetMemoryEntryRequest(BaseModel):
         extra="forbid",
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    citation: MemoryCitation
+    citation: Annotated[
+        dict[str, Any] | None,
+        Field(description="Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."),
+    ] = None
+    target: LegacyMemoryTarget | None = None
+
+    @model_validator(mode="after")
+    def _validate_exclusive_fields(self):
+        fields = ("citation", "target")
+        present = tuple(field for field in fields if field in self.model_fields_set)
+        if len(present) != 1 or getattr(self, present[0]) is None:
+            raise ValueError("exactly one non-null address is required")  # noqa: TRY003
+        return self
 
 
 class GetHandoffReportRequest(BaseModel):
@@ -3574,9 +3878,19 @@ class ListMemoryEntriesRequest(BaseModel):
     )
     tag_filter: TagFilter | None = None
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    include_inactive: Annotated[
-        StrictBool, Field(description="Include inactive entries from the current Memory head for explicit audit.")
-    ] = False
+    include_inactive: Annotated[StrictBool, Field(description="Include all four Atomic Memory lifecycle states.")] = (
+        False
+    )
+    limit: Annotated[StrictInt, Field(ge=1, le=100)] = 50
+    cursor: Annotated[StrictStr | None, Field(min_length=1)] = None
+
+
+class ListMemoryEntriesResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    entries: list[AtomicMemoryRecord]
+    next_cursor: StrictStr | None = None
 
 
 class ListArtifactCandidatesRequest(BaseModel):
@@ -3590,25 +3904,12 @@ class ListArtifactCandidatesRequest(BaseModel):
     limit: Annotated[StrictInt, Field(ge=1, le=100)] = 50
 
 
-class MemoryEntry(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    citation: MemoryCitation
-    version: Annotated[StrictInt, Field(ge=1)]
-    kind: StrictStr
-    text: StrictStr
-    state: MemoryEntryState
-    source_refs: list[SourceReference]
-    artifact_refs: list[ArtifactReference]
-
-
 class MemoryMutationResponse(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory: ArtifactReference
-    entry: MemoryEntry | None = None
+    changed: StrictBool
+    records: list[AtomicMemoryRecord]
 
 
 class MemoryRevisionChanges(BaseModel):
@@ -3657,14 +3958,6 @@ class ProposeExperienceRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation],
-        Field(
-            description="Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            max_length=32,
-            validate_default=True,
-        ),
-    ] = []
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     proposal: ExperienceProposal
     source_refs: Annotated[
@@ -3686,7 +3979,7 @@ class ProposeExperienceRequest(BaseModel):
 
     @model_validator(mode="after")
     def _reject_excess_candidate_evidence(self):
-        if len(self.source_refs) + len(self.artifact_refs) + len(self.memory_citations or ()) > 32:
+        if len(self.source_refs) + len(self.artifact_refs) > 32:
             raise ValueError(  # noqa: TRY003
                 "source_refs and artifact_refs together must not exceed 32 references"
             )
@@ -3800,13 +4093,6 @@ class ReviseArtifactCandidateRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation] | None,
-        Field(
-            description="Omission or null retains the current citations; an explicit array replaces them, including an empty array. Non-empty only for Experience.",
-            max_length=32,
-        ),
-    ] = None
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     candidate_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
     expected_version: Annotated[StrictInt, Field(ge=1)]
@@ -3830,21 +4116,11 @@ class ReviseArtifactCandidateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _reject_excess_candidate_evidence(self):
-        if len(self.source_refs) + len(self.artifact_refs) + len(self.memory_citations or ()) > 32:
+        if len(self.source_refs) + len(self.artifact_refs) > 32:
             raise ValueError(  # noqa: TRY003
                 "source_refs and artifact_refs together must not exceed 32 references"
             )
         return self
-
-
-class SearchMemoryHit(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    citation: MemoryCitation
-    text: StrictStr
-    score: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
-    matched_by: list[MemoryMatchedBy]
 
 
 class SearchTopicMemoryHit(BaseModel):
@@ -3882,9 +4158,8 @@ class SearchMemoryResponse(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory: ArtifactReference | None = None
-    mode: MemoryUsedSearchMode | None = None
-    hits: list[SearchMemoryHit]
+    mode: AtomicMemorySearchMode
+    hits: list[AtomicMemorySearchHit]
 
 
 class TopicMemoryArtifact(BaseModel):
@@ -4020,66 +4295,10 @@ class CreateSubjectSourceResponse(BaseModel):
     sources: Annotated[list[SourceRecord], Field(max_length=2, min_length=2)]
 
 
-class DreamInputManifest(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    transform_version: StrictStr = "powercontext.dream.evidence.v1"
-    artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
-    memory_citations: Annotated[list[MemoryCitation], Field(validate_default=True)] = []
-    sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
-    nodes: Annotated[list[DreamEvidenceNode], Field(validate_default=True)] = []
-    edges: Annotated[list[DreamEvidenceEdge], Field(validate_default=True)] = []
-    root_groups: Annotated[list[DreamRootEvidenceGroup], Field(validate_default=True)] = []
-    projection_digest: StrictStr
-    projection_bytes: StrictInt
-    incomplete: StrictBool = False
-
-
-class DreamRun(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    scope_id: StrictStr
-    run_id: StrictStr
-    operation: DreamOperation
-    status: DreamStatus = DreamStatus.QUEUED
-    outcome: DreamOutcome | None = None
-    target: ArtifactReference | None = None
-    candidate: DreamCandidateRef | None = None
-    reason: StrictStr | None = None
-    error: StrictStr | None = None
-    accepted_at: AwareDatetime
-    started_at: AwareDatetime | None = None
-    completed_at: AwareDatetime | None = None
-    attempt_count: StrictInt = 0
-    input_manifest: DreamInputManifest | None = None
-    usage: DreamUsage | None = None
-    budget: DreamBudget | None = None
-    prompt_version: StrictStr = "powercontext.dream.v1"
-    model_config_id: Annotated[StrictStr | None, Field(...)]
-
-
-class DreamRunPage(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    runs: list[DreamRun]
-    next_cursor: StrictStr | None = None
-
-
 class ArtifactCandidate(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation],
-        Field(
-            description="Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            max_length=32,
-            validate_default=True,
-        ),
-    ] = []
     permissions: Annotated[
         CandidatePermissions | None,
         Field(description="Current Principal permissions in enforced mode; advisory and checked again on mutation."),
@@ -4110,7 +4329,7 @@ class ArtifactCandidate(BaseModel):
 
     @model_validator(mode="after")
     def _reject_excess_candidate_evidence(self):
-        if len(self.source_refs) + len(self.artifact_refs) + len(self.memory_citations or ()) > 32:
+        if len(self.source_refs) + len(self.artifact_refs) > 32:
             raise ValueError(  # noqa: TRY003
                 "source_refs and artifact_refs together must not exceed 32 references"
             )
@@ -4139,10 +4358,8 @@ class ExtractionStatus(BaseModel):
     observation: ExtractionObservation
 
 
-class HandoffCitation(RootModel[HandoffSourceCitation | HandoffArtifactCitation | HandoffMemoryCitation]):
-    root: Annotated[
-        HandoffSourceCitation | HandoffArtifactCitation | HandoffMemoryCitation, Field(discriminator="kind")
-    ]
+class HandoffCitation(RootModel[HandoffSourceCitation | HandoffArtifactCitation]):
+    root: Annotated[HandoffSourceCitation | HandoffArtifactCitation, Field(discriminator="kind")]
 
 
 class HandoffEvidenceCheck(BaseModel):
@@ -4185,14 +4402,6 @@ class ExperienceArtifact(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation],
-        Field(
-            description="Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            max_length=32,
-            validate_default=True,
-        ),
-    ] = []
     artifact: ArtifactReference
     content: ExperienceProposal
     source_refs: list[SourceReference]
@@ -4203,14 +4412,6 @@ class SkillArtifact(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation],
-        Field(
-            description="Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            max_length=32,
-            validate_default=True,
-        ),
-    ] = []
     artifact: ArtifactReference
     content: SkillProposal
     source_refs: list[SourceReference]
@@ -4241,14 +4442,6 @@ class ListMemoryChangesResponse(BaseModel):
     )
     memory: ArtifactReference | None = None
     revisions: list[MemoryRevisionChanges]
-
-
-class ListMemoryEntriesResponse(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    memory: ArtifactReference | None = None
-    entries: list[MemoryEntry]
 
 
 class PrepareContextRequest(BaseModel):
@@ -4613,7 +4806,8 @@ class HandoffActivation(BaseModel):
 
 class CreateArtifactRequest(
     RootModel[
-        CreateTopicMemoryArtifactRequest
+        CreateAtomicMemoryArtifactRequest
+        | CreateTopicMemoryArtifactRequest
         | CreateMemoryArtifactRequest
         | CreateExperienceArtifactRequest
         | CreateSkillArtifactRequest
@@ -4623,7 +4817,8 @@ class CreateArtifactRequest(
     ]
 ):
     root: Annotated[
-        CreateTopicMemoryArtifactRequest
+        CreateAtomicMemoryArtifactRequest
+        | CreateTopicMemoryArtifactRequest
         | CreateMemoryArtifactRequest
         | CreateExperienceArtifactRequest
         | CreateSkillArtifactRequest
@@ -4636,7 +4831,8 @@ class CreateArtifactRequest(
 
 class ReplaceArtifactRequest(
     RootModel[
-        ReplaceTopicMemoryArtifactRequest
+        ReplaceAtomicMemoryArtifactRequest
+        | ReplaceTopicMemoryArtifactRequest
         | ReplaceMemoryArtifactRequest
         | ReplaceExperienceArtifactRequest
         | ReplaceSkillArtifactRequest
@@ -4646,7 +4842,8 @@ class ReplaceArtifactRequest(
     ]
 ):
     root: (
-        ReplaceTopicMemoryArtifactRequest
+        ReplaceAtomicMemoryArtifactRequest
+        | ReplaceTopicMemoryArtifactRequest
         | ReplaceMemoryArtifactRequest
         | ReplaceExperienceArtifactRequest
         | ReplaceSkillArtifactRequest
