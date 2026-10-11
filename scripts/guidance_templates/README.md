@@ -5,6 +5,11 @@ Change `base/` for common instructions and `hosts/<host>/` for genuine host diff
 Host templates inherit named blocks; do not edit generated copies under `integrations/`.
 `resources.json` lists the complete packaged resource set, including linked references.
 `legacy.json` is a frozen migration record of pristine pre-marker resources, not a second editable guidance source.
+Generated `.powercontext-guidance.json` files separate the current `resources` inventory from
+`legacy_sha256` migration hashes using `schema_version: 1`. Initial flat hash-map manifests remain readable.
+All declared resources (including unlinked auxiliary files) and local Markdown references must exist before
+installation writes. Managed content without its manifest, invalid manifests, and incomplete legacy reference
+trees are rejected; existing files never repair an incomplete incoming package.
 
 Run `uv run python scripts/integration_guidance_skills.py --write` (or `make integration-guidance`),
 then `uv run python scripts/integration_guidance_skills.py --check-generated`.
@@ -35,6 +40,12 @@ user files even when the incoming package predates managed-refresh metadata. Wor
 owned hook's interpreter substitution to recognize untouched legacy guidance across environment changes;
 the complete normalized document must still match its frozen migration hash.
 
+An upgrade that drops a previously owned resource requires an explicit migration and currently fails before
+writing. This preserves edits and notes in retired resources and avoids silently reviving them as user files.
+Unlisted Markdown with ownership markers is also rejected rather than classified as a personal file.
+User-added unmarked files continue to be preserved. These installation checks do not validate arbitrary
+external URLs or provide content authenticity for an untrusted package.
+
 Git attributes keep packaged guidance resources in LF form, including on `core.autocrlf=true` checkouts.
 This checkout policy does not normalize local notes outside the managed region during refresh.
 
@@ -43,5 +54,5 @@ host-provided plugin root, verifies its helper, and falls back to the installed 
 the environment variable is unavailable. Other existing host instructions are retained through template inheritance.
 
 After committing a Claude Code Skill change, refresh its pinned evaluation copy with
-`uv run python evaluation/skill-up/sync_skill.py --revision HEAD` and run that script with `--check`.
+`uv run python evaluation/skills/skill-up/sync_skill.py --revision HEAD` and run that script with `--check`.
 The offline evaluation checks do not replace a new authenticated model run for the new pin.

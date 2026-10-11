@@ -125,7 +125,12 @@ def generated_guidance(root: Path = ROOT) -> dict[Path, bytes]:
                     )
             output[root / descriptor.skill / relative] = content.encode("utf-8")
         output[root / descriptor.skill / RESOURCE_MANIFEST] = (
-            json.dumps(legacy[host], sort_keys=True, indent=2) + "\n"
+            json.dumps(
+                {"schema_version": 1, "resources": sorted(paths), "legacy_sha256": legacy[host]},
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
         ).encode("utf-8")
     for relative in FILE_HOSTS.values():
         file_skill(root / relative, generated=output)

@@ -119,6 +119,10 @@ liveness, readiness, capabilities, declared routes, the current Scope, and a rea
 A Scope failure leaves health results available. The endpoint summary shows only its origin, configuration source
 and whether a path prefix exists; credentials, prefix text, query strings and fragments are not printed.
 
+Doctor reports the active host's native MCP catalog separately. The documented DSH installation is HTTP-only, so
+`native_mcp_unconfigured` does not fail an otherwise healthy HTTP plugin. If other native MCP tools are visible
+but `mcp__powercontext__*` is absent, Doctor reports `native_mcp_powercontext_missing` with a recovery action.
+
 Each failed check identifies the operation, a stable code, HTTP status/request ID when available, and a recovery
 action. Protocol errors also include `protocol_issue`, identifying the violated JSON, status or PreparedContext field rule.
 Readiness retains recognized dependency statuses, including a 503 response. It never forwards raw Server
@@ -252,10 +256,19 @@ Inside DeepSeek Harness:
 | `unavailable` | Connection failure, timeout, cancellation, or HTTP 503. Native diagnostics use `server_unavailable`. |
 | `unscoped` | The resolver completed without a Scope. |
 | `invalid_response` | The client detected an invalid Server response. |
+| `precondition_failed` | The Server rejected a write because a tag or revision precondition no longer matches the current state. Re-read the current reference, then retry with the fresh value. A 412 that carries a published business code reports that code instead. |
+| `precondition_required` | The Server requires the current ETag in `If-Match` for this mutation. Read the resource, then retry with its ETag. |
+| `invalid_cursor` | The Server rejected a pagination cursor that is malformed or does not match this request. Restart the listing from the beginning. This is the 400 half of the cursor pair whose expired half is `cursor_expired`. |
+| `cursor_expired` | The Server rejected a pagination cursor. Restart the listing from the beginning. |
+| `handoff_report_too_large` | The result exceeds the response limit; the Server's only 413 is the Handoff Report size limit. Narrow the selection and retry. |
+| `capacity_exceeded` | The Server reached a capacity limit. Retry after a short delay. |
 
-Existing conflict and validation codes, such as `revision_conflict` and `invalid_request`, retain their meaning. Failure
-results preserve available HTTP status and request ID, but use fixed messages instead of Server-provided text. Unknown
-error codes are omitted from `error_code` and diagnostics; their presence alone does not imply a version mismatch.
+Existing conflict and validation codes, such as `revision_conflict` and `invalid_request`, retain their meaning. A domain
+status keeps its own result code and recovery action: only transport failures and HTTP 5xx use the `unavailable` wording,
+so a recoverable rejection is never reported as an outage. A response body that carries `error.details` preserves that
+object on the tool result. Failure results preserve available HTTP status and request ID, but use fixed messages instead
+of Server-provided text. Unknown error codes are omitted from `error_code` and diagnostics; their presence alone does not
+imply a version mismatch.
 
 ## Diagnose automatic recall and capture
 

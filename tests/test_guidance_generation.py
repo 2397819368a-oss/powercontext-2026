@@ -23,7 +23,15 @@ from pathlib import Path
 import pytest
 from integration_guidance_skills import FILE_HOSTS, ROOT, file_skill, refresh_generated_guidance
 
-from powercontext.cli.guidance import END, HOST_GUIDANCE, START, GuidanceError, merge_guidance, refresh_skill
+from powercontext.cli.guidance import (
+    END,
+    HOST_GUIDANCE,
+    RESOURCE_MANIFEST,
+    START,
+    GuidanceError,
+    merge_guidance,
+    refresh_skill,
+)
 
 
 @pytest.fixture
@@ -321,3 +329,131 @@ def test_unchanged_pre_marker_staging_keeps_additional_user_files(
     note.write_bytes(b"Keep this extra file.\r\n")
     preserve_installed_guidance(previous, staged)
     assert (staged / SKILL_DIRECTORY / "personal/notes.md").read_bytes() == note.read_bytes()
+
+
+@pytest.mark.parametrize("host", ["workbuddy", "opencode", "hermes", "zcode"])
+@pytest.mark.parametrize("damage", ["reference", "manifest", "invalid-manifest"])
+def test_incomplete_package_never_uses_old_files_to_repair_it(tmp_path: Path, host: str, damage: str) -> None:
+    from powercontext.cli.guidance import SKILL_DIRECTORY, preserve_installed_guidance
+    from powercontext.cli.opencode import _install_skill
+    from powercontext.cli.system import SetupError
+    from powercontext.cli.workbuddy import _install_workbuddy_skill
+
+    package = tmp_path / "package"
+    source = package / SKILL_DIRECTORY
+    installed = tmp_path / "installed"
+    target = installed / SKILL_DIRECTORY
+    shutil.copytree(ROOT / FILE_HOSTS[host], source)
+
+    def install() -> None:
+        if host == "workbuddy":
+            _install_workbuddy_skill(package, target.parent, installed / "hooks")
+        elif host == "opencode":
+            _install_skill(source, target)
+        else:
+            preserve_installed_guidance(installed, package)
+
+    if host in {"workbuddy", "opencode"}:
+        install()
+    else:
+        shutil.copytree(source, target)
+    (target / "personal.md").write_bytes(b"Keep user notes\r\n")
+    before = snapshot(installed)
+    damaged = source / ("references/work-handoff.md" if damage == "reference" else RESOURCE_MANIFEST)
+    if damage == "invalid-manifest":
+        damaged.write_text("[]", encoding="utf-8")
+    else:
+        damaged.unlink()
+    package_before = snapshot(package)
+    with pytest.raises((GuidanceError, SetupError), match=r"guidance|manifest|resource"):
+        install()
+    assert snapshot(installed) == before
+    assert snapshot(package) == package_before
+
+
+@pytest.mark.parametrize("host", ["hermes", "zcode"])
+def test_retired_owned_file_requires_migration_instead_of_becoming_a_user_file(tmp_path: Path, host: str) -> None:
+    from powercontext.cli.guidance import SKILL_DIRECTORY, preserve_installed_guidance
+
+    previous = tmp_path / "previous"
+    staged = tmp_path / "staged"
+    for root in (previous, staged):
+        shutil.copytree(ROOT / FILE_HOSTS[host], root / SKILL_DIRECTORY)
+    retired = previous / SKILL_DIRECTORY / "references/retired.md"
+    retired.write_bytes((START + "\nOld packaged guidance\n" + END + "\nUser notes\n").encode())
+    manifest = previous / SKILL_DIRECTORY / RESOURCE_MANIFEST
+    inventory = json.loads(manifest.read_text(encoding="utf-8"))
+    if "resources" in inventory:
+        inventory["resources"].append("references/retired.md")
+    else:
+        inventory["references/retired.md"] = "a" * 64
+    manifest.write_text(json.dumps(inventory), encoding="utf-8")
+    before = snapshot(previous)
+    staged_before = snapshot(staged)
+    with pytest.raises(GuidanceError, match=r"migration|owned"):
+        preserve_installed_guidance(previous, staged)
+    assert snapshot(previous) == before
+    assert snapshot(staged) == staged_before
+
+
+@pytest.mark.parametrize("missing", ["SKILL.md", "references/work-handoff.md", "agents/openai.yaml"])
+def test_fresh_install_requires_all_declared_resources_including_unlinked_files(tmp_path: Path, missing: str) -> None:
+    source, target = tmp_path / "source", tmp_path / "installed"
+    shutil.copytree(ROOT / FILE_HOSTS["codex"], source)
+    (source / missing).unlink()
+    with pytest.raises(GuidanceError, match="resource"):
+        refresh_skill(source, target)
+    assert not target.exists()
+
+
+def test_flat_manifest_upgrade_retains_notes_and_mtimes(tmp_path: Path) -> None:
+    source, target = tmp_path / "source", tmp_path / "installed"
+    shutil.copytree(ROOT / FILE_HOSTS["opencode"], source)
+    manifest = source / RESOURCE_MANIFEST
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest.write_text(json.dumps(payload["legacy_sha256"]), encoding="utf-8")
+    refresh_skill(source, target)
+    note = target / "personal.md"
+    note.write_bytes(b"Keep notes from an initial generated package\r\n")
+    before = (note.read_bytes(), note.stat().st_mtime_ns)
+    refresh_skill(ROOT / FILE_HOSTS["opencode"], target)
+    assert (note.read_bytes(), note.stat().st_mtime_ns) == before
+    after = snapshot(target)
+    refresh_skill(ROOT / FILE_HOSTS["opencode"], target)
+    assert snapshot(target) == after
+
+
+def test_legacy_package_missing_a_linked_reference_is_rejected(
+    tmp_path: Path, pre_marker_packages: dict[str, Path]
+) -> None:
+    from powercontext.cli.guidance import SKILL_DIRECTORY
+
+    source = pre_marker_packages["zcode"] / SKILL_DIRECTORY
+    (source / "references/work-handoff.md").unlink()
+    target = tmp_path / "installed"
+    with pytest.raises(GuidanceError, match="missing guidance resource"):
+        refresh_skill(source, target)
+    assert not target.exists()
+
+
+def test_unlisted_managed_file_cannot_be_preserved_as_a_user_file(tmp_path: Path) -> None:
+    from powercontext.cli.guidance import SKILL_DIRECTORY, preserve_installed_guidance
+
+    previous, staged = tmp_path / "previous", tmp_path / "staged"
+    for root in (previous, staged):
+        shutil.copytree(ROOT / FILE_HOSTS["zcode"], root / SKILL_DIRECTORY)
+    (previous / SKILL_DIRECTORY / "unlisted.md").write_text(START + "\nold\n" + END, encoding="utf-8")
+    before, staged_before = snapshot(previous), snapshot(staged)
+    with pytest.raises(GuidanceError, match="unlisted owned"):
+        preserve_installed_guidance(previous, staged)
+    assert snapshot(previous) == before
+    assert snapshot(staged) == staged_before
+
+
+def test_new_package_files_need_explicit_ownership_before_installation(tmp_path: Path) -> None:
+    source, target = tmp_path / "source", tmp_path / "installed"
+    shutil.copytree(ROOT / FILE_HOSTS["zcode"], source)
+    (source / "undeclared.md").write_text("New package instructions", encoding="utf-8")
+    with pytest.raises(GuidanceError, match="unlisted guidance resource"):
+        refresh_skill(source, target)
+    assert not target.exists()

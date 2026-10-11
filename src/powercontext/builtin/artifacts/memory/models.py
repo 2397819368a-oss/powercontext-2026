@@ -213,6 +213,7 @@ class MemoryHit(BaseModel):
     text: str
     score: float
     matched_by: tuple[MemoryMatchedBy, ...]
+    relevance: float | None = Field(default=None, ge=-1.0, le=1.0, allow_inf_nan=False, exclude=True)
 
 
 class MemoryRerankTrace(BaseModel):
