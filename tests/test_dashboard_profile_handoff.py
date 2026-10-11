@@ -490,6 +490,35 @@ def test_rollback_rejects_a_cross_origin_request(dashboard: TestClient) -> None:
     assert dashboard.get(path).json()["revision"] == 2
 
 
+def test_topic_history_cursor_does_not_follow_a_link_to_another_topic(dashboard: TestClient) -> None:
+    scope = create_scope(dashboard, "Topic history cursor")["scope_id"]
+    ids = []
+    for title in ("Topic A", "Topic B"):
+        created = dashboard.post(
+            f"/v1/scopes/{scope}/artifacts",
+            json={"family": "topic-memory", "content": {"title": title, "summary": "Summary", "detail": "Detail."}},
+        )
+        assert created.status_code == 201, created.text
+        ids.append(created.json()["artifact_id"])
+    for revision in range(2, 10):
+        _put_content(
+            dashboard,
+            scope,
+            "topic-memory",
+            ids[0],
+            {"title": "Topic A", "summary": f"Summary {revision}", "detail": "Detail."},
+        )
+    opened = dashboard.get(
+        "/dashboard/topics", params={"scope": scope, "topic_artifact": ids[0], "topic_revision": "9", "lang": "en"}
+    )
+    assert opened.status_code == 200, opened.text
+    paged = dashboard.get(next(href for href in _hrefs(opened.text) if "topic_revision_cursor=" in href))
+    assert paged.status_code == 200, paged.text
+    other = next(href for href in _hrefs(paged.text) if f"topic_artifact={ids[1]}" in href)
+    assert "topic_revision_cursor" not in other
+    assert "Revision history" in dashboard.get(other).text
+
+
 def test_dashboard_rolls_back_experience_skill_topic_and_handoff(dashboard: TestClient) -> None:
     scope = create_scope(dashboard, "Family rollback")["scope_id"]
     experience = dashboard.post(

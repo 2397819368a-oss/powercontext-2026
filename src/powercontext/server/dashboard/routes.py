@@ -154,6 +154,7 @@ def links(request: Request, ctx: dict[str, Any]):
         if "scope" in params and params["scope"] != ctx["scope"]:
             query = {"scope": params["scope"], "period": ctx["period"]}
         else:
+            _drop_foreign_revision_cursors(query, params)
             query.update(params)
             _retain_memory_artifact(destination, ctx, query)
         if destination.startswith("evidence/"):
@@ -164,6 +165,23 @@ def links(request: Request, ctx: dict[str, Any]):
         )
 
     return link
+
+
+_REVISION_CURSOR_IDENTITY = {
+    "topic_revision_cursor": "topic_artifact",
+    "prompt_revision_cursor": "prompt_key",
+    "experience_revision_cursor": "artifact",
+    "skill_revision_cursor": "artifact",
+    "handoff_revision_cursor": "artifact",
+}
+
+
+def _drop_foreign_revision_cursors(query: dict[str, Any], params: dict[str, Any]) -> None:
+    """Remove retained revision cursors that belong to an artifact the link no longer targets."""
+
+    for cursor, identity in _REVISION_CURSOR_IDENTITY.items():
+        if cursor not in params and identity in params and params[identity] != query.get(identity):
+            query.pop(cursor, None)
 
 
 def _retain_memory_artifact(destination: str, ctx: dict[str, Any], query: dict[str, Any]) -> None:
