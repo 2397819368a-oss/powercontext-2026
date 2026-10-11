@@ -28,6 +28,7 @@ from powercontext.builtin.artifacts.handoff.errors import (
     InvalidHandoffReferenceError,
 )
 from powercontext.builtin.artifacts.handoff.generation_metadata import HandoffGenerationReceipts
+from powercontext.builtin.artifacts.handoff.hints import render_handoff_hint
 from powercontext.builtin.artifacts.handoff.models import (
     Handoff,
     HandoffArtifactCitation,
@@ -40,12 +41,12 @@ from powercontext.builtin.artifacts.handoff.models import (
     HandoffEvidenceCheck,
     HandoffGenerationEvidence,
     HandoffGenerationRequest,
-    HandoffMemoryCitation,
     HandoffResolution,
     HandoffResolutionSelection,
     HandoffSourceCitation,
     PreparedHandoff,
     PrepareHandoff,
+    PrepareHandoffHint,
 )
 from powercontext.builtin.artifacts.handoff.protocols import (
     HandoffBackend,
@@ -54,6 +55,7 @@ from powercontext.builtin.artifacts.handoff.protocols import (
 )
 from powercontext.builtin.artifacts.prompt import PromptError
 from powercontext.builtin.artifacts.prompt.service import ScopedPrompts, current_prompt, prompt_operation
+from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.errors import RevisionConflictError
 from powercontext.sources import SourceRef
 
@@ -278,6 +280,69 @@ class HandoffService:
             ),
         )
 
+    async def hint(self, request: PrepareHandoffHint, /) -> str | None:
+        """Project a selected Handoff without generating, persisting, or truncating history."""
+
+        evidence_scope_id = self.scope_id
+        selected_revision = None
+        if request.prepared is not None:
+            self._require_prepared(request.prepared)
+            content = request.prepared.content
+            current = await self._backend.latest(self.artifact_id)
+        else:
+            selected = (
+                await self.revision(request.revision)
+                if request.revision is not None
+                else await self._backend.latest(self.artifact_id)
+            )
+            if selected is None:
+                return None
+            content = selected.content
+            selected_revision = selected.as_ref()
+            current = selected if request.selection == "latest" else await self._backend.latest(selected.artifact_id)
+            provenance = selected.lineage.publication_source
+            if provenance is not None:
+                evidence_scope_id = provenance.scope_id
+        resolver = self._resolver_for_scope(evidence_scope_id)
+
+        checks = await self._hint_evidence_checks(content, resolver=resolver)
+        if checks is None:
+            return None
+        resolution = HandoffResolution(
+            status="resolved",
+            scope_id=self.scope_id,
+            content=content,
+            selection=request.selection,
+            selected_revision=selected_revision,
+            current_revision=None if current is None else current.as_ref(),
+            evidence_checks=checks,
+        )
+        return render_handoff_hint(
+            resolution,
+            evidence_scope_id=evidence_scope_id,
+            max_bytes=request.max_bytes,
+        )
+
+    async def _hint_evidence_checks(
+        self,
+        content: HandoffContent,
+        *,
+        resolver: HandoffEvidenceResolver,
+    ) -> tuple[HandoffEvidenceCheck, ...] | None:
+        """Require complete evidence, including omission citations, before exposing orientation."""
+
+        try:
+            checks = await self._evidence_checks(content, evidence_resolver=resolver, evidence_authorizer=None)
+            if any(check.status == "unavailable" for check in checks):
+                return None
+            for omission in content.omissions:
+                if omission.citation is None:
+                    continue
+                await resolver.validate(omission.citation)
+        except (HandoffEvidenceUnavailableError, SourceNotEligibleError):
+            return None
+        return checks
+
     def _resolver_for_scope(self, scope_id: str) -> HandoffEvidenceResolver:
         if scope_id == self.scope_id:
             return self._evidence_resolver
@@ -421,13 +486,6 @@ def _source_lineage(content: HandoffContent) -> tuple[SourceRef, ...]:
 def _artifact_lineage(content: HandoffContent) -> tuple[ArtifactRef, ...]:
     artifacts: list[ArtifactRef] = []
     for citation in _direct_citations(content):
-        reference = (
-            citation.artifact_ref
-            if isinstance(citation, HandoffArtifactCitation)
-            else citation.memory_citation.memory_ref
-            if isinstance(citation, HandoffMemoryCitation)
-            else None
-        )
-        if reference is not None and reference not in artifacts:
-            artifacts.append(reference)
+        if isinstance(citation, HandoffArtifactCitation) and citation.artifact_ref not in artifacts:
+            artifacts.append(citation.artifact_ref)
     return tuple(artifacts)

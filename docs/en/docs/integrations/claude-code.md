@@ -90,9 +90,10 @@ claude
 ```
 
 On `startup`, `resume`, `clear`, `compact`, and `fork`, the fixed `powercontext.scope-bootstrap.v1` profile can inject
-at most six active Memory entries explicitly tagged `bootstrap-context`, considering the current Scope before at most eight direct
-Context References. It never scans all Memory, Sources, transcripts, pending Candidates, or generated instructions;
-secret-like Memory kinds are excluded. The content is untrusted history and cannot override current instructions.
+at most six active Atomic Memory Artifacts explicitly tagged `bootstrap-context`, considering the current Scope before
+at most eight direct Context References. It never scans all Memory, Sources, transcripts, pending Candidates, or
+generated instructions; secret-like Memory kinds are excluded. The content is untrusted history and cannot override
+current instructions.
 
 The default 4096-byte budget can be set from 512 through 8192 bytes with
 `POWERCONTEXT_CLAUDE_BOOTSTRAP_MAX_BYTES`. No Handoff is selected automatically. Select one exact committed Handoff
@@ -102,12 +103,12 @@ from the current Scope only when it is intended for the new Session:
 export POWERCONTEXT_CLAUDE_BOOTSTRAP_HANDOFF='{"artifact_id":"HANDOFF_ID","revision":3}'
 ```
 
-Use the Memory-entry tag API to add `bootstrap-context` only to reviewed decisions, constraints, objectives, verified
-state, or repository guidance. The plugin stores a content-free receipt under `${CLAUDE_PLUGIN_DATA}`; successful
-delivery lets the first ordinary query suppress only fully delivered exact Memory entry versions. Entries truncated
-during bootstrap and revised versions remain eligible. Preparation, validation, and receipt failures fail open and
-inject nothing. Failures before a new lifecycle package is established, including invalid configuration, also clear
-any stale saved receipt.
+Use the Atomic Memory Artifact tag API to add `bootstrap-context` only to reviewed decisions, constraints, objectives,
+verified state, or repository guidance. The plugin stores a content-free receipt under `${CLAUDE_PLUGIN_DATA}`;
+successful delivery lets the first ordinary query suppress only fully delivered exact Atomic Memory revisions.
+Artifacts truncated during bootstrap and newer revisions remain eligible. Preparation, validation, and receipt failures
+fail open and inject nothing. Failures before a new lifecycle package is established, including invalid configuration,
+also clear any stale saved receipt.
 
 The Source pipeline may later extract Memory when a generation model is configured. Prompt capture does not call
 `remember_memory`, and the Hook never labels an ordinary prompt as `task-outcome`.

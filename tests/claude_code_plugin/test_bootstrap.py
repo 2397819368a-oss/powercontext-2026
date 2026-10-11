@@ -36,11 +36,9 @@ def _ready(content: str = "curated bootstrap context") -> dict[str, object]:
         "package_digest": "sha256:" + sha256(content.encode()).hexdigest(),
         "items": [
             {
-                "kind": "memory_entry",
+                "kind": "atomic-memory",
                 "scope_id": "scope:test",
-                "artifact": {"family": "memory", "artifact_id": "memory", "revision": 3},
-                "entry_id": "entry-1",
-                "entry_version_id": "entry-version-1",
+                "artifact": {"family": "atomic-memory", "artifact_id": "memory", "revision": 3},
                 "content_digest": "sha256:" + "a" * 64,
                 "truncated": False,
             }

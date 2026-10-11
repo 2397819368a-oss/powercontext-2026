@@ -24,6 +24,10 @@ powercontext doctor codex
 该命令会把仓库添加为 Codex marketplace，安装 PowerContext 插件，并创建用户数据目录。重复执行是安全的。
 `--ref` 应与安装 PowerContext 工具时使用的 ref 一致。
 
+刷新安装时，setup `.env` 文件或进程环境中新声明的客户端地址会覆盖保存的客户端设置和之前安装的 MCP 地址。
+未提供新地址时，setup 复用保存的地址。文件与进程中声明的地址冲突时，仍需显式选择：使用 `--server-url`，
+并在重新执行前统一或清除运行时地址覆盖。`--source` 指定插件代码来源，不指定 Server 地址。
+
 配置完成后开启新的 Codex 会话。通过 `/hooks` 查看 PowerContext `SessionStart` 和 `UserPromptSubmit` Hook，
 并在收到提示时授予信任。
 
@@ -92,10 +96,10 @@ export POWERCONTEXT_CODEX_BOOTSTRAP_CONTEXT=true
 codex
 ```
 
-固定 profile `powercontext.scope-bootstrap.v1` 最多包含 6 条显式标记为 `bootstrap-context` 的 active Memory；
-顺序是当前 Scope 优先，其次是最多 8 个直接 Context References。它不会扫描全部 Memory、Source、transcript、pending
-Candidate 或生成的 instruction，也会排除类型类似 secret 的 Memory。所有历史文本都标记为不可信，不能覆盖当前的
-用户、developer、system 或仓库指令。
+固定 profile `powercontext.scope-bootstrap.v1` 最多包含 6 个显式标记为 `bootstrap-context` 的 active Atomic Memory
+Artifact；顺序是当前 Scope 优先，其次是最多 8 个直接 Context References。它不会扫描全部 Memory、Source、
+transcript、pending Candidate 或生成的 instruction，也会排除类型类似 secret 的 Memory。所有历史文本都标记为
+不可信，不能覆盖当前的用户、developer、system 或仓库指令。
 
 默认总预算是 4096 UTF-8 bytes，可在 512 到 8192 之间调整：
 
@@ -109,9 +113,10 @@ export POWERCONTEXT_CODEX_BOOTSTRAP_MAX_BYTES=6144
 export POWERCONTEXT_CODEX_BOOTSTRAP_HANDOFF='{"artifact_id":"HANDOFF_ID","revision":3}'
 ```
 
-通过 Memory entry tag API，只把经过审阅、适合每个新 Session 的决策、约束、目标、已验证状态或仓库指南标记为
-`bootstrap-context`。不含正文的 delivery receipt 让重试保持幂等；成功注入后，第一条普通查询会携带该 receipt，
-Runtime 仅排除正文已完整交付的 exact Memory entry versions；启动时被截短的条目和新修订版本仍可正常召回。
+通过 Atomic Memory Artifact tag API，只把经过审阅、适合每个新 Session 的决策、约束、目标、已验证状态或
+仓库指南标记为 `bootstrap-context`。不含正文的 delivery receipt 让重试保持幂等；成功注入后，第一条普通查询
+会携带该 receipt，Runtime 仅排除正文已完整交付的 exact Atomic Memory revisions；启动时被截短的 Artifact 和
+后续修订版本仍可正常召回。
 准备、校验或回执失败时都会 fail open，不注入任何内容。
 在新的生命周期包建立前发生失败（包括配置非法）时，还会清除之前保存的过期 receipt。
 
@@ -168,7 +173,7 @@ export POWERCONTEXT_CODEX_FLUSH_ON_CAPTURE=true
 
 ## 连接启用鉴权的本地 Server
 
-本地 Server 默认关闭认证，需要时再开启；启用 Dashboard 时需要同时开启认证。首次本地配置向导默认不启用 Dashboard。
+本地 Server 默认关闭认证，需要时可独立开启。首次本地配置向导默认不启用 Dashboard；选择启用 Dashboard 不要求配置 token。
 
 从本地 secret manager 加载一个 token，然后启用鉴权并启动 Server：
 
@@ -203,6 +208,10 @@ Linux、macOS 和 Windows 上的新 Codex 会话无需每次导出授权变量�
 
 Windows setup 还会维护当前用户的授权环境，以兼容 Desktop。环境变更不会传给已经运行的进程。
 setup 后重启 Codex，让新进程加载更新后的插件配置。再次 setup 不提供 token 时保留凭据，提供新 token 时轮换凭据。
+切换 Server 地址但未提供新 token 时，旧凭据仍绑定之前的地址，不会发送给新 Server。setup 和 doctor 会在不使用
+该凭据的情况下验证新地址，因此关闭认证的 Server 可以正常连接。新 Server 需要认证时，在重新 setup 时通过
+`POWERCONTEXT_CODEX_AUTHORIZATION` 或 `POWERCONTEXT_CLIENT_API_TOKEN` 提供它的 token；新 token 会替换保存记录，
+并绑定本次选择的地址。
 
 在 Linux 或 macOS 上可这样验证不依赖进程授权变量的新会话：
 

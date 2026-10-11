@@ -14,7 +14,7 @@ Issue #1429 使用了 Project 和 Workstream 术语。后续 RFC 1345 已确定 
 
 首个画像版本为 `powercontext.scope-bootstrap.v1`，只允许：
 
-1. 最多六条当前有效、且被显式标记 `bootstrap-context` 的 Memory 条目。先选择当前 Scope，再按 Scope 的规范顺序选择最多八个直接 Context Reference；每个参与 Scope 最多检查 32 条带标签的条目。
+1. 最多六个当前有效、且被显式标记 `bootstrap-context` 的 Atomic Memory Artifact。先选择当前 Scope，再按 Scope 的规范顺序选择最多八个直接 Context Reference；每个参与 Scope 最多检查 32 个带标签的 Artifact。
 2. 调用方在当前 Scope 中显式指定的一条精确、已提交 Handoff Revision。服务端不会隐式选择“最新 Handoff”。
 
 标签表示运维者已经审核其适合自动注入，但不是授权机制。不得标记凭证、秘密、个人数据、未经审核的生成指令或其他不应自动注入的内容。Runtime 还会先归一化标点和分隔符，再排除 kind 表明为 secret、credential、password、token、API-key、access-key 或 private-key 的条目。每个参与 Scope 仍须通过当前授权检查。
@@ -29,11 +29,11 @@ Issue #1429 使用了 Project 和 Workstream 术语。后续 RFC 1345 已确定 
 
 收据不保存查询、正文、transcript 路径、原始宿主事件 ID 或宿主错误文本，只保存有界身份元数据、精确内容引用与摘要、字节数、创建时间和状态。事件 ID 在持久化前与 Scope、集成及生命周期一同哈希；画像、字节预算和精确 Handoff 等会影响包内容的字段另行计算指纹。用不同的这些字段复用同一稳定事件会被拒绝，而不会误返回为另一请求生成的包。其余字段相同的稳定事件重试在 `pending` 时重建同一精确包，终态后返回 `skipped`；若待交付期间关闭开关，收据会直接终结为跳过且不读取 Context Reference。收据保留 30 天并在后续请求中顺带清理；无稳定事件标识的关闭或空结果只返回临时收据，不新增数据库行。宿主不提供稳定事件标识时，不宣称具备跨重启幂等性。
 
-`PrepareContextRequest` 可携带 `bootstrap_receipt_id`。只有当收据属于相同 Scope 且状态为 `injected` 时，普通查询召回才去掉收据中完整交付的精确 Memory 条目版本。过滤发生在候选限额和召回充分性判断之前，因此已交付条目既不会误让 gate 判定充分，也不会挤掉仍合格的候选。条目身份不受其他条目推动父 Memory Revision 前进的影响；正文只交付了前缀的条目及后续修订版仍可召回。缺失、过期、跨 Scope 或非注入收据均被忽略，保持 fail-open。
+`PrepareContextRequest` 可携带 `bootstrap_receipt_id`。只有当收据属于相同 Scope 且状态为 `injected` 时，普通查询召回才去掉收据中完整交付的精确 Atomic Memory Revision。过滤发生在候选限额和召回充分性判断之前，因此已交付 Artifact 既不会误让 gate 判定充分，也不会挤掉仍合格的候选。Atomic Memory 身份彼此独立，其他写入不会改变已交付身份；正文只交付了前缀的 Artifact 及后续修订版仍可召回。缺失、过期、跨 Scope 或非注入收据均被忽略，保持 fail-open。
 
 ## 限额与信任边界
 
-默认输出 4,096 字节，硬上限 8,192 字节；最多一条 Handoff 加六条 Memory。参与 Scope 数量、带标签条目扫描数、选中项数、单项正文和最终输出均有固定上限。单项正文最多 2,000 字节，只在 Unicode 字符边界截断，Scope、Artifact Revision、Memory 条目与版本、内容摘要及截断标志必须完整保留。无法在剩余预算中同时保留有意义正文与引用的项目会被省略。
+默认输出 4,096 字节，硬上限 8,192 字节；最多一条 Handoff 加六个 Atomic Memory Artifact。参与 Scope 数量、带标签 Artifact 扫描数、选中项数、单项正文和最终输出均有固定上限。单项正文最多 2,000 字节，只在 Unicode 字符边界截断，Scope、Artifact Revision、内容摘要及截断标志必须完整保留。无法在剩余预算中同时保留有意义正文与引用的项目会被省略。
 
 输出明确声明为不可信历史数据。当前 system/developer 指令、用户请求、仓库规则和实时验证始终优先；历史 Markdown 以引用数据呈现，不成为新的指令层。
 
@@ -45,4 +45,4 @@ Codex 和 Claude Code 复用现有 Scope 绑定，在 `SessionStart` 请求启�
 
 ## 验收
 
-契约与 Runtime 测试必须覆盖：默认关闭、全部生命周期、精确 Handoff、策展 Memory 顺序、Unicode 字节限额、分隔符归一化后的秘密 kind 排除、Context Reference 授权、收据重试、请求冲突、状态迁移与有界保留、包级遗漏、在 gate 前完成的跨无关 Memory Revision 首查询精确版本去重、部分交付条目继续可召回，以及数据库不保存正文。Codex 与 Claude Code 测试必须覆盖成功注入、关闭/空结果、终态事件重放、向首查询传递收据、非法配置与响应、超时和 HTTP 失败均不阻塞宿主。
+契约与 Runtime 测试必须覆盖：默认关闭、全部生命周期、精确 Handoff、策展 Atomic Memory 顺序、Unicode 字节限额、分隔符归一化后的秘密 kind 排除、Context Reference 授权、收据重试、请求冲突、状态迁移与有界保留、包级遗漏、在 gate 前完成的跨无关 Atomic Memory 首查询精确 Revision 去重、部分交付 Artifact 和后续修订版继续可召回，以及数据库不保存正文。Codex 与 Claude Code 测试必须覆盖成功注入、关闭/空结果、终态事件重放、向首查询传递收据、非法配置与响应、超时和 HTTP 失败均不阻塞宿主。

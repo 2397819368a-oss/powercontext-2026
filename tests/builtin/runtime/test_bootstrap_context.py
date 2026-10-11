@@ -21,11 +21,9 @@ from powercontext.builtin.runtime.models import BootstrapContextItem
 
 def test_bootstrap_item_body_limit_includes_the_truncation_marker() -> None:
     item = BootstrapContextItem(
-        kind="memory_entry",
+        kind="atomic-memory",
         scope_id="scope:test",
-        artifact=ArtifactRef(family="memory", artifact_id="memory", revision=1),
-        entry_id="entry",
-        entry_version_id="version",
+        artifact=ArtifactRef(family="atomic-memory", artifact_id="memory", revision=1),
         content_digest="sha256:" + ("0" * 64),
     )
 

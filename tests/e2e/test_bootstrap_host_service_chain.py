@@ -125,18 +125,14 @@ async def _seed_bootstrap_memory(base_url: str, host: str) -> str:
         remembered = await client.remember_memory(
             RememberMemoryRequest(scope_id=scope.scope_id, kind="decision", text=BOOTSTRAP_TEXT)
         )
-        assert remembered.entry is not None
-        citation = remembered.entry.citation
-        tags = await client.get_memory_entry_tags(
-            scope.scope_id,
-            citation.memory_ref.artifact_id,
-            citation.entry_id,
-        )
+        assert len(remembered.records) == 1
+        artifact_id = remembered.records[0].artifact.artifact_id
+        tags = await client.get_artifact_tags(scope.scope_id, "atomic-memory", artifact_id)
         assert tags is not None
-        await client.replace_memory_entry_tags(
+        await client.replace_artifact_tags(
             scope.scope_id,
-            citation.memory_ref.artifact_id,
-            citation.entry_id,
+            "atomic-memory",
+            artifact_id,
             ReplaceArtifactTagsRequest.model_validate({"tags": ["bootstrap-context"]}),
             expected_etag=tags.etag,
         )

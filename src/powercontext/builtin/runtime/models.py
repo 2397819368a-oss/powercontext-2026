@@ -17,21 +17,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from hashlib import sha256
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts.models import _reject_legacy_memory_citations
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.memory.models import (
-    MemoryCitation,
     MemoryEntryInput,
-    MemoryEntryState,
-    MemoryEntryVersion,
     MemoryHit,
     MemoryRerankTrace,
-    MemoryRevisionChanges,
     MemorySearchMode,
     MemoryUsedSearchMode,
 )
@@ -116,6 +114,42 @@ class CommitConnectorCheckpoint(BaseModel):
     checkpoint: JsonValue | None
 
 
+class ExtractionBackground(BaseModel):
+    """Placement, leadership, and lifecycle of the Memory Supervisor."""
+
+    location: Literal["local", "external", "none"]
+    role: Literal["leader", "standby"] | None = None
+    state: Literal["running", "degraded", "stopped", "unknown"]
+    automatic_processing_enabled: bool | None = None
+
+
+class ExtractionFailure(BaseModel):
+    """A historical failure observation, not an unresolved incident."""
+
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    stage: Literal["inference", "flush", "worker", "supervisor", "lease_renewal", "scope_discovery"]
+    occurred_at: datetime
+
+
+class ExtractionObservation(BaseModel):
+    """Independent success and failure evidence within this Runtime's lifetime."""
+
+    status: Literal["unverified", "observed"]
+    since: datetime
+    last_success_at: datetime | None = None
+    last_failure: ExtractionFailure | None = None
+
+
+class ExtractionStatus(BaseModel):
+    """Read-only facts about Memory extraction, without an overall health verdict."""
+
+    configuration: Literal["configured", "unconfigured", "unknown"]
+    background: ExtractionBackground
+    observation: ExtractionObservation
+
+
 class RuntimeCapabilities(BaseModel):
     """Behavior available from the assembled Source-to-Memory Runtime."""
 
@@ -131,13 +165,20 @@ class RuntimeCapabilities(BaseModel):
 
 
 class MemoryFlushResult(BaseModel):
-    """Result of processing one scoped Source window."""
+    """Result of processing one scoped Source window.
+
+    ``held_count`` and ``hold_codes`` are retained compatibility fields. Atomic Memory
+    processing leaves them at zero and advances the cursor only with its domain commit.
+    """
 
     previous_cursor: int
     high_watermark: int
     current_cursor: int
     source_count: int
     memory_ref: ArtifactRef | None
+    remaining_work: bool = False
+    held_count: int = 0
+    hold_codes: tuple[str, ...] = ()
 
     @property
     def processed(self) -> bool:
@@ -323,30 +364,16 @@ class BootstrapContextRequest(_PreparedContextModel):
 class BootstrapContextItem(_PreparedContextModel):
     """One delivered item pinned to exact authoritative content."""
 
-    kind: Literal["memory_entry", "handoff"]
+    kind: Literal["atomic-memory", "handoff"]
     scope_id: Annotated[str, Field(min_length=1, max_length=256)]
     artifact: ArtifactRef
-    entry_id: Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")] | None = None
-    entry_version_id: (
-        Annotated[
-            str,
-            Field(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$"),
-        ]
-        | None
-    ) = None
     content_digest: Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
     truncated: bool = False
 
     @model_validator(mode="after")
     def validate_reference(self) -> BootstrapContextItem:
-        has_entry = self.entry_id is not None or self.entry_version_id is not None
-        if self.kind == "memory_entry":
-            if not (self.entry_id is not None and self.entry_version_id is not None):
-                raise ValueError("memory bootstrap items require an exact entry version")  # noqa: TRY003
-            if self.artifact.family != "memory":
-                raise ValueError("memory bootstrap items require a Memory Artifact")  # noqa: TRY003
-        elif has_entry or self.artifact.family != "handoff":
-            raise ValueError("handoff bootstrap items require only an exact Handoff Artifact")  # noqa: TRY003
+        if self.artifact.family != self.kind:
+            raise ValueError("bootstrap item kind must match its Artifact family")  # noqa: TRY003
         return self
 
 
@@ -411,69 +438,22 @@ class RecordBootstrapDeliveryRequest(_PreparedContextModel):
     outcome: Literal["injected", "failed"]
 
 
-class MemoryEntryRecord(BaseModel):
-    """An exact entry version together with its state in one Revision."""
-
-    memory_ref: ArtifactRef
-    state: MemoryEntryState
-    entry: MemoryEntryVersion
-
-    @property
-    def citation(self) -> MemoryCitation:
-        return MemoryCitation(
-            memory_ref=self.memory_ref,
-            entry_id=self.entry.entry_id,
-            entry_version_id=self.entry.entry_version_id,
-        )
-
-
-class MemoryEntriesPage(BaseModel):
-    """Selected current-head entries for one scope, or an absent Memory."""
-
-    memory_ref: ArtifactRef | None
-    entries: tuple[MemoryEntryRecord, ...] = ()
-
-
-class GetMemoryEntryRequest(BaseModel):
-    citation: MemoryCitation
-
-
-class ReviseMemoryEntryRequest(BaseModel):
-    citation: MemoryCitation
-    kind: str
-    text: str
-    reason: str | None = None
-
-
-class RetireMemoryEntryRequest(BaseModel):
-    citation: MemoryCitation
-    reason: str | None = None
-
-
-class MemoryMutationResult(BaseModel):
-    previous_revision: int | None
-    memory_ref: ArtifactRef
-    entry: MemoryEntryRecord | None = None
-
-
-class MemoryChangesPage(BaseModel):
-    memory_ref: ArtifactRef | None
-    revisions: tuple[MemoryRevisionChanges, ...] = ()
-
-
 class ProposeExperienceRequest(BaseModel):
     """Submit a complete Experience proposal with exact evidence."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     proposal: ExperienceContent
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
-    memory_citations: tuple[MemoryCitation, ...] = ()
     target: ArtifactRef | None = None
     reason: str | None = None
 
 
 class GenerateExperienceRequest(BaseModel):
     """Generate a reviewed Experience Candidate from exact evidence."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     sources: tuple[SourceRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
     artifacts: tuple[ArtifactRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
@@ -496,6 +476,8 @@ class GetExperienceRequest(BaseModel):
 class ProposeSkillRequest(BaseModel):
     """Submit a complete managed Skill proposal with exact evidence."""
 
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
+
     proposal: SkillContent
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
@@ -505,6 +487,8 @@ class ProposeSkillRequest(BaseModel):
 
 class GenerateSkillRequest(BaseModel):
     """Generate a reviewed managed Skill Candidate from an explicit lineage shape."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     origin: SkillGenerationOrigin
     sources: tuple[SourceRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
@@ -572,10 +556,11 @@ class RejectArtifactCandidateRequest(ApproveArtifactCandidateRequest):
 
 
 class ReviseArtifactCandidateRequest(ApproveArtifactCandidateRequest):
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
+
     proposal: ExperienceContent | SkillContent | ProfileWriteContent
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
-    memory_citations: tuple[MemoryCitation, ...] | None = None
     target: ArtifactRef | None = None
     reason: str | None = None
 

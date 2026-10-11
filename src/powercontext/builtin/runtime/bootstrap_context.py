@@ -147,13 +147,11 @@ def _render(candidates: Sequence[BootstrapCandidate]) -> str:
     for number, candidate in enumerate(candidates, start=1):
         item = candidate.item
         artifact = item.artifact
-        title = "Committed Handoff" if item.kind == "handoff" else "Curated Memory"
+        title = "Committed Handoff" if item.kind == "handoff" else "Curated Atomic Memory"
         metadata = [
             f"Scope: {_quoted(item.scope_id)}",
             f"Artifact: family={_quoted(artifact.family)}, id={_quoted(artifact.artifact_id)}, revision={artifact.revision}",
         ]
-        if item.entry_id is not None and item.entry_version_id is not None:
-            metadata.append(f"Entry: id={_quoted(item.entry_id)}, version={_quoted(item.entry_version_id)}")
         metadata.extend((
             f"Content digest: {_quoted(item.content_digest)}",
             f"Truncated: {'yes' if item.truncated else 'no'}",

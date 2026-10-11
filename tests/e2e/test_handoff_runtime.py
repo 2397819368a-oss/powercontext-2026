@@ -21,12 +21,13 @@ from pathlib import Path
 import pytest
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.handoff import (
     HandoffEvidenceUnavailableError,
     HandoffScopeMismatchError,
     PrepareHandoff,
+    PrepareHandoffHint,
 )
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.records import ArtifactWrite
@@ -36,13 +37,11 @@ from powercontext.builtin.runtime import (
     CaptureSource,
     HandoffArtifactCitation,
     HandoffDraft,
-    HandoffMemoryCitation,
     HandoffOmission,
     HandoffSourceCitation,
     HandoffStatement,
     InferenceConfig,
     PreparedHandoff,
-    RememberMemoryRequest,
     open_builtin_runtime,
 )
 from powercontext.builtin.runtime.relational import RelationalContexts
@@ -121,7 +120,7 @@ def test_handoff_batch_rejects_existing_prompt_as_evidence(tmp_path: Path) -> No
             prompt = await runtime.records.for_scope(scope.scope_id).create_artifact(
                 "prompt",
                 ArtifactWrite(
-                    prompt_key="memory.extract",
+                    prompt_key="atomic_memory.extract",
                     content={
                         "schema_version": "powercontext.prompt.v1",
                         "mode": "custom",
@@ -237,8 +236,8 @@ def test_handoff_activation_rejects_a_lineage_only_boundary_source() -> None:
                 ScopeDraft(title="Project", summary="Reserved boundary", idempotency_key="reserved-boundary")
             )
             created = await runtime.records.for_scope(scope.scope_id).create_artifact(
-                "memory",
-                ArtifactWrite(content={"entries": [{"kind": "fact", "text": "Direct input."}]}),
+                "atomic-memory",
+                ArtifactWrite(content={"kind": "fact", "text": "Direct input."}),
             )
 
             with pytest.raises(SourceNotEligibleError):
@@ -248,6 +247,38 @@ def test_handoff_activation_rejects_a_lineage_only_boundary_source() -> None:
                         objective="Do not regenerate from management provenance.",
                     )
                 )
+
+    asyncio.run(scenario())
+
+
+def test_handoff_hint_omits_a_lineage_only_source_without_changing_continue_errors() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Hint evidence", summary="Eligibility boundary", idempotency_key="hint-eligibility")
+            )
+            created = await runtime.records.for_scope(scope.scope_id).create_artifact(
+                "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Direct input."})
+            )
+            prepared = PreparedHandoff(
+                scope_id=scope.scope_id,
+                base=None,
+                content=HandoffDraft(
+                    objective="Continue historical work.",
+                    state=(
+                        HandoffStatement(
+                            text="Recorded state.", citations=(HandoffSourceCitation(source_ref=created.sources[0]),)
+                        ),
+                    ),
+                    disposition="continuable",
+                ).as_content(),
+            )
+            handoffs = runtime.handoff.for_scope(scope.scope_id)
+            hint = await handoffs.hint(PrepareHandoffHint(selection="prepared", prepared=prepared))
+            assert hint.status == "empty" and hint.content is None and hint.content_bytes == 0
+            with pytest.raises(SourceNotEligibleError):
+                await handoffs.continue_from(prepared)
 
     asyncio.run(scenario())
 
@@ -307,19 +338,16 @@ def test_handoff_runtime_supports_temporary_transfer_and_durable_milestones() ->
                     metadata={"origin": "e2e"},
                 )
             )
-            memory = await runtime.memory.for_scope(scope.scope_id).remember(
-                RememberMemoryRequest(
-                    entries=(
-                        MemoryEntryInput(
-                            kind="decision",
-                            text="Regression tests must use the public parser interface.",
-                        ),
-                    )
-                )
-            )
-            assert memory.entry is not None
+            assert runtime.atomic_memory is not None
+            memory = await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(
+                    kind="decision",
+                    text="Regression tests must use the public parser interface.",
+                ),
+            ))
+            assert memory.records
             source_citation = HandoffSourceCitation(source_ref=source.source_ref)
-            memory_citation = HandoffMemoryCitation(memory_citation=memory.entry.citation)
+            memory_citation = HandoffArtifactCitation(artifact_ref=memory.primary.ref)
             handoffs = runtime.handoff.for_scope(scope.scope_id)
 
             empty = await handoffs.continue_latest()
@@ -363,7 +391,7 @@ def test_handoff_runtime_supports_temporary_transfer_and_durable_milestones() ->
             assert first.revision == 1
             assert first.content == prepared.content
             assert first.lineage.sources == (source.source_ref,)
-            assert first.lineage.artifacts == (memory.memory_ref,)
+            assert first.lineage.artifacts == (memory.primary.ref,)
             assert await handoffs.revisions() == (first,)
 
             completed = await handoffs.finalize(
@@ -388,7 +416,7 @@ def test_handoff_runtime_supports_temporary_transfer_and_durable_milestones() ->
             historical = await handoffs.continue_from(first.as_ref())
 
             assert second.revision == 2
-            assert second.lineage.artifacts == (memory.memory_ref, first.as_ref())
+            assert second.lineage.artifacts == (memory.primary.ref, first.as_ref())
             assert latest.status == "resolved"
             assert latest.selection == "latest"
             assert latest.selected_revision == second.as_ref()

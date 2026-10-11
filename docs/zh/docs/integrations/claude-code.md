@@ -85,7 +85,7 @@ claude
 ```
 
 在 `startup`、`resume`、`clear`、`compact` 和 `fork` 事件中，固定 profile
-`powercontext.scope-bootstrap.v1` 最多注入 6 条显式标记为 `bootstrap-context` 的 active Memory；当前 Scope
+`powercontext.scope-bootstrap.v1` 最多注入 6 个显式标记为 `bootstrap-context` 的 active Atomic Memory Artifact；当前 Scope
 优先，其次是最多 8 个直接 Context References。它不会扫描全部 Memory、Source、transcript、pending Candidate 或生成的
 instruction，也会排除类型类似 secret 的 Memory。内容始终是不可信历史，不能覆盖当前指令。
 
@@ -96,9 +96,9 @@ instruction，也会排除类型类似 secret 的 Memory。内容始终是不可
 export POWERCONTEXT_CLAUDE_BOOTSTRAP_HANDOFF='{"artifact_id":"HANDOFF_ID","revision":3}'
 ```
 
-通过 Memory entry tag API，只把经过审阅的决策、约束、目标、已验证状态或仓库指南标记为 `bootstrap-context`。
+通过 Atomic Memory Artifact tag API，只把经过审阅的决策、约束、目标、已验证状态或仓库指南标记为 `bootstrap-context`。
 插件在 `${CLAUDE_PLUGIN_DATA}` 下只保存不含正文的 receipt；成功注入后，第一条普通查询仅排除正文已完整交付的
-exact Memory entry versions；启动时被截短的条目和新修订版本仍可召回。准备、校验或回执失败时都会 fail open，
+exact Atomic Memory revisions；启动时被截短的 Artifact 和后续修订版本仍可召回。准备、校验或回执失败时都会 fail open，
 不注入任何内容。在新的生命周期包建立前发生失败（包括配置非法）时，还会清除之前保存的过期 receipt。
 
 配置 generation model 后，Source pipeline 可能进一步提取 Memory。提示词采集不会调用 `remember_memory`，

@@ -40,8 +40,6 @@ _ITEM_KEYS = {
     "kind",
     "scope_id",
     "artifact",
-    "entry_id",
-    "entry_version_id",
     "content_digest",
     "truncated",
 }
@@ -130,11 +128,9 @@ def _validate_item(value: object) -> dict[str, object]:
     kind = value.get("kind")
     scope_id = value.get("scope_id")
     artifact = value.get("artifact")
-    entry_id = value.get("entry_id")
-    entry_version_id = value.get("entry_version_id")
     digest = value.get("content_digest")
     if (
-        kind not in {"memory_entry", "handoff"}
+        kind not in {"atomic-memory", "handoff"}
         or not isinstance(scope_id, str)
         or not scope_id.strip()
         or len(scope_id) > 256
@@ -149,14 +145,7 @@ def _validate_item(value: object) -> dict[str, object]:
         or not isinstance(value.get("truncated"), bool)
     ):
         raise InvalidBootstrapResponse
-    if kind == "memory_entry":
-        if (
-            artifact.get("family") != "memory"
-            or not _printable_identifier(entry_id, maximum=128)
-            or not _printable_identifier(entry_version_id, maximum=128)
-        ):
-            raise InvalidBootstrapResponse
-    elif artifact.get("family") != "handoff" or entry_id is not None or entry_version_id is not None:
+    if artifact.get("family") != kind:
         raise InvalidBootstrapResponse
     return cast(dict[str, object], value)
 

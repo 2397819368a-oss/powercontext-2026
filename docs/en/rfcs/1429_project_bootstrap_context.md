@@ -16,7 +16,7 @@ Issue #1429 used the product terms Project and Workstream. RFC 1345 subsequently
 - Include only reviewed, explicitly selected material and preserve exact authoritative references and content digests.
 - Bound work, item count, per-item text, and final UTF-8 bytes without model inference.
 - Persist content-free delivery receipts with `pending`, `injected`, `skipped`, or `failed` state.
-- Let the first ordinary query identify the last injected receipt so identical Memory entry versions are not returned twice.
+- Let the first ordinary query identify the last injected receipt so identical Atomic Memory revisions are not returned twice.
 - Support both Codex and Claude Code through their maintained `SessionStart` hooks.
 
 ## Non-goals
@@ -29,7 +29,7 @@ The initial profile is `powercontext.scope-bootstrap.v1`.
 
 Eligible content is deliberately narrow:
 
-1. Up to six active current Memory entries explicitly tagged `bootstrap-context`. The current Scope is considered first, followed by at most eight direct Context References in canonical Scope order. At most 32 tagged entries are inspected per participating Scope.
+1. Up to six active current Atomic Memory Artifacts explicitly tagged `bootstrap-context`. The current Scope is considered first, followed by at most eight direct Context References in canonical Scope order. At most 32 tagged Artifacts are inspected per participating Scope.
 2. At most one committed Handoff Revision supplied by the caller as an exact `{family, artifact_id, revision}` reference in the current Scope. “Latest Handoff” is never selected implicitly.
 
 The `bootstrap-context` tag is an operator review decision, not an authorization mechanism. Operators must not tag credentials, secrets, personal data, generated instructions that have not been reviewed, or material that should not be injected automatically. The Runtime additionally rejects entries whose normalized kind identifies secret, credential, password, token, API-key, access-key, or private-key material, including punctuation and separator variants. Current authorization is still checked for every participating Scope.
@@ -44,11 +44,11 @@ A ready package has a `pending` receipt. Before emitting hook output, the host c
 
 Receipts store no query, content body, transcript path, raw host event identifier, or host error text. They store only bounded identity metadata, exact content references and digests, byte counts, creation time, and state. A supplied event identifier is hashed with the Scope, integration, and lifecycle before persistence. Package-shaping fields are separately fingerprinted: reusing the same stable event with a different profile, byte budget, or exact Handoff is rejected instead of returning a package built for another request. Repeating an otherwise identical stable event returns the existing result while pending and returns `skipped` after a terminal outcome. If opt-in is revoked while an event is pending, that receipt is terminally skipped without reading Context References. Receipts expire after 30 days and are pruned opportunistically. Disabled or empty invocations without a stable event receive an ephemeral response receipt but do not create a database row. Hosts that expose no stable event identity cannot claim restart idempotency.
 
-`PrepareContextRequest` optionally accepts `bootstrap_receipt_id`. When that receipt belongs to the same Scope and is `injected`, ordinary recall removes only fully delivered exact Memory entry versions listed by the receipt. This happens before candidate limiting and recall-sufficiency assessment, so delivered entries neither satisfy the gate nor displace eligible replacements. Entry identity is independent of a parent Memory Revision advanced by unrelated entries. A partially delivered entry and any revised version remain eligible. An absent, stale, foreign, pending, skipped, or failed receipt is ignored so recall remains fail-open.
+`PrepareContextRequest` optionally accepts `bootstrap_receipt_id`. When that receipt belongs to the same Scope and is `injected`, ordinary recall removes only fully delivered exact Atomic Memory revisions listed by the receipt. This happens before candidate limiting and recall-sufficiency assessment, so delivered Artifacts neither satisfy the gate nor displace eligible replacements. Atomic Memory identities are independent, so unrelated writes cannot change the delivered identity. A partially delivered Artifact and any newer revision remain eligible. An absent, stale, foreign, pending, skipped, or failed receipt is ignored so recall remains fail-open.
 
 ## Rendering and bounds
 
-The default final limit is 4,096 bytes and the hard maximum is 8,192 bytes. There are at most seven items: one exact Handoff followed by six curated Memory entries. Each item body is capped at 2,000 bytes and truncated only at Unicode character boundaries. Complete Scope, Artifact Revision, Memory entry/version, digest, and truncation metadata remain visible. Items that cannot retain a meaningful body and their citation within the remaining budget are omitted.
+The default final limit is 4,096 bytes and the hard maximum is 8,192 bytes. There are at most seven items: one exact Handoff followed by six curated Atomic Memory Artifacts. Each item body is capped at 2,000 bytes and truncated only at Unicode character boundaries. Complete Scope, Artifact Revision, digest, and truncation metadata remain visible. Items that cannot retain a meaningful body and their citation within the remaining budget are omitted.
 
 Selection uses exact tag lookup and immutable reads only. It does not embed, rerank, generate, or expand. The participating Scope count, tagged-entry scan, selected item count, per-item text, and final output are all bounded. Ordering and rendering are deterministic for the same exact inputs.
 
@@ -67,4 +67,4 @@ The subsequent `UserPromptSubmit` uses normal query-based recall and passes the 
 
 ## Acceptance
 
-Implementation is complete when contract and runtime tests cover opt-in defaults, all lifecycle values, exact Handoff selection, curated Memory ordering, Unicode byte bounds, normalized secret-kind exclusion, authorization across Context References, receipt retry, request-mismatch and transition semantics, bounded retention, package-level omissions, pre-gate first-query exact-version deduplication across unrelated Memory Revisions, continued recall of partially delivered entries, and content-free storage; and both Codex and Claude Code tests cover successful injection, disabled/empty paths, repeated terminal events, state handoff to the first query, invalid configuration and responses, timeouts, and HTTP failures without blocking the host.
+Implementation is complete when contract and runtime tests cover opt-in defaults, all lifecycle values, exact Handoff selection, curated Atomic Memory ordering, Unicode byte bounds, normalized secret-kind exclusion, authorization across Context References, receipt retry, request-mismatch and transition semantics, bounded retention, package-level omissions, pre-gate first-query exact-revision deduplication across unrelated Atomic Memories, continued recall of partially delivered Artifacts and newer revisions, and content-free storage; and both Codex and Claude Code tests cover successful injection, disabled/empty paths, repeated terminal events, state handoff to the first query, invalid configuration and responses, timeouts, and HTTP failures without blocking the host.

@@ -24,6 +24,11 @@ powercontext doctor codex
 The command adds the repository as a Codex marketplace, installs the PowerContext plugin, and creates the user data
 directory. It is safe to run again. Pass the same `--ref` used to install the PowerContext tool.
 
+When refreshing setup, client endpoint declarations in the setup `.env` file or process environment supersede saved
+client settings and the previously installed MCP URL. Without a new declaration, setup reuses saved endpoints.
+Conflicting file and process declarations still require an explicit choice; use `--server-url` and align or unset
+runtime URL overrides before rerunning setup. `--source` selects plugin code, not the Server endpoint.
+
 Open a new Codex session after setup. Use `/hooks` to inspect and, when prompted, trust the PowerContext
 `SessionStart` and `UserPromptSubmit` hooks.
 
@@ -106,10 +111,11 @@ export POWERCONTEXT_CODEX_BOOTSTRAP_CONTEXT=true
 codex
 ```
 
-The fixed `powercontext.scope-bootstrap.v1` profile includes at most six active Memory entries explicitly tagged
-`bootstrap-context`, considering the current Scope before at most eight direct Context References. It never scans all Memory,
-Sources, transcripts, pending Candidates, or generated instructions. Secret-like Memory kinds are excluded. Historical
-text is marked as untrusted and cannot override current user, developer, system, or repository instructions.
+The fixed `powercontext.scope-bootstrap.v1` profile includes at most six active Atomic Memory Artifacts explicitly
+tagged `bootstrap-context`, considering the current Scope before at most eight direct Context References. It never
+scans all Memory, Sources, transcripts, pending Candidates, or generated instructions. Secret-like Memory kinds are
+excluded. Historical text is marked as untrusted and cannot override current user, developer, system, or repository
+instructions.
 
 The default package limit is 4096 UTF-8 bytes. It can be set from 512 through 8192 bytes:
 
@@ -124,10 +130,11 @@ identity before starting Codex:
 export POWERCONTEXT_CODEX_BOOTSTRAP_HANDOFF='{"artifact_id":"HANDOFF_ID","revision":3}'
 ```
 
-Use the Memory-entry tag API to add `bootstrap-context` only to reviewed decisions, constraints, objectives, verified
-state, or repository guidance suitable for every new Session. A content-free delivery receipt makes retries idempotent;
-after successful injection, the first ordinary query sends that receipt so the Runtime suppresses only fully delivered
-exact Memory entry versions. Entries truncated during bootstrap and revised versions remain eligible for recall.
+Use the Atomic Memory Artifact tag API to add `bootstrap-context` only to reviewed decisions, constraints, objectives,
+verified state, or repository guidance suitable for every new Session. A content-free delivery receipt makes retries
+idempotent; after successful injection, the first ordinary query sends that receipt so the Runtime suppresses only
+fully delivered exact Atomic Memory revisions. Artifacts truncated during bootstrap and newer revisions remain eligible
+for recall.
 Preparation, validation, and receipt failures all fail open and inject nothing.
 Failures before a new lifecycle package is established, including invalid configuration, also clear any stale saved receipt.
 
@@ -190,8 +197,8 @@ This adds inference latency to each prompt and is not the normal interactive set
 
 ## Connect to an authenticated local Server
 
-Local Server authentication is disabled by default. Enable it when needed; enabling Dashboard also requires
-authenticated access. A fresh local configuration wizard leaves Dashboard off unless you select it.
+Local Server authentication is disabled by default and can be enabled independently of Dashboard.
+A fresh local configuration wizard leaves Dashboard off unless you select it; selecting it does not require a token.
 
 Load one token from your local secret manager, then start the Server with authentication enabled:
 
@@ -228,6 +235,10 @@ authorization without changing it. Do not put the token in `.mcp.json`, the Serv
 On Windows, setup also maintains the current user's authorization environment for Desktop compatibility. Existing
 processes do not receive environment changes. Restart Codex after setup to load the updated plugin configuration.
 Rerunning setup without a token preserves the saved credential; supplying a new token rotates it.
+If the Server endpoint changes without a new token, the old credential remains bound to the previous endpoint and is
+not forwarded. Setup and doctor probe the new endpoint without that credential, so an unauthenticated Server can
+connect normally. For an authenticated Server, supply its token through `POWERCONTEXT_CODEX_AUTHORIZATION` or
+`POWERCONTEXT_CLIENT_API_TOKEN` while rerunning setup; the new token replaces the saved record for the selected URL.
 
 To verify a new session without a process override on Linux or macOS:
 

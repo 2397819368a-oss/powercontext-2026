@@ -82,12 +82,12 @@ Agent-supplied `scope_id` cannot redirect a write. Repository and directory
 identities are binding lookup inputs only; they never generate a Scope ID.
 
 Bootstrap context is disabled by default. Set
-`POWERCONTEXT_CODEX_BOOTSTRAP_CONTEXT=true` to include active Memory entries
-explicitly tagged `bootstrap-context`; use
+`POWERCONTEXT_CODEX_BOOTSTRAP_CONTEXT=true` to include active Atomic Memory
+Artifacts explicitly tagged `bootstrap-context`; use
 `POWERCONTEXT_CODEX_BOOTSTRAP_MAX_BYTES` for the 512–8192-byte budget and
 `POWERCONTEXT_CODEX_BOOTSTRAP_HANDOFF` for one exact committed Handoff identity.
 The first ordinary recall carries the successful receipt so fully delivered
-exact Memory entry versions are not repeated; truncated entries remain eligible.
+exact Atomic Memory revisions are not repeated; truncated Artifacts remain eligible.
 Invalid configuration or another failure before a new package is established
 clears any stale saved receipt and injects nothing.
 

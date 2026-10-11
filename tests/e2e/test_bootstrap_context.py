@@ -34,12 +34,11 @@ from powercontext.http import (
     CreateArtifactRequest,
     CreateScopeRequest,
     CreateSourceRequest,
-    ListMemoryEntriesRequest,
     PrepareContextRequest,
     RecordBootstrapDeliveryRequest,
     RememberMemoryRequest,
+    ReplaceArtifactRequest,
     ReplaceArtifactTagsRequest,
-    ReviseMemoryEntryRequest,
 )
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import McpConfig, MetricsConfig, ServerSettings
@@ -48,17 +47,36 @@ from powercontext.server.settings import McpConfig, MetricsConfig, ServerSetting
 async def _tag_for_bootstrap(
     client: PowerContextClient,
     scope_id: str,
-    memory_artifact_id: str,
-    entry_id: str,
+    artifact_id: str,
 ) -> None:
-    tags = await client.get_memory_entry_tags(scope_id, memory_artifact_id, entry_id)
+    tags = await client.get_artifact_tags(scope_id, "atomic-memory", artifact_id)
     assert tags is not None
-    await client.replace_memory_entry_tags(
+    await client.replace_artifact_tags(
         scope_id,
-        memory_artifact_id,
-        entry_id,
+        "atomic-memory",
+        artifact_id,
         ReplaceArtifactTagsRequest.model_validate({"tags": ["bootstrap-context"]}),
         expected_etag=tags.etag,
+    )
+
+
+async def _replace_atomic_memory(
+    client: PowerContextClient,
+    transport: httpx.AsyncClient,
+    scope_id: str,
+    artifact_id: str,
+    *,
+    kind: str,
+    text: str,
+):
+    current = await transport.get(f"/v1/scopes/{scope_id}/artifacts/atomic-memory/{artifact_id}")
+    assert current.status_code == 200, current.text
+    return await client.replace_artifact(
+        scope_id,
+        "atomic-memory",
+        artifact_id,
+        ReplaceArtifactRequest.model_validate({"content": {"kind": kind, "text": text}}),
+        expected_etag=current.headers["ETag"],
     )
 
 
@@ -89,38 +107,14 @@ def test_bootstrap_is_opt_in_exact_bounded_idempotent_and_keeps_partial_memory_r
                     + " OMITTED-TAIL: restore the lunar archive after validation.",
                 )
             )
-            assert remembered.entry is not None
-            entry = remembered.entry
-            tags = await client.get_memory_entry_tags(
-                scope.scope_id,
-                entry.citation.memory_ref.artifact_id,
-                entry.citation.entry_id,
-            )
-            assert tags is not None
-            await client.replace_memory_entry_tags(
-                scope.scope_id,
-                entry.citation.memory_ref.artifact_id,
-                entry.citation.entry_id,
-                ReplaceArtifactTagsRequest.model_validate({"tags": ["bootstrap-context"]}),
-                expected_etag=tags.etag,
-            )
+            assert len(remembered.records) == 1
+            entry = remembered.records[0]
+            await _tag_for_bootstrap(client, scope.scope_id, entry.artifact.artifact_id)
             secret = await client.remember_memory(
                 RememberMemoryRequest(scope_id=scope.scope_id, kind="access-key", text="do-not-inject-secret")
             )
-            assert secret.entry is not None
-            secret_tags = await client.get_memory_entry_tags(
-                scope.scope_id,
-                secret.entry.citation.memory_ref.artifact_id,
-                secret.entry.citation.entry_id,
-            )
-            assert secret_tags is not None
-            await client.replace_memory_entry_tags(
-                scope.scope_id,
-                secret.entry.citation.memory_ref.artifact_id,
-                secret.entry.citation.entry_id,
-                ReplaceArtifactTagsRequest.model_validate({"tags": ["bootstrap-context"]}),
-                expected_etag=secret_tags.etag,
-            )
+            assert len(secret.records) == 1
+            await _tag_for_bootstrap(client, scope.scope_id, secret.records[0].artifact.artifact_id)
 
             disabled = await client.prepare_bootstrap_context(
                 BootstrapContextRequest.model_validate({
@@ -153,7 +147,7 @@ def test_bootstrap_is_opt_in_exact_bounded_idempotent_and_keeps_partial_memory_r
             assert prepared.content_bytes == len(prepared.content.encode("utf-8")) <= 1024
             assert prepared.truncated is True
             assert len(prepared.items) == 1
-            assert prepared.items[0].entry_version_id == entry.citation.entry_version_id
+            assert prepared.items[0].artifact == entry.artifact
             assert prepared.items[0].truncated is True
 
             retried = await client.prepare_bootstrap_context(request)
@@ -212,19 +206,14 @@ def test_bootstrap_is_opt_in_exact_bounded_idempotent_and_keeps_partial_memory_r
             assert with_receipt.status == "ready"
             assert with_receipt.content is not None and "OMITTED-TAIL" in with_receipt.content
 
-            current_entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
-            current_citation = next(
-                item.citation for item in current_entries.entries if item.citation.entry_id == entry.citation.entry_id
+            revised = await _replace_atomic_memory(
+                client,
+                transport,
+                scope.scope_id,
+                entry.artifact.artifact_id,
+                kind="decision",
+                text="BOOTSTRAP-ONLY: regenerate both Python and JavaScript bindings.",
             )
-            revised = await client.revise_memory_entry(
-                ReviseMemoryEntryRequest(
-                    scope_id=scope.scope_id,
-                    citation=current_citation,
-                    kind="decision",
-                    text="BOOTSTRAP-ONLY: regenerate both Python and JavaScript bindings.",
-                )
-            )
-            assert revised.entry is not None
             after_revision = await client.prepare_context(
                 PrepareContextRequest(
                     scope_id=scope.scope_id,
@@ -233,9 +222,7 @@ def test_bootstrap_is_opt_in_exact_bounded_idempotent_and_keeps_partial_memory_r
                 )
             )
             assert after_revision.status == "ready"
-            assert (
-                after_revision.content is not None and revised.entry.citation.entry_version_id in after_revision.content
-            )
+            assert after_revision.content is not None and "both Python and JavaScript" in after_revision.content
 
             pending_retry_request = BootstrapContextRequest.model_validate({
                 "scope_id": scope.scope_id,
@@ -247,15 +234,15 @@ def test_bootstrap_is_opt_in_exact_bounded_idempotent_and_keeps_partial_memory_r
             })
             pending_before_revision = await client.prepare_bootstrap_context(pending_retry_request)
             assert pending_before_revision.status == "ready"
-            changed_again = await client.revise_memory_entry(
-                ReviseMemoryEntryRequest(
-                    scope_id=scope.scope_id,
-                    citation=revised.entry.citation,
-                    kind="decision",
-                    text="SECOND-REVISION: this must not change a pending bootstrap retry.",
-                )
+            changed_again = await _replace_atomic_memory(
+                client,
+                transport,
+                scope.scope_id,
+                entry.artifact.artifact_id,
+                kind="decision",
+                text="SECOND-REVISION: this must not change a pending bootstrap retry.",
             )
-            assert changed_again.entry is not None
+            assert changed_again.revision == revised.revision + 1
             stable_retry = await client.prepare_bootstrap_context(pending_retry_request)
             assert stable_retry.receipt == pending_before_revision.receipt
             assert stable_retry.content == pending_before_revision.content
@@ -294,7 +281,7 @@ def test_bootstrap_is_opt_in_exact_bounded_idempotent_and_keeps_partial_memory_r
     asyncio.run(scenario())
 
 
-def test_bootstrap_deduplicates_complete_entry_before_recall_sufficiency_gate(
+def test_bootstrap_deduplicates_complete_atomic_revision_before_recall_sufficiency_gate(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -308,7 +295,7 @@ def test_bootstrap_deduplicates_complete_entry_before_recall_sufficiency_gate(
     monkeypatch.setattr(RecallSufficiencyGate, "assess", observe_assess)
     app = create_server_app(
         settings=ServerSettings(
-            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'deduplicate-entry-version.db'}"),
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'deduplicate-atomic-revision.db'}"),
             mcp=McpConfig(enabled=False),
             metrics=MetricsConfig(enabled=False),
             runtime=RuntimeConfig(
@@ -328,9 +315,9 @@ def test_bootstrap_deduplicates_complete_entry_before_recall_sufficiency_gate(
             client = PowerContextClient("http://testserver", http_client=transport, trust_transport_security=True)
             scope = await client.create_scope(
                 CreateScopeRequest(
-                    title="Entry version deduplication",
-                    summary="Ignore unrelated Memory revisions",
-                    idempotency_key="entry-version-deduplication",
+                    title="Atomic revision deduplication",
+                    summary="Ignore unrelated Atomic Memory writes",
+                    idempotency_key="atomic-revision-deduplication",
                 )
             )
             remembered = await client.remember_memory(
@@ -340,20 +327,15 @@ def test_bootstrap_deduplicates_complete_entry_before_recall_sufficiency_gate(
                     text="Use the orange moonlight protocol for release validation.",
                 )
             )
-            assert remembered.entry is not None
-            entry = remembered.entry
-            await _tag_for_bootstrap(
-                client,
-                scope.scope_id,
-                entry.citation.memory_ref.artifact_id,
-                entry.citation.entry_id,
-            )
+            assert len(remembered.records) == 1
+            entry = remembered.records[0]
+            await _tag_for_bootstrap(client, scope.scope_id, entry.artifact.artifact_id)
             request = BootstrapContextRequest.model_validate({
                 "scope_id": scope.scope_id,
                 "enabled": True,
                 "lifecycle": "startup",
                 "integration": "acceptance",
-                "event_id": "entry-version-event",
+                "event_id": "atomic-revision-event",
                 "max_bytes": 4096,
             })
             prepared = await client.prepare_bootstrap_context(request)
@@ -375,14 +357,14 @@ def test_bootstrap_deduplicates_complete_entry_before_recall_sufficiency_gate(
                     text="The cafeteria closes at six.",
                 )
             )
-            assert unrelated.entry is not None
-            assert unrelated.entry.citation.memory_ref.revision > entry.citation.memory_ref.revision
+            assert len(unrelated.records) == 1
+            assert unrelated.records[0].artifact.artifact_id != entry.artifact.artifact_id
 
             ordinary = await client.prepare_context(
                 PrepareContextRequest(scope_id=scope.scope_id, query="orange moonlight release protocol")
             )
             assert ordinary.status == "ready"
-            assert ordinary.content is not None and entry.citation.entry_version_id in ordinary.content
+            assert ordinary.content is not None and "orange moonlight" in ordinary.content
             deduplicated = await client.prepare_context(
                 PrepareContextRequest(
                     scope_id=scope.scope_id,
@@ -427,15 +409,10 @@ def test_pending_bootstrap_retry_preserves_package_level_omission(tmp_path) -> N
                         text=f"{marker}: keep this complete body in deterministic order.",
                     )
                 )
-                assert remembered.entry is not None
-                entries.append(remembered.entry)
+                assert len(remembered.records) == 1
+                entries.append(remembered.records[0])
             for entry in entries:
-                await _tag_for_bootstrap(
-                    client,
-                    scope.scope_id,
-                    entry.citation.memory_ref.artifact_id,
-                    entry.citation.entry_id,
-                )
+                await _tag_for_bootstrap(client, scope.scope_id, entry.artifact.artifact_id)
 
             request = BootstrapContextRequest.model_validate({
                 "scope_id": scope.scope_id,
@@ -616,13 +593,8 @@ def test_reconstruction_failure_uses_a_concurrent_terminal_receipt_state(tmp_pat
             remembered = await client.remember_memory(
                 RememberMemoryRequest(scope_id=scope.scope_id, kind="decision", text="Keep the blue release flag.")
             )
-            assert remembered.entry is not None
-            await _tag_for_bootstrap(
-                client,
-                scope.scope_id,
-                remembered.entry.citation.memory_ref.artifact_id,
-                remembered.entry.citation.entry_id,
-            )
+            assert len(remembered.records) == 1
+            await _tag_for_bootstrap(client, scope.scope_id, remembered.records[0].artifact.artifact_id)
             request = BootstrapContextRequest.model_validate({
                 "scope_id": scope.scope_id,
                 "enabled": True,
@@ -685,19 +657,8 @@ def test_bootstrap_considers_only_the_first_eight_direct_context_references(tmp_
                     text="NINTH-REFERENCE: this is outside the bootstrap scan.",
                 )
             )
-            assert remembered.entry is not None
-            citation = remembered.entry.citation
-            tags = await client.get_memory_entry_tags(
-                last_reference, citation.memory_ref.artifact_id, citation.entry_id
-            )
-            assert tags is not None
-            await client.replace_memory_entry_tags(
-                last_reference,
-                citation.memory_ref.artifact_id,
-                citation.entry_id,
-                ReplaceArtifactTagsRequest.model_validate({"tags": ["bootstrap-context"]}),
-                expected_etag=tags.etag,
-            )
+            assert len(remembered.records) == 1
+            await _tag_for_bootstrap(client, last_reference, remembered.records[0].artifact.artifact_id)
             current = await client.create_scope(
                 CreateScopeRequest(
                     title="Current",

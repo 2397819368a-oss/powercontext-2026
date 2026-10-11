@@ -151,7 +151,7 @@ class BootstrapReceiptRepository:
         return (replace(stored, state=outcome) if claimed else stored), claimed
 
     async def injected_memory_keys(self, scope_id: str, receipt_id: str) -> frozenset[tuple[object, ...]]:
-        """Return fully delivered entry-version identities from one injected package."""
+        """Return fully delivered Atomic Memory revision identities from one injected package."""
 
         async with self._database.transaction() as connection:
             row = (
@@ -176,11 +176,10 @@ class BootstrapReceiptRepository:
             (
                 item.scope_id,
                 item.artifact.artifact_id,
-                item.entry_id,
-                item.entry_version_id,
+                item.artifact.revision,
             )
             for item in items
-            if item.kind == "memory_entry" and not item.truncated
+            if item.kind == "atomic-memory" and not item.truncated
         )
 
 
