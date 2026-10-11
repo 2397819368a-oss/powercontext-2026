@@ -20,9 +20,19 @@ from powercontext.artifacts.models import (
     ArtifactDraft,
     ArtifactLineage,
     ArtifactRef,
-    MemoryCitation,
 )
 from powercontext.artifacts.protocols import ArtifactCatalog, ArtifactStore
+from powercontext.artifacts.search import (
+    ArtifactSearchContractError,
+    ArtifactSearcher,
+    ArtifactSearchExecutionContext,
+    ArtifactSearchFamilyNotFound,
+    ArtifactSearchMatch,
+    ArtifactSearchOutcome,
+    ArtifactSearchQuery,
+    ArtifactSearchUnsupported,
+    ChannelScore,
+)
 
 __all__ = [
     "Artifact",
@@ -31,6 +41,14 @@ __all__ = [
     "ArtifactDraft",
     "ArtifactLineage",
     "ArtifactRef",
+    "ArtifactSearchContractError",
+    "ArtifactSearchExecutionContext",
+    "ArtifactSearchFamilyNotFound",
+    "ArtifactSearchMatch",
+    "ArtifactSearchOutcome",
+    "ArtifactSearchQuery",
+    "ArtifactSearchUnsupported",
+    "ArtifactSearcher",
     "ArtifactStore",
-    "MemoryCitation",
+    "ChannelScore",
 ]

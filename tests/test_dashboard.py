@@ -201,26 +201,28 @@ def collect_pages(client: TestClient, first: str, route: str, identity: str) -> 
 
 def test_memory_pagination_and_deep_link_select_the_corresponding_text(dashboard: TestClient) -> None:
     scope = create_scope(dashboard, "Long memory")["scope_id"]
-    for index in range(25):
+    for index in range(75):
         response = dashboard.post(
             "/v1/memory/remember",
             json={"scope_id": scope, "kind": "constraint", "text": f"Recorded constraint {index}."},
         )
         assert response.status_code == 200
-    entries = dashboard.post("/v1/memory/entries/list", json={"scope_id": scope}).json()["entries"]
+    entries = dashboard.post("/v1/atomic-memory/list", json={"scope_id": scope, "limit": 100}).json()["items"]
     first = dashboard.get("/dashboard/notes", params={"scope": scope})
-    expected = {item["citation"]["entry_id"] for item in entries}
-    assert collect_pages(dashboard, first.text, "/dashboard/notes", "entry") == expected
-    entry = entries[-1]["citation"]
-    deep = dashboard.get("/dashboard/notes", params={"scope": scope, "entry": entry["entry_id"]})
+    expected = {item["artifact"]["artifact_id"] for item in entries}
+    assert collect_pages(dashboard, first.text, "/dashboard/notes", "artifact") == expected
+    entry = entries[-1]["artifact"]
+    deep = dashboard.get(
+        "/dashboard/notes", params={"scope": scope, "artifact": entry["artifact_id"], "revision": entry["revision"]}
+    )
     assert deep.status_code == 200
-    assert entry["entry_id"] in record_links(deep.text, "/dashboard/notes", "entry")
+    assert f"atomic-memory/{entry['artifact_id']}@{entry['revision']}" in deep.text
     assert entries[-1]["text"] in deep.text
     assert dashboard.get("/dashboard/notes", params={"scope": scope, "notes_page": "invalid"}).status_code == 422
-    assert dashboard.get("/dashboard/notes", params={"scope": scope, "notes_page": "99"}).status_code == 404
+    assert dashboard.get("/dashboard/notes", params={"scope": scope, "notes_history": "invalid"}).status_code == 422
 
 
-def test_memory_search_preserves_scope_citations_and_result_pagination(dashboard: TestClient) -> None:
+def test_memory_search_preserves_scope_references_and_result_pagination(dashboard: TestClient) -> None:
     scope = create_scope(dashboard, "Searchable memory")["scope_id"]
     other = create_scope(dashboard, "Separate memory")["scope_id"]
     for index in range(9):
@@ -234,12 +236,14 @@ def test_memory_search_preserves_scope_citations_and_result_pagination(dashboard
     )
     assert response.status_code == 200
     hits = dashboard.post(
-        "/v1/memory/search", json={"scope_id": scope, "query": "Release", "mode": "fts", "limit": 50}
+        "/v1/atomic-memory/search", json={"scope_id": scope, "query": "Release", "mode": "text", "limit": 50}
     ).json()["hits"]
     assert hits
     first = dashboard.get("/dashboard/notes", params={"scope": scope, "q": "Release"})
     assert first.status_code == 200
     assert LABELS["constraint"] in first.text
+    assert f"{hits[0]['score']:.6f}" in first.text
+    assert 'data-memory-channel="text"' in first.text
     assert LABELS["page_number"].format(page=1) in first.text
     second = dashboard.get(page_link(first.text, LABELS["next_page"]))
     assert second.status_code == 200
@@ -247,33 +251,33 @@ def test_memory_search_preserves_scope_citations_and_result_pagination(dashboard
     assert second.url.params["scope"] == scope
     assert LABELS["page_number"].format(page=2) in second.text
     previous = dashboard.get(page_link(second.text, LABELS["previous_page"]))
-    assert record_links(previous.text, "/dashboard/notes", "entry") == record_links(
-        first.text, "/dashboard/notes", "entry"
+    assert record_links(previous.text, "/dashboard/notes", "artifact") == record_links(
+        first.text, "/dashboard/notes", "artifact"
     )
-    assert collect_pages(dashboard, first.text, "/dashboard/notes", "entry") == {
-        hit["citation"]["entry_id"] for hit in hits
+    assert collect_pages(dashboard, first.text, "/dashboard/notes", "artifact") == {
+        hit["memory"]["artifact"]["artifact_id"] for hit in hits
     }
     for hit in hits:
-        citation = hit["citation"]
+        artifact = hit["memory"]["artifact"]
         selected = dashboard.get(
             "/dashboard/notes",
             params={
                 "scope": scope,
                 "q": "Release",
-                "entry": citation["entry_id"],
-                "entry_version": citation["entry_version_id"],
-                "memory_id": citation["memory_ref"]["artifact_id"],
-                "memory_revision": citation["memory_ref"]["revision"],
+                "artifact": artifact["artifact_id"],
+                "revision": artifact["revision"],
             },
         )
         assert selected.status_code == 200
-        assert hit["text"] in selected.text
+        assert hit["memory"]["text"] in selected.text
     for target, query in [(other, "Release"), (scope, "nonexistent")]:
         empty = dashboard.get("/dashboard/notes", params={"scope": target, "q": query})
         assert empty.status_code == 200
         assert LABELS["notes_no_match"] in empty.text
         assert LABELS["page_number"].format(page=1) in empty.text
-        assert not record_links(empty.text, "/dashboard/notes", "entry")
+        assert not record_links(empty.text, "/dashboard/notes", "artifact")
+        assert LABELS["memory_requested_mode"] in empty.text
+        assert f"{LABELS['memory_used_mode']}: {LABELS['memory_mode_text']}" in empty.text
     single = dashboard.get("/dashboard/notes", params={"scope": scope, "q": "Invoices"})
     assert LABELS["page_number"].format(page=1) in single.text
     assert LABELS["previous_page"] in single.text
@@ -281,10 +285,85 @@ def test_memory_search_preserves_scope_citations_and_result_pagination(dashboard
     restored = dashboard.get(page_link(first.text, LABELS["clear_search"]))
     assert restored.status_code == 200
     assert not restored.url.params.get("q")
-    expected = dashboard.post("/v1/memory/entries/list", json={"scope_id": scope}).json()["entries"]
-    assert collect_pages(dashboard, restored.text, "/dashboard/notes", "entry") == {
-        item["citation"]["entry_id"] for item in expected
+    expected = dashboard.post("/v1/atomic-memory/list", json={"scope_id": scope}).json()["items"]
+    assert collect_pages(dashboard, restored.text, "/dashboard/notes", "artifact") == {
+        item["artifact"]["artifact_id"] for item in expected
     }
+
+
+def test_memory_search_modes_surface_semantic_hits_and_keep_navigation(tmp_path: Path) -> None:
+    from powercontext.builtin.artifacts.memory import EmbeddingProfile
+    from powercontext.builtin.inference import EmbeddingResult
+
+    class CoffeeEmbedding:
+        profile = EmbeddingProfile(
+            profile_id="dashboard-coffee", model="test", dimension=3, distance="l2", normalization="unit"
+        )
+
+        async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
+            return EmbeddingResult(
+                vectors=tuple(
+                    (1.0, 0.0, 0.0) if any(word in text.lower() for word in ("coffee", "caffeine")) else (0.0, 1.0, 0.0)
+                    for text in texts
+                )
+            )
+
+    app = create_server_app(
+        settings=ServerSettings(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path}/semantic.db"),
+            dashboard=DashboardConfig(enabled=True),
+            mcp=McpConfig(enabled=False),
+        ),
+        scheduler_path=tmp_path / "scheduler.db",
+        embedding_model=CoffeeEmbedding(),
+    )
+    with TestClient(app) as client:
+        scope = create_scope(client, "Coffee preferences")["scope_id"]
+        for index in range(8):
+            assert (
+                client.post(
+                    "/v1/memory/remember",
+                    json={"scope_id": scope, "kind": "fact", "text": f"Coffee preparation choice {index}."},
+                ).status_code
+                == 200
+            )
+        lexical = client.get("/dashboard/notes", params={"scope": scope, "q": "caffeine", "mode": "fts"})
+        assert lexical.status_code == 200
+        assert not record_links(lexical.text, "/dashboard/notes", "artifact")
+        semantic = client.get("/dashboard/notes", params={"scope": scope, "q": "caffeine", "mode": "vector"})
+        assert semantic.status_code == 200
+        assert len(record_links(semantic.text, "/dashboard/notes", "artifact")) == 6
+        assert 'data-memory-channel="vector"' in semantic.text
+        assert 'data-memory-channel="text"' not in semantic.text
+        following = client.get(page_link(semantic.text, LABELS["next_page"]))
+        assert following.url.params["mode"] == "vector"
+        assert len(record_links(following.text, "/dashboard/notes", "artifact")) == 2
+        selected_url = next(
+            unescape(url)
+            for url in re.findall(r'href="([^"]+)"', following.text)
+            if "artifact=" in unescape(url) and "/dashboard/notes?" in unescape(url)
+        )
+        selected = client.get(selected_url)
+        assert selected.status_code == 200
+        assert selected.url.params["mode"] == "vector"
+        assert 'data-memory-channel="vector"' in selected.text.split('id="memory-accordion"', 1)[1]
+        restored = client.get(page_link(selected.text, LABELS["clear_search"]))
+        assert restored.url.params["mode"] == "vector"
+        assert not restored.url.params.get("artifact")
+        assert "memory-search-evidence" not in restored.text
+        forgotten = client.get(page_link(restored.text, LABELS["memory_state_forgotten"]))
+        assert forgotten.url.params["mode"] == "vector"
+        assert forgotten.url.params["note_state"] == "forgotten"
+        automatic = client.get("/dashboard/notes", params={"scope": scope, "q": "coffee", "lang": "en"})
+        assert "Executed mode: Hybrid" in automatic.text
+        assert 'data-memory-channel="text"' in automatic.text
+        assert 'data-memory-channel="vector"' in automatic.text
+        assert "0.032787" in automatic.text
+        invalid = client.get(
+            "/dashboard/notes", params={"scope": scope, "q": "coffee", "mode": "keyword", "lang": "zh"}
+        )
+        assert LABELS["error_422"] in invalid.text
+        assert 'class="text-secondary memory-search-mode"' not in invalid.text
 
 
 def test_collection_errors_return_to_a_readable_list(dashboard: TestClient) -> None:
@@ -457,27 +536,26 @@ def test_memory_exact_revision_and_cross_scope_isolation(dashboard: TestClient) 
         },
     )
     assert saved.status_code == 200
-    entry = saved.json()["entry"]
-    citation = entry["citation"]
+    artifact = saved.json()["records"][0]["artifact"]
     query = {
         "scope": first["scope_id"],
-        "entry": citation["entry_id"],
-        "memory_id": citation["memory_ref"]["artifact_id"],
-        "memory_revision": citation["memory_ref"]["revision"],
-        "entry_version": citation["entry_version_id"],
+        "artifact": artifact["artifact_id"],
+        "revision": artifact["revision"],
     }
     response = dashboard.get("/dashboard/notes", params=query)
     assert response.status_code == 200
     assert "&lt;public&gt;" in response.text
     assert "<public>" not in response.text
-    assert dashboard.get("/dashboard/notes", params={**query, "entry_version": "missing"}).status_code == 404
+    assert dashboard.get("/dashboard/notes", params={**query, "revision": "999"}).status_code == 404
     assert (
         dashboard.get(
-            "/dashboard/notes", params={key: value for key, value in query.items() if key != "memory_id"}
+            "/dashboard/notes", params={key: value for key, value in query.items() if key != "revision"}
         ).status_code
         == 422
     )
-    denied = dashboard.post("/v1/memory/entries/get", json={"scope_id": other["scope_id"], "citation": citation})
+    denied = dashboard.get(
+        f"/v1/scopes/{other['scope_id']}/artifacts/atomic-memory/{artifact['artifact_id']}/revisions/{artifact['revision']}"
+    )
     crossed = dashboard.get("/dashboard/notes", params={**query, "scope": other["scope_id"]})
     assert denied.is_error
     assert crossed.status_code == denied.status_code
@@ -499,7 +577,7 @@ def test_reviewed_methods_link_to_exact_memory_evidence(dashboard: TestClient) -
         json={"scope_id": scope, "kind": "fact", "text": "The original retry preserved one committed record."},
     )
     assert saved.status_code == 200
-    citation = saved.json()["entry"]["citation"]
+    memory_ref = saved.json()["records"][0]["artifact"]
     artifact = None
     for family, proposal in (
         (
@@ -521,7 +599,7 @@ def test_reviewed_methods_link_to_exact_memory_evidence(dashboard: TestClient) -
             },
         ),
     ):
-        lineage = {"memory_citations": [citation]} if artifact is None else {"artifact_refs": [artifact]}
+        lineage = {"artifact_refs": [memory_ref if artifact is None else artifact]}
         proposed = dashboard.post(
             f"/v1/{family}/propose",
             json={"scope_id": scope, "proposal": proposal, "source_refs": [], "artifact_refs": [], **lineage},
@@ -538,9 +616,12 @@ def test_reviewed_methods_link_to_exact_memory_evidence(dashboard: TestClient) -
         )
         assert approved.status_code == 200, approved.text
         artifact = approved.json()["result_artifact"]
-    revised = dashboard.post(
-        "/v1/memory/entries/revise",
-        json={"scope_id": scope, "citation": citation, "kind": "fact", "text": "The retry contract was later refined."},
+    memory_url = f"/v1/scopes/{scope}/artifacts/atomic-memory/{memory_ref['artifact_id']}"
+    current = dashboard.get(memory_url)
+    revised = dashboard.put(
+        memory_url,
+        headers={"If-Match": current.headers["etag"]},
+        json={"content": {"kind": "fact", "text": "The retry contract was later refined."}},
     )
     assert revised.status_code == 200
     detail = dashboard.get(
@@ -553,18 +634,33 @@ def test_reviewed_methods_link_to_exact_memory_evidence(dashboard: TestClient) -
     experience = dashboard.get(experience_link)
     assert experience.status_code == 200
     links = [unescape(value) for value in re.findall(r'href="([^"]+)"', experience.text)]
-    memory_link = next(value for value in links if "entry_version=" in value)
+    memory_link = next(
+        value
+        for value in links
+        if urlsplit(value).path == "/dashboard/notes"
+        and parse_qs(urlsplit(value).query).get("artifact") == [memory_ref["artifact_id"]]
+    )
     query = parse_qs(urlsplit(memory_link).query)
     assert query["scope"] == [scope]
-    assert query["entry"] == [citation["entry_id"]]
-    assert query["entry_version"] == [citation["entry_version_id"]]
-    assert query["memory_id"] == [citation["memory_ref"]["artifact_id"]]
-    assert query["memory_revision"] == [str(citation["memory_ref"]["revision"])]
+    assert query["artifact"] == [memory_ref["artifact_id"]]
+    assert query["revision"] == [str(memory_ref["revision"])]
     historical = dashboard.get(memory_link)
     assert historical.status_code == 200
     assert "The original retry preserved one committed record." in historical.text
+    assert LABELS["historical_revision"] in historical.text
+    searched_history = dashboard.get(
+        memory_link, params={**{key: value[0] for key, value in query.items()}, "q": "refined", "mode": "fts"}
+    )
+    assert searched_history.status_code == 200
+    assert 'data-memory-channel="text"' in searched_history.text
+    selected_header = re.search(r'<button\b[^>]*aria-expanded="true"[^>]*>(.*?)</button>', searched_history.text, re.S)
+    assert selected_header is not None
+    assert "The original retry preserved" in selected_header[1]
+    assert "memory-search-evidence" not in selected_header[1]
     other = create_scope(dashboard, "Unrelated Dream evidence")["scope_id"]
-    denied_read = dashboard.post("/v1/memory/entries/get", json={"scope_id": other, "citation": citation})
+    denied_read = dashboard.get(
+        f"/v1/scopes/{other}/artifacts/atomic-memory/{memory_ref['artifact_id']}/revisions/{memory_ref['revision']}"
+    )
     crossed = dashboard.get(
         "/dashboard/notes", params={**{key: value[0] for key, value in query.items()}, "scope": other}
     )
@@ -662,7 +758,7 @@ def test_committed_handoff_json_and_its_sources_are_readable(dashboard: TestClie
     )
 
 
-def test_dashboard_is_opt_in_and_requires_the_static_token_profile(tmp_path: Path, monkeypatch) -> None:
+def test_dashboard_is_opt_in_and_enforced_access_requires_the_static_token_profile(tmp_path: Path, monkeypatch) -> None:
     from powercontext.server.authentication import StaticBearerAuthenticationProvider
     from powercontext.server.authz import PrincipalRef
 
@@ -677,8 +773,8 @@ def test_dashboard_is_opt_in_and_requires_the_static_token_profile(tmp_path: Pat
         assert client.post("/dashboard/session", data={"token": "unused"}).status_code == 404
 
     monkeypatch.setenv("POWERCONTEXT_SERVER_DASHBOARD_ENABLED", "true")
-    with pytest.raises(ValueError, match="DASHBOARD_ENABLED requires"):
-        ServerSettings(database=database)
+    with pytest.raises(ValueError, match="AUTH_TOKEN"):
+        ServerSettings(database=database, access=AccessControlConfig(mode="enforced"))
     token = token_urlsafe(24)
     settings = ServerSettings(
         database=database,

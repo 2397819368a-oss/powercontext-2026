@@ -21,6 +21,44 @@ secret-bearing deployment artifact.
 group or other permissions. The service records its identity and refuses to launch if the file is replaced or its
 ownership, permissions, or contents change; run `service install` again after an intentional update.
 
+## Atomic Memory
+
+See [Use Atomic Memory](../workflows/atomic-memory.md) for creation, search, lifecycle and restoration examples,
+and [offline migration](atomic-memory-migration.md) for existing databases.
+
+Restoration previews require an explicit shared signing key. Every process that generates or validates tokens must
+use the same secret and key ID:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_PREVIEW_SIGNING_SECRET` | unset | Secret of at least 32 characters; without it, previews and token validation return `422 invalid_preview`, while direct restoration remains available |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_PREVIEW_SIGNING_KEY_ID` | `atomic-memory-v1` | Current key ID, 1–128 characters; deployment configuration loads only this one key |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_PREVIEW_TTL_SECONDS` | `300` | Preview lifetime, 1–3600 seconds |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_RESTORE_RETRY_BUDGET` | `3` | Re-read and preparation retries after `atomic_memory_changed` during restoration without a token, 0–10; the default permits the initial attempt plus 3 retries |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_RELATED_MODE` | `auto` | Related-memory recall during Source processing: `auto`, `fts`, `vector` or `hybrid`; auto selects fts without a profile and hybrid with one |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_RELATED_MAX_DISTANCE` | `1.0` | Maximum exact L2 distance for complete related-vector enumeration, nonnegative; does not apply to ordinary searches with a limit |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_RELATED_FTS_FALLBACK` | `false` | Explicitly permit full-text enumeration when the related query vector is unavailable, profiles mismatch or vector projections are incomplete; ordinary search error handling is unchanged |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_COMPARISON_BATCH_SIZE` | `20` | Maximum related objects per comparison call, positive integer; it is not a total candidate limit |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_INPUT_TOKENS_LIMIT` | `24000` | Estimated tokens per extraction/comparison input, including instructions and complete input, positive integer |
+
+An unset secret never generates a random process key. Changing the secret or key ID invalidates old tokens; preview
+again. A restoration with a token returns `preview_stale` on changes instead of reinterpreting the intent. The retry
+budget does not replay a write whose commit outcome is unknown after a connection failure.
+
+Source processing generates candidates, then enumerates related active memories satisfying permission, tag and
+retrieval eligibility. Fts enumerates all qualifying matches; vector enumerates all results within its threshold;
+hybrid combines both. Neither comparison batch size nor token budget truncates the total candidates. Oversized
+comparison input reduces the batch until every candidate is processed. A single object or complete extraction input
+that exceeds the budget fails the window without partial publication or cursor advancement. Fallback changes recall
+evidence and requires an explicit choice; by default errors retain the window for diagnosis and retry.
+
+Atomic Memory has no legacy collection capacity budget or compact operation. `MEMORY_MAX_ACTIVE_ENTRIES`,
+`MEMORY_MAX_MANIFEST_ENTRIES`, `MEMORY_MAX_MANIFEST_BYTES` and `MEMORY_COMPACTION_*` settings remain parseable but do not
+limit new memories or enable compaction. The legacy MemoryWriteGate collection contract is unsupported by the Atomic
+Runtime; enabling `MEMORY_WRITE_GATE_ENABLED` or injecting an old gate is rejected explicitly.
+The existing limit of 32 tags per Artifact still applies. If merged input tags exceed it, the whole merge fails;
+Source processing also retains the window without partial publication or cursor advancement.
+
 ## User data
 
 `POWERCONTEXT_HOME` overrides the directory used by the installed Server:
@@ -49,7 +87,7 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_WORKSPACE` | Server startup directory | Resolution root for local project Agent Skill folders |
 | `POWERCONTEXT_SERVER_MCP_ENABLED` | `true` | Enable Streamable HTTP MCP |
 | `POWERCONTEXT_SERVER_MCP_PATH` | `/mcp` | MCP path |
-| `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `false` | Personal and demonstration Dashboard; requires static Bearer authentication and does not support injected authentication or authorization Providers |
+| `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `false` | Personal and demonstration Dashboard; local `ACCESS_MODE=disabled` needs no token, while `enforced` requires a static Bearer token; injected authentication or authorization Providers are unsupported |
 | `POWERCONTEXT_SERVER_AUTH_ENABLED` | `false` | Legacy static bearer switch; `true` maps to `ACCESS_MODE=enforced` and requires `AUTH_TOKEN` |
 | `POWERCONTEXT_SERVER_AUTH_TOKEN` | unset | Legacy static bearer token; used as compatibility authentication and mapped to the built-in administrator when no Authentication Provider is injected |
 | `POWERCONTEXT_SERVER_ACCESS_MODE` | `disabled` | The only supported Access switch: `disabled` or `enforced` |
@@ -71,11 +109,21 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_DATABASE_PATH` | user data `seekdb` directory | Embedded seekdb path; used only when `DATABASE_KIND=seekdb` |
 | `POWERCONTEXT_SERVER_DATABASE_BUSY_TIMEOUT_MS` | `5000` | Milliseconds a business connection waits for SQLite's single write lock before raising; it does not govern usage accounting, which has its own bounded budget |
 | `POWERCONTEXT_SERVER_RUNTIME_SCOPE_CACHE_SIZE` | `128` | Inactive scope compositions retained by the Runtime; in-flight scopes are never evicted |
-| `POWERCONTEXT_SERVER_RUNTIME_SOURCE_WINDOW_LIMIT` | `100` | Maximum Sources processed in one activation |
+| `POWERCONTEXT_SERVER_RUNTIME_SOURCE_WINDOW_LIMIT` | `100` | Maximum Source journal positions per activation; Memory reduces its window after generation timeouts |
 | `POWERCONTEXT_SERVER_RUNTIME_CONTEXT_ASSEMBLY_MAX_ENTRIES` | `8` | Maximum sum of explicit `assembly.sections[].limit`; positive integer. Per-family limits still apply. |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_EXTRACTION_PROFILE` | `coding` | Memory selection policy: `coding` or `conversation` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_ENABLED` | `false` | Apply listwise reranking after coarse Memory retrieval |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_CANDIDATE_LIMIT` | `30` | Coarse candidate pool supplied to the reranker |
+| `POWERCONTEXT_SERVER_RUNTIME_DECISION_ASSISTANCE_ENABLED` | `false` | Enable decision-model assistance; requires a decision or generation model |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_ENABLED` | `false` | Legacy collection WriteGate; unsupported by Atomic Runtime, which rejects enabling it |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_HOLD_ON` | `yes` | Decision outcome that means evidence is insufficient: `yes` or `no` |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_THRESHOLD` | unset | Optional confidence threshold from `0` to `1`; a hold-direction verdict below it is flagged instead of held |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_ACTIVE_ENTRIES` | `5000` | Legacy collection setting; does not limit Atomic Memory, but parsing still validates it against the manifest limit |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_ENTRIES` | `10000` | Legacy collection setting; Atomic Memory has no collection manifest |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_BYTES` | `4194304` | Legacy collection setting; does not limit total Atomic Memory content |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_COMPACTION_ENABLED` | `false` | Legacy collection setting; Atomic Runtime has no compact operation |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_COMPACTION_MIN_TOMBSTONE_REVISIONS` | `10` | Legacy collection setting; Atomic Runtime has no compact operation |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_HISTORY_REVISIONS` | `100` | Maximum Memory history Revisions read by the Runtime |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_ENABLED` | `false` | Enable the optional recall-sufficiency gate; disabling it keeps recall identical to a deployment without the feature |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_MAX_ROUNDS` | `2` | Most expansion rounds after the first recall; `0` to `2`, where `0` assesses without expanding |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_MIN_CANDIDATES` | `2` | Fewest candidates a recall needs to count as sufficient |
@@ -134,6 +182,12 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_MODEL_SETTINGS` | `{}` | JSON object of Pydantic AI reranker model settings |
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_TIMEOUT_SECONDS` | generation timeout | LLM reranker timeout |
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_MAX_REQUESTS` | generation request limit | Maximum model requests in one rerank operation |
+| `POWERCONTEXT_SERVER_INFERENCE_DECISION_MODEL` | generation model | Optional dedicated Pydantic AI model for decision assistance and the Memory write gate |
+| `POWERCONTEXT_SERVER_INFERENCE_DECISION_BASE_URL` | inherited/provider default | Custom decision-model provider base URL; requires `DECISION_MODEL` |
+| `POWERCONTEXT_SERVER_INFERENCE_DECISION_HEADERS` | `{}` | JSON object of static decision client headers; values are secrets and inherit generation headers when no dedicated model is set |
+| `POWERCONTEXT_SERVER_INFERENCE_DECISION_MODEL_SETTINGS` | `{}` | JSON object of decision model settings; merged with generation settings when no dedicated model is set |
+| `POWERCONTEXT_SERVER_INFERENCE_DECISION_TIMEOUT_SECONDS` | generation timeout | Timeout in seconds for a decision operation |
+| `POWERCONTEXT_SERVER_INFERENCE_DECISION_MAX_REQUESTS` | generation request limit | Maximum model requests for one decision operation, including model-output validation retries; excludes provider SDK HTTP retries |
 | `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | unset | Experience automatic admission interval; unset preserves accepted work and stops new automatic admission |
 | `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` | automatic local project targets | JSON override containing the host identity and explicit Agent Skill targets |
 
@@ -144,6 +198,19 @@ assessment calls no model, and expansion reuses the same request's Scope, famili
 with the query vectors already produced. The round-one and round-two similarity floors must stay in decreasing order, or
 startup fails. Enabling the gate can add search rounds and latency, so evaluate retrieval results and latency on your own
 data.
+
+When the gate produces a `RecallEffort`, the relational Runtime adds one observation to `pc_recall_effort_daily`, keyed by
+`(scope_id, usage_date, policy_id, assessment)`. Dates use UTC. The additive counters describe committed search rounds,
+expansion actions, candidate-pool sizes, search-reported additional inference calls, and final byte-budget truncations and
+drops. The two drop subclasses sum to `dropped_items`; invalid counts are rejected before persistence. The table contains
+only its key dimensions and counters, without entry identities, queries, prompts, citations, or content bodies. It is an
+internal aggregate and is not included in the statistics overview or HTTP/MCP responses.
+
+Recall-effort recording makes one write attempt within `POWERCONTEXT_SERVER_RUNTIME_MODEL_USAGE_WRITE_TIMEOUT_SECONDS`.
+A failed write logs a safe diagnostic and preserves the prepared context. Request cancellation waits for the owned
+transaction's native cleanup before propagating, preserving a shared in-memory SQLite database. A caller-supplied
+`recall_effort_sink` replaces the relational recorder; a disabled gate invokes neither. Existing SQLite and OceanBase
+databases gain the missing relation through the normal additive table-creation path.
 
 Model usage accounting is best-effort and never gates a model call. Each Runtime owns one bounded recorder that accepts a
 record without any I/O and writes it in an independent short transaction, so a statistics outage, a full queue, or a lock
@@ -226,6 +293,27 @@ Custom Source registries remain available to synchronous SDK contexts and API-on
 The authenticated `/metrics` endpoint exposes `powercontext_server_artifact_processing_*` observations with only a `family`
 label: Worker capacity, ready/retry queues, unacknowledged Scopes, discovery and invocation duration, completions,
 failures, and timeouts. Unacknowledged counts reflect the latest discovery; counters reset with the Supervisor instance.
+
+The `extraction` object in `GET /v1/capabilities` separates configuration, background execution, and local observations.
+Reading this snapshot does not query the database or call a model, and does not produce an overall health verdict.
+
+- `configuration` is `configured` when a local extraction model or custom pipeline is assembled, or a local Memory
+  worker is registered. It is `unconfigured` when none is available. Registration does not verify credentials or
+  connectivity. External execution reports `unknown`.
+- `background.location` is `local`, `external`, or `none`. The local Supervisor's `role` (`leader` or `standby`) is
+  separate from its `state` (`running`, `degraded`, or `stopped`); standby is normal. A worker crash can coexist with a
+  running Supervisor that arranges retries. `automatic_processing_enabled=false` still permits explicit work.
+  External execution has unknown state and schedule; no running local Supervisor means a null role.
+- `observation.since` marks the start of this Runtime's local observation window, including its child Memory workers.
+  `status=unverified` means no execution outcome or control failure has been observed; `observed` means evidence exists.
+  `last_success_at` records a successful nonempty flush or acknowledged worker invocation. `last_failure` records a safe
+  `code`, `stage`, and `occurred_at`, such as `model_timeout` at `inference` or `worker_crash` at `worker`.
+  Generic failures retain the observing boundary (`flush` or `worker`) without assuming a model failure.
+
+Success and failure records are independent: Scope B succeeding does not clear Scope A's failure or prove its recovery.
+A historical failure also does not mean an incident is still unresolved. Observations reset on Runtime restart and do
+not prove model connectivity or remote worker health. Use structured logs for Scope-specific failures and retries, and
+the existing metrics for queue and progress observations; local ready counts are not a global Source backlog.
 
 Remote and multi-user deployments must use `enforced`. In that mode, HTTP, MCP, and metrics share one Server PEP.
 `/v1/access/me` reports the `server`/`scope`/`artifact` Resource Kinds,
