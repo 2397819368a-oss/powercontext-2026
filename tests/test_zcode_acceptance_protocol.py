@@ -17,10 +17,27 @@
 import asyncio
 import json
 
+import httpx
 import pytest
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .e2e.zcode_acceptance.protocol import CaptureResponseGate, ObserveServer, WireEvidence
+from powercontext.builtin.artifacts.atomic_memory.extraction import (
+    AtomicMemoryEvidence,
+    AtomicMemoryExtractionInput,
+    AtomicMemoryExtractionOutput,
+)
+from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
+    AtomicMemoryComparisonItem,
+    AtomicMemoryReconciliationInput,
+    AtomicMemoryReconciliationOutput,
+    validate_reconciliation_output,
+)
+from powercontext.builtin.inference.pydantic_ai import PydanticAIStructuredGenerator
+from powercontext.sources import SourceRef
+
+from .e2e.zcode_acceptance.protocol import CaptureResponseGate, HostModelFixture, ObserveServer, WireEvidence
 
 
 def capture_app(writes: list[str], *, reject: bool = False) -> ASGIApp:
@@ -116,3 +133,59 @@ def test_capture_gate_has_bounded_failure_without_release():
     assert gate.accepted.is_set()
     assert gate.release_timed_out
     assert sent == []
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_generation_fixture_round_trips_atomic_source_extraction_and_reconciliation(duplicate):
+    async def scenario():
+        fixture = HostModelFixture()
+        evidence = AtomicMemoryEvidence(
+            evidence_id="captured-source-evidence",
+            source_ref=SourceRef(source_type="content", source_id="captured-color-policy"),
+            journal_position=1,
+            content="In the synthetic Orion project, the verification color is copper-7319.",
+            source_metadata={},
+        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fixture.app)) as client:
+            model = OpenAIChatModel(
+                "memory-fixture",
+                provider=OpenAIProvider(base_url="http://fixture/v1", api_key="synthetic-only", http_client=client),
+            )
+            extractor = PydanticAIStructuredGenerator(
+                model=model,
+                instructions="Extract only the supplied Source facts and cite their evidence IDs.",
+                input_type=AtomicMemoryExtractionInput,
+                output_type=AtomicMemoryExtractionOutput,
+            )
+            extraction = await extractor.generate(AtomicMemoryExtractionInput(evidence=(evidence,)))
+            (candidate,) = extraction.output.candidates
+            assert candidate.text == evidence.content
+            assert candidate.evidence_ids == (evidence.evidence_id,)
+            proposal = AtomicMemoryComparisonItem(
+                item_id="new-candidate",
+                kind=candidate.kind,
+                text=candidate.text,
+                original_refs=(),
+                evidence_ids=candidate.evidence_ids,
+            )
+            related: tuple[AtomicMemoryComparisonItem, ...] = tuple(
+                [proposal.model_copy(update={"item_id": "existing-working-item"})] if duplicate else []
+            )
+            request = AtomicMemoryReconciliationInput(proposal=proposal, related=related, evidence=(evidence,))
+            reconciler = PydanticAIStructuredGenerator(
+                model=model,
+                instructions="Reconcile against every supplied related item; preserve supplied evidence identities.",
+                input_type=AtomicMemoryReconciliationInput,
+                output_type=AtomicMemoryReconciliationOutput,
+            )
+            output = (await reconciler.generate(request)).output
+            validate_reconciliation_output(request, output)
+            if duplicate:
+                assert output.action == "noop"
+                assert output.target_ids == (related[0].item_id,)
+            else:
+                assert output.action == "create"
+                assert output.content is not None and output.content.text == evidence.content
+                assert output.evidence_ids == candidate.evidence_ids
+
+    asyncio.run(scenario())

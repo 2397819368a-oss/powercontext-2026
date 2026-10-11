@@ -90,7 +90,7 @@ these tests. Deselection and unsupported features are not acceptance success.
 | P3-02 | Missing/wrong Bearer rejection and successful native MCP reads |
 | P3-03 | Hook Source, scheduler Memory with Source citation, fresh session recall |
 | P3-04 | Explicit/session/workspace/default priority; separate workspace, profile and endpoint ownership |
-| P3-05 | Memory revision conflict; exact nullable Handoff, Receipt and Outcome association |
+| P3-05 | Atomic Memory content ETag conflict; exact nullable Handoff, Receipt and Outcome association |
 | P3-06 | Unchanged inspection, stale approval rejection and separately authorized current approval |
 | P3-07 | Delayed accepted response, concurrent CLI sessions, unavailable runtime directory |
 | P3-08 | Actual startup/resume/compact; default and opt-in Stop behavior |
@@ -108,6 +108,9 @@ No explicit `remember_memory` or manual `flush_memory` is allowed to substitute 
 Core success requires P3-01 through P3-09. Lifecycle subfeatures are reported separately: a successful `/compact` command
 does not imply `SessionStart(compact)` was emitted. The optional HTTPS scenario does not block local core acceptance;
 SSH forwarding must be described as forwarding, not direct remote-port HTTPS.
+
+The recorded live-model and desktop Memory checks used the legacy collection/entry contract. They do not establish
+current Atomic Memory behavior; repeat those Memory checks before claiming qualification for the current contract.
 
 On Windows with Node 24.15.0 and CLI 0.16.9, the local core suite passed two independent controlled-model runs and
 two independent live-model runs. Live runs used GLM-5.3 for the host and `openai-chat:glm-5.3-flash` for Generation.

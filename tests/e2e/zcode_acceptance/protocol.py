@@ -285,34 +285,42 @@ class HostModelFixture:
     def generate_memory(self, body: dict[str, Any]) -> JSONResponse:
         """Public inference protocol for real scheduler worker processes, not an injected Runtime pipeline."""
         self.generation_requests.append(body)
-        payload = None
+        payload: dict[str, Any] | None = None
         for text in strings(body.get("messages", [])):
             try:
                 value = json.loads(text)
             except ValueError:
                 continue
-            if isinstance(value, dict) and "evidence" in value and "current_entries" in value:
+            if isinstance(value, dict) and "evidence" in value:
                 payload = value
                 break
         assert payload is not None or not body.get("tools"), "generation_input_missing"
-        payload = payload or {"evidence": [], "current_entries": []}
-        candidates = []
-        existing = {entry["text"] for entry in payload["current_entries"]}
-        for item in payload["evidence"]:
-            match = re.search(
-                r"In the synthetic (\w+) project, the verification color is (\w+-\d+)\.",
-                "\n".join(strings(item["content"])),
+        payload = payload or {"evidence": []}
+        if "proposal" in payload:
+            proposal, related = payload["proposal"], payload["related"]
+            duplicate = next(
+                (item for item in related if (item["kind"], item["text"]) == (proposal["kind"], proposal["text"])),
+                None,
             )
-            if match and match[0] not in existing:
-                candidates.append({
-                    "intent": "add",
-                    "kind": "fact",
-                    "text": match[0],
-                    "evidence_ids": [item["evidence_id"]],
-                    "entry_id": None,
-                    "reason": "Synthetic source evidence",
-                })
-        output = json.dumps({"candidates": candidates})
+            value = {
+                "action": "noop" if duplicate else "create",
+                "compared_ids": [item["item_id"] for item in related],
+                "target_ids": [duplicate["item_id"]] if duplicate else [],
+                "content": None if duplicate else {"kind": proposal["kind"], "text": proposal["text"]},
+                "evidence_ids": [] if duplicate else proposal["evidence_ids"],
+                "reason": "Already represented" if duplicate else "Independent synthetic source evidence",
+            }
+        else:
+            candidates = []
+            for item in payload["evidence"]:
+                match = re.search(
+                    r"In the synthetic (\w+) project, the verification color is (\w+-\d+)\.",
+                    "\n".join(strings(item["content"])),
+                )
+                if match:
+                    candidates.append({"kind": "fact", "text": match[0], "evidence_ids": [item["evidence_id"]]})
+            value = {"candidates": candidates}
+        output = json.dumps(value)
         tools = body.get("tools", [])
         message = {"role": "assistant", "content": output}
         if tools:

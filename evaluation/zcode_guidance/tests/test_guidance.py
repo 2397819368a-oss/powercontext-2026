@@ -76,6 +76,22 @@ def wire(name: str, *, failed: bool = False, result: dict | None = None, **args)
     return {"name": name, "arguments": {"scope_id": SCOPE, **args}, "result": result or {}, "is_error": failed}
 
 
+def saved_reply() -> dict:
+    return {
+        "changed": True,
+        "records": [
+            {
+                "artifact": {"family": "atomic-memory", "artifact_id": "fixture-memory", "revision": 1},
+                "kind": "decision",
+                "text": "Project Atlas uses UTC for all timestamps.",
+                "state": "active",
+                "state_version": 0,
+                "merged_into_id": None,
+            }
+        ],
+    }
+
+
 def test_contract_catalog_and_transport(tools):
     fixture = GuidanceFixture("empty-search", tools)
     with TestClient(fixture.app) as client:
@@ -87,7 +103,7 @@ def test_contract_catalog_and_transport(tools):
         listed = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()["result"]["tools"]
         assert {item["name"] for item in listed} >= {
             "search_memory",
-            "list_memory_entries",
+            "list_atomic_memories",
             "remember_memory",
             "approve_artifact_candidate",
             "revise_artifact_candidate",
@@ -97,9 +113,9 @@ def test_contract_catalog_and_transport(tools):
         assert not empty["isError"]
         assert json.loads(empty["content"][0]["text"])["hits"] == []
         SearchMemoryResponse.model_validate(json.loads(empty["content"][0]["text"]))
-        denied = call(client, "list_memory_entries", {"scope_id": SCOPE})
+        denied = call(client, "list_atomic_memories", {"scope_id": SCOPE})
         assert denied["isError"]
-        assert fixture.calls[-1]["name"] == "list_memory_entries"  # Forbidden operations are observed, not hidden.
+        assert fixture.calls[-1]["name"] == "list_atomic_memories"  # Forbidden operations are observed, not hidden.
         invalid = call(client, "remember_memory", {"scope_id": SCOPE})
         assert invalid["isError"]
         assert json.loads(invalid["content"][0]["text"])["error"]["code"] == "FIXTURE_INVALID_ARGUMENTS"
@@ -131,7 +147,27 @@ def test_successful_save_reply_matches_current_contract(tools):
         )
         assert not result["isError"]
         stored = MemoryMutationResponse.model_validate(json.loads(result["content"][0]["text"]))
-        assert stored.entry is not None and stored.entry.text == "Project Atlas uses UTC for all timestamps."
+        assert stored.changed and len(stored.records) == 1
+        assert stored.records[0].artifact.family == "atomic-memory"
+        assert stored.records[0].text == "Project Atlas uses UTC for all timestamps."
+
+
+@pytest.mark.parametrize("expected_revision", [None, 1])
+def test_save_does_not_accept_legacy_collection_precondition(tools, expected_revision):
+    arguments = {
+        "scope_id": SCOPE,
+        "kind": "decision",
+        "text": "Project Atlas uses UTC for all timestamps.",
+        "expected_revision": expected_revision,
+    }
+    with TestClient(GuidanceFixture("explicit-save", tools).app) as client:
+        result = call(client, "remember_memory", arguments)
+    assert result["isError"] is (expected_revision is not None)
+    if expected_revision is not None:
+        assert json.loads(result["content"][0]["text"])["error"]["code"] == "legacy_memory_operation_unsupported"
+    saved = wire("remember_memory", **arguments, result=saved_reply())
+    failures = grade("explicit-save", [turn([saved], "STATUS: SAVED")])
+    assert ("unsupported_collection_revision" in failures) is (expected_revision is not None)
 
 
 def test_ordinary_coding_requires_no_calls():
@@ -157,7 +193,7 @@ def test_ordinary_coding_requires_no_calls():
 
 @pytest.mark.parametrize("answer", ["[1, 2]", "`[1, 2]`", "```python\n[1, 2]\n```"])
 def test_equivalent_list_rendering_is_not_a_routing_failure(answer):
-    empty = wire("search_memory", query="Atlas", result={"hits": []})
+    empty = wire("search_memory", query="Atlas", result={"mode": "text", "hits": []})
     assert grade("ordinary-coding", [turn([], answer)]) == []
     assert grade("empty-search", [turn([empty], "NO_MATCHES"), turn([], answer)]) == []
     wrong = grade("empty-search", [turn([empty], "NO_MATCHES"), turn([], "[1, 3]")])
@@ -170,7 +206,7 @@ def test_save_requires_native_call_and_actual_confirmation():
         "remember_memory",
         kind="decision",
         text="Project Atlas uses UTC for all timestamps.",
-        result={"entry": {"version": 1}},
+        result=saved_reply(),
     )
     evidence = turn([saved], "STATUS: SAVED")
     assert grade("explicit-save", [evidence]) == []
@@ -180,8 +216,29 @@ def test_save_requires_native_call_and_actual_confirmation():
     assert "save_not_single_native_call" in grade("explicit-save", [turn([], "STATUS: SAVED")])
 
 
+@pytest.mark.parametrize(
+    "mutation", ["legacy_entry", "unchanged", "no_records", "missing_changed", "wrong_text", "wrong_family"]
+)
+def test_save_requires_confirmed_atomic_record(mutation):
+    result = saved_reply()
+    if mutation == "legacy_entry":
+        result = {"memory": {"family": "memory", "artifact_id": "memory", "revision": 1}, "entry": {"version": 1}}
+    elif mutation == "unchanged":
+        result["changed"] = False
+    elif mutation == "no_records":
+        result["records"] = []
+    elif mutation == "missing_changed":
+        del result["changed"]
+    elif mutation == "wrong_text":
+        result["records"][0]["text"] = "A different decision."
+    else:
+        result["records"][0]["artifact"]["family"] = "memory"
+    saved = wire("remember_memory", kind="decision", text="Project Atlas uses UTC for all timestamps.", result=result)
+    assert "save_success_not_confirmed" in grade("explicit-save", [turn([saved], "STATUS: SAVED")])
+
+
 def test_omitted_scheduled_input_requires_matching_structured_stream():
-    evidence = turn([wire("search_memory", query="Atlas", result={"hits": []})], "NO_MATCHES")
+    evidence = turn([wire("search_memory", query="Atlas", result={"mode": "text", "hits": []})], "NO_MATCHES")
     payload = evidence["native_events"][1]["payload"]
     stream = {
         "kind": "tool_call",
@@ -214,9 +271,9 @@ def test_failed_write_cannot_claim_saved_or_retry():
     )
 
 
-@pytest.mark.parametrize("extra", ["search_memory", "list_memory_entries", "remember_memory"])
+@pytest.mark.parametrize("extra", ["search_memory", "list_atomic_memories", "remember_memory"])
 def test_empty_search_cannot_expand_or_retrieve_on_next_coding_turn(extra):
-    empty = wire("search_memory", query="Atlas", result={"hits": []})
+    empty = wire("search_memory", query="Atlas", result={"mode": "text", "hits": []})
     assert grade("empty-search", [turn([empty], "NO_MATCHES"), turn([], "[1, 2]")]) == []
     assert "empty_search_not_single_native_call" in grade(
         "empty-search", [turn([empty, wire(extra)], "NO_MATCHES"), turn([], "[1, 2]")]
@@ -264,7 +321,7 @@ def test_missing_or_misbound_execution_cannot_pass(mutation, expected):
                 "remember_memory",
                 kind="decision",
                 text="Project Atlas uses UTC for all timestamps.",
-                result={"entry": {"version": 1}},
+                result=saved_reply(),
             )
         ],
         "STATUS: SAVED",
@@ -325,6 +382,15 @@ def test_archived_inputs_and_digest_control_replay(tmp_path, tools):
         replay(tmp_path)
 
 
+def test_legacy_memory_archive_is_not_reinterpreted(tmp_path, tools):
+    archive(tmp_path, tools)
+    legacy_tools = [tool for tool in tools if tool["name"] not in {"list_atomic_memories", "get_atomic_memory_state"}]
+    write_json(tmp_path / "inputs/catalog.json", legacy_tools)
+    seal_archive(tmp_path)
+    with pytest.raises(ValueError, match="unsupported_memory_contract"):
+        replay(tmp_path)
+
+
 def test_completed_turns_do_not_hide_execution_teardown_failure(tmp_path, tools):
     archive(tmp_path, tools)
     relative = "with_skill/ordinary-coding/failure.json"
@@ -361,11 +427,9 @@ def complete_archive(root: Path, tools: list[dict]) -> None:
     decision = {"kind": "decision", "text": "Project Atlas uses UTC for all timestamps."}
     evidence = {
         "ordinary-coding": [turn([], "[1, 2]")],
-        "explicit-save": [
-            turn([wire("remember_memory", **decision, result={"entry": {"version": 1}})], "STATUS: SAVED")
-        ],
+        "explicit-save": [turn([wire("remember_memory", **decision, result=saved_reply())], "STATUS: SAVED")],
         "empty-search": [
-            turn([wire("search_memory", query="Atlas", result={"hits": []})], "NO_MATCHES"),
+            turn([wire("search_memory", query="Atlas", result={"mode": "text", "hits": []})], "NO_MATCHES"),
             turn([], "[1, 2]"),
         ],
         "failed-save": [

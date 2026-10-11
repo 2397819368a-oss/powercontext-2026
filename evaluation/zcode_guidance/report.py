@@ -22,6 +22,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from powercontext.http._generated.models import MemoryMutationResponse
+
 from .fixture import CANDIDATE, PREFIX, SCOPE
 
 
@@ -175,13 +179,29 @@ def grade(case: str, turns: list[dict]) -> list[str]:
             failures.append("save_not_single_native_call")
         else:
             call = wire[0][0]
+            if call["arguments"].get("expected_revision") is not None:
+                failures.append("unsupported_collection_revision")
             if (
                 call["arguments"].get("kind") != "decision"
                 or call["arguments"].get("text") != "Project Atlas uses UTC for all timestamps."
             ):
                 failures.append("saved_decision_changed")
             if case == "explicit-save":
-                if call["is_error"] or not call["result"].get("entry") or not answer(0).startswith("STATUS: SAVED"):
+                try:
+                    saved = MemoryMutationResponse.model_validate(call["result"])
+                except ValidationError:
+                    saved = None
+                if (
+                    call["is_error"]
+                    or saved is None
+                    or not saved.changed
+                    or len(saved.records) != 1
+                    or saved.records[0].artifact.family != "atomic-memory"
+                    or saved.records[0].kind != "decision"
+                    or saved.records[0].text != call["arguments"].get("text")
+                    or saved.records[0].state != "active"
+                    or not answer(0).startswith("STATUS: SAVED")
+                ):
                     failures.append("save_success_not_confirmed")
             elif (
                 not call["is_error"]
@@ -253,14 +273,17 @@ def replay(root: Path) -> dict:
     selection = provenance.get("selected_model", {})
     if provenance.get("model_mode") != "live" or provenance.get("server_mode") != "controlled-mcp" or not selection:
         raise ValueError("live_model_provenance_required")
+    tool_names = {tool["name"] for tool in tools}
+    if not {"list_atomic_memories", "get_atomic_memory_state"}.issubset(tool_names):
+        raise ValueError("unsupported_memory_contract")
     if not {
         "remember_memory",
         "search_memory",
-        "list_memory_entries",
+        "list_atomic_memories",
         "approve_artifact_candidate",
         "revise_artifact_candidate",
         "publish_artifact",
-    }.issubset({tool["name"] for tool in tools}):
+    }.issubset(tool_names):
         raise ValueError("incomplete_tool_catalog")
     results = []
     for arm in ("with_skill", "without_skill"):

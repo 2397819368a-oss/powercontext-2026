@@ -464,7 +464,7 @@ class AcceptanceRun:
         self.summary["host_version"] = version.stdout.strip()
         approved_operations = [
             "remember_memory",
-            "revise_memory_entry",
+            "replace_artifact",
             "handoff_current_work",
             "commit_handoff",
             "acknowledge_handoff",
@@ -575,21 +575,31 @@ class AcceptanceRun:
             source_ref = {"name": "content", "source_id": source["source_id"]}
             deadline = min(self.budget, time.monotonic() + (180 if self.live else 20))
             generated = None
-            inventory: dict[str, Any] = {}
+            published: dict[str, Any] = {}
             while time.monotonic() < deadline:
                 inventory = self.post("/v1/memory/entries/list", {"scope_id": self.scope_id})
                 generated = next(
-                    (
-                        item
-                        for item in inventory["entries"]
-                        if marker in item["text"] and source_ref in item["source_refs"]
-                    ),
+                    (item for item in inventory["entries"] if marker in item["text"] and item["state"] == "active"),
                     None,
                 )
                 if generated:
-                    break
+                    reference = generated["artifact"]
+                    assert reference["family"] == "atomic-memory" and reference["revision"] >= 1
+                    response = self.client.get(
+                        f"/v1/scopes/{self.scope_id}/artifacts/{reference['family']}/"
+                        f"{reference['artifact_id']}/revisions/{reference['revision']}"
+                    )
+                    response.raise_for_status()
+                    published = response.json()
+                    assert published["scope_id"] == self.scope_id
+                    assert {key: published[key] for key in reference} == reference
+                    assert published["content"]["text"] == generated["text"]
+                    if {"source_type": "content", "source_id": source["source_id"]} in published["sources"]:
+                        break
+                    generated = None
                 time.sleep(0.1)
-            assert generated and inventory["memory"], "scheduler_memory_timeout_or_missing_source_evidence"
+            assert generated and published, "scheduler_memory_timeout_or_missing_source_evidence"
+            assert isinstance(generated["state_version"], int) and generated["state_version"] >= 0
             assert not any(item["path"] == "/v1/memory/flush" for item in self.wire.records[start:])
             assert not self.wire.calls("remember_memory", start), "auto_chain_substituted_manual_memory"
             second = self.invoke(
@@ -616,9 +626,9 @@ class AcceptanceRun:
                         "scope_id": self.scope_id,
                         "source": source_ref,
                         "position": source["position"],
-                        "memory": inventory["memory"],
-                        "citation": generated["citation"],
-                        "source_refs": generated["source_refs"],
+                        "memory_artifact": generated["artifact"],
+                        "memory_state_version": generated["state_version"],
+                        "sources": published["sources"],
                         "independent_sessions": True,
                         "random_marker_recalled": True,
                         "prepare": "ready",

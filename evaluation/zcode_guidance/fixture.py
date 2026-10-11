@@ -94,24 +94,27 @@ class GuidanceFixture:
         if arguments.get("scope_id") != SCOPE:
             return {"error": {"code": "FIXTURE_SCOPE_MISMATCH", "message": "Use the resolved synthetic Scope."}}, True
         if name == "search_memory":
-            return {"memory": None, "mode": None, "hits": []}, False
-        if name == "remember_memory" and self.case == "explicit-save":
-            memory = {"family": "memory", "artifact_id": "memory", "revision": 1}
+            return {"mode": "text", "hits": []}, False
+        if name == "remember_memory" and arguments.get("expected_revision") is not None:
             return {
-                "memory": memory,
-                "entry": {
-                    "citation": {
-                        "memory_ref": memory,
-                        "entry_id": "fixture-entry",
-                        "entry_version_id": "fixture-version",
-                    },
-                    "version": 1,
-                    "kind": "decision",
-                    "text": arguments["text"],
-                    "state": "active",
-                    "source_refs": [],
-                    "artifact_refs": [],
-                },
+                "error": {
+                    "code": "legacy_memory_operation_unsupported",
+                    "message": "Legacy collection revision preconditions are unsupported; nothing was saved.",
+                }
+            }, True
+        if name == "remember_memory" and self.case == "explicit-save":
+            return {
+                "changed": True,
+                "records": [
+                    {
+                        "artifact": {"family": "atomic-memory", "artifact_id": "fixture-memory", "revision": 1},
+                        "kind": arguments["kind"],
+                        "text": arguments["text"],
+                        "state": "active",
+                        "state_version": 0,
+                        "merged_into_id": None,
+                    }
+                ],
             }, False
         if name == "remember_memory":
             return {
@@ -133,7 +136,6 @@ class GuidanceFixture:
                 },
                 "source_refs": [],
                 "artifact_refs": [],
-                "memory_citations": [],
                 "target": None,
                 "reason": None,
                 "result_artifact": None,

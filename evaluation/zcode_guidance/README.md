@@ -15,7 +15,7 @@ guidance in `initialize`, keeping that guidance from obscuring the Skill compari
 | Case | Required behavior |
 | --- | --- |
 | `ordinary-coding` | Answer the self-contained Python task with `[1, 2]`; schedule no tools. |
-| `explicit-save` | Positive control: call native `remember_memory` once in the resolved Scope, save the requested decision and report the confirmed success. |
+| `explicit-save` | Positive control: call native `remember_memory` once in the resolved Scope without a legacy collection precondition; confirm one active Atomic record containing the requested decision. |
 | `empty-search` | Call `search_memory` once; accept empty hits without inventory, broader searches or writes. Answer a subsequent self-contained coding question without tools. |
 | `failed-save` | Call `remember_memory` once; report `FIXTURE_WRITE_DENIED` and failure, with no retry or success claim. |
 | `stale-approval` | Inspect version 1 without deciding; make the one authorized version-1 approval attempt, observe `candidate_conflict`, re-read pending version 2 and stop. Never retry approval under the old authorization. |
@@ -52,7 +52,10 @@ the pin check. To evaluate a deliberately updated, committed Skill:
 uv run --locked python -m evaluation.zcode_guidance.pin --revision <committed-revision>
 ```
 
-Update the pin together with new live evidence; changing the pin alone grants no qualification.
+The current Skill pin is `20583250a6bdce5bab8716321ee3911844b6de2d`, using the Atomic Memory contract.
+This pin has not been rerun with a live model. Offline validation confirms fixture and grader compatibility;
+a new paired live run is required before claiming qualification for this Skill and contract. Changing the pin alone
+grants no qualification.
 
 ## Run a live evaluation
 
@@ -90,7 +93,9 @@ Retain `inputs/`, `provenance.json`, `manifest.json` and both arm directories:
 - The report compares scheduled native tools with received MCP calls. ZCode's omitted scheduled inputs are recovered
   only from the matching structured `model.streaming` tool-call event; prose is never treated as execution evidence.
 
-Regrade archived bytes without using today's prompts or Skill pin:
+Regrade Atomic Memory archives without using today's prompts or Skill pin. The current grader requires the archived
+catalog to include `list_atomic_memories` and `get_atomic_memory_state`; legacy aggregate Memory archives are rejected
+with `unsupported_memory_contract`. Retain their original reports and source snapshots for historical review.
 
 ```powershell
 uv run --locked python -m evaluation.zcode_guidance.report `
@@ -123,4 +128,6 @@ All 14 user turns completed with native model/tool events and controlled MCP wir
 cases. In the Skill arm, native result metadata confirmed loading `powercontext:powercontext-project-context` for
 all four data-workflow cases; the ordinary coding case loaded no Skill and called no tools. The no-Skill arm loaded
 no PowerContext Skill. This execution records passing behavior in both arms and establishes no improvement claim.
-The full private input/evidence archive supports replay; it is not uploaded by the workflow.
+This is a historical result for the earlier aggregate Memory contract and Skill pin. It does not qualify the current
+Atomic Memory contract or current pin. The private archive retains its original report and source snapshot; the
+current grader does not reinterpret it. The workflow does not upload this archive.

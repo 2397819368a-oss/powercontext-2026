@@ -76,6 +76,11 @@ class _AccessRequirement(TypedDict):
     resolver: str
 
 
+class _FeatureContract(TypedDict):
+    version: dict[str, int]
+    operations: list[str]
+
+
 def generate_sources() -> dict[Path, str]:
     """Build every generated source without modifying the worktree."""
 
@@ -122,6 +127,14 @@ def _generate_models(
     transport_contract.paths = {}
     if transport_contract.components is None or transport_contract.components.schemas is None:
         raise ContractGenerationError("components.schemas", None)
+    exclusive_schemas = {
+        name: schema
+        for name, schema in transport_contract.components.schemas.items()
+        if isinstance(schema, Schema) and (schema.model_extra or {}).get("x-powercontext-exclusive-fields")
+    }
+    # Keep address alternatives as fields in the SDK; the generated validator retains their exclusivity.
+    for schema in exclusive_schemas.values():
+        schema.oneOf = None
     result = generate(
         transport_contract.model_dump(mode="json", by_alias=True, exclude_none=True),
         config=GenerateConfig(
@@ -145,8 +158,34 @@ def _generate_models(
     evidence_models = _candidate_evidence_models(transport_contract.components.schemas)
     source = _with_nested_model_defaults(f"{result.rstrip()}\n")
     source = _with_code_validation(source, transport_contract.components.schemas)
+    source = _with_exclusive_fields(source, exclusive_schemas)
     source = _with_artifact_search_validation(source, transport_contract.components.schemas)
     return _with_candidate_evidence_limits(source, evidence_models)
+
+
+def _with_exclusive_fields(source: str, schemas: dict[str, Schema]) -> str:
+    for name, schema in schemas.items():
+        fields = (schema.model_extra or {})["x-powercontext-exclusive-fields"]
+        if not isinstance(fields, list) or not all(isinstance(field, str) for field in fields):
+            raise ContractGenerationError("x-powercontext-exclusive-fields", fields)
+        source = _with_model_validator_import(source)
+        header = f"class {name}(BaseModel):"
+        start = source.find(header)
+        if start < 0:
+            raise ContractGenerationError("generated model class", name)  # noqa: TRY003
+        next_class = source.find("\nclass ", start + len(header))
+        insert_at = next_class if next_class >= 0 else len(source.rstrip())
+        validator = f"""
+    @model_validator(mode="after")
+    def _validate_exclusive_fields(self):
+        fields = {tuple(fields)!r}
+        present = tuple(field for field in fields if field in self.model_fields_set)
+        if len(present) != 1 or getattr(self, present[0]) is None:
+            raise ValueError("exactly one non-null address is required")  # noqa: TRY003
+        return self
+"""
+        source = f"{source[:insert_at].rstrip()}\n{validator.rstrip()}\n\n{source[insert_at:].lstrip()}"
+    return source
 
 
 def _with_artifact_search_validation(source: str, schemas: dict[str, Schema | Reference]) -> str:
@@ -286,6 +325,7 @@ def _generate_operations(
 ) -> str:
     imports: set[tuple[str, str]] = set()
     operations: list[str] = []
+    feature_operations: list[tuple[str, OpenAPIOperation]] = []
     for path, path_item in (contract.paths or {}).items():
         if isinstance(path_item, dict):
             path_item = PathItem.model_validate(path_item)
@@ -297,6 +337,7 @@ def _generate_operations(
             if operation.operationId is None or operation.summary is None:
                 raise ContractGenerationError("operation metadata", path)  # noqa: TRY003
             operation_id = operation.operationId
+            feature_operations.append((operation_id, operation))
             access = _access_requirement(operation, operation_id)
             parameters = _operation_parameters(path_item, operation)
             request_model = _request_model(operation, parameters, schemas)
@@ -335,6 +376,7 @@ def _generate_operations(
                 )
             )
 
+    feature_contracts = _feature_contracts(contract, feature_operations)
     import_lines = "\n".join(f"from {module} import {name}" for module, name in sorted(imports))
     rendered_operations = "\n\n".join(operations)
     source = f"""# generated from openapi/powercontext.yaml; do not edit.
@@ -351,6 +393,7 @@ OPENAPI_VERSION = {contract.openapi!r}
 API_TITLE = {contract.info.title!r}
 API_DESCRIPTION = {contract.info.description!r}
 API_VERSION = {contract.info.version!r}
+FEATURE_CONTRACTS: dict[str, dict[str, JsonValue]] = {pformat(feature_contracts, sort_dicts=False)}
 
 RequestT = TypeVar("RequestT")
 ResponseT = TypeVar("ResponseT")
@@ -388,6 +431,42 @@ class AccessRequirement(BaseModel):
         encoding="utf-8",
     )
     return f"{formatter.format_code(source).rstrip()}\n"
+
+
+def _feature_contracts(
+    contract: OpenAPI, operations: list[tuple[str, OpenAPIOperation]]
+) -> dict[str, _FeatureContract]:
+    """Validate and collect feature versions and membership from the wire contract."""
+
+    versions = (contract.model_extra or {}).get("x-powercontext-feature-contracts", {})
+    if not isinstance(versions, dict):
+        raise ContractGenerationError("x-powercontext-feature-contracts", versions)
+    features: dict[str, _FeatureContract] = {}
+    for name, version in versions.items():
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(version, dict)
+            or set(version) != {"major", "minor"}
+            or any(type(value) is not int or value < 0 for value in version.values())
+            or version["major"] < 1
+        ):
+            raise ContractGenerationError("feature version", {name: version})  # noqa: TRY003
+        features[name] = {"version": version, "operations": []}
+    for operation_id, operation in operations:
+        memberships = (operation.model_extra or {}).get("x-powercontext-feature-contracts", [])
+        if (
+            not isinstance(memberships, list)
+            or any(not isinstance(name, str) or name not in features for name in memberships)
+            or len(memberships) != len(set(memberships))
+        ):
+            raise ContractGenerationError(f"feature membership for {operation_id}", memberships)  # noqa: TRY003
+        for name in memberships:
+            features[name]["operations"].append(operation_id)
+    for name, feature in features.items():
+        if not feature["operations"]:
+            raise ContractGenerationError("feature without operations", name)  # noqa: TRY003
+    return features
 
 
 def _generate_schema(contract: dict[str, JsonValue]) -> str:
@@ -436,11 +515,6 @@ def _with_candidate_evidence_limits(source: str, model_names: tuple[str, ...]) -
         next_class = updated.find("\nclass ", start + len(class_header))
         insert_at = next_class if next_class >= 0 else len(updated.rstrip())
         validator = _CANDIDATE_EVIDENCE_VALIDATOR
-        if "    memory_citations:" in updated[start:insert_at]:
-            validator = validator.replace(
-                "len(self.source_refs) + len(self.artifact_refs)",
-                "len(self.source_refs) + len(self.artifact_refs) + len(self.memory_citations or ())",
-            )
         updated = f"{updated[:insert_at].rstrip()}\n{validator.rstrip()}\n\n{updated[insert_at:].lstrip()}"
     formatter = CodeFormatter(
         python_version=PythonVersion.PY_311,
