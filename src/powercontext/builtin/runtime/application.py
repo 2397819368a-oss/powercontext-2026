@@ -30,8 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactLineage, ArtifactRef
-from powercontext.artifacts import ArtifactRef, StableHandle
+from powercontext.artifacts import ArtifactLineage, ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchOutcome,

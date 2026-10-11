@@ -21,12 +21,11 @@ from pathlib import Path
 
 import pytest
 from pydantic import JsonValue, ValidationError
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import ArtifactRef
-from powercontext.builtin.artifacts.atomic_memory import AtomicMemory, AtomicMemoryContent
 from powercontext.artifacts import ArtifactRef, StableHandle
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemory, AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import Experience
 from powercontext.builtin.artifacts.handoff import Handoff
 from powercontext.builtin.artifacts.skill import Skill
@@ -545,9 +544,18 @@ def test_artifact_handle_resolves_through_record_service() -> None:
     async def scenario() -> None:
         async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as profile:
             records, _, _ = _services(profile)
-            created = await records.create_artifact("scope-a", "memory", ArtifactWrite(content=_memory_content()))
-            handle = StableHandle(family="memory", key="preferred-language")
-            target = ArtifactRef(family="memory", artifact_id=created.artifact_id, revision=created.revision)
+            handle = StableHandle(family="profile", key="support-agent")
+            target = ArtifactRef(family="profile", artifact_id="profile-1", revision=1)
+            async with profile.database.transaction() as connection:
+                await connection.execute(
+                    insert(ARTIFACTS_TABLE).values(
+                        scope_id="scope-a",
+                        family=target.family,
+                        artifact_id=target.artifact_id,
+                        revision=target.revision,
+                        content=b"{}",
+                    )
+                )
 
             assert await records.bind_artifact_handle("scope-a", handle, target) == target
             assert await records.resolve_artifact_handle("scope-a", handle) == target

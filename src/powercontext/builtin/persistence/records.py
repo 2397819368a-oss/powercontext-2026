@@ -28,11 +28,8 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-<<<<<<< HEAD
-from powercontext.artifacts import Artifact, ArtifactRef
-from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
 from powercontext.artifacts import Artifact, ArtifactRef, StableHandle
-from powercontext.builtin.artifacts.memory import MemoryCitation, MemoryEntryVersion, MemoryService
+from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
 from powercontext.builtin.persistence.artifact_handles import ArtifactHandleRepository
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec

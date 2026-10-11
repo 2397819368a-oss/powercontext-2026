@@ -42,17 +42,7 @@ class ArtifactHandleRepository:
                 existing = await _resolve(connection, scope_id, handle)
                 if existing is not None:
                     return _require_same_binding(scope_id, handle, existing, target)
-                target_exists = (
-                    await connection.execute(
-                        select(ARTIFACTS_TABLE.c.revision).where(
-                            ARTIFACTS_TABLE.c.scope_id == scope_id,
-                            ARTIFACTS_TABLE.c.family == target.family,
-                            ARTIFACTS_TABLE.c.artifact_id == target.artifact_id,
-                            ARTIFACTS_TABLE.c.revision == target.revision,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if target_exists is None:
+                if not await _target_exists(connection, scope_id, target):
                     raise RepositoryNotFoundError("artifact", (scope_id, *target.model_dump().values()))
                 await connection.execute(
                     insert(ARTIFACT_HANDLES_TABLE).values(
@@ -63,11 +53,17 @@ class ArtifactHandleRepository:
                         revision=target.revision,
                     )
                 )
-        except IntegrityError:
-            # A concurrent binder may have won the unique-key race. Resolve the
-            # durable winner and preserve idempotency only for the same target.
-            existing = await self.resolve(scope_id, handle)
-            return _require_same_binding(scope_id, handle, existing, target)
+        except IntegrityError as error:
+            async with self._database.transaction() as connection:
+                existing = await _resolve(connection, scope_id, handle)
+                target_exists = await _target_exists(connection, scope_id, target)
+            if existing is not None:
+                # A concurrent binder won the handle-key race. Preserve
+                # idempotency only when it committed the requested target.
+                return _require_same_binding(scope_id, handle, existing, target)
+            if not target_exists:
+                raise RepositoryNotFoundError("artifact", (scope_id, *target.model_dump().values())) from error
+            raise
         return target
 
     async def resolve(self, scope_id: str, handle: StableHandle, /) -> ArtifactRef:
@@ -91,6 +87,20 @@ async def _resolve(connection, scope_id: str, handle: StableHandle) -> ArtifactR
     if row is None:
         return None
     return ArtifactRef(family=handle.family, artifact_id=str(row.artifact_id), revision=int(row.revision))
+
+
+async def _target_exists(connection, scope_id: str, target: ArtifactRef) -> bool:
+    revision = (
+        await connection.execute(
+            select(ARTIFACTS_TABLE.c.revision).where(
+                ARTIFACTS_TABLE.c.scope_id == scope_id,
+                ARTIFACTS_TABLE.c.family == target.family,
+                ARTIFACTS_TABLE.c.artifact_id == target.artifact_id,
+                ARTIFACTS_TABLE.c.revision == target.revision,
+            )
+        )
+    ).scalar_one_or_none()
+    return revision is not None
 
 
 def _require_same_binding(

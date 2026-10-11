@@ -35,16 +35,16 @@ def test_artifact_handle_bind_and_resolve_public_path(tmp_path) -> None:
         scope_id = client.get("/v1/scopes/default").json()["scope_id"]
         created = client.post(
             f"/v1/scopes/{scope_id}/artifacts",
-            json={"family": "memory", "content": {"entries": [{"kind": "preference", "text": "Use Chinese"}]}},
+            json={"family": "profile", "content": {"content": "# Chinese support agent"}},
         )
         assert created.status_code == 201
         artifact = created.json()
-        path = f"/v1/scopes/{scope_id}/artifact-handles/memory/preferred-language"
+        path = f"/v1/scopes/{scope_id}/artifact-handles/profile/support-agent"
         expected = {
-            "family": "memory",
-            "key": "preferred-language",
+            "family": "profile",
+            "key": "support-agent",
             "artifact": {
-                "family": "memory",
+                "family": "profile",
                 "artifact_id": artifact["artifact_id"],
                 "revision": artifact["revision"],
             },
@@ -58,17 +58,24 @@ def test_artifact_handle_bind_and_resolve_public_path(tmp_path) -> None:
         assert bound.json() == expected
         assert client.get(path).json() == expected
 
-        artifact_path = f"/v1/scopes/{scope_id}/artifacts/memory/{artifact['artifact_id']}"
+        artifact_path = f"/v1/scopes/{scope_id}/artifacts/profile/{artifact['artifact_id']}"
         revised = client.put(
             artifact_path,
             headers={"If-Match": created.headers["ETag"]},
-            json={"content": {"entries": [{"kind": "preference", "text": "Use English"}]}},
+            json={"content": {"content": "# English support agent"}},
         )
         assert revised.status_code == 200
         assert revised.json()["revision"] == 2
         assert client.get(path).json() == expected
 
-        missing = client.get(f"/v1/scopes/{scope_id}/artifact-handles/memory/missing")
+        conflicting = client.put(
+            path,
+            json={"artifact_id": artifact["artifact_id"], "revision": revised.json()["revision"]},
+        )
+        assert conflicting.status_code == 409
+        assert conflicting.json()["error"]["details"] == {"kind": "artifact_handle"}
+
+        missing = client.get(f"/v1/scopes/{scope_id}/artifact-handles/profile/missing")
         assert missing.status_code == 404
         assert missing.json()["error"]["code"] == "artifact_handle_not_found"
 

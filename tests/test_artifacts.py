@@ -94,7 +94,7 @@ def test_artifact_reference_rejects_invalid_identity(
 
 @pytest.mark.parametrize("key", ["a", "payment-retry-policy", "policy2", "a" * MAX_ARTIFACT_HANDLE_KEY_LENGTH])
 def test_stable_handle_accepts_canonical_keys(key: str) -> None:
-    assert StableHandle(family="memory", key=key).key == key
+    assert StableHandle(family="profile", key=key).key == key
 
 
 @pytest.mark.parametrize(
@@ -103,13 +103,13 @@ def test_stable_handle_accepts_canonical_keys(key: str) -> None:
 )
 def test_stable_handle_rejects_noncanonical_keys(key: str) -> None:
     with pytest.raises(ValidationError) as error:
-        StableHandle(family="memory", key=key)
+        StableHandle(family="profile", key=key)
     assert error.value.errors()[0]["loc"] == ("key",)
 
 
 def test_stable_handle_rejects_keys_over_the_length_limit() -> None:
     with pytest.raises(ValidationError) as error:
-        StableHandle(family="memory", key="a" * (MAX_ARTIFACT_HANDLE_KEY_LENGTH + 1))
+        StableHandle(family="profile", key="a" * (MAX_ARTIFACT_HANDLE_KEY_LENGTH + 1))
     assert error.value.errors()[0]["loc"] == ("key",)
 
 

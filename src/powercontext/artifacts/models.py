@@ -16,11 +16,9 @@
 
 from __future__ import annotations
 
-<<<<<<< HEAD
+import re
 from collections.abc import Mapping
 from typing import Any, ClassVar, Generic, TypeVar
-import re
-from typing import ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
