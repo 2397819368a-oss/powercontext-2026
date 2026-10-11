@@ -94,11 +94,11 @@ from powercontext.builtin.inference.usage import (
     UsageReportingStructuredGenerator,
 )
 from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndexCapabilities
-from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
-from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
+from powercontext.builtin.persistence.atomic_memory_readiness import (
     assert_atomic_memory_migration_ready,
     ensure_supported_atomic_memory_schema,
 )
+from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.oceanbase.experience_index import OceanBaseExperienceFTSIndex
 from powercontext.builtin.persistence.oceanbase.profile import OceanBaseConfig, OceanBaseProfile

@@ -16,7 +16,8 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Generic, TypeVar
+from collections.abc import Mapping
+from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
@@ -26,6 +27,12 @@ from powercontext.sources.models import SourceRef
 
 ContentT = TypeVar("ContentT", covariant=True)
 _LEGACY_MEMORY_FAMILY = "memory"
+
+
+def _reject_legacy_memory_citations(value: Any) -> Any:
+    if isinstance(value, Mapping) and "memory_citations" in value:
+        raise ValueError("memory_citations is no longer supported; cite Atomic Memory revisions in artifacts")  # noqa: TRY003
+    return value
 
 
 class ArtifactRef(BaseModel):
@@ -80,6 +87,8 @@ class ArtifactAddress(BaseModel):
 class ArtifactLineage(BaseModel):
     """The direct evidence used to produce one artifact revision."""
 
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
+
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
     publication_source: ArtifactAddress | None = None
@@ -94,6 +103,8 @@ class ArtifactLineage(BaseModel):
 
 class ArtifactDraft(BaseModel, Generic[ContentT]):
     """Content and complete evidence supplied for one Artifact write."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     family: ClassVar[str] = "artifact"
 

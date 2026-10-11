@@ -22,18 +22,12 @@ import signal
 from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from sqlite3 import SQLITE_CANTOPEN
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import typer
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
-from powercontext.builtin.persistence.migrations.atomic_memory_references import CandidateDecision, load_decisions
-from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
-    apply_atomic_memory_migration,
-    plan_atomic_memory_migration,
-    verify_atomic_memory_migration,
-)
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.processing_migration import (
@@ -68,6 +62,9 @@ from powercontext.server.settings import (
     UnauthenticatedNonLoopbackBindError,
 )
 from powercontext.server.tracing import configure_server_tracing
+
+if TYPE_CHECKING:
+    from powercontext.builtin.persistence.migrations.atomic_memory_references import CandidateDecision
 
 HELP_OPTION_NAMES = ("-h", "--help")
 
@@ -191,6 +188,8 @@ def atomic_memory_migrate(
 ) -> None:
     """Archive Memory v1, convert its history and references to Atomic Memory, and remove it from public tables."""
 
+    from powercontext.builtin.persistence.migrations.atomic_memory_references import load_decisions
+
     if action == "apply" and not maintenance_confirmed:
         raise typer.BadParameter("apply requires --maintenance-confirmed after stopping every old writer")  # noqa: TRY003
     try:
@@ -294,6 +293,8 @@ async def _atomic_memory_maintenance(
                     batch_size=batch_size,
                 )
             else:
+                from powercontext.builtin.persistence.migrations.atomic_memory_v1 import apply_atomic_memory_migration
+
                 report = await apply_atomic_memory_migration(
                     profile.database,
                     index,
@@ -302,6 +303,11 @@ async def _atomic_memory_maintenance(
                     decisions=decisions,
                 )
         else:
+            from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
+                plan_atomic_memory_migration,
+                verify_atomic_memory_migration,
+            )
+
             async with profile.database.transaction() as connection:
                 report = (
                     await plan_atomic_memory_migration(connection, index=index, decisions=decisions)

@@ -302,6 +302,16 @@ def atomic_memory_profile_fingerprint(profile: EmbeddingProfile, /) -> str:
     return sha256(canonical_json(profile.model_dump(mode="json"))).hexdigest()
 
 
+def sqlite_fts_coverage_sql(terms: tuple[str, ...], /) -> tuple[str, dict[str, object]]:
+    """Count whole terms without growing SQL depth or bind count with query length."""
+
+    return (
+        "(SELECT COUNT(*) FROM json_each(:fts_terms) AS query_term "
+        "WHERE instr(' ' || searchable_text || ' ', query_term.value) > 0)",
+        {"fts_terms": json.dumps([f" {term} " for term in terms], ensure_ascii=False)},
+    )
+
+
 def atomic_memory_filter_sql(
     filters: AtomicMemoryIndexFilter, dialect: Literal["sqlite", "mysql"], /
 ) -> tuple[str, dict[str, object]]:
@@ -525,18 +535,18 @@ class RelationalAtomicMemoryIndex:
         if request.mode in {"fts", "hybrid"}:
             terms, required = fts_query_requirements(request.query, floor=request.admission)
             _, lower_required = fts_query_requirements(request.query, floor=floor)
-            coverage: list[str] = []
-            for index, term in enumerate(terms):
-                key = f"probe_term_{index}"
-                parameters[key] = f" {term} "
-                matched = (
-                    f"instr(' ' || searchable_text || ' ', :{key}) > 0"
-                    if dialect == "sqlite"
-                    else f"LOCATE(BINARY :{key}, BINARY CONCAT(' ', searchable_text, ' ')) > 0"
-                )
-                coverage.append(f"CASE WHEN {matched} THEN 1 ELSE 0 END")
-            if coverage:
-                lexical = " + ".join(coverage)
+            if terms:
+                if dialect == "sqlite":
+                    lexical, coverage_parameters = sqlite_fts_coverage_sql(terms)
+                    parameters.update(coverage_parameters)
+                else:
+                    coverage: list[str] = []
+                    for index, term in enumerate(terms):
+                        key = f"probe_term_{index}"
+                        parameters[key] = f" {term} "
+                        matched = f"LOCATE(BINARY :{key}, BINARY CONCAT(' ', searchable_text, ' ')) > 0"
+                        coverage.append(f"CASE WHEN {matched} THEN 1 ELSE 0 END")
+                    lexical = " + ".join(coverage)
                 parameters.update(probe_required=required, probe_lower_required=lower_required)
                 current.append(f"(({lexical}) >= :probe_required)")
                 recoverable.append(f"(({lexical}) >= :probe_lower_required)")
@@ -622,4 +632,5 @@ __all__ = [
     "atomic_memory_profile_fingerprint",
     "combine_atomic_memory_channels",
     "load_atomic_memory_tags",
+    "sqlite_fts_coverage_sql",
 ]

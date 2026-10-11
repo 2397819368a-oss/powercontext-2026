@@ -41,7 +41,12 @@ from powercontext.builtin.artifacts.atomic_memory.service import AtomicMemorySer
 from powercontext.builtin.artifacts.memory.canonical import canonical_embedding, canonical_json, normalize_query
 from powercontext.builtin.artifacts.memory.models import MemoryQueryEmbedding
 from powercontext.builtin.artifacts.memory.reranking import MemoryReranker
-from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor, analyze_text
+from powercontext.builtin.artifacts.search import (
+    AdmissionCounts,
+    AdmissionFloor,
+    analyze_text,
+    unit_l2_cosine_similarity,
+)
 from powercontext.builtin.inference import (
     InferenceTimeoutError,
     InferenceUnavailableError,
@@ -106,6 +111,12 @@ class AtomicMemorySearchHit:
     @property
     def text(self) -> str:
         return self.hit.text
+
+    @property
+    def relevance(self) -> float | None:
+        """Cosine similarity of the vector channel, when this hit was vector-matched."""
+
+        return None if self.hit.distance is None else unit_l2_cosine_similarity(self.hit.distance)
 
 
 @dataclass(frozen=True, slots=True)

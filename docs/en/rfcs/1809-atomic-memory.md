@@ -240,8 +240,10 @@ writing, tags, and authorization, and restart queries and pagination under the n
 target the same Atomic Memory.
 
 The SDK and runtime do not retain the legacy Memory domain model, `MemoryCitation`, or other legacy typed Memory references.
-Terminal Dream runs and historical receipts with old structures are converted offline into explicit untyped historical
-data. They are for display only, without evidence resolution, execution, or recovery.
+Terminal Dream runs with old structures are converted offline into explicit untyped historical data for display only,
+without evidence resolution, execution, or recovery. Historical receipts retain unavailable collection addresses in
+`unavailable_evidence` as descriptions of what was unavailable. These addresses are not resolved or accepted as new evidence;
+exact entry citations are converted to Atomic references.
 Frozen legacy decoding belongs only to offline migration tools. The runtime keeps no legacy decoder and depends on
 neither old tables nor online mapping tables.
 

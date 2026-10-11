@@ -2314,17 +2314,17 @@ class ScopedWorkApplication:
         unavailable = _unavailable_evidence(resolution)
         if request.status == "accepted" and unavailable:
             raise InvalidRuntimeRequestError("handoff-evidence-unavailable")
-        receipt_record = HandoffReceipt(
-            receiver=request.receiver,
-            status=request.status,
-            selection=request.selection,
-            selected_revision=resolution.selected_revision,
-            prepared_digest=(None if request.prepared is None else content_digest(request.prepared)),
-            receiver_checks=request.receiver_checks,
-            evidence_status="unavailable" if unavailable else "available",
-            unavailable_evidence=unavailable,
-            message=request.message,
-        )
+        receipt_record = HandoffReceipt.model_validate({
+            "receiver": request.receiver,
+            "status": request.status,
+            "selection": request.selection,
+            "selected_revision": resolution.selected_revision,
+            "prepared_digest": None if request.prepared is None else content_digest(request.prepared),
+            "receiver_checks": request.receiver_checks,
+            "evidence_status": "unavailable" if unavailable else "available",
+            "unavailable_evidence": tuple(citation.model_dump() for citation in unavailable),
+            "message": request.message,
+        })
         receipt = await self._capture(HANDOFF_RECEIPT_SOURCE_KIND, request.source_id, receipt_record)
         return HandoffAcknowledgement(resolution=resolution, receipt=receipt)
 

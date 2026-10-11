@@ -23,6 +23,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts.models import _reject_legacy_memory_citations
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.memory.models import (
     MemoryEntryInput,
@@ -308,6 +309,8 @@ class PreparedContext(_PreparedContextModel):
 class ProposeExperienceRequest(BaseModel):
     """Submit a complete Experience proposal with exact evidence."""
 
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
+
     proposal: ExperienceContent
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
@@ -317,6 +320,8 @@ class ProposeExperienceRequest(BaseModel):
 
 class GenerateExperienceRequest(BaseModel):
     """Generate a reviewed Experience Candidate from exact evidence."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     sources: tuple[SourceRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
     artifacts: tuple[ArtifactRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
@@ -339,6 +344,8 @@ class GetExperienceRequest(BaseModel):
 class ProposeSkillRequest(BaseModel):
     """Submit a complete managed Skill proposal with exact evidence."""
 
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
+
     proposal: SkillContent
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
@@ -348,6 +355,8 @@ class ProposeSkillRequest(BaseModel):
 
 class GenerateSkillRequest(BaseModel):
     """Generate a reviewed managed Skill Candidate from an explicit lineage shape."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     origin: SkillGenerationOrigin
     sources: tuple[SourceRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
@@ -415,6 +424,8 @@ class RejectArtifactCandidateRequest(ApproveArtifactCandidateRequest):
 
 
 class ReviseArtifactCandidateRequest(ApproveArtifactCandidateRequest):
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
+
     proposal: ExperienceContent | SkillContent | ProfileWriteContent
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()

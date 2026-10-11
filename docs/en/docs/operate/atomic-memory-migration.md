@@ -107,11 +107,11 @@ Apply runs these steps in order; each can be repeated after an interruption:
    from online lineage, Candidate `artifact_refs`, Task Outcome `produced_artifacts`, and `kind: artifact`
    citations of a whole collection in Handoff content and Work claims or checks. A Handoff receipt's
    `unavailable_evidence` records evidence that was unavailable rather than support: its collection references
-   move unchanged into the receipt's `historical_data` (format `powercontext.handoff-receipt-history.v1`), which
-   is shown as history and never resolved.
+   remain unchanged in that field as historical unavailable addresses. Reading the receipt does not query
+   the archive, and these addresses cannot support new requests. Exact entry citations still become Atomic references.
 5. Finished Dream runs move to a historical format: the original request, input manifest and request digest
-   move to `historical_data` and are no longer read as an executable request. Unfinished runs drop the empty
-   legacy entry citation fields from their request and input manifest. Request digests are recomputed in the
+   move to `historical_data` and are no longer read as an executable request. Unfinished runs without legacy
+   snapshots drop the empty entry citation field from their request. Request digests are recomputed in the
    current request format, so retrying the same request with the same idempotency key still replays the run.
    A request that cited legacy entries cannot be sent again; its run keeps the accepted digest, so reusing its
    key conflicts.
@@ -136,7 +136,12 @@ reference that does not resolve to an exact imported Atomic revision; a Handoff 
 claim or check left without evidence once collection citations are removed; and a Candidate version left
 without any Source or Artifact evidence once its collection references are removed.
 
-The last case requires a decision file, passed with `--decisions`, that names replacement evidence for each
+Finish unfinished Dream runs that have saved an input manifest in the legacy format before migration,
+even if they selected only Experiences without Memory citations. Their Artifact digests include the empty
+legacy lineage field, so removing it invalidates those snapshots. Queued runs without a saved manifest can
+migrate when their selected inputs are unaffected; current-format snapshots remain usable when their inputs are unchanged.
+
+Candidates left without evidence require a decision file, passed with `--decisions`, that names replacement evidence for each
 blocked Candidate version:
 
 ```json
@@ -203,14 +208,16 @@ Use the target deployment configuration:
 powercontext server atomic-memory-rebuild-projection --env-file .env --maintenance-confirmed
 ```
 
-This command requires completed legacy history migration, valid authoritative content revisions and head
-lifecycle data. It rebuilds only active current rows and removes nonactive or orphan current rows. Heads, content
-revisions, lifecycle states, retained history and Source/processing progress keep their exact identities and
-values. It cannot repair or bypass missing legacy history imports.
+This command checks that legacy objects, columns and foreign keys have been removed from public storage and
+that Atomic heads, content revisions and head lifecycle data are valid. It rebuilds only active current rows and removes nonactive
+or orphan current rows. Heads, content revisions, lifecycle states, retained history and Source/processing
+progress keep their exact identities and values. Rebuilding reads neither the archive nor legacy entry tables.
+The offline migration `verify` command checks whether legacy history was imported completely; projection
+rebuilding cannot supply missing history.
 
 Each active body's embedding is prepared outside the write transaction. Before publishing, the command
 locks and rechecks its exact revision, state version and deployment profile, then loads the latest formal
-tags and immutable Owner in that transaction. With vectors disabled, it retains body/full-text
+tags in that transaction. With vectors disabled, it retains body/full-text
 data and clears embedding, profile and input hashes. SQLite refreshes its derived FTS helper using stable
 Scope/Artifact identity tokens, independent of rowids changed by `VACUUM`.
 

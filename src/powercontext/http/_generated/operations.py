@@ -1663,7 +1663,7 @@ LIST_MEMORY_CHANGES = Operation[ListMemoryChangesRequest, ListMemoryChangesRespo
     scope_mode="none",
     responses={
         200: {
-            "description": "Compact changes through the selected Memory Revision.",
+            "description": "Reserved legacy response shape; this operation returns operation_not_supported.",
             "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
         },
         404: {"$ref": "#/components/responses/NotFound"},

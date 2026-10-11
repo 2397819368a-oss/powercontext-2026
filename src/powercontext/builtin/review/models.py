@@ -22,6 +22,7 @@ from typing import Generic, TypeVar
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts.models import _reject_legacy_memory_citations
 from powercontext.builtin.evidence.models import ResolvedEvidence
 from powercontext.limits import MAX_ARTIFACT_ID_LENGTH
 from powercontext.sources import SourceRef
@@ -44,6 +45,8 @@ class CandidateStatus(StrEnum):
 
 class ArtifactCandidate(BaseModel, Generic[ProposalT]):
     """One current Candidate head with its immutable proposal version."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     candidate_id: str = Field(min_length=1, max_length=MAX_ARTIFACT_ID_LENGTH)
     version: StrictInt = Field(ge=1)

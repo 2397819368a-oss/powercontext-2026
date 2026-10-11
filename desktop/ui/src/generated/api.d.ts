@@ -989,7 +989,7 @@ export interface paths {
         put?: never;
         /**
          * Unsupported continuous legacy collection changes
-         * @description Continuous legacy collection changes have no Atomic equivalent and return operation_not_supported. Exact historical references remain readable.
+         * @description Continuous legacy collection changes have no Atomic equivalent and return operation_not_supported. Legacy collection history is archived offline; read exact Atomic Memory revisions through the Artifact API.
          */
         post: operations["list_memory_changes"];
         delete?: never;
@@ -6552,7 +6552,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Compact changes through the selected Memory Revision. */
+            /** @description Reserved legacy response shape; this operation returns operation_not_supported. */
             200: {
                 headers: {
                     "X-PowerContext-Request-ID": components["headers"]["RequestId"];

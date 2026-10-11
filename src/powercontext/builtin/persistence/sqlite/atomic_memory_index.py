@@ -38,6 +38,7 @@ from powercontext.builtin.persistence.atomic_memory_index import (
     atomic_memory_profile_fingerprint,
     atomic_memory_vector_sql,
     combine_atomic_memory_channels,
+    sqlite_fts_coverage_sql,
 )
 from powercontext.builtin.persistence.atomic_memory_index_schema import (
     ATOMIC_MEMORY_PROJECTION_FORMAT,
@@ -196,18 +197,15 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
             match_query = fts_match_query(request.query)
             terms, required = fts_query_requirements(request.query, floor=request.admission)
             if match_query is not None:
-                coverage = []
-                for index, term in enumerate(terms):
-                    key = f"fts_term_{index}"
-                    parameters[key] = f" {term} "
-                    coverage.append(f"CASE WHEN instr(' ' || searchable_text || ' ', :{key}) > 0 THEN 1 ELSE 0 END")
+                coverage, coverage_parameters = sqlite_fts_coverage_sql(terms)
+                parameters.update(coverage_parameters)
                 parameters.update(fts_query=match_query, fts_required=required)
                 rows = (
                     await connection.execute(
                         text(
                             f"SELECT {_HIT_COLUMNS}, -bm25({_FTS_TABLE}) AS score FROM {_FTS_TABLE} "  # noqa: S608
                             "WHERE searchable_text MATCH :fts_query AND scope_id = :scope_id "
-                            f"AND ({eligibility}) AND ({' + '.join(coverage)}) >= :fts_required "
+                            f"AND ({eligibility}) AND {coverage} >= :fts_required "
                             f"ORDER BY score DESC, artifact_id{limit_sql}"
                         ),
                         parameters,

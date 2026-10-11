@@ -2157,8 +2157,10 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "summary": "Unsupported continuous legacy collection changes",
                 "description": "Continuous legacy collection changes "
                 "have no Atomic equivalent and return "
-                "operation_not_supported. Exact "
-                "historical references remain readable.",
+                "operation_not_supported. Legacy "
+                "collection history is archived offline; "
+                "read exact Atomic Memory revisions "
+                "through the Artifact API.",
                 "operationId": "list_memory_changes",
                 "requestBody": {
                     "content": {
@@ -2168,7 +2170,11 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 },
                 "responses": {
                     "200": {
-                        "description": "Compact changes through the selected Memory Revision.",
+                        "description": "Reserved legacy "
+                        "response shape; "
+                        "this operation "
+                        "returns "
+                        "operation_not_supported.",
                         "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
                         "content": {
                             "application/json": {"schema": {"$ref": "#/components/schemas/ListMemoryChangesResponse"}}

@@ -2099,7 +2099,7 @@ paths:
       tags: [memory]
       summary: Unsupported continuous legacy collection changes
       description: >-
-        Continuous legacy collection changes have no Atomic equivalent and return operation_not_supported. Exact historical references remain readable.
+        Continuous legacy collection changes have no Atomic equivalent and return operation_not_supported. Legacy collection history is archived offline; read exact Atomic Memory revisions through the Artifact API.
       operationId: list_memory_changes
       x-powercontext-access: {action: scope.read, resource: {type: scope, scope-id-from: scope_id}}
       x-powercontext-scope-mode: none
@@ -2111,7 +2111,7 @@ paths:
               $ref: "#/components/schemas/ListMemoryChangesRequest"
       responses:
         "200":
-          description: Compact changes through the selected Memory Revision.
+          description: Reserved legacy response shape; this operation returns operation_not_supported.
           headers:
             X-PowerContext-Request-ID:
               $ref: "#/components/headers/RequestId"

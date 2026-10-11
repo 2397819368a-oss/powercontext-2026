@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import fields, replace
-from math import sqrt
 
 import pytest
 
@@ -134,7 +134,7 @@ def _memory_hit(
     matched_by: tuple[MemoryMatchedBy, ...],
     text: str = "alpha beta",
     artifact_ref: ArtifactRef = MEMORY_REF,
-    distance: float | None = None,
+    relevance: float | None = None,
 ) -> AtomicMemorySearchHit:
     return AtomicMemorySearchHit(
         hit=AtomicMemoryIndexHit(
@@ -143,7 +143,8 @@ def _memory_hit(
             kind="fact",
             text=text,
             score=score,
-            distance=distance,
+            # Unit-vector L2 distance whose cosine similarity is ``relevance``.
+            distance=None if relevance is None else math.sqrt(2 * (1 - relevance)),
         ),
         matched_by=matched_by,
     )
@@ -387,14 +388,14 @@ def test_build_recall_candidates_wires_scope_ids_into_the_per_scope_rule() -> No
     deep_vector = _memory_hit(
         score=1 / 62,
         matched_by=("vector",),
-        distance=sqrt(2 * (1 - 0.9)),
         artifact_ref=ArtifactRef(family="atomic-memory", artifact_id="a-vector", revision=1),
+        relevance=0.9,
     )
     ref_vector = _memory_hit(
         score=1 / 61,
         matched_by=("vector",),
-        distance=sqrt(2 * (1 - 0.31)),
         artifact_ref=ArtifactRef(family="atomic-memory", artifact_id="b-vector", revision=1),
+        relevance=0.31,
     )
     gate = RecallSufficiencyGate()
     policy = RecallSufficiencyPolicy()
@@ -698,13 +699,12 @@ def test_memory_two_channel_hit_normalizes_against_its_wider_upper_bound() -> No
 
 def test_memory_vector_relevance_reaches_gate_without_changing_rank_score() -> None:
     hits = (
-        _memory_hit(score=2 / 61, matched_by=("fts", "vector"), text="alpha beta", distance=sqrt(2 * (1 - 0.3))),
+        _memory_hit(score=2 / 61, matched_by=("fts", "vector"), relevance=0.3),
         _memory_hit(
             score=1 / 62,
             matched_by=("vector",),
-            text="alpha beta",
-            distance=sqrt(2 * (1 - 0.1)),
             artifact_ref=ArtifactRef(family="atomic-memory", artifact_id="other", revision=1),
+            relevance=0.1,
         ),
     )
     candidates = build_recall_candidates(memory_hits=hits, topic_memory_hits=(), experience_hits=())

@@ -84,6 +84,14 @@ from powercontext.builtin.scope import ScopeDraft
 # once the query has more than two Analyzer terms (``fts_query_requirements`` clamps a short
 # query to a single required match).
 _QUERY = "alpha beta gamma"
+
+
+def _embedded_body(text: str) -> str:
+    """Atomic Memory embeds ``kind`` and body on separate lines; tests key vectors by body."""
+
+    return text.split("\n", 1)[-1]
+
+
 _MEMORY_ONLY = {"sections": [{"family": "memory", "limit": 8}]}
 _TOPIC_MEMORY_ONLY = {"sections": [{"family": "topic-memory", "limit": 8}]}
 
@@ -171,7 +179,7 @@ def _entry(text: str) -> AtomicMemoryContent:
 
 async def _seed(runtime: BuiltinRuntime, scope_id: str, texts: list[str]) -> None:
     assert runtime.atomic_memory is not None
-    await runtime.atomic_memory.for_scope(scope_id).create(tuple(_entry(text) for text in texts))
+    await runtime.atomic_memory.for_scope(scope_id).create(tuple(_entry(text) for text in map(_embedded_body, texts)))
 
 
 async def _seed_topic_memories(runtime: BuiltinRuntime, scope_id: str, count: int) -> None:
@@ -283,8 +291,8 @@ def test_sqlite_vector_prepare_reports_cosine_and_expands_past_a_weak_top(tmp_pa
 
         async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
             similarities = tuple(
-                1.0 if text == _QUERY else 0.2 if text.removeprefix("fact\n") == "unrelated vector evidence" else 0.31
-                for text in texts
+                1.0 if text == _QUERY else 0.2 if text == "unrelated vector evidence" else 0.31
+                for text in map(_embedded_body, texts)
             )
             return EmbeddingResult(
                 vectors=tuple((similarity, math.sqrt(1.0 - similarity**2)) for similarity in similarities)
@@ -314,8 +322,7 @@ def test_sqlite_vector_prepare_reports_cosine_and_expands_past_a_weak_top(tmp_pa
         assert effort.signals.top_score == pytest.approx(0.31, abs=0.005)
         assert len(log.calls) == 2
         assert "unrelated vector evidence" in (build.context.content or "")
-        # Atomic filters before LIMIT and reports an existence probe rather than
-        # fabricating legacy pre-admission counts.
+        # Atomic Memory reports recoverability as an existence probe, not pre-admission counts.
         assert effort.admission_by_family == ()
         assert [call["memory_recoverable"] for call in log.calls] == [True, False]
 
@@ -340,8 +347,8 @@ def test_bounded_expansion_surfaces_a_strong_hit_hidden_by_the_fusion_limit(tmp_
         async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
             return EmbeddingResult(
                 vectors=tuple(
-                    (cosine := cosines.get(text.removeprefix("fact\n"), 0.0), math.sqrt(1.0 - cosine * cosine))
-                    for text in texts
+                    (cosine := cosines.get(text, 0.0), math.sqrt(1.0 - cosine * cosine))
+                    for text in map(_embedded_body, texts)
                 )
             )
 
@@ -413,12 +420,10 @@ def test_expansion_fts_only_hit_preserves_round_zero_scored_family(tmp_path, mon
 
         async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
             vectors = {_QUERY: (1.0, 0.0), "alpha beta gamma evidence": (0.5, math.sqrt(0.75))}
-            return EmbeddingResult(
-                vectors=tuple(vectors.get(text.removeprefix("fact\n"), (0.0, 1.0)) for text in texts)
-            )
+            return EmbeddingResult(vectors=tuple(vectors.get(text, (0.0, 1.0)) for text in map(_embedded_body, texts)))
 
     original = ScopedContextApplication._recall_round
-    expansion_first_distance = []
+    expansion_first_relevance = []
 
     async def fts_first_expansion(*args: Any, **kwargs: Any) -> _RecallRoundOutcome:
         result = await original(*args, **kwargs)
@@ -427,7 +432,7 @@ def test_expansion_fts_only_hit_preserves_round_zero_scored_family(tmp_path, mon
         # Put the new FTS-only hit first in the returned round. Accumulation must still append it
         # after round zero's vector-backed first hit rather than replace the family's first hit.
         memory = tuple(replace(group, hits=tuple(reversed(group.hits))) for group in result.memory)
-        expansion_first_distance.extend(group.hits[0].hit.distance for group in memory if group.hits)
+        expansion_first_relevance.extend(group.hits[0].relevance for group in memory if group.hits)
         return replace(result, memory=memory)
 
     monkeypatch.setattr(ScopedContextApplication, "_recall_round", fts_first_expansion)
@@ -455,7 +460,7 @@ def test_expansion_fts_only_hit_preserves_round_zero_scored_family(tmp_path, mon
         assert before_effort.candidates_by_round == (1,)
         assert before_effort.signals is not None
         assert before_effort.signals.top_score == pytest.approx(0.5, abs=0.005)
-        assert expansion_first_distance == [None]
+        assert expansion_first_relevance == [None]
         assert after_effort is not None
         assert after_effort.rounds == 2
         assert after_effort.candidates_by_round == (1, 2)
@@ -477,9 +482,7 @@ def test_scoped_first_hit_rule_applies_per_scope_through_the_runtime(tmp_path, m
 
         async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
             vectors = {_QUERY: (1.0, 0.0), "alpha beta gamma vector evidence": (0.31, math.sqrt(1 - 0.31**2))}
-            return EmbeddingResult(
-                vectors=tuple(vectors.get(text.removeprefix("fact\n"), (0.0, 1.0)) for text in texts)
-            )
+            return EmbeddingResult(vectors=tuple(vectors.get(text, (0.0, 1.0)) for text in map(_embedded_body, texts)))
 
     log = _RecallRoundLog()
     log.install(monkeypatch)
@@ -504,8 +507,8 @@ def test_scoped_first_hit_rule_applies_per_scope_through_the_runtime(tmp_path, m
 
         assert effort is not None
         assert effort.assessment == "weak-top-1"
-        # All three identities have been delivered. Zero-cosine rows remain below
-        # the policy floor, so the exact probe stops after one expansion.
+        # After round one re-admits "alpha solo", the recoverability probe finds no row the
+        # lower round-two floor would add, so expansion stops; the weak-top-1 reason is kept.
         assert effort.rounds == 2
         assert effort.candidates_by_round == (2, 3)
         assert [call["memory_recoverable"] for call in log.calls] == [True, False]

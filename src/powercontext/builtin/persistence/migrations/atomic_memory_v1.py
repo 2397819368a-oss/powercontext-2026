@@ -54,8 +54,12 @@ from powercontext.builtin.persistence.atomic_memory_index import (
     atomic_memory_profile_fingerprint,
     drop_obsolete_atomic_memory_projection,
 )
+from powercontext.builtin.persistence.atomic_memory_readiness import (
+    AtomicMemoryMigrationError,
+    assert_atomic_memory_migration_ready,
+    ensure_supported_atomic_memory_schema,
+)
 from powercontext.builtin.persistence.database import AsyncDatabase
-from powercontext.builtin.persistence.errors import PersistenceError
 from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
 from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
     ARCHIVE_TABLE_NAME,
@@ -95,12 +99,6 @@ MIGRATION_ID = "powercontext.memory.v1-to-atomic-memory.v1"
 _FAMILY = "atomic-memory"
 _PROJECTION_FORMAT = "powercontext.atomic-memory.current.v1"
 _ENTRY_HASH_DOMAIN = b"powercontext:entry-content:v1\0"
-
-
-class AtomicMemoryMigrationError(PersistenceError):
-    def __init__(self, errors: tuple[str, ...]) -> None:
-        self.errors = errors
-        super().__init__("Atomic Memory offline migration is not ready: " + "; ".join(errors))
 
 
 class AtomicMemoryMigrationReport(BaseModel):
@@ -310,15 +308,6 @@ _PROCESSING_COLUMNS = {
         "reason",
     },
 }
-
-
-async def ensure_supported_atomic_memory_schema(connection: AsyncConnection) -> None:
-    """Reject the unreleased split state authority without changing its evidence."""
-
-    if "pc_atomic_memory_states" in await _tables(connection):
-        raise AtomicMemoryMigrationError((
-            "unsupported unreleased schema pc_atomic_memory_states; preserve the database and use a supported backup",
-        ))
 
 
 async def _merge_schema_errors(connection: AsyncConnection, tables: set[str]) -> tuple[str, ...]:
@@ -1532,20 +1521,6 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
         errors=tuple(errors),
         processing_snapshot_hash=inventory.processing_snapshot_hash,
     )
-
-
-async def assert_atomic_memory_migration_ready(connection: AsyncConnection) -> None:
-    """Read-only startup gate: a light residual check that never reads archived or legacy history.
-
-    Apply removes public collections only after accepting import, reference
-    conversion and projection, so their absence is the completion evidence.
-    Full per-entry verification remains ``atomic-memory-migrate verify``.
-    """
-
-    await ensure_supported_atomic_memory_schema(connection)
-    errors = await residual_issues(connection, await _tables(connection), thorough=False)
-    if errors:
-        raise AtomicMemoryMigrationError(tuple(errors))
 
 
 __all__ = [

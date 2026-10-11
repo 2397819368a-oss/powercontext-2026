@@ -48,8 +48,9 @@ the workspace binding is fixed onto that session. If
   Default to active memories. Include forgotten, merged, or retired memories only for an explicit audit.
 - Use `get_artifact_revision` with the exact `atomic-memory` ArtifactRef to inspect immutable content and lineage.
   Use `get_artifact` for current content and `get_atomic_memory_state` for current lifecycle state.
-- `get_memory_entry` reads retained legacy history using a complete old citation, or resolves a migrated logical target.
-  Never manufacture a legacy citation from a new ArtifactRef.
+- `get_memory_entry` only adapts a legacy `target` with `type: "memory_entry"`, `family: "memory"`,
+  the collection's `artifact_id`, and `entry_id` to the migrated Atomic's current content.
+  Legacy citations and collection history are unsupported. Use `get_artifact_revision` with an Atomic ArtifactRef for exact history.
 - Use `search_topic_memory` with a focused query and no more than eight results
   for durable topic summaries. The Server selects the retrieval mode.
 - Use `get_topic_memory` with an exact returned Artifact reference only when

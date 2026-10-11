@@ -32,7 +32,7 @@ from typing import Annotated, Any, Literal
 
 import rfc8785
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import inspect, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.artifacts.experience.recurrence import (
@@ -48,6 +48,13 @@ from powercontext.builtin.artifacts.experience.recurrence import (
 from powercontext.builtin.artifacts.handoff.models import HandoffContent, HandoffSourceCitation
 from powercontext.builtin.dream.models import CreateDreamRunRequest, DreamRecord
 from powercontext.builtin.persistence.atomic_memory_identity import legacy_entry_artifact_id
+from powercontext.builtin.persistence.atomic_memory_readiness import (
+    LEGACY_ENTRY_FOREIGN_KEYS,
+    atomic_memory_readiness_issues,
+    legacy_citation_columns,
+    legacy_entry_foreign_key_names,
+    legacy_foreign_keys,
+)
 from powercontext.builtin.persistence.codec import dump_model
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
@@ -55,7 +62,6 @@ from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
     LegacyCollection,
     archive_collection,
     archive_incoming_reference,
-    has_column,
     rows,
     table_names,
 )
@@ -70,7 +76,6 @@ from powercontext.builtin.work.models import (
 
 DECISIONS_FORMAT = "powercontext.atomic-memory-reference-decisions.v1"
 DREAM_HISTORY_FORMAT = "powercontext.dream-history.v1"
-RECEIPT_HISTORY_FORMAT = "powercontext.handoff-receipt-history.v1"
 _WORK_MODELS: dict[str, type[BaseModel]] = {
     "work-contract": WorkContract,
     "handoff-boundary": CurrentWorkHandoff,
@@ -78,11 +83,6 @@ _WORK_MODELS: dict[str, type[BaseModel]] = {
     "task-outcome": TaskOutcome,
 }
 _TERMINAL_DREAM = frozenset({"succeeded", "failed"})
-_LEGACY_ENTRY_FOREIGN_KEYS = {
-    "pc_memory_entry_versions": ("scope_id", "family", "memory_artifact_id", "created_in_revision"),
-    "pc_memory_entry_heads": ("scope_id", "family", "memory_artifact_id", "head_revision"),
-}
-_LEGACY_CITATION_TABLES = ("pc_artifacts", "pc_artifact_candidate_versions")
 
 
 class _LegacyValue(BaseModel):
@@ -534,7 +534,7 @@ async def _handoffs(context: _Context, units: _Units) -> None:
     keys = await _keys(
         units,
         "SELECT scope_id, family, artifact_id, revision FROM pc_artifacts WHERE family = 'handoff' "
-        "AND (content LIKE '%memory_citation%' OR content LIKE '%\"memory\"%') "
+        "AND (CAST(content AS CHAR) LIKE '%memory_citation%' OR CAST(content AS CHAR) LIKE '%\"memory\"%') "
         "UNION SELECT DISTINCT scope_id, family, artifact_id, revision "
         "FROM pc_artifact_lineage_artifacts WHERE family = 'handoff' AND upstream_family = 'memory'",
     )
@@ -702,30 +702,14 @@ def _outcome_digests(before: dict[tuple[str, int], str], after: TaskOutcome) -> 
     return changed
 
 
-def _receipt_history(receipt: dict[str, Any]) -> dict[str, Any]:
-    """Move unavailable evidence that cited a whole collection into the receipt's history."""
-
-    evidence = receipt.get("unavailable_evidence") or []
-    legacy = [citation for citation in evidence if _collection_citation(citation) is not None]
-    if not legacy:
-        return receipt
-    if receipt.get("historical_data") is not None:
-        raise ValueError("receipt already holds historical data")  # noqa: TRY003
-    return {
-        **receipt,
-        "unavailable_evidence": [citation for citation in evidence if _collection_citation(citation) is None],
-        "historical_data": {"format": RECEIPT_HISTORY_FORMAT, "unavailable_evidence": legacy},
-    }
-
-
 async def _work_sources(context: _Context, units: _Units) -> None:  # noqa: C901 - One Source rewrite with its ledger.
     keys = await _keys(
         units,
         "SELECT scope_id, source_type, source_id FROM pc_sources WHERE source_type = 'content' "
-        "AND payload LIKE '%\"memory%'",
+        "AND CAST(payload AS CHAR) LIKE '%\"memory%'",
     )
 
-    async def convert(connection: AsyncConnection, key: Mapping[str, Any]) -> None:  # noqa: C901 - One Source rewrite with its ledger.
+    async def convert(connection: AsyncConnection, key: Mapping[str, Any]) -> None:
         stored = await connection.scalar(
             text(
                 "SELECT payload FROM pc_sources WHERE scope_id = :scope_id AND source_type = :source_type "
@@ -742,8 +726,6 @@ async def _work_sources(context: _Context, units: _Units) -> None:  # noqa: C901
         # A receipt's unavailable evidence records what was missing; it asserts no support to drop.
         dropped: list[tuple[str, dict[str, Any]]] | None = None if model is HandoffReceipt else []
         converted = await _convert_citations(context, connection, key["scope_id"], original, None, dropped)
-        if model is HandoffReceipt:
-            converted = _receipt_history(converted)
         if model is TaskOutcome:
             produced = []
             for index, ref in enumerate(converted.get("produced_artifacts", ())):
@@ -800,9 +782,10 @@ async def _candidates(context: _Context, units: _Units) -> None:
         units,
         "SELECT scope_id, candidate_id, version FROM pc_artifact_candidate_versions WHERE family <> 'memory' AND "  # noqa: S608
         + (
-            "((memory_citations IS NOT NULL AND LENGTH(memory_citations) > 2) OR artifact_refs LIKE '%\"memory\"%')"
+            "((memory_citations IS NOT NULL AND LENGTH(memory_citations) > 2) "
+            "OR CAST(artifact_refs AS CHAR) LIKE '%\"memory\"%')"
             if cited
-            else "artifact_refs LIKE '%\"memory\"%'"
+            else "CAST(artifact_refs AS CHAR) LIKE '%\"memory\"%'"
         ),
     )
 
@@ -915,6 +898,14 @@ async def _dream_inputs_change(  # noqa: C901 - One check over each kind of pinn
 ) -> bool:
     """Whether conversion changes any digest or lineage pinned by an unfinished Dream run."""
 
+    manifest = (payload.get("run") or {}).get("input_manifest")
+    if isinstance(manifest, dict) and (
+        "memory_citations" in manifest
+        or any("memory_citations" in node or "current_entry_version_id" in node for node in manifest.get("nodes", ()))
+    ):
+        # Legacy Artifact digests include lineage.memory_citations even when empty.
+        # Removing that field changes every pinned Artifact digest, without changing its stored body.
+        return True
     artifacts: set[tuple[str, str, int]] = set()
     sources: set[tuple[str, str]] = set()
     if _dream_inputs([payload.get("request"), (payload.get("run") or {}).get("input_manifest")], artifacts, sources):
@@ -949,9 +940,16 @@ async def _dream_inputs_change(  # noqa: C901 - One check over each kind of pinn
         if stored is None:
             continue
         value = json.loads(bytes(stored)).get("value") or {}
-        if str((value.get("metadata") or {}).get("kind")) in _WORK_MODELS and _holds_memory_reference(
-            json.loads(value["content"])
-        ):
+        model = _WORK_MODELS.get(str((value.get("metadata") or {}).get("kind")))
+        if model is None:
+            continue
+        content = json.loads(value["content"])
+        if model is HandoffReceipt:
+            # These unavailable addresses survive unchanged, so the Source digest stays pinned.
+            content["unavailable_evidence"] = [
+                item for item in content.get("unavailable_evidence", ()) if _collection_citation(item) is None
+            ]
+        if _holds_memory_reference(content):
             return True
     return False
 
@@ -1142,40 +1140,11 @@ async def convert_references(
     return context.counts, tuple(context.errors)
 
 
-async def legacy_citation_columns(connection: AsyncConnection, tables: set[str]) -> list[str]:
-    """Public tables that still declare the legacy entry citation column."""
-
-    return [
-        table
-        for table in _LEGACY_CITATION_TABLES
-        if table in tables and await has_column(connection, table, LEGACY_CITATION_COLUMN)
-    ]
-
-
 async def drop_legacy_citation_columns(connection: AsyncConnection) -> None:
     """Remove the emptied legacy citation columns; every citation was converted and accepted first."""
 
     for table in await legacy_citation_columns(connection, await table_names(connection)):
         await connection.execute(text(f"ALTER TABLE {table} DROP COLUMN {LEGACY_CITATION_COLUMN}"))
-
-
-async def _foreign_key_names(connection: AsyncConnection, table: str) -> list[str | None]:
-    columns = _LEGACY_ENTRY_FOREIGN_KEYS[table]
-
-    def read(value: Any) -> list[str | None]:
-        return [
-            item.get("name")
-            for item in inspect(value).get_foreign_keys(table)
-            if item["referred_table"] == "pc_artifacts" and tuple(item["constrained_columns"]) == columns
-        ]
-
-    return await connection.run_sync(read)
-
-
-async def legacy_foreign_keys(connection: AsyncConnection, tables: set[str]) -> list[str]:
-    return [
-        table for table in _LEGACY_ENTRY_FOREIGN_KEYS if table in tables and await _foreign_key_names(connection, table)
-    ]
 
 
 async def drop_legacy_foreign_keys(connection: AsyncConnection) -> None:
@@ -1187,7 +1156,7 @@ async def drop_legacy_foreign_keys(connection: AsyncConnection) -> None:
         return
     if connection.dialect.name == "mysql":
         for table in pending:
-            for name in await _foreign_key_names(connection, table):
+            for name in await legacy_entry_foreign_key_names(connection, table):
                 await connection.execute(text(f"ALTER TABLE {table} DROP FOREIGN KEY {name}"))
         return
     # Removing a foreign key does not change SQLite's stored row format, so the
@@ -1200,7 +1169,7 @@ async def drop_legacy_foreign_keys(connection: AsyncConnection) -> None:
         )
         await connection.execute(
             text("UPDATE sqlite_master SET sql = :sql WHERE type = 'table' AND name = :name"),
-            {"sql": _without_artifact_foreign_key(str(created), _LEGACY_ENTRY_FOREIGN_KEYS[table]), "name": table},
+            {"sql": _without_artifact_foreign_key(str(created), LEGACY_ENTRY_FOREIGN_KEYS[table]), "name": table},
         )
     await connection.execute(text(f"PRAGMA schema_version = {version + 1}"))
     await connection.execute(text("PRAGMA writable_schema = OFF"))
@@ -1280,55 +1249,37 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
     public; every other reference must be gone.
     """
 
-    issues: list[str] = []
+    issues = await atomic_memory_readiness_issues(connection, tables, collections_removed=collections_removed)
+    if not thorough:
+        return issues
 
     async def count(sql: str) -> int:
         return int(await connection.scalar(text(sql), {"historical": '%"request":null%'}) or 0)
 
-    if (
-        collections_removed
-        and "pc_artifacts" in tables
-        and await count("SELECT COUNT(*) FROM pc_artifacts WHERE family = 'memory'")
-    ):
-        issues.append("legacy Memory collections remain in public Artifact tables; run apply")
-    referrers = "" if collections_removed else " AND family <> 'memory'"
-    if "pc_artifact_lineage_artifacts" in tables and await count(
-        "SELECT COUNT(*) FROM pc_artifact_lineage_artifacts WHERE upstream_family = 'memory'" + referrers  # noqa: S608
-    ):
-        issues.append("public lineage still references legacy Memory collections; run apply")
-    foreign_keys = await legacy_foreign_keys(connection, tables)
-    if foreign_keys:
-        issues.append("legacy entry tables still reference public Artifacts: " + ", ".join(foreign_keys))
     citation_tables = await legacy_citation_columns(connection, tables)
-    if collections_removed and citation_tables:
-        issues.append(
-            "public tables still declare legacy memory_citations: " + ", ".join(citation_tables) + "; run apply"
-        )
-    if not thorough:
-        return issues
     cited = "(memory_citations IS NOT NULL AND LENGTH(memory_citations) > 2) OR "
     checks = {
         "pc_artifacts": (
             "SELECT COUNT(*) FROM pc_artifacts WHERE "  # noqa: S608
             + (cited if "pc_artifacts" in citation_tables else "")
-            + "(family = 'handoff' AND content LIKE '%memory_citation%')",
+            + "(family = 'handoff' AND CAST(content AS CHAR) LIKE '%memory_citation%')",
             "Artifacts still hold legacy Memory citations",
         ),
         "pc_artifact_candidate_versions": (
             "SELECT COUNT(*) FROM pc_artifact_candidate_versions WHERE "  # noqa: S608
             + (cited if "pc_artifact_candidate_versions" in citation_tables else "")
-            + "artifact_refs LIKE '%\"memory\"%'",
+            + "CAST(artifact_refs AS CHAR) LIKE '%\"memory\"%'",
             "Candidates still hold legacy Memory references",
         ),
         "pc_dream_runs": (
             "SELECT COUNT(*) FROM pc_dream_runs WHERE status IN ('succeeded', 'failed') "
-            "AND payload NOT LIKE :historical",
+            "AND CAST(payload AS CHAR) NOT LIKE :historical",
             "terminal Dream runs still use the executable legacy format",
         ),
     }
     if "pc_dream_runs" in tables and await count(
         "SELECT COUNT(*) FROM pc_dream_runs WHERE status NOT IN ('succeeded', 'failed') "
-        "AND payload LIKE '%memory_citations%'"
+        "AND CAST(payload AS CHAR) LIKE '%memory_citations%'"
     ):
         issues.append("unfinished Dream runs still carry legacy entry citation fields")
     for table, (sql, message) in checks.items():
@@ -1336,7 +1287,10 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
             issues.append(message)
     if "pc_artifacts" in tables:
         for row in await rows(
-            connection, "pc_artifacts", ("content",), "WHERE family = 'handoff' AND content LIKE '%\"memory\"%'"
+            connection,
+            "pc_artifacts",
+            ("content",),
+            "WHERE family = 'handoff' AND CAST(content AS CHAR) LIKE '%\"memory\"%'",
         ):
             if _holds_collection_citation(json.loads(bytes(row["content"]))):
                 issues.append("Handoffs still cite whole legacy Memory collections")
@@ -1346,15 +1300,19 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
             connection,
             "pc_sources",
             ("payload",),
-            "WHERE source_type = 'content' AND payload LIKE '%memory%'",
+            "WHERE source_type = 'content' AND CAST(payload AS CHAR) LIKE '%memory%'",
         ):
             value = json.loads(bytes(row["payload"]))["value"]
             model = _WORK_MODELS.get(str((value.get("metadata") or {}).get("kind")))
             if model is None:
                 continue
             content = value["content"]
-            # A receipt keeps the collections it could not resolve only in its explicit history.
-            current = {name: item for name, item in json.loads(content).items() if name != "historical_data"}
+            current = json.loads(content)
+            if model is HandoffReceipt:
+                # Only unavailable addresses may describe an archived collection.
+                current["unavailable_evidence"] = [
+                    item for item in current.get("unavailable_evidence", ()) if _collection_citation(item) is None
+                ]
             if "memory_citation" in content or _holds_collection_citation(current):
                 issues.append("structured Work Sources still hold legacy Memory citations")
                 break
@@ -1364,7 +1322,6 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
 __all__ = [
     "DECISIONS_FORMAT",
     "DREAM_HISTORY_FORMAT",
-    "RECEIPT_HISTORY_FORMAT",
     "CandidateDecision",
     "convert_references",
     "drop_legacy_citation_columns",

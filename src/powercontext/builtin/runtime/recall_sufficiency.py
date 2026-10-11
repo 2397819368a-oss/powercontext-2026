@@ -33,7 +33,6 @@ from powercontext.builtin.artifacts.search import (
     AdmissionFloor,
     analyze_text,
     fts_query_requirements,
-    unit_l2_cosine_similarity,
 )
 from powercontext.builtin.artifacts.topic_memory import TopicMemorySearchHit
 from powercontext.builtin.runtime.atomic_memory import AtomicMemorySearchHit
@@ -421,8 +420,8 @@ def build_recall_candidates(
                 entry_id=None,
                 entry_version_id=None,
                 score=_normalize_memory_score(hit),
-                text=hit.hit.text,
-                relevance=None if hit.hit.distance is None else unit_l2_cosine_similarity(hit.hit.distance),
+                text=hit.text,
+                relevance=hit.relevance,
                 scope_id=None if memory_scope_ids is None else memory_scope_ids[index],
             )
         )
