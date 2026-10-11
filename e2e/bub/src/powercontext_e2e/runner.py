@@ -42,15 +42,15 @@ from powercontext.client.settings import ClientSettings
 from powercontext.http import CreateScopeRequest, ListMemoryEntriesRequest, PrepareContextRequest
 
 from .artifacts import write_artifacts
-from .catalog import ContinuationEvaluationSpec, E2ETask, MemoryEvaluationSpec, OutcomeEvaluationSpec
+from .catalog import E2ETask, MemoryEvaluationSpec, OutcomeEvaluationSpec, is_paired
 from .evaluation import evaluate_observation, matches_forbidden_context
 from .evidence import fingerprint, load_resolved_instructions, redact, write_evaluation_report, write_evidence
 from .hosts import HostAdapter, host_adapter
 from .models import (
+    AtomicMemorySnapshot,
     CaptureRecord,
     EvaluationReport,
     HarborTrialObservation,
-    MemoryEntrySnapshot,
     MemorySnapshot,
     NativeArtifact,
     PreparedContextSnapshot,
@@ -61,7 +61,7 @@ from .models import (
     TaskObservation,
 )
 from .report import render_evaluation_summary
-from .settings import HarnessSettings, ModelNotConfiguredError
+from .settings import HarnessSettings, ModelNotConfiguredError, agent_secret
 
 FailurePolicy = Literal["fail-fast", "collect-all"]
 TaskStatus = Literal["completed", "failed", "skipped"]
@@ -151,8 +151,8 @@ async def run_tasks(
     settings: HarnessSettings,
     failure_policy: FailurePolicy = "collect-all",
 ) -> bool:
-    if continuation_ids := [task.id for task in tasks if isinstance(task.evaluation, ContinuationEvaluationSpec)]:
-        raise ValueError(f"Run OFF/ON continuation workloads with the paired command: {continuation_ids!r}")  # noqa: TRY003
+    if paired_ids := [task.id for task in tasks if is_paired(task)]:
+        raise ValueError(f"Run OFF/ON comparison workloads with the paired command: {paired_ids!r}")  # noqa: TRY003
     require_runtime_models(tasks)
 
     accepted = True
@@ -439,7 +439,8 @@ def _job_config(
         invocation_scopes=invocation_scopes if runtime is not None else None,
     )
     if settings.agent_proxy_url is not None:
-        proxy_url = settings.agent_proxy_url.get_secret_value()
+        # Harbor writes a literal under these names to its job files in full, and the URL can carry credentials.
+        proxy_url = agent_secret("PROXY_URL", settings.agent_proxy_url.get_secret_value())
         agent.env.update({
             "HTTP_PROXY": proxy_url,
             "HTTPS_PROXY": proxy_url,
@@ -536,6 +537,13 @@ def _validate_batch_compatibility(tasks: tuple[E2ETask, ...], settings: HarnessS
 
 
 def _load_source_task(task: E2ETask, repository: Path) -> SourceTask:
+    harbor_task = _load_harbor_task(task, repository)
+    return SourceTask(task, harbor_task, _task_layout(task, harbor_task))
+
+
+def _load_harbor_task(task: E2ETask, repository: Path) -> HarborTask:
+    """Load a local Harbor task and verify it is the one the manifest pins."""
+
     dataset_path = task.dataset.path
     if dataset_path is None:
         raise ValueError(f"Source task {task.id!r} does not use a local Harbor dataset")  # noqa: TRY003
@@ -546,7 +554,7 @@ def _load_source_task(task: E2ETask, repository: Path) -> SourceTask:
         raise ValueError(f"Source task {task.id!r} cannot be loaded from {task_dir}") from exc  # noqa: TRY003
     if harbor_task.checksum != task.dataset.checksum:
         raise ValueError(f"Source task {task.id!r} checksum changed")  # noqa: TRY003
-    return SourceTask(task, harbor_task, _task_layout(task, harbor_task))
+    return harbor_task
 
 
 def _runtime_profile(source: SourceTask) -> dict[str, Any]:
@@ -596,24 +604,31 @@ def _task_layout(task: E2ETask, harbor_task: HarborTask) -> tuple[str, ...]:
 
 
 async def memory_snapshot(client: PowerContextClient, scope_id: str) -> MemorySnapshot:
-    response = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope_id))
-    return MemorySnapshot(
-        entries=tuple(
-            MemoryEntrySnapshot(
-                entry_id=entry.citation.entry_id,
-                entry_version_id=entry.citation.entry_version_id,
-                version=entry.version,
-                kind=entry.kind,
-                text=entry.text,
-                state=entry.state.value,
-                source_refs=tuple(
-                    SourceReferenceSnapshot(name=source.name, source_id=source.source_id)
-                    for source in entry.source_refs
-                ),
+    entries: list[AtomicMemorySnapshot] = []
+    cursor = None
+    while True:
+        response = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope_id, cursor=cursor))
+        for entry in response.entries:
+            ref = entry.artifact
+            revision = await client.get_artifact_revision(scope_id, ref.family, ref.artifact_id, ref.revision)
+            entries.append(
+                AtomicMemorySnapshot(
+                    artifact=ref,
+                    kind=entry.kind,
+                    text=entry.text,
+                    state=entry.state.value,
+                    state_version=entry.state_version,
+                    merged_into_id=entry.merged_into_id,
+                    sources=tuple(
+                        SourceReferenceSnapshot(name=source.source_type, source_id=source.source_id)
+                        for source in revision.sources
+                    ),
+                    artifacts=tuple(revision.artifacts),
+                )
             )
-            for entry in response.entries
-        )
-    )
+        cursor = response.next_cursor
+        if cursor is None:
+            return MemorySnapshot(entries=tuple(entries))
 
 
 async def prepared_context(client: PowerContextClient, scope_id: str, query: str) -> PreparedContextSnapshot:

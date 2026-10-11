@@ -41,6 +41,20 @@ wheels = [
 ]
 
 [[package]]
+name = "alembic"
+version = "1.20.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mako" },
+    { name = "sqlalchemy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ed/aa/02910bdb8e2f1444f6654d5b296cd827d126f82209050ee7b1000f92ac4b/alembic-1.20.0.tar.gz", hash = "sha256:db505480647bc60386c5369402f4a57a506b7539c9e9ef5e270d45cbbe4939bf", size = 2093272, upload-time = "2026-09-11T19:09:11.126Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3f/27/78a89b55b0904d222183164e079b4ca56208e94eff1d35ad1f1ad5be9b06/alembic-1.20.0-py3-none-any.whl", hash = "sha256:77eb101048d95f982c0353e9233404889dcd7a6fc244c107836c0e2fc9cf7d9d", size = 268719, upload-time = "2026-09-11T19:09:12.88Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1878,7 +1892,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-sdk"
-version = "0.4.3"
+version = "0.4.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -1887,9 +1901,9 @@ dependencies = [
     { name = "orjson" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bd/0e/3c0347fd517390e807d9772d2037f9cc65c0227af27f07052ba9c8ebdfa2/langgraph_sdk-0.4.3.tar.gz", hash = "sha256:f101cc043ddd7400ceaef66d934c42fa2f0e7d4ea5029754d286260d39038251", size = 344145, upload-time = "2026-08-19T18:05:21.838Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/ae/91446c1fffa04a2dc1f81afbfb5bfff3590452891a72bd9098a656ab2657/langgraph_sdk-0.4.4.tar.gz", hash = "sha256:4e651ffa09de695681579396375377bdde23bedbc8e35b070e615cbd5af7da8b", size = 345789, upload-time = "2026-08-27T21:25:22.593Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/a0/f3bc44b46ef730588f66fdf9e9ddc54189db78482a9e914ae6a554a2b2e0/langgraph_sdk-0.4.3-py3-none-any.whl", hash = "sha256:1b7920b39b6dc439843d122a06f04a0cb8b65c02fd086ddf68e18596a230a0e7", size = 161794, upload-time = "2026-08-19T18:05:20.495Z" },
+    { url = "https://files.pythonhosted.org/packages/43/d5/2ad7f3a835c6fcebf58b6669552536ecd52d2dfe4cf49c6c36648fd83572/langgraph_sdk-0.4.4-py3-none-any.whl", hash = "sha256:39afe416c91742925e6f8a93715f566d499b36e1b636b804a4ffe3190e4f4e64", size = 162270, upload-time = "2026-08-27T21:25:21.072Z" },
 ]
 
 [[package]]
@@ -1933,6 +1947,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/10/1a/17af258260cf8378fabd10bacef0c585e19697eab1deea25f8e4f4fb6462/logfire_api-4.38.0.tar.gz", hash = "sha256:e773cd4a26edb48ef4ec6f88661d1c670bb68c303a71c7043a236d64a9699cd2", size = 90364, upload-time = "2026-07-20T12:15:34.913Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/26/22/598f988f293ce391e88baddeeaa1acaea625822653193935301e7149b5c6/logfire_api-4.38.0-py3-none-any.whl", hash = "sha256:6c0612d9200727b64b42eba6068d0d6afd45308f4b844ffd6290c2d33aa6a6f6", size = 140109, upload-time = "2026-07-20T12:15:31.973Z" },
+]
+
+[[package]]
+name = "mako"
+version = "1.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markupsafe" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5a/09/e07c4b5579a79f4b16f8d4f29f6c54514ac787c4ad506b8c4f28a0e6b0bf/mako-1.4.3.tar.gz", hash = "sha256:cd6537fe88d5fec315c55c2f8529bc4ce7a9a352ad7db3eeaa6a66e2dd4ec37a", size = 412799, upload-time = "2026-09-22T20:54:31.509Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/a0/053d6af3e8f871e0073b4a36732d9e65be77a72e5434c31b94f6af78a6bb/mako-1.4.3-py3-none-any.whl", hash = "sha256:723296007c870bfd6b3f0c3230dba7198096e5269297ebf5e4eff9e7ffa39d4f", size = 80164, upload-time = "2026-09-22T20:54:33.128Z" },
 ]
 
 [[package]]
@@ -2693,7 +2719,9 @@ dependencies = [
 [package.optional-dependencies]
 builtin = [
     { name = "aiosqlite" },
+    { name = "alembic" },
     { name = "apscheduler" },
+    { name = "filelock" },
     { name = "jsonschema" },
     { name = "packaging" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "openai"] },
@@ -2703,6 +2731,7 @@ builtin = [
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlite-vec" },
+    { name = "tzdata" },
 ]
 cli = [
     { name = "httpx", extra = ["socks"] },
@@ -2731,7 +2760,9 @@ code = [
 ]
 seekdb = [
     { name = "aiosqlite" },
+    { name = "alembic" },
     { name = "apscheduler" },
+    { name = "filelock" },
     { name = "jsonschema" },
     { name = "packaging" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "openai"] },
@@ -2742,12 +2773,15 @@ seekdb = [
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlite-vec" },
+    { name = "tzdata" },
 ]
 server = [
     { name = "aiosqlite" },
+    { name = "alembic" },
     { name = "apscheduler" },
     { name = "fastapi" },
     { name = "fastmcp" },
+    { name = "filelock" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "jsonschema" },
@@ -2766,6 +2800,7 @@ server = [
     { name = "scalar-fastapi" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlite-vec" },
+    { name = "tzdata" },
     { name = "uvicorn" },
 ]
 tracing-otlp = [
@@ -2810,11 +2845,17 @@ requires-dist = [
     { name = "aiosqlite", marker = "extra == 'builtin'", specifier = ">=0.22,<1" },
     { name = "aiosqlite", marker = "extra == 'seekdb'", specifier = ">=0.22,<1" },
     { name = "aiosqlite", marker = "extra == 'server'", specifier = ">=0.22,<1" },
+    { name = "alembic", marker = "extra == 'builtin'", specifier = ">=1.16,<2" },
+    { name = "alembic", marker = "extra == 'seekdb'", specifier = ">=1.16,<2" },
+    { name = "alembic", marker = "extra == 'server'", specifier = ">=1.16,<2" },
     { name = "apscheduler", marker = "extra == 'builtin'", specifier = ">=3.11,<4" },
     { name = "apscheduler", marker = "extra == 'seekdb'", specifier = ">=3.11,<4" },
     { name = "apscheduler", marker = "extra == 'server'", specifier = ">=3.11,<4" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115,<1" },
     { name = "fastmcp", marker = "extra == 'server'", specifier = ">=3.4,<4" },
+    { name = "filelock", marker = "extra == 'builtin'", specifier = ">=3.16,<4" },
+    { name = "filelock", marker = "extra == 'seekdb'", specifier = ">=3.16,<4" },
+    { name = "filelock", marker = "extra == 'server'", specifier = ">=3.16,<4" },
     { name = "httpx", marker = "extra == 'server'", specifier = ">=0.28,<1" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'cli'", specifier = ">=0.28,<1" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'client'", specifier = ">=0.28,<1" },
@@ -2875,6 +2916,9 @@ requires-dist = [
     { name = "tree-sitter-typescript", marker = "extra == 'code'", specifier = "==0.23.2" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.16,<1" },
     { name = "typing-extensions", specifier = ">=4.12,<5" },
+    { name = "tzdata", marker = "extra == 'builtin'", specifier = ">=2026.3" },
+    { name = "tzdata", marker = "extra == 'seekdb'", specifier = ">=2026.3" },
+    { name = "tzdata", marker = "extra == 'server'", specifier = ">=2026.3" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.34,<1" },
 ]
 provides-extras = ["builtin", "cli", "client", "code", "seekdb", "server", "tracing-otlp"]

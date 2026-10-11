@@ -25,6 +25,9 @@ You see the context the work needs now: confirmed decisions, constraints, progre
 
 You decide what will matter later and what needs to move with the task. PowerContext stores durable information as Memory and organizes the current objective and state into a Handoff. You can record reusable approaches as Experience or Skill. PowerContext keeps every item within the scope of the work and preserves its sources and earlier revisions.
 
+The optional recall-sufficiency gate records scope-local daily search effort and budget omissions for later policy
+evaluation. See the [configuration reference](docs/en/docs/operate/configuration.md) for its recording and failure behavior.
+
 ## Install, configure, and connect your Agent
 
 You need Git, [uv](https://docs.astral.sh/uv/getting-started/installation/), and your Agent's CLI.
@@ -116,6 +119,14 @@ Explore the [22 Chinese Jupyter tutorials and a complete team workflow](examples
 
 See the [methods, full results, and limitations](https://powercontext.oceanbase.io/en/benchmarks/) behind these comparisons.
 
+### LoCoMo Plus: comparison with Jev
+
+![LoCoMo Plus scores for native PowerContext and PowerContext + Jev across GPT-4o-mini, Qwen3.7-plus, and GPT-4o](docs/assets/readme-locomo-plus.svg)
+
+*LoCoMo Plus scores with and without Jev candidate filtering after retrieval. Each model is used for both Memory extraction and answering; embeddings use qwen3.7-text-embedding (1024 dimensions). Jev score differences are +8.925, +8.577, and +4.198 percentage points, respectively.*
+
+These six scores were supplied by the project owner; the run artifacts are not publicly available for verification. The reproducibility instructions describe the evaluation harness, not verification of these scores.
+
 ## Build PowerContext
 
 ```bash
@@ -125,6 +136,8 @@ make test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
+Coding and memory evaluations, performance benchmarks, and Skill regressions live under
+[`evaluation/`](evaluation/README.md).
 
 ## Learn more
 

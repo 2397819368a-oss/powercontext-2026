@@ -7,7 +7,8 @@ title: "RFC 1435：可解释的 PreparedContext Receipt"
 - RFC PR: [oceanbase/powercontext#1435](https://github.com/oceanbase/powercontext/pull/1435)
 - Tracking Issue: [oceanbase/powercontext#1356](https://github.com/oceanbase/powercontext/issues/1356)
 - Related RFCs: [RFC 0014](0014_memory_layer_design.md)、[RFC 0028](0028_context_pack.md)、
-  [RFC 0046](0046_observability_foundations.md)、[RFC 0080](0080_memory_search_reranking.md)
+  [RFC 0046](0046_observability_foundations.md)、[RFC 0080](0080_memory_search_reranking.md)、
+  [Atomic Memory](1809-atomic-memory.md)
 
 # Summary
 
@@ -87,12 +88,13 @@ PreparedContext Receipt 不是 Handoff Receipt。后者是 Work Continuity 对�
 紧凑 Receipt 是第一层披露。更细的查看复用现有精确读取：
 
 1. Receipt：选中引用、省略计数、检索路径、digest、预算。
-2. 按带 Scope 的身份精确读取 Memory entry、Topic Memory、Experience 或 Profile；代码则按 fingerprint、
+2. 按带 Scope 的 Artifact 地址精确读取 Atomic Memory、Topic Memory、Experience 或 Profile revision；代码则按 fingerprint、
    仓库相对路径、文件哈希和行范围读取。
 3. 在调用方有权读取时，查看该 Artifact 上已有的精确 Source 证据。
 
-Receipt 不为以后展开而缓存条目正文。需要正文时，通过普通 Artifact/code API 加载当前精确身份。若该身份已被
-retire，精确读取失败就是解释；Receipt 不是时光机。
+Receipt 不为以后展开而缓存条目正文。需要正文时，在当前授权下通过普通 Artifact/code API 加载记录中的精确
+revision。Atomic Memory 在 forget、merge 或 retire 后，历史 revision 仍可读取；查看不得追随最新 head，也不得
+替换为 merge 目标。授权拒绝或记录中的 revision 不可用时，仍按普通精确读取失败处理。
 
 ## 失败保持 fail-open
 
@@ -112,8 +114,9 @@ PreparedContext，省略 `receipt`，并记录无正文诊断。忽略新字段�
 省略、null 和 false 等价。现有客户端既不发送该字段，也不解析 Receipt。v1 不提供把每次 prepare 都带上 Receipt 的
 Server 部署默认值。
 
-`query`、`scope_id` 和 `max_bytes` 保持现有边界。`query_digest` 对 Memory 搜索已使用的同一规范化 query 做哈希
-（`normalize_text`：trimmed query 的 NFC Unicode，UTF-8）。Receipt 只保存 `sha256:<hex>`。
+`query`、`scope_id` 和 `max_bytes` 保持现有边界。`query_digest` 对 Atomic Memory 搜索已使用的同一规范化 query
+做哈希（`normalize_query`：trimmed query 的 NFC Unicode）。SHA-256 的输入是该字符串的 UTF-8 编码；query 不受
+耐久正文的 byte 上限约束。Receipt 只保存 `sha256:<hex>`。
 
 ## 公开响应
 
@@ -163,7 +166,7 @@ reranker 不会将该值设为 true。
 
 | `SelectedItem.kind` | 必需身份 |
 | --- | --- |
-| `memory` | `memory_entry_address`：带 Scope 的 Memory Artifact 地址、entry ID、entry version ID |
+| `atomic-memory` | `artifact_address`：Scope ID 与精确 Atomic Memory Artifact ref，包含 revision |
 | `topic-memory` | `artifact_address`：Scope ID 与精确 Topic Memory Artifact ref |
 | `experience` | `artifact_address`：Scope ID 与精确 Experience Artifact ref |
 | `profile` | `artifact_address`：Scope ID 与精确已提交 Profile Artifact ref |
@@ -171,9 +174,9 @@ reranker 不会将该值设为 true。
 
 Artifact 地址包含 `scope_id` 和 `artifact`（`family`、`artifact_id`、`revision`）。每个选中条目还包含
 `rendered_bytes`（渲染片段的 UTF-8 大小，不含条目之间的分隔符）和 `truncated`。身份字段互斥。即使是当前 Scope 的
-Memory citation 或 Artifact ref，也要扩展成带 Scope 的地址；两个 Scope 中相同的 Artifact 或 entry ID 必须是两个身份。
-`memory_entry_address` 使用现有 `MemoryEntryAddress` 形状（`memory`、`entry_id`、`entry_version_id`），
-其中 `memory` 是 Artifact 地址。`code_evidence` 使用现有 `CodeEvidenceRef` 字段（`scope_id`、`fingerprint`、
+Atomic Memory citation 或 Artifact ref，也要扩展成带 Scope 的 `ArtifactAddress`；两个 Scope 中相同的 Artifact ID
+必须是两个身份。Atomic Memory 使用 `artifact_address`，其中 `family=atomic-memory`，`revision` 是被选中的精确版本。
+`code_evidence` 使用现有 `CodeEvidenceRef` 字段（`scope_id`、`fingerprint`、
 `path`、`file_sha256`、`start_line`、`end_line`、`snippet_sha256`）；它不是 Artifact ref。
 
 选中条目按注入顺序排列。将简短 ref 规范化为地址后，其有序身份必须等于 `PreparedContextBuild.origins` 接上
@@ -181,7 +184,7 @@ Memory citation 或 Artifact ref，也要扩展成带 Scope 的地址；两个 S
 和非空 `code_origins`。集合比较或只比较 `origins` 都不满足此不变量。缺少、多出、重排或歧义身份使整份 Receipt 无效，
 并进入 Receipt 组装失败路径。
 
-32 条上限覆盖当前显式 assembly 最多 26 条历史内容（Memory、Topic Memory、Profile 各八条，Experience 两条），
+32 条上限覆盖当前显式 assembly 最多 26 条历史内容（Atomic Memory、Topic Memory、Profile 各八条，Experience 两条），
 再加最多四条代码。默认 Builder 的历史条目合计上限是八，且也支持 Topic Memory；这些默认值不是所有请求的选中上限。
 Runtime 条目限制和 byte 预算仍控制实际选择。Receipt 不得为适配自身 schema 而改变这些限制。
 
@@ -192,11 +195,13 @@ Runtime 条目限制和 byte 预算仍控制实际选择。Receipt 不得为适�
 每个被放弃的扩展轮次都标记为未保留。尝试过但失败的扩展不得报告为成功搜索。扩展 query 原文和模型响应均不进入 Receipt。
 
 `SearchGroup` 聚合 `round`、`family`、实际 `mode`、`outcome`、`fallback_reason` 相同的调用，包含正整数 `count`。
-family 为 `memory`、`topic-memory`、`experience`、`profile`、`code`；mode 为 `fts`、`vector`、`hybrid`、
-`snapshot`、`code` 或 `none`。`snapshot` 描述 Profile 读取，`code` 描述现有代码 query 操作。
+family 为 `atomic-memory`、`topic-memory`、`experience`、`profile`、`code`；mode 为 `fts`、`vector`、`hybrid`、
+`snapshot`、`code` 或 `none`。assembly selector 仍为 `memory`，选择的是 `atomic-memory` family；Atomic Memory
+搜索实际执行的 `text` 模式映射为 Receipt 的 `fts`。`snapshot` 描述 Profile 读取，`code` 描述现有代码 query 操作。
 `outcome` 为 `completed`、`not_run` 或 `failed`；`none` 表示没有执行检索模式。Experience adapter 必须提供实际模式，
-Runtime 不得根据 adapter 是否存在来推断。未启用的 family 不产生组；请求了但没有配置 reader 或可搜索 head 的 family
-产生 `not_run` 组。已完成但零命中的搜索仍为 `completed`，保留实际模式。
+Runtime 不得根据 adapter 是否存在来推断。未启用的 family 不产生组；请求了但没有配置 reader 的 family 产生
+`not_run` 组。Atomic Memory 搜索不以 collection head 存在为前提：空搜索是零命中的 `completed`，保留实际模式。
+只有 reader 要求可搜索 head 的 family，才可能因缺少该 head 而记为 `not_run`。
 completed/failed 组的 `count` 统计实际调用；not-run 组统计跳过的检索机会。扩展循环外的 Profile 和 code 操作归入
 round zero，每次实际调用只计一次。
 
@@ -205,12 +210,12 @@ round zero，每次实际调用只计一次。
 结果时使用 `reused_fts_fallback`。扩展失败属于 `RecallRound`，不属于搜索回退枚举。`auto` 是请求策略，不是 Receipt
 中的实际执行模式。
 
-例如，同一轮对两个已授权 Scope 的 Memory 搜索可以产生以下组：
+例如，同一轮对两个已授权 Scope 的 Atomic Memory 搜索可以产生以下组：
 
 ```json
 [
-  {"round": 0, "family": "memory", "mode": "hybrid", "outcome": "completed", "fallback_reason": "none", "count": 1},
-  {"round": 0, "family": "memory", "mode": "fts", "outcome": "completed", "fallback_reason": "inference_timeout", "count": 1}
+  {"round": 0, "family": "atomic-memory", "mode": "hybrid", "outcome": "completed", "fallback_reason": "none", "count": 1},
+  {"round": 0, "family": "atomic-memory", "mode": "fts", "outcome": "completed", "fallback_reason": "inference_timeout", "count": 1}
 ]
 ```
 
@@ -267,7 +272,8 @@ reason 为封闭枚举：
 `dropped_no_fitting_truncation` 区别。两者相加等于 `dropped_items`；不得再将总数计为另一种省略。
 成功截断记录在选中条目与 Receipt 上，不计为省略候选。
 
-`not_retrieved` 是每个请求 family 的空集标志，`count=1`，包括 reader/head 缺失。该 family 为最终构建产生过候选时，
+`not_retrieved` 是每个请求 family 的空集标志，`count=1`，包括 reader 或所需 head 缺失。Atomic Memory 零命中搜索
+也设置此标志，不表示缺少 collection head。该 family 为最终构建产生过候选时，
 即使全部候选后来被丢掉，也不出现该组。其他原因统计保留轮次和最终构建处理的有界候选列表中的排除事件，而非存储中的
 不同 Artifact 数。重复身份被排除时增加 `duplicate`。放弃的扩展候选池不增加省略计数。现有 omission 和 recall-effort
 计数表达同一事件时直接复用；其余排除在遍历同一有界候选池时计数，不增加数据库搜索或整份 Artifact 扫描。
@@ -341,11 +347,15 @@ Receipt，在同一改动里更新校验器并设置 `include_receipt`。
 
 - empty、ready、truncated、deduplicated、reranked、fallback 和 Receipt 构造失败；默认、false、null 标志仍返回
   恰好四个响应键。
-- 默认召回的 Topic Memory；选中 18 和 26 条历史内容的 Memory/Topic Memory/Experience/Profile 混合 assembly；
+- 默认召回的 Topic Memory；选中 18 和 26 条历史内容的 Atomic Memory/Topic Memory/Experience/Profile 混合 assembly；
   纯代码与混合代码结果，包括代码截断后的最终行范围和哈希。
 - 两个 origins 集合的有序完整选中身份、不同 Scope 中相同简短 ID、精确读取复用，以及 `content_digest` 等于返回
-  `content` 的 UTF-8 哈希。
-- 同一轮不同 Scope 中的 hybrid 与 FTS、已完成零命中与未运行的区别、正常 FTS 与推理回退、FTS 回退复用，以及扩展
+  `content` 的 UTF-8 哈希；在当前授权下复用 forget/merge/retire 后的 Atomic Memory 历史 revision 精确读取，
+  不追随新 head。
+- 至少 2731 个字符的非 ASCII query，在请求字符上限内但超过 8192 UTF-8 bytes 时，`query_digest` 与
+  `normalize_query` 一致，不因耐久正文 byte 上限而省略 Receipt。
+- assembly selector `memory` 对应 family `atomic-memory`；Atomic Memory `text` 映射为 Receipt `fts`。
+  同一轮不同 Scope 中的 hybrid 与 FTS、Atomic Memory 已完成零命中与未运行的区别、正常 FTS 与推理回退、FTS 回退复用，以及扩展
   失败时仅返回 round-zero 候选池。
 - 继承与独立 rerank 模型/参数、不同 Scope Prompt 与 revision、参数或编译 Prompt 变化导致配置 digest 变化、重复
   配置去重、temperature 为零仍非确定性，以及注入 reranker 缺证据时 fail-open 省略 Receipt。
@@ -357,7 +367,7 @@ Receipt，在同一改动里更新校验器并设置 `include_receipt`。
 # Drawbacks
 
 - 可选字段仍会扩大 OpenAPI 模型和所有生成客户端，即使多数宿主从不请求 Receipt。
-- 省略计数是已接纳候选池的摘要，不是整个 Memory Artifact 的摘要，可能被误读成“考虑了项目的多大一部分”。
+- 省略计数是已接纳候选池的摘要，不是全部 Atomic Memory Artifact 的摘要，可能被误读成“考虑了项目的多大一部分”。
 - 调用方仍可能不顾信任规则把 Receipt JSON 注入 prompt。
 - `receipt_id` 看起来像耐久标识，但 v1 无法稍后获取。
 
@@ -389,7 +399,7 @@ PowerContext 已有四种相关但不同的记录：
 
 - `PreparedContextBuild.origins` 与 `code_origins` 保留精确选中身份，在 HTTP 边界被丢弃。
 - Runtime 的 `memory.search`、`experience.search`、`context.build` span 记录计数和模式，不记录引用。
-- `MemoryRerankTrace` 解释进程内的 listwise Memory 搜索。
+- `AtomicMemoryRerankTrace` 解释进程内的 listwise Memory 搜索。
 - Handoff Receipt 在 Work Continuity 中确认精确 Handoff Revision。
 
 RFC 0028 已经要求注入路径带引用和预算，但没有暴露选择记录。RFC 0046 禁止把 Memory 正文和 query 原文放进

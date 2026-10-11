@@ -7,7 +7,8 @@ title: "RFC 1435: Explainable PreparedContext Receipts"
 - RFC PR: [oceanbase/powercontext#1435](https://github.com/oceanbase/powercontext/pull/1435)
 - Tracking Issue: [oceanbase/powercontext#1356](https://github.com/oceanbase/powercontext/issues/1356)
 - Related RFCs: [RFC 0014](0014_memory_layer_design.md), [RFC 0028](0028_context_pack.md),
-  [RFC 0046](0046_observability_foundations.md), and [RFC 0080](0080_memory_search_reranking.md)
+  [RFC 0046](0046_observability_foundations.md), [RFC 0080](0080_memory_search_reranking.md),
+  and [Atomic Memory](1809-atomic-memory.md)
 
 # Summary
 
@@ -36,7 +37,7 @@ That gap blocks three product uses:
 - Adjacent work such as multi-resolution packing can compare policies only after a stable, content-free selection
   record exists.
 
-Spans answer "which stage ran and how long it took". They do not identify the exact Memory entry versions or Experience
+Spans answer "which stage ran and how long it took". They do not identify the exact Atomic Memory revisions or Experience
 revisions that were rendered, and they must not grow into a public selection schema. Memory search's in-process rerank
 trace is also the wrong surface: it describes one search, not the interleaved, budgeted PreparedContext that the host
 injects.
@@ -98,13 +99,14 @@ Handoff Revision. A PreparedContext Receipt explains one ephemeral recall.
 The compact Receipt is the first disclosure level. Progressive inspection reuses existing exact-read operations:
 
 1. Receipt: selected refs, omission counts, retrieval path, digest, budget.
-2. Exact Memory entry, Topic Memory, Experience, or Profile read by the Scope-qualified identity; code read by its
-   fingerprint, repository-relative path, file hash, and line range.
+2. Exact Atomic Memory, Topic Memory, Experience, or Profile revision read by the Scope-qualified Artifact address;
+   code read by its fingerprint, repository-relative path, file hash, and line range.
 3. Exact Source evidence already attached to that Artifact, when the caller is authorized to read it.
 
-The Receipt does not cache item bodies for later expansion. If the caller needs the text, it loads the current exact
-identity through the ordinary Artifact and code APIs. If that identity has since been retired, the exact-read
-failure is the explanation; the Receipt is not a time-travel store.
+The Receipt does not cache item bodies for later expansion. If the caller needs the text, it loads the recorded exact
+revision through the ordinary Artifact and code APIs under current authorization. Atomic Memory historical revisions
+remain readable after forget, merge, or retire; inspection must not follow the latest head or substitute a merge target.
+An authorization denial or unavailable recorded revision remains an ordinary exact-read failure.
 
 ## Failure stays fail-open
 
@@ -125,8 +127,9 @@ content-free diagnostic. Integrations that ignore the new field keep working.
 Omitted, null, and false are equivalent. Existing clients send neither the field nor a Receipt parser. v1 does not
 offer a Server deployment default that turns Receipts on for every prepare.
 
-`query`, `scope_id`, and `max_bytes` keep their current bounds. `query_digest` hashes the same normalized query Memory
-search already uses (`normalize_text`: NFC Unicode of the trimmed query, UTF-8). The Receipt stores only `sha256:<hex>`.
+`query`, `scope_id`, and `max_bytes` keep their current bounds. `query_digest` hashes the same normalized query Atomic
+Memory search already uses (`normalize_query`: NFC Unicode of the trimmed query). SHA-256 consumes the UTF-8 encoding
+of that normalized string; the durable-body byte limit does not apply to queries. The Receipt stores only `sha256:<hex>`.
 
 ## Public response
 
@@ -178,7 +181,7 @@ model-backed rerank remains non-deterministic at temperature zero; a configured 
 
 | `SelectedItem.kind` | Required identity |
 | --- | --- |
-| `memory` | `memory_entry_address`: Scope-qualified Memory Artifact address, entry ID, entry version ID |
+| `atomic-memory` | `artifact_address`: Scope ID and exact Atomic Memory Artifact ref, including revision |
 | `topic-memory` | `artifact_address`: Scope ID and exact Topic Memory Artifact ref |
 | `experience` | `artifact_address`: Scope ID and exact Experience Artifact ref |
 | `profile` | `artifact_address`: Scope ID and exact committed Profile Artifact ref |
@@ -186,10 +189,10 @@ model-backed rerank remains non-deterministic at temperature zero; a configured 
 
 An Artifact address contains `scope_id` and `artifact` (`family`, `artifact_id`, `revision`). Every selected item also
 has `rendered_bytes` (UTF-8 size of its rendered fragment, excluding separators between items) and `truncated`.
-The identity fields are mutually exclusive. Even a current-Scope Memory citation or Artifact ref is expanded to its
-Scope-qualified address; the same Artifact or entry ID in two Scopes must remain two different identities.
-`memory_entry_address` uses the existing `MemoryEntryAddress` shape (`memory`, `entry_id`, `entry_version_id`), with
-`memory` an Artifact address. `code_evidence` uses the existing `CodeEvidenceRef` fields (`scope_id`, `fingerprint`,
+The identity fields are mutually exclusive. Even a current-Scope Atomic Memory citation or Artifact ref is expanded to
+its Scope-qualified `ArtifactAddress`; the same Artifact ID in two Scopes must remain two different identities.
+Atomic Memory uses `artifact_address` with `family=atomic-memory` and the exact selected `revision`.
+`code_evidence` uses the existing `CodeEvidenceRef` fields (`scope_id`, `fingerprint`,
 `path`, `file_sha256`, `start_line`, `end_line`, `snippet_sha256`); it is not an Artifact ref.
 
 Selected items follow injection order. After normalizing short refs to addresses, their ordered identities must equal
@@ -198,7 +201,7 @@ snippet hash of any truncated code item. A code-only ready result has empty `ori
 Neither a set comparison nor an `origins`-only comparison satisfies this invariant. Missing, extra, reordered, or
 ambiguous identities invalidate the entire Receipt and follow the Receipt-assembly failure path.
 
-The 32-item cap covers the current explicit assembly maximum of 26 historical items (eight Memory, eight Topic Memory,
+The 32-item cap covers the current explicit assembly maximum of 26 historical items (eight Atomic Memory, eight Topic Memory,
 eight Profile, two Experience), plus up to four code items. The default builder's combined historical entry limit is
 eight and it also supports Topic Memory; neither default is a universal selected-item bound. Runtime entry limits and
 the byte budget still control actual selection. The Receipt never changes those limits to make its own schema fit.
@@ -212,12 +215,14 @@ abandoned expansion is marked not retained. An attempted but failed expansion is
 Expanded query text and its model response are never included.
 
 `SearchGroup` aggregates calls with the same `round`, `family`, actual `mode`, `outcome`, and `fallback_reason`, and
-contains a positive `count`. Families are `memory`, `topic-memory`, `experience`, `profile`, and `code`; modes are
-`fts`, `vector`, `hybrid`, `snapshot`, `code`, or `none`. `snapshot` describes a Profile read and `code` the existing code
-query operation. `outcome` is `completed`, `not_run`, or `failed`; `none` means no retrieval mode was executed. An
+contains a positive `count`. Families are `atomic-memory`, `topic-memory`, `experience`, `profile`, and `code`; modes are
+`fts`, `vector`, `hybrid`, `snapshot`, `code`, or `none`. The assembly selector remains `memory`; it selects the
+`atomic-memory` family. Atomic Memory search's executed `text` mode maps to Receipt mode `fts`.
+`snapshot` describes a Profile read and `code` the existing code query operation. `outcome` is `completed`, `not_run`, or `failed`; `none` means no retrieval mode was executed. An
 Experience adapter must provide its actual retrieval mode; the Runtime must not infer it from the adapter's presence.
-A disabled family has no group; a requested family with no configured reader or no searchable head has a `not_run`
-group. A completed zero-hit search is still `completed` with its actual mode. `count` counts actual calls for completed or
+A disabled family has no group; a requested family with no configured reader has a `not_run` group. Atomic Memory
+search has no collection head prerequisite: an empty search is `completed` with zero hits and its actual mode. A missing
+searchable head can mean `not_run` only for a family whose reader requires one. `count` counts actual calls for completed or
 failed groups, and skipped retrieval opportunities for not-run groups. Profile and code operations outside the
 expansion loop belong to round zero and are counted once per actual invocation.
 
@@ -226,12 +231,12 @@ under `auto` uses `none`; dropping the vector channel after an inference error u
 round reuses the FTS-only outcome of that failure, it uses `reused_fts_fallback`. Expansion failure belongs in
 `RecallRound`, not in this search fallback enum. `auto` is a request policy, never an actual mode in a Receipt.
 
-For example, Memory searches in two authorized Scopes can produce these groups in the same round:
+For example, Atomic Memory searches in two authorized Scopes can produce these groups in the same round:
 
 ```json
 [
-  {"round": 0, "family": "memory", "mode": "hybrid", "outcome": "completed", "fallback_reason": "none", "count": 1},
-  {"round": 0, "family": "memory", "mode": "fts", "outcome": "completed", "fallback_reason": "inference_timeout", "count": 1}
+  {"round": 0, "family": "atomic-memory", "mode": "hybrid", "outcome": "completed", "fallback_reason": "none", "count": 1},
+  {"round": 0, "family": "atomic-memory", "mode": "fts", "outcome": "completed", "fallback_reason": "inference_timeout", "count": 1}
 ]
 ```
 
@@ -295,7 +300,8 @@ the same five-value enum as selected items. Reasons are closed:
 `dropped_no_fitting_truncation` distinction. Their sum is `dropped_items`; do not add that total again as a separate
 omission. Successful truncation is recorded on the selected item and Receipt, not counted as an omitted candidate.
 
-`not_retrieved` is an empty-set flag per requested family with `count=1`, including a missing reader/head. It is absent
+`not_retrieved` is an empty-set flag per requested family with `count=1`, including a missing reader or a required head.
+Atomic Memory zero-hit searches also set this flag; they are not missing collection heads. It is absent
 when that family produced any candidates for the final build, even if every candidate was later dropped. Other reasons
 count exclusion events in the bounded candidate lists processed for the retained rounds and final build, not distinct
 Artifacts in storage. A repeated identity increments `duplicate` when it is excluded. Abandoned expansion pools do not
@@ -378,11 +384,15 @@ Implementation acceptance covers:
 
 - Empty, ready, truncated, deduplicated, reranked, fallback, and receipt-construction failure results; default, false,
   and null flags continue to return exactly four response keys.
-- Topic Memory in default recall; mixed Memory/Topic Memory/Experience/Profile assembly with 18 and 26 selected
+- Topic Memory in default recall; mixed Atomic Memory/Topic Memory/Experience/Profile assembly with 18 and 26 selected
   historical items; code-only and mixed code results, including final truncated code ranges and hashes.
 - Ordered complete selected identities across both origins collections, identical short IDs in different Scopes,
-  exact-read reuse, and `content_digest` equal to the hash of returned UTF-8 `content`.
-- Hybrid and FTS in different Scopes in the same round, completed zero-hit versus not-run searches, normal FTS versus
+  exact-read reuse after Atomic Memory forget/merge/retire under current authorization without following a newer head,
+  and `content_digest` equal to the hash of returned UTF-8 `content`.
+- A non-ASCII query of at least 2731 characters, within the request's character limit but over 8192 UTF-8 bytes,
+  produces the same `query_digest` as `normalize_query`; no durable-body byte limit causes Receipt omission.
+- Assembly selector `memory` yields family `atomic-memory`; Atomic Memory `text` maps to Receipt `fts`. Hybrid and FTS
+  in different Scopes in the same round, completed zero-hit Atomic Memory versus not-run searches, normal FTS versus
   inference fallback, reused FTS fallback, and failed expansion returning only the round-zero candidate pool.
 - Effective inherited and separate rerank models/settings, distinct Scope Prompts and revisions, changed settings or
   compiled Prompt changing the config digest, repeated config deduplication, temperature-zero non-determinism, and
@@ -395,7 +405,7 @@ Implementation acceptance covers:
 # Drawbacks
 
 - Optional fields expand the OpenAPI models and every generated client even when most hosts never request a Receipt.
-- Omission counts are summaries of the admitted candidate pool, not of the entire Memory Artifact, so they can be
+- Omission counts are summaries of the admitted candidate pool, not of all Atomic Memory Artifacts, so they can be
   misread as "how much of the project was considered".
 - Callers might inject Receipt JSON into prompts despite the trust rule.
 - `receipt_id` looks like a durable identifier even though v1 cannot fetch it later.
@@ -432,7 +442,7 @@ PowerContext already has four related but distinct records:
 
 - `PreparedContextBuild.origins` and `code_origins` retain the exact selected identities, discarded at the HTTP boundary.
 - Runtime `memory.search`, `experience.search`, and `context.build` spans record counts and modes, not citations.
-- `MemoryRerankTrace` explains listwise Memory search inside the process.
+- `AtomicMemoryRerankTrace` explains listwise Memory search inside the process.
 - Handoff Receipts acknowledge an exact Handoff Revision in Work Continuity.
 
 RFC 0028 already requires citations and budgets on the injection path; it does not expose the selection record.
