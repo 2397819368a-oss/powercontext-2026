@@ -106,13 +106,7 @@ def install_opencode_plugin(*, source: str, ref: str, server_url: str = "http://
     require_replaceable_plugin(legacy_tui_target)
     require_replaceable_skill(skill_target)
     tui_config = _prepare_tui_config(config_dir, tui_source)
-    _install_plugin(plugin_dir / OPENCODE_BUNDLE, plugin_target)
-    _commit_tui_config(tui_config)
-    _install_skill(plugin_dir / OPENCODE_SKILL.parent, skill_target)
-    try:
-        legacy_tui_target.unlink(missing_ok=True)
-    except OSError as error:
-        raise SetupError.command_unavailable(["remove", "legacy", "OpenCode", "TUI plugin"], error) from error
+    _install_opencode_files(plugin_dir, plugin_target, legacy_tui_target, skill_target, tui_config)
     from powercontext.cli.authorization import (
         configure_stored_authorization,
         setup_authorization_value,
@@ -129,6 +123,70 @@ def install_opencode_plugin(*, source: str, ref: str, server_url: str = "http://
             value=setup_authorization_value("opencode"),
         ),
     )
+
+
+def _install_opencode_files(
+    plugin_dir: Path,
+    plugin_target: Path,
+    legacy_tui_target: Path,
+    skill_target: Path,
+    tui_config: tuple[Path, str | None],
+) -> None:
+    """Prepare guidance before writes, and restore the installation on a caught commit failure."""
+    config_dir = plugin_target.parent.parent
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        transaction = Path(tempfile.mkdtemp(prefix=".powercontext-install-", dir=config_dir))
+    except OSError as error:
+        raise SetupError.command_unavailable(["stage", "OpenCode", "installation"], error) from error
+    keep_backups = False
+    try:
+        staged_skill = transaction / "skill"
+        _stage_skill(plugin_dir / OPENCODE_SKILL.parent, skill_target, staged_skill)
+        backups: list[tuple[Path, Path | None]] = []
+        for index, target in enumerate((
+            plugin_target,
+            _plugin_manifest_path(plugin_target),
+            tui_config[0],
+            legacy_tui_target,
+        )):
+            backup = transaction / str(index) if target.exists() else None
+            if backup is not None:
+                shutil.copy2(target, backup)
+            backups.append((target, backup))
+        try:
+            _install_plugin(plugin_dir / OPENCODE_BUNDLE, plugin_target)
+            _commit_tui_config(tui_config)
+            legacy_tui_target.unlink(missing_ok=True)
+            # Skill replacement is last and restores its old directory if the swap fails.
+            _commit_skill(staged_skill, skill_target)
+        except BaseException:
+            failed = _restore_opencode_files(backups)
+            if failed:
+                keep_backups = True
+                message = f"OpenCode installation recovery failed for {failed}; backups retained at {transaction}"
+                raise SetupError(message) from None
+            raise
+    except (OSError, GuidanceError) as error:
+        raise SetupError.command_unavailable(["install", "OpenCode", "plugin and Skill"], error) from error
+    finally:
+        if not keep_backups:
+            with suppress(OSError):
+                shutil.rmtree(transaction)
+
+
+def _restore_opencode_files(backups: list[tuple[Path, Path | None]]) -> list[str]:
+    """Attempt every file restoration even if one path is unavailable."""
+    failed: list[str] = []
+    for target, backup in reversed(backups):
+        try:
+            if backup is None:
+                target.unlink(missing_ok=True)
+            else:
+                os.replace(backup, target)
+        except OSError:
+            failed.append(str(target))
+    return failed
 
 
 def resolve_opencode_plugin_dir(*, source: str, ref: str) -> Path:
@@ -202,40 +260,44 @@ def _install_skill(source: Path, target: Path) -> None:
     require_replaceable_skill(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / f".{target.name}.{uuid4().hex}.tmp"
+    try:
+        _stage_skill(source, target, staging)
+        _commit_skill(staging, target)
+    except (OSError, GuidanceError) as error:
+        raise SetupError.command_unavailable(["install", "OpenCode", "Skill"], error) from error
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
+def _stage_skill(source: Path, target: Path, staging: Path) -> None:
+    if target.exists():
+        shutil.copytree(target, staging)
+    refresh_skill(source, staging)
+    write_if_changed(
+        staging / SKILL_MANIFEST,
+        (json.dumps({"schema": 1, "owner": "powercontext", "integration": "opencode"}, indent=2) + "\n").encode(
+            "utf-8"
+        ),
+    )
+
+
+def _commit_skill(staging: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
     backup: Path | None = None
     try:
         if target.exists():
-            shutil.copytree(target, staging)
-        try:
-            refresh_skill(source, staging)
-        except GuidanceError as error:
-            raise OSError(str(error)) from error
-        write_if_changed(
-            staging / SKILL_MANIFEST,
-            (json.dumps({"schema": 1, "owner": "powercontext", "integration": "opencode"}, indent=2) + "\n").encode(
-                "utf-8"
-            ),
-        )
-        if target.exists():
             backup = target.parent / f".{target.name}.{uuid4().hex}.bak"
             os.replace(target, backup)
-        try:
-            os.replace(staging, target)
-        except OSError:
-            if backup is not None:
-                os.replace(backup, target)
-                backup = None
-            raise
+        os.replace(staging, target)
+    except BaseException:
+        if backup is not None and backup.exists() and not target.exists():
+            os.replace(backup, target)
+        raise
+    else:
         if backup is not None:
             with suppress(OSError):
                 shutil.rmtree(backup)
-    except OSError as error:
-        if staging.exists():
-            shutil.rmtree(staging)
-        if backup is not None and backup.exists() and not target.exists():
-            with suppress(OSError):
-                os.replace(backup, target)
-        raise SetupError.command_unavailable(["install", "OpenCode", "Skill"], error) from error
 
 
 def _owned_skill(path: Path) -> bool:
