@@ -609,9 +609,10 @@ class AccessControlService:
             raise AccessUnavailableError("transactional_relationships_unavailable")
         repository = self.relationships.with_connection(connection)
         provider = self.provider
-        if isinstance(provider, BuiltinAuthorizationProvider):
+        # Binding a Provider or Repository subclass could discard its custom rules; keep it unchanged.
+        if type(provider) is BuiltinAuthorizationProvider and type(provider._repository) is RelationalAccessRepository:
             provider = provider.with_repository(repository)
-        return AccessControlService(
+        bound = AccessControlService(
             provider,
             relationships=repository,
             audit=repository,
@@ -620,6 +621,8 @@ class AccessControlService:
             clock=self._clock,
             static_scope_principal=self._static_scope_principal,
         )
+        bound._deferred_decisions = self._deferred_decisions
+        return bound
 
     async def require_scope_read(self, principal, scope_id: str, *, connection, context: AccessAuditContext):
         """Use a local policy snapshot when available, preserving external point decisions."""

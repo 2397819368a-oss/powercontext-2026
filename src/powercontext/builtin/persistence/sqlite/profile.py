@@ -17,10 +17,12 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal, cast
+from urllib.parse import parse_qsl, unquote, urlsplit
 from weakref import WeakKeyDictionary, WeakSet
 
 import aiosqlite
@@ -29,7 +31,7 @@ from aiosqlite import Connection, Cursor
 from aiosqlite.context import Result
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import Table, event
-from sqlalchemy.engine import AdaptedConnection, ExceptionContext, make_url
+from sqlalchemy.engine import URL, AdaptedConnection, ExceptionContext, make_url
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -68,7 +70,13 @@ class SQLiteConfig(BaseModel):
     def is_in_memory(self) -> bool:
         """Return whether this profile stores its database only in process memory."""
 
-        return _is_memory_url(self.url)
+        return _storage_kind(self.url) == "memory"
+
+    @property
+    def is_persistent(self) -> bool:
+        """Return whether data survives closing the last connection."""
+
+        return _storage_kind(self.url) == "persistent"
 
 
 class SQLiteProfile:
@@ -91,11 +99,11 @@ class SQLiteProfile:
 
         _create_database_directory(config.url)
         engine_options: dict[str, object] = {"echo": config.echo, "hide_parameters": True}
-        if config.is_in_memory:
+        if not config.is_persistent:
             engine_options["poolclass"] = StaticPool
         engine = create_async_engine(config.url, **engine_options)
         _configure_sqlite(engine, config, load_vector_extension=load_vector_extension)
-        database = AsyncDatabase.own(engine, shared_connection=config.is_in_memory)
+        database = AsyncDatabase.own(engine, shared_connection=not config.is_persistent)
         profile = cls(database=database, tables=tables)
         try:
             await _warm_sqlite(engine, config)
@@ -105,13 +113,66 @@ class SQLiteProfile:
         finally:
             await database.close()
 
+    @classmethod
+    @asynccontextmanager
+    async def open_readonly(
+        cls,
+        config: SQLiteConfig,
+        *,
+        load_vector_extension: bool = False,
+    ) -> AsyncIterator[SQLiteProfile]:
+        """Read an existing persistent database without schema or journal initialization.
 
-def _is_memory_url(value: str) -> bool:
-    database = make_url(value).database
-    return database in {None, "", ":memory:"}
+        SQLite's normal WAL locking remains enabled so committed WAL data is
+        visible. Its shared-memory coordination may use the WAL/SHM sidecars.
+        """
+
+        if not config.is_persistent:
+            raise ValueError("read-only SQLite inspection requires a persistent database")  # noqa: TRY003
+        engine = create_async_engine(_readonly_sqlite_url(config.url), echo=config.echo, hide_parameters=True)
+        _configure_sqlite(engine, config, load_vector_extension=load_vector_extension, read_only=True)
+        database = AsyncDatabase.own(engine)
+        try:
+            await database.ping()
+            yield cls(database=database, tables=())
+        finally:
+            await database.close()
+
+
+def _storage_kind(value: str) -> Literal["memory", "temporary", "persistent"]:
+    url = make_url(value)
+    # Match the driver's effective URI flag and filename, including boolean aliases.
+    args, options = url.get_dialect()().create_connect_args(url)
+    filename = str(args[0])
+    if filename == ":memory:":
+        return "memory"
+    if not filename:
+        return "temporary"
+    if options.get("uri") and filename.startswith("file:"):
+        # SQLite recognizes only lowercase file:, and does not strip literal URI controls.
+        uri = urlsplit(filename.replace("\t", "%09").replace("\n", "%0A").replace("\r", "%0D"))
+        # SQLite terminates decoded filenames and parameter strings at the first NUL.
+        path = unquote(uri.path).partition("\0")[0]
+        parameters = {name.partition("\0")[0]: value.partition("\0")[0] for name, value in parse_qsl(uri.query)}
+        if path == ":memory:" or parameters.get("mode") == "memory" or parameters.get("vfs") == "memdb":
+            return "memory"
+        if not path:
+            return "temporary"
+    return "persistent"
+
+
+def _readonly_sqlite_url(value: str) -> URL:
+    url = make_url(value)
+    database = url.database or ""
+    uri = str(url.query.get("uri", "false")).lower() in {"1", "true", "yes", "on", "t", "y"}
+    filename = database if uri and database.startswith("file:") else Path(database).absolute().as_uri()
+    query = {key: option for key, option in url.query.items() if key not in {"immutable", "nolock"}}
+    return url.set(database=filename, query={**query, "mode": "ro", "uri": "true"})
 
 
 def _create_database_directory(value: str) -> None:
+    if _storage_kind(value) != "persistent":
+        return
     database = make_url(value).database
     if not database or database == ":memory:":
         return
@@ -123,6 +184,7 @@ def _configure_sqlite(
     config: SQLiteConfig,
     *,
     load_vector_extension: bool,
+    read_only: bool = False,
 ) -> None:
     @event.listens_for(engine.sync_engine, "connect")
     def set_pragmas(dbapi_connection: DBAPIConnection, connection_record: ConnectionPoolEntry) -> None:
@@ -136,6 +198,8 @@ def _configure_sqlite(
         try:
             cursor.execute(f"PRAGMA busy_timeout = {config.busy_timeout_ms}")
             cursor.execute(f"PRAGMA foreign_keys = {'ON' if config.foreign_keys else 'OFF'}")
+            if read_only:
+                cursor.execute("PRAGMA query_only = ON")
         finally:
             cursor.close()
 
@@ -215,7 +279,7 @@ async def _warm_sqlite(engine: AsyncEngine, config: SQLiteConfig) -> None:
                     await connection.commit()
             except OperationalError as error:
                 remaining = deadline - loop.time()
-                if not _database_is_locked(error) or remaining <= 0:
+                if not is_sqlite_lock_error(error) or remaining <= 0:
                     raise
                 await asyncio.sleep(min(_WARMUP_RETRY_SECONDS, remaining))
             else:
@@ -223,7 +287,7 @@ async def _warm_sqlite(engine: AsyncEngine, config: SQLiteConfig) -> None:
 
 
 def _warmup_lock(value: str) -> asyncio.Lock:
-    if _is_memory_url(value):
+    if _storage_kind(value) != "persistent":
         return asyncio.Lock()
     loop = asyncio.get_running_loop()
     locks = _WARMUP_LOCKS.setdefault(loop, {})
@@ -231,5 +295,11 @@ def _warmup_lock(value: str) -> asyncio.Lock:
     return locks.setdefault(key, asyncio.Lock())
 
 
-def _database_is_locked(error: OperationalError) -> bool:
-    return "database is locked" in str(error.orig).lower()
+def is_sqlite_lock_error(error: OperationalError) -> bool:
+    """Recognize SQLite contention, including shared-cache table/schema locks."""
+
+    original = error.orig
+    return isinstance(original, sqlite3.OperationalError) and (getattr(original, "sqlite_errorcode", 0) & 0xFF) in (
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    )

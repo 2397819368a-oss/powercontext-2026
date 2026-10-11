@@ -17,6 +17,39 @@ PowerContext 进程启动时从环境变量读取配置。当前工作目录存�
 `service install` 还要求该文件是当前用户拥有的普通非符号链接文件，且 group 和 other 均无访问权限。服务会记录文件
 身份；文件被替换或其 owner、权限、内容发生变化后会拒绝启动。确认修改是预期行为后，请重新执行 `service install`。
 
+## Atomic Memory
+
+创建、搜索、四态和恢复示例见[使用 Atomic Memory](../workflows/atomic-memory.md)；已有数据库的升级步骤见
+[停服迁移](atomic-memory-migration.md)。
+
+恢复预览使用显式共享签名密钥。所有可能生成或验证 token 的进程使用相同 secret 和 key ID：
+
+| 变量 | 默认值 | 含义 |
+| --- | --- | --- |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_PREVIEW_SIGNING_SECRET` | 未设置 | 至少 32 字符的机密；未设置时预览和 token 校验返回 `422 invalid_preview`，直接恢复仍可使用 |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_PREVIEW_SIGNING_KEY_ID` | `atomic-memory-v1` | 当前密钥标识，1–128 字符；部署配置只加载这一把密钥 |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_PREVIEW_TTL_SECONDS` | `300` | 预览有效期，1–3600 秒 |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_RESTORE_RETRY_BUDGET` | `3` | 无 token 恢复遇到 `atomic_memory_changed` 后重新读取和准备的次数，0–10；默认最多初次尝试加 3 次重试 |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_RELATED_MODE` | `auto` | Source 抽取的相关记忆召回：`auto`、`fts`、`vector` 或 `hybrid`；auto 在无 profile 时选 fts，有 profile 时选 hybrid |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_RELATED_MAX_DISTANCE` | `1.0` | 相关记忆向量枚举的最大精确 L2 距离，非负；不用于普通有 limit 的搜索 |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_RELATED_FTS_FALLBACK` | `false` | 显式允许相关召回在查询向量不可用、profile 不匹配或向量投影不完整时改用全文枚举；不改变普通搜索的错误处理 |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_COMPARISON_BATCH_SIZE` | `20` | 每次相关记忆判断最多比较的对象数，正整数；不是总候选上限 |
+| `POWERCONTEXT_SERVER_RUNTIME_ATOMIC_MEMORY_INPUT_TOKENS_LIMIT` | `24000` | 每次抽取或判断输入的估算 token 上限，包含指令和完整输入，正整数 |
+
+未配置 secret 不会生成随机进程密钥。更换 secret 或 key ID 后，旧 token 无法验证，应重新预览。
+带 token 的恢复遇到变化会返回 `preview_stale`，不会自动重新解释意图；重试预算也不处理提交结果未知的连接失败。
+
+Source 处理先生成候选，再枚举满足权限、标签及检索资格的相关 active 记忆。fts 枚举全部合格匹配，vector 枚举
+阈值内全部结果，hybrid 合并两者。总候选不会按 comparison batch size 或 token 限额截断。
+比较输入过大时缩小单批，直到所有候选都处理完；连单个对象或完整抽取输入都超预算时窗口失败，不部分提交或推进 cursor。
+开启 fallback 会改变相关召回依据，应显式选择；默认错误会保留当前窗口供排查和重试。
+
+Atomic Memory 没有旧集合容量预算或 compact 操作。旧 `MEMORY_MAX_ACTIVE_ENTRIES`、`MEMORY_MAX_MANIFEST_ENTRIES`、
+`MEMORY_MAX_MANIFEST_BYTES` 和 `MEMORY_COMPACTION_*` 设置仍可解析，但不限制新记忆或启用压缩。
+旧 MemoryWriteGate 集合契约不支持 Atomic Runtime；开启 `MEMORY_WRITE_GATE_ENABLED` 或注入旧 gate 会被明确拒绝。
+Atomic Memory 的标签仍遵守每个 Artifact 最多 32 个的限制。合并输入标签的并集超过此上限时，整笔合并失败；
+Source 抽取窗口也不会部分提交或推进游标。
+
 ## 用户数据
 
 `POWERCONTEXT_HOME` 可覆盖已安装 Server 使用的数据目录：
@@ -73,14 +106,14 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_ENABLED` | `false` | 在 Memory 粗召回后应用 listwise rerank |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_CANDIDATE_LIMIT` | `30` | 交给 reranker 的粗排候选池大小 |
 | `POWERCONTEXT_SERVER_RUNTIME_DECISION_ASSISTANCE_ENABLED` | `false` | 启用决策模型辅助；需要配置决策模型或 generation 模型 |
-| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_ENABLED` | `false` | 启用待写入 Memory 的决策模型门控；没有决策后端时会放行写入 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_ENABLED` | `false` | 旧集合 WriteGate；Atomic Runtime 不支持，开启时拒绝构造 |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_HOLD_ON` | `yes` | 表示证据不足的决策结果：`yes` 或 `no` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_THRESHOLD` | 未设置 | 可选的 `0` 到 `1` 置信度阈值；低于阈值的暂缓方向结果会标记而非暂缓写入 |
-| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_ACTIVE_ENTRIES` | `5000` | 每份 Memory 的活跃条目上限；不得高于清单条目上限 |
-| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_ENTRIES` | `10000` | 每份 Memory 清单的条目上限，包括非活跃条目 |
-| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_BYTES` | `4194304` | Memory 完整规范内容的字节上限 |
-| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_COMPACTION_ENABLED` | `false` | 允许显式的进程内墓碑压缩；不会自动安排或触发压缩 |
-| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_COMPACTION_MIN_TOMBSTONE_REVISIONS` | `10` | 墓碑可压缩前至少经过的完整 Revision 推进次数 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_ACTIVE_ENTRIES` | `5000` | 旧集合设置；不限制 Atomic Memory，配置仍校验不高于清单条目上限 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_ENTRIES` | `10000` | 旧集合设置；Atomic Memory 不使用集合清单 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_BYTES` | `4194304` | 旧集合设置；不限制 Atomic Memory 正文总量 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_COMPACTION_ENABLED` | `false` | 旧集合设置；Atomic Runtime 不提供 compact |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_COMPACTION_MIN_TOMBSTONE_REVISIONS` | `10` | 旧集合设置；Atomic Runtime 不提供 compact |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_HISTORY_REVISIONS` | `100` | Runtime 读取的 Memory 历史 Revision 数量上限 |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_ENABLED` | `false` | 启用可选的召回充分性门控；关闭时召回行为与不启用该功能时一致 |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_MAX_ROUNDS` | `2` | 首轮召回之后最多追加的搜索轮数；取值 `0`–`2`，`0` 表示只评估、不追加 |
@@ -91,8 +124,8 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_ROUND1_MIN_SEMANTIC_SIMILARITY` | `0.15` | 第一轮追加搜索使用的语义相似度准入下限；启用时不得高于首轮的 `0.3` |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_ROUND2_MIN_SEMANTIC_SIMILARITY` | `0.10` | 第二轮追加搜索使用的语义相似度准入下限；启用时不得高于第一轮的值 |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_ALLOW_WITH_RERANK` | `false` | 已启用 `MEMORY_RERANK_ENABLED` 时是否仍允许追加搜索；默认在 rerank 之后不再追加 |
-| `POWERCONTEXT_SERVER_RUNTIME_RECALL_FTS_WEIGHT` | `1.0` | hybrid Memory 和 Topic Memory RRF 中 FTS 的相对贡献；`0` 会从 hybrid 结果中排除仅命中 FTS 的候选 |
-| `POWERCONTEXT_SERVER_RUNTIME_RECALL_VECTOR_WEIGHT` | `1.0` | hybrid Memory 和 Topic Memory RRF 中 vector 的相对贡献；`0` 会从 hybrid 结果中排除仅命中 vector 的候选 |
+| `POWERCONTEXT_SERVER_RUNTIME_RECALL_FTS_WEIGHT` | `1.0` | hybrid Atomic Memory 和 Topic Memory RRF 中 FTS 的相对贡献；`0` 会从 hybrid 结果中排除仅命中 FTS 的候选 |
+| `POWERCONTEXT_SERVER_RUNTIME_RECALL_VECTOR_WEIGHT` | `1.0` | hybrid Atomic Memory 和 Topic Memory RRF 中 vector 的相对贡献；`0` 会从 hybrid 结果中排除仅命中 vector 的候选 |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_SCHEDULE_SECONDS` | 未设置 | Memory 自动准入间隔；`SCHEDULE_SECONDS` 保留为兼容别名 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SCHEDULE_SECONDS` | 未设置 | Topic Memory 自动准入间隔；未设置时不接纳新的自动调用 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SOURCE_WINDOW_LIMIT` | `10` | 每个 Topic Memory Window 的 Source 数量上限，硬上限为 100；一次 Scope 调用可完成多个 Window |
@@ -151,7 +184,10 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | 未设置 | Experience 自动准入间隔；未设置时保留已接受工作，停止新的自动准入 |
 | `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` | 自动生成本机项目 target | 覆盖默认值的 host identity 和显式 Agent Skill targets JSON object |
 
-召回通道权重表示相对比例，只在 hybrid 候选通过各通道准入下限后生效。同比例缩放两个值不会改变结果。将其中一个设为
+召回通道权重表示相对比例，应用于 Atomic Memory 和 Topic Memory，只在 hybrid 候选通过各通道准入下限后生效。
+单通道搜索保持无权重行为；`auto` 只有在选择 hybrid 搜索时才应用权重。Atomic Memory 的 `matched_by` 和 recall gate
+相关度不包含零权重通道；Topic Memory 则为正权重通道选中的 Topic 保留零权重通道的证据。
+同比例缩放两个值不会改变结果。将其中一个设为
 `0` 会从 hybrid 融合中排除该通道，但提高权重不能恢复融合前已被拒绝的候选。零权重不会关闭该通道的检索和准入工作：
 vector 查询仍可能生成 embedding，检索与准入计数也仍包含零权重通道。如果 Topic Artifact 搜索请求显式提供自己的 `fusion`
 参数，它会完整取代部署级召回权重；只有请求未指定 `fusion` 时，部署级权重才生效。归一化后，每个非零通道权重必须不低于 IEEE 754 binary64

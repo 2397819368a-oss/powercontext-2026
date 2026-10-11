@@ -27,6 +27,8 @@ from fastapi.routing import APIRoute
 from starlette.middleware import Middleware
 
 from powercontext._logging import log_safely
+from powercontext.artifacts.search import ArtifactSearchExecutionContext
+from powercontext.builtin.artifacts.atomic_memory.extraction import AtomicMemoryGenerationPipeline
 from powercontext.builtin.artifacts.experience import ExperienceCandidatePipeline, ExperienceGenerator
 from powercontext.builtin.artifacts.handoff import HandoffGenerationPipeline
 from powercontext.builtin.artifacts.memory import CandidatePipeline
@@ -35,10 +37,10 @@ from powercontext.builtin.artifacts.skill import ExternalSkillProvider, SkillGen
 from powercontext.builtin.dream.generation import DreamGenerator
 from powercontext.builtin.inference import EmbeddingModel
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.records import BaseOperationNotSupportedError
 from powercontext.builtin.runtime import (
     BuiltinRuntime,
     ExperienceIncubationResult,
-    MemoryEntryRecord,
     MemoryFlushResult,
 )
 from powercontext.builtin.runtime.application import ScheduledExperienceRunner, ScheduledSourceRunner
@@ -57,7 +59,7 @@ from powercontext.http import (
 )
 from powercontext.paths import default_scheduler_path
 from powercontext.server.access import HttpAccessLogMiddleware
-from powercontext.server.app import create_app
+from powercontext.server.app import _bind_evidence_access, create_app
 from powercontext.server.authentication import (
     AuthenticationProvider,
     StaticBearerAuthenticationProvider,
@@ -66,7 +68,6 @@ from powercontext.server.authz import (
     AccessAction,
     AccessAuditContext,
     AccessControlService,
-    MemoryEntrySelector,
     PrincipalRef,
     ResourceRef,
     access_control_for_mode,
@@ -77,6 +78,8 @@ from powercontext.server.context import current_principal, current_request_id
 from powercontext.server.cursor_secret import resolve_cursor_secret
 from powercontext.server.dashboard import mount_dashboard
 from powercontext.server.dream_access import DreamAccess
+from powercontext.server.identity import ServerIdentityRepository
+from powercontext.server.info import server_info
 from powercontext.server.mcp import mount_mcp
 from powercontext.server.metrics import CONTENT_TYPE_LATEST, HttpMetricsMiddleware, ServerMetrics
 from powercontext.server.middleware import AuthenticationMiddleware
@@ -124,7 +127,7 @@ def create_server_app(  # noqa: C901
     *,
     settings: ServerSettings | None = None,
     scheduler_path: str | Path | None = None,
-    candidate_pipeline: CandidatePipeline | None = None,
+    candidate_pipeline: CandidatePipeline | AtomicMemoryGenerationPipeline | None = None,
     experience_pipeline: ExperienceCandidatePipeline | None = None,
     experience_generator: ExperienceGenerator | None = None,
     profile_generator: ProfileGenerator | None = None,
@@ -243,7 +246,10 @@ def create_server_app(  # noqa: C901
                     ),
                 )
             )
-            _bind_dream_access(dream_access, runtime)
+            identity_repository = ServerIdentityRepository(runtime.primary_database)
+            await identity_repository.initialize()
+            server_id = await identity_repository.load_or_create()
+            _bind_evidence_access(runtime, active_access_control, resolved.access.mode)
             if active_access_control is not None:
                 migrated, unresolved = await runtime._records().migrate_handoff_receipts(
                     active_access_control.committed_receipt_identity,
@@ -271,6 +277,7 @@ def create_server_app(  # noqa: C901
 
             app.state.capabilities = capabilities
             app.state.capability_provider = current_capabilities
+            app.state.server_info = server_info(server_id)
             await readiness_probe()
             try:
                 yield
@@ -281,6 +288,7 @@ def create_server_app(  # noqa: C901
                 app.state.capability_provider = None
                 app.state.access_control = configured_access_control
                 app.state.authentication_provider = configured_authentication
+                app.state.server_info = None
                 app.state.capabilities = Capabilities(
                     source_types=[],
                     artifact_families=[],
@@ -380,11 +388,6 @@ def _resolve_security_providers(
     return static_principal, authentication, access_control, True
 
 
-def _bind_dream_access(access: DreamAccess | None, runtime: BuiltinRuntime) -> None:
-    if access is not None:
-        access.bind(runtime)
-
-
 async def _remove_legacy_topic_owners(access: AccessControlService) -> None:
     """Drop the Artifact owner rows older versions retained for Topic Memory.
 
@@ -420,26 +423,11 @@ def _scheduled_access_runners(
         context = AccessAuditContext(transport="background", operation="process_source_window")
         await access.bootstrap_static_scope(principal, scope_id, context=context)
         await access.require(principal, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(scope_id), context=context)
-        memory = runtime.memory.for_scope(scope_id)
-        before = await memory.list(include_inactive=True)
-        before_keys = {_memory_resource(scope_id, entry).key for entry in before.entries}
-        await access.require_all(
-            principal,
-            tuple((AccessAction.ARTIFACT_WRITE, _memory_resource(scope_id, entry)) for entry in before.entries),
-            context=context,
+        if runtime.atomic_memory is None:
+            raise BaseOperationNotSupportedError("artifact_family", "atomic-memory", "runtime application")
+        return await runtime.atomic_memory.for_scope(scope_id).flush(
+            context=ArtifactSearchExecutionContext(principal=principal, access=access, audit=context),
         )
-        result = await memory.flush()
-        after = await memory.list(include_inactive=True)
-        for entry in after.entries:
-            resource = _memory_resource(scope_id, entry)
-            if resource.key not in before_keys:
-                await access.establish_artifact_owner(
-                    resource,
-                    principal,
-                    idempotency_key=f"background-memory-owner:{scope_id}:{resource.artifact_id}:{entry.citation.entry_id}",
-                    context=context,
-                )
-        return result
 
     async def incubate_experience(scope_id: str, runtime: BuiltinRuntime) -> ExperienceIncubationResult:
         context = AccessAuditContext(transport="background", operation="incubate_experience_candidates")
@@ -520,16 +508,6 @@ def _scheduled_principal(
     if legacy_static_principal is not None:
         return legacy_static_principal
     raise ValueError("scheduled processing in enforced mode requires ACCESS_BACKGROUND_PRINCIPAL_ID")  # noqa: TRY003
-
-
-def _memory_resource(scope_id: str, entry: MemoryEntryRecord) -> ResourceRef:
-    citation = entry.citation
-    return ResourceRef.artifact(
-        scope_id,
-        family="memory",
-        artifact_id=citation.memory_ref.artifact_id,
-        selector=MemoryEntrySelector(entry_id=citation.entry_id),
-    )
 
 
 class _ServerReadinessProbe:
@@ -632,7 +610,16 @@ async def _server_capabilities(runtime: BuiltinRuntime) -> Capabilities:
     capabilities = await runtime.capabilities()
     return Capabilities(
         source_types=[CONTENT_SOURCE_NAME],
-        artifact_families=["memory", "topic-memory", "experience", "skill", "handoff", "profile", "prompt"],
+        artifact_families=[
+            "memory",
+            "atomic-memory",
+            "topic-memory",
+            "experience",
+            "skill",
+            "handoff",
+            "profile",
+            "prompt",
+        ],
         prompts={
             key: PromptCapability.model_validate_json(value.model_dump_json())
             for key, value in capabilities.prompts.items()

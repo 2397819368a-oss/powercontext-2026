@@ -18,14 +18,13 @@ import asyncio
 import math
 import sys
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
 
 from powercontext import ArtifactRef
 from powercontext.artifacts.fusion import RrfParameters
-from powercontext.builtin.artifacts.memory import MemoryChannelHit, MemoryMatchedBy
-from powercontext.builtin.artifacts.memory.fusion import fuse_rankings
 from powercontext.builtin.artifacts.search import RecallChannelWeights
 from powercontext.builtin.artifacts.topic_memory import (
     TopicMemoryChannelHit,
@@ -33,6 +32,11 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemorySearchChannels,
 )
 from powercontext.builtin.artifacts.topic_memory.fusion import _fuse_topic_memory_rankings
+from powercontext.builtin.persistence.atomic_memory_index import (
+    AtomicMemoryIndexHit,
+    AtomicMemorySearchChannels,
+    combine_atomic_memory_channels,
+)
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig, composition
 from powercontext.server.settings import ServerSettings
@@ -155,21 +159,23 @@ def test_extreme_nonzero_recall_weight_ratios_are_rejected_by_the_domain_type(
 def test_smallest_accepted_channel_weight_remains_usable_in_memory_and_topic_fusion(
     fts: float,
     vector: float,
-    memory_channel: MemoryMatchedBy,
+    memory_channel: Literal["fts", "vector"],
     topic_channel: TopicMemoryMatchedBy,
 ) -> None:
     weights = RuntimeConfig(recall_fts_weight=fts, recall_vector_weight=vector).recall_channel_weights
-    memory_candidate = MemoryChannelHit(
-        memory_ref=ArtifactRef(family="memory", artifact_id="memory", revision=1),
-        entry_id="entry",
-        entry_version_id="version",
+    memory_candidate = AtomicMemoryIndexHit(
+        artifact_ref=ArtifactRef(family="atomic-memory", artifact_id="memory", revision=1),
+        state_version=0,
+        kind="fact",
         text="needle",
+        score=0.0,
         distance=0.1 if memory_channel == "vector" else None,
     )
-    memory_hits = fuse_rankings(
-        fts=(memory_candidate,) if memory_channel == "fts" else (),
-        vector=(memory_candidate,) if memory_channel == "vector" else (),
-        limit=1,
+    memory_hits = combine_atomic_memory_channels(
+        AtomicMemorySearchChannels(
+            fts=(memory_candidate,) if memory_channel == "fts" else (),
+            vector=(memory_candidate,) if memory_channel == "vector" else (),
+        ),
         channel_weights=weights,
     )
     topic_candidate = TopicMemoryChannelHit(
@@ -197,10 +203,7 @@ def test_smallest_accepted_channel_weight_remains_usable_in_memory_and_topic_fus
     ).hits
 
     assert len(memory_hits) == 1
-    assert memory_hits[0].matched_by == (memory_channel,)
     assert memory_hits[0].score > 0.0
-    assert memory_hits[0].score_upper_bound is not None
-    assert memory_hits[0].score_upper_bound > 0.0
     assert len(topic_hits) == 1
     assert topic_hits[0].matched_by == (topic_channel,)
     assert topic_hits[0].score > 0.0
