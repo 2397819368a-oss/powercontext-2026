@@ -609,7 +609,8 @@ class AccessControlService:
             raise AccessUnavailableError("transactional_relationships_unavailable")
         repository = self.relationships.with_connection(connection)
         provider = self.provider
-        if isinstance(provider, BuiltinAuthorizationProvider):
+        # Binding a Provider or Repository subclass could discard its custom rules; keep it unchanged.
+        if type(provider) is BuiltinAuthorizationProvider and type(provider._repository) is RelationalAccessRepository:
             provider = provider.with_repository(repository)
         bound = AccessControlService(
             provider,
