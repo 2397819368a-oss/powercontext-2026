@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from base64 import urlsafe_b64encode
 from contextlib import asynccontextmanager, nullcontext
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn
 
 from sqlalchemy import update
 
+from powercontext._logging import log_safely
 from powercontext.artifacts import ArtifactLineage, ArtifactRef
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
@@ -75,6 +77,9 @@ from powercontext.errors import RevisionConflictError
 
 if TYPE_CHECKING:
     from powercontext.builtin.runtime.config import RuntimeConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -215,22 +220,28 @@ class AtomicMemorySourceWindowProcessor:
             if reducible and action.through - action.after > 1:
                 await self._reduce_window(scope_id, context, processing, cursor, state, action, high_watermark)
             raise
-        await self._publish(
-            scope_id,
-            context,
-            processing,
-            cursor,
-            transition,
-            action,
-            window,
-            eligible,
-            consulted_artifacts,
-            workset,
-            prepared,
-            decision,
-            observation,
-            high_watermark,
-        )
+        try:
+            finalized = await self._publish(
+                scope_id,
+                context,
+                processing,
+                cursor,
+                transition,
+                action,
+                window,
+                eligible,
+                consulted_artifacts,
+                workset,
+                prepared,
+                decision,
+                observation,
+                high_watermark,
+            )
+        except Exception:
+            self._emit_failed_observation(observation)
+            raise
+        if finalized is not None:
+            emit_decision_observation(finalized)
         return self._result(
             action.after,
             action.through,
@@ -310,6 +321,7 @@ class AtomicMemorySourceWindowProcessor:
     ):
         application = self.application
         writes = tuple(write for item in prepared for write in item.plan.writes)
+        finalized = None
         with self._stage(
             "memory.commit",
             {
@@ -352,7 +364,7 @@ class AtomicMemorySourceWindowProcessor:
                     results = await application.service.commit_window(
                         connection, scope_id, prepared, context, read_set=tuple(workset.reads.values())
                     )
-                await self._finalize_observation(
+                finalized = await self._finalize_observation(
                     connection,
                     observation,
                     final_action=(
@@ -372,6 +384,7 @@ class AtomicMemorySourceWindowProcessor:
                 await self.windows.clear_consumed(connection, scope_id, action.through)
                 if processing is not None:
                     await processing.complete(connection, remaining_work=action.through < high_watermark)
+        return finalized
 
     async def _prepare(self, scope_id, eligible, pipeline, context):
         workset = AtomicMemoryWindowWorkset()
@@ -638,23 +651,41 @@ class AtomicMemorySourceWindowProcessor:
 
     async def _finalize_observation(self, connection, observation, *, final_action, subject_refs):
         if observation is None or self.decision_observations is None:
-            return
+            return None
         finalized = observation.model_copy(
             update={
                 "final_action": final_action,
                 "subject_refs": observation.subject_refs if final_action == "memory_write_hold" else subject_refs,
             }
         )
-        await self.decision_observations.append(connection, finalized)
-        if self.decision_observation_retention_days is not None:
-            from datetime import UTC, datetime, timedelta
+        try:
+            async with connection.begin_nested():
+                await self.decision_observations.append(connection, finalized)
+                if self.decision_observation_retention_days is not None:
+                    from datetime import UTC, datetime, timedelta
 
-            await self.decision_observations.prune_before(
-                connection,
-                finalized.scope_id,
-                datetime.now(UTC) - timedelta(days=self.decision_observation_retention_days),
+                    await self.decision_observations.prune_before(
+                        connection,
+                        finalized.scope_id,
+                        datetime.now(UTC) - timedelta(days=self.decision_observation_retention_days),
+                    )
+        except Exception as error:
+            log_safely(
+                logger,
+                logging.WARNING,
+                "Decision observation persistence failed",
+                exc_info=error,
+                extra={"event": "decision.observation_sink_failed", "error_type": type(error).__name__},
             )
-        emit_decision_observation(finalized)
+            return None
+        return finalized
+
+    @staticmethod
+    def _emit_failed_observation(observation):
+        if observation is not None:
+            emit_decision_observation(
+                observation.model_copy(update={"final_action": "memory_write_failed", "subject_refs": ()})
+            )
 
     @staticmethod
     def _result(after, through, high_watermark, count, *, held=False, hold_codes=()):

@@ -18,6 +18,8 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from powercontext.builtin.artifacts.atomic_memory.extraction import AtomicMemoryCandidate, AtomicMemoryExtractionOutput
 from powercontext.builtin.decision_observations import DecisionPrivacyBoundary
@@ -163,6 +165,87 @@ def test_atomic_memory_gate_finalizes_one_applied_observation_in_the_commit_tran
     asyncio.run(scenario())
     events = [record for record in caplog.records if getattr(record, "event", None) == "decision.observation"]
     assert [record.__dict__["final_action"] for record in events] == ["memory_write_applied"]
+
+
+def test_atomic_memory_gate_emits_failed_outcome_after_late_transaction_rollback(
+    tmp_path, caplog: pytest.LogCaptureFixture
+):
+    async def scenario():
+        gate = build_memory_write_gate(
+            None,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.NO_EXTERNAL_CALL,
+        )
+        assert gate is not None
+        config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'atomic-gate-rollback.db'}")
+        async with SQLiteProfile.open(config, tables=BUILTIN_TABLES) as profile:
+            contexts = await _ready_contexts(
+                profile,
+                candidate_pipeline=atomic_memory_pipeline(Pipeline()),
+                memory_write_gate=gate,
+            )
+            scope = await create_scope(contexts, 1)
+            context = await contexts.get(scope)
+            async with profile.database.transaction() as connection:
+                await connection.execute(
+                    text(
+                        "CREATE TRIGGER reject_memory_cursor "
+                        "BEFORE INSERT ON pc_source_cursors "
+                        "BEGIN SELECT RAISE(ABORT, 'cursor rejected'); END"
+                    )
+                )
+
+            with pytest.raises(IntegrityError, match="cursor rejected"):
+                await context.triggers.flush(limit=1)
+
+            assert (await context.triggers.cursor()).sequence == 0
+            assert not (await contexts.atomic_memory.for_scope(scope).list()).items
+            async with profile.database.transaction() as connection:
+                assert not await DecisionObservationRepository().observations(connection, scope)
+
+    caplog.set_level("INFO", logger="powercontext.builtin.runtime.decision_policy")
+    asyncio.run(scenario())
+    events = [record for record in caplog.records if getattr(record, "event", None) == "decision.observation"]
+    assert [record.__dict__["final_action"] for record in events] == ["memory_write_failed"]
+
+
+def test_atomic_memory_audit_failure_does_not_block_shadow_write(tmp_path, caplog: pytest.LogCaptureFixture):
+    async def scenario():
+        gate = build_memory_write_gate(
+            None,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.NO_EXTERNAL_CALL,
+        )
+        assert gate is not None
+        config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'atomic-gate-audit.db'}")
+        async with SQLiteProfile.open(config, tables=BUILTIN_TABLES) as profile:
+            contexts = await _ready_contexts(
+                profile,
+                candidate_pipeline=atomic_memory_pipeline(Pipeline()),
+                memory_write_gate=gate,
+            )
+            scope = await create_scope(contexts, 1)
+            context = await contexts.get(scope)
+            async with profile.database.transaction() as connection:
+                await connection.execute(
+                    text(
+                        "CREATE TRIGGER reject_decision_observation "
+                        "BEFORE INSERT ON pc_decision_observations "
+                        "BEGIN SELECT RAISE(ABORT, 'audit rejected'); END"
+                    )
+                )
+
+            assert (await context.triggers.flush(limit=1)).current_cursor == 1
+            assert len((await contexts.atomic_memory.for_scope(scope).list()).items) == 1
+            async with profile.database.transaction() as connection:
+                assert not await DecisionObservationRepository().observations(connection, scope)
+
+    caplog.set_level("WARNING", logger="powercontext.builtin.runtime.atomic_memory_processing")
+    asyncio.run(scenario())
+    diagnostics = [
+        record for record in caplog.records if getattr(record, "event", None) == "decision.observation_sink_failed"
+    ]
+    assert len(diagnostics) == 1
 
 
 @pytest.mark.parametrize("error", [InferenceTimeoutError("embed", 60), InferenceUnavailableError("generate")])

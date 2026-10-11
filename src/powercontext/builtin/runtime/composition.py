@@ -1733,7 +1733,7 @@ def _unbounded_provider_factory(
             if headers:
                 from openai import AsyncOpenAI
 
-                http_client = _openai_http_client(follow_redirects=False) if base_url is not None else None
+                http_client = _endpoint_http_client(follow_redirects=False) if base_url is not None else None
                 client = AsyncOpenAI(
                     base_url=None if base_url is None else str(base_url),
                     api_key=os.getenv("OPENAI_API_KEY") or "api-key-not-set",
@@ -1748,7 +1748,7 @@ def _unbounded_provider_factory(
                 client = AsyncOpenAI(
                     base_url=str(base_url),
                     api_key=os.getenv("OPENAI_API_KEY") or "api-key-not-set",
-                    http_client=_openai_http_client(follow_redirects=False),
+                    http_client=_endpoint_http_client(follow_redirects=False),
                 )
                 resources.push_async_callback(client.close)
                 return OpenAIProvider(openai_client=client)
@@ -1764,6 +1764,7 @@ def _unbounded_provider_factory(
                     base_url=None if base_url is None else str(base_url),
                     api_key=api_key or os.getenv("ANTHROPIC_API_KEY") or "api-key-not-set",
                     default_headers=default_headers,
+                    http_client=_endpoint_http_client(follow_redirects=False) if base_url is not None else None,
                 )
                 resources.push_async_callback(client.close)
                 return AnthropicProvider(anthropic_client=client)
@@ -1776,8 +1777,8 @@ def _unbounded_provider_factory(
     return create_provider
 
 
-def _openai_http_client(*, follow_redirects: bool):
-    """Create the SDK transport with an explicit redirect policy for local-only endpoints."""
+def _endpoint_http_client(*, follow_redirects: bool):
+    """Create the SDK transport with an explicit redirect policy for custom endpoints."""
 
     import httpx
 

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, SecretStr
 
 from powercontext.builtin.inference import InferenceUnavailableError, InferenceUsage
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
@@ -227,6 +227,23 @@ def test_loopback_openai_provider_disables_redirects() -> None:
             )
 
             provider = factory("openai-chat")
+
+            assert provider.client._client.follow_redirects is False  # pyright: ignore[reportPrivateUsage]
+
+    asyncio.run(scenario())
+
+
+def test_loopback_anthropic_headers_provider_disables_redirects() -> None:
+    async def scenario() -> None:
+        async with AsyncExitStack() as resources:
+            factory = composition._unbounded_provider_factory(
+                AnyHttpUrl("http://127.0.0.1:11434"),
+                {"x-api-key": SecretStr("test-key")},
+                workload="generation",
+                resources=resources,
+            )
+
+            provider = factory("anthropic")
 
             assert provider.client._client.follow_redirects is False  # pyright: ignore[reportPrivateUsage]
 
