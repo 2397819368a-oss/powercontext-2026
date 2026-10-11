@@ -205,6 +205,17 @@ def test_only_explicit_loopback_decision_endpoints_are_local(endpoint: str, expe
     assert composition._is_loopback_endpoint(AnyHttpUrl(endpoint)) is expected
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "expected"),
+    [
+        ("http://127.0.0.1:11434/v1", True),
+        ("https://api.example.test/v1", False),
+    ],
+)
+def test_loopback_classifier_accepts_runtime_string_overrides(endpoint: str, expected: bool) -> None:
+    assert composition._is_loopback_endpoint(endpoint) is expected
+
+
 def test_loopback_openai_provider_disables_redirects() -> None:
     async def scenario() -> None:
         async with AsyncExitStack() as resources:

@@ -26,6 +26,7 @@ from functools import partial
 from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, JsonValue, SecretStr
 from typing_extensions import override
@@ -1783,12 +1784,18 @@ def _openai_http_client(*, follow_redirects: bool):
     return httpx.AsyncClient(follow_redirects=follow_redirects)
 
 
-def _is_loopback_endpoint(endpoint: AnyHttpUrl | None) -> bool:
+def _is_loopback_endpoint(endpoint: AnyHttpUrl | str | None) -> bool:
     """Allow only explicit local names and addresses for raw decision content."""
 
-    if endpoint is None or endpoint.host is None:
+    if endpoint is None:
         return False
-    host = endpoint.host.strip("[]").lower()
+    try:
+        host = urlsplit(str(endpoint)).hostname
+    except ValueError:
+        return False
+    if host is None:
+        return False
+    host = host.lower()
     if host == "localhost":
         return True
     try:
