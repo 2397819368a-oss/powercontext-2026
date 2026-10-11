@@ -15,7 +15,10 @@ no HTTP health endpoint; Pod readiness alone does not establish processing healt
 
 Follow the chart's installation, coordinated upgrade and acceptance-test instructions. SQLite
 and embedded seekdb remain single-process evaluation options outside this chart. See
-[processing migration](artifact-processing-migration.md) before reusing an existing database.
+[database migrations](database-migrations.md), including [Atomic Memory migration](atomic-memory-migration.md)
+and [processing migration](artifact-processing-migration.md), before reusing an existing database.
+The chart does not run migrations automatically. Historical cluster acceptance uses the image and schema
+specified in the chart README; a new application revision requires its own runtime cold-start validation.
 
 For cluster acceptance, use the chart's `values-acceptance.yaml` together with your local image and
 Secret references. It configures two API replicas, one initial background replica, and the local

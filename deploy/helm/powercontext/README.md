@@ -106,9 +106,12 @@ Deployments**. Do not assume an ordinary `helm upgrade` is a safe mixed-version 
    not promise every model call will drain. A longer grace period alone does not guarantee draining.
 3. Scale both Deployments to zero and wait until all their Pods have terminated. Disable any external
    reconciler that would restore replicas during maintenance.
-4. With the target application's configuration and credentials, run the documented processing
-   migration `plan`, then `apply --maintenance-confirmed` when needed, then `verify`. Follow
-   `docs/en/docs/operate/artifact-processing-migration.md`; there is no automatic Helm migration hook.
+4. With the target application's configuration and credentials, follow
+   `docs/en/docs/operate/database-migrations.md` and run each required migration's `plan`,
+   `apply --maintenance-confirmed`, and `verify` before starting the target image. Existing
+   Memory-entry databases also require `docs/en/docs/operate/atomic-memory-migration.md`;
+   processing migrations are described in `docs/en/docs/operate/artifact-processing-migration.md`.
+   There is no automatic Helm migration hook.
 5. Only after migration verification succeeds, upgrade the chart/image using your saved values and
    restore the desired replica counts. Check readiness, authentication and background progress before
    resuming traffic.
@@ -184,7 +187,9 @@ The application image included separate local concurrent-startup fixes. These ma
 relational and FULLTEXT DDL idempotent, probe all four FULLTEXT projections with `MATCH`,
 and retry narrowly identified authorization bootstrap conflicts after rollback.
 The fixes must be integrated separately before this cold-start result applies to a
-released image.
+released image. This evidence predates the Atomic Memory schema; the old Memory-entry
+FULLTEXT patch and this image do not establish concurrent cold-start acceptance for
+Atomic Memory. Validate the target runtime and its migrations separately.
 
 | Component | Tested revision |
 | --- | --- |

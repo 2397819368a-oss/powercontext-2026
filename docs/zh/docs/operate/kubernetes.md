@@ -13,7 +13,10 @@ supervisor，其余作为候选实例；增加副本不会增加活跃 superviso
 HTTP 健康端点，Pod Ready 不代表后台处理正常，需结合租约续期、日志和持久化处理进度判断。
 
 安装、协调停机升级和集群验收步骤见 Chart 文档。Chart 不支持 SQLite 或内嵌 seekdb；这些后端应使用
-单进程评估部署。复用已有数据库前请先完成[处理状态迁移](artifact-processing-migration.md)。
+单进程评估部署。复用已有数据库前请遵循[数据库迁移](database-migrations.md)，包括
+[Atomic Memory 迁移](atomic-memory-migration.md)和[处理状态迁移](artifact-processing-migration.md)。
+Chart 不会自动执行迁移。历史集群验收对应 Chart README 中指定的镜像和 schema；新的应用 revision
+需要单独验证 runtime 冷启动。
 
 集群验收时，将 Chart 中的 `values-acceptance.yaml` 与本地镜像和 Secret 引用配置一起使用。
 该配置启用两个 API 副本、一个初始 background 副本及本地 `test` 生成模型。验收脚本会拒绝少于
