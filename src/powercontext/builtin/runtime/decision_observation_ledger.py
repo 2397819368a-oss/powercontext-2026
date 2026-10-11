@@ -18,13 +18,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.ext.asyncio import AsyncConnection
+
 from powercontext.builtin.decision_observations import DecisionObservation
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.decision_observations import DecisionObservationRepository
 
 
 class RelationalDecisionObservationSink:
-    """Persist each observation independently of the domain operation it describes."""
+    """Persist a sidecar in the caller's transaction when one owns the domain write."""
 
     def __init__(
         self,
@@ -33,15 +35,17 @@ class RelationalDecisionObservationSink:
         /,
         *,
         retention_days: int | None = None,
+        connection: AsyncConnection | None = None,
     ) -> None:
         self._database = database
         self._repository = repository
         self._retention_days = retention_days
+        self._connection = connection
 
     async def record(self, observation: DecisionObservation, /) -> None:
-        """Append one sidecar in a short caller-independent transaction."""
+        """Append one sidecar, opening a short transaction only when no connection is bound."""
 
-        async with self._database.transaction() as connection:
+        async with self._database.connection(self._connection) as connection:
             await self._repository.append(connection, observation)
             if self._retention_days is not None:
                 await self._repository.prune_before(

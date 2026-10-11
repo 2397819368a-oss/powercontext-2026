@@ -199,6 +199,25 @@ def test_direct_gate_rejects_a_disabled_or_conflicting_policy() -> None:
         DecisionMemoryWriteGate(_StaticDecisionModel(_verdict(DecisionOutcome.YES)), policy=threshold_policy)
 
 
+def test_direct_gate_rejects_policy_fields_it_does_not_execute() -> None:
+    model = _StaticDecisionModel(_verdict(DecisionOutcome.YES))
+    question_policy = memory_write_policy().model_copy(update={"question": "Does this unrelated question hold?"})
+    with pytest.raises(ValueError, match="question"):
+        DecisionMemoryWriteGate(model, policy=question_policy)
+
+    mapping_policy = memory_write_policy().model_copy(
+        update={
+            "outcome_mapping": {
+                DecisionOutcome.YES.value: DecisionVerdict.DENY.value,
+                DecisionOutcome.NO.value: "review",
+                DecisionOutcome.ABSTAIN.value: DecisionVerdict.UNKNOWN.value,
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="outcome mapping"):
+        DecisionMemoryWriteGate(model, policy=mapping_policy)
+
+
 def test_observation_records_backend_identity_and_evaluation_latency() -> None:
     async def scenario() -> None:
         sink = _RecordingObservationSink()

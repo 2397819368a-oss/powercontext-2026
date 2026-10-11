@@ -75,6 +75,7 @@ class MemoryCommit(BaseModel):
     content_hash: str
     entry_versions: tuple[MemoryEntryVersion, ...]
     projections: tuple[MemoryProjection, ...]
+    assessed_entry_refs: tuple[tuple[str, str], ...] = ()
 
 
 class MemoryWriteRejectionCode(StrEnum):
@@ -125,6 +126,7 @@ class MemoryWriteGateRequest:
     subject_refs: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     observation_sink: MemoryWriteObservationSink | None = None
+    defer_observation_emission: bool = False
 
 
 class MemoryWriteGate(Protocol):

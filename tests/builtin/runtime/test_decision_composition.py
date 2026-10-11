@@ -203,3 +203,20 @@ def test_decision_role_is_not_registered_as_an_mcp_tool() -> None:
 )
 def test_only_explicit_loopback_decision_endpoints_are_local(endpoint: str, expected: bool) -> None:
     assert composition._is_loopback_endpoint(AnyHttpUrl(endpoint)) is expected
+
+
+def test_loopback_openai_provider_disables_redirects() -> None:
+    async def scenario() -> None:
+        async with AsyncExitStack() as resources:
+            factory = composition._unbounded_provider_factory(
+                AnyHttpUrl("http://127.0.0.1:11434/v1"),
+                {},
+                workload="generation",
+                resources=resources,
+            )
+
+            provider = factory("openai-chat")
+
+            assert provider.client._client.follow_redirects is False  # pyright: ignore[reportPrivateUsage]
+
+    asyncio.run(scenario())

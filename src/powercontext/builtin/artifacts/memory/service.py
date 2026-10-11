@@ -111,6 +111,7 @@ from powercontext.builtin.inference import (
     InferenceUnavailableError,
     embed_query,
 )
+from powercontext.builtin.runtime.decision_policy import emit_decision_observation
 from powercontext.builtin.tags import TagFilter
 from powercontext.errors import RevisionConflictError
 from powercontext.sources import (
@@ -623,8 +624,15 @@ class MemoryService:
             final_action="memory_write_applied",
             operation_id=f"memory-write:{committed.artifact_id}@{committed.revision}",
             subject_refs=tuple(
-                f"entry:{entry.entry_id}@{entry.entry_version_id}" for entry in plan.commit.entry_versions
+                _gate_entry_reference(entry_id, entry_version_id)
+                for entry_id, entry_version_id in plan.commit.assessed_entry_refs
             ),
+            incomplete_subject_count=max(
+                0,
+                len(plan.decision_observation.subject_refs) - len(plan.commit.assessed_entry_refs),
+            )
+            if plan.decision_observation is not None
+            else 0,
         )
         return committed
 
@@ -1444,6 +1452,7 @@ class MemoryService:
             subject_refs=_gate_subject_refs(candidates),
             evidence_refs=tuple(_gate_evidence_ref(entry) for entry in projection.entries),
             observation_sink=pending,
+            defer_observation_emission=True,
         )
         if projection.rejection is not None:
             if isinstance(self._write_gate, MemoryWriteGatePreflight):
@@ -1481,7 +1490,7 @@ class MemoryService:
         subject_refs: tuple[str, ...] | None = None,
         incomplete_subject_count: int = 0,
     ) -> None:
-        if observation is None or self._write_gate_observation_sink is None:
+        if observation is None:
             return
         metadata = dict(observation.metadata)
         if incomplete_subject_count:
@@ -1498,6 +1507,9 @@ class MemoryService:
                 "metadata": metadata,
             }
         )
+        emit_decision_observation(finalized)
+        if self._write_gate_observation_sink is None:
+            return
         try:
             await self._write_gate_observation_sink.record(finalized)
         except Exception as error:
@@ -1614,17 +1626,21 @@ class MemoryService:
         manifest = {} if base is None else {entry.entry_id: entry for entry in base.content.manifest.entries}
         current_by_entry = {} if current_entries is None else {entry.entry_id: entry for entry in current_entries}
         new_versions: list[MemoryEntryVersion] = []
+        assessed_entry_refs: list[tuple[str, str]] = []
         changes: list[MemoryChange] = []
         targeted: set[str] = set()
         # The manifest records each active entry's validated content hash, so exact
         # duplicate detection compares hashes; rebuilding every body here would cost
         # one material per entry to answer the same question.
         new_content: set[str] = {item.entry_content_hash for item in manifest.values() if item.state == "active"}
+        active_by_content = {item.entry_content_hash: item for item in manifest.values() if item.state == "active"}
 
         for candidate in candidates:
             if candidate.entry is None:
                 material = await self._material_from_candidate(candidate, evidence.sources, evidence.artifacts)
-                if material.content_hash in new_content:
+                existing = active_by_content.get(material.content_hash)
+                if existing is not None:
+                    assessed_entry_refs.append((existing.entry_id, existing.entry_version_id))
                     continue
                 new_content.add(material.content_hash)
                 entry_id = self._new_id("entry")
@@ -1638,8 +1654,10 @@ class MemoryService:
                     created_in_revision=next_revision,
                 )
                 manifest[entry_id] = _manifest_entry(version, state="active")
+                active_by_content[material.content_hash] = manifest[entry_id]
                 current_by_entry[entry_id] = version
                 new_versions.append(version)
+                assessed_entry_refs.append((version.entry_id, version.entry_version_id))
                 changes.append(
                     MemoryChange(
                         op="add",
@@ -1668,6 +1686,7 @@ class MemoryService:
                 material.content_hash == previous_material.content_hash
                 and material.content_bytes == previous_material.content_bytes
             ):
+                assessed_entry_refs.append((previous.entry_id, previous.entry_version_id))
                 continue
             version = self._new_entry_version(
                 memory_id=memory_id,
@@ -1677,8 +1696,10 @@ class MemoryService:
                 created_in_revision=next_revision,
             )
             manifest[entry_id] = _manifest_entry(version, state="active")
+            active_by_content[material.content_hash] = manifest[entry_id]
             current_by_entry[entry_id] = version
             new_versions.append(version)
+            assessed_entry_refs.append((version.entry_id, version.entry_version_id))
             changes.append(
                 MemoryChange(
                     op="revise",
@@ -1723,6 +1744,7 @@ class MemoryService:
             content_hash=sha256(content_bytes).hexdigest(),
             entry_versions=tuple(new_versions),
             projections=projections,
+            assessed_entry_refs=tuple(assessed_entry_refs),
         )
 
     async def _claim_revision_target(
@@ -1973,6 +1995,10 @@ def _gate_artifact_reference(reference: ArtifactRef, /) -> str:
     )
 
 
+def _gate_entry_reference(entry_id: str, entry_version_id: str, /) -> str:
+    return f"entry:{_gate_reference_component(entry_id)}@{_gate_reference_component(entry_version_id)}"
+
+
 def _gate_reference_component(value: str, /) -> str:
     return urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
 
@@ -1987,7 +2013,7 @@ def _gate_subject_refs(candidates: tuple[MemoryEntryInput, ...]) -> tuple[str, .
     return tuple(
         f"candidate:{index}"
         if candidate.entry is None
-        else f"entry:{candidate.entry.entry_id}@{candidate.entry.entry_version_id}"
+        else _gate_entry_reference(candidate.entry.entry_id, candidate.entry.entry_version_id)
         for index, candidate in enumerate(candidates, start=1)
     )
 

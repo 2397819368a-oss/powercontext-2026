@@ -392,6 +392,7 @@ class _ScopedServices:
                 self.database,
                 self.repositories.decision_observations,
                 retention_days=self.decision_observation_retention_days,
+                connection=connection,
             ),
         )
 

@@ -1689,10 +1689,23 @@ def _unbounded_provider_factory(
             if headers:
                 from openai import AsyncOpenAI
 
+                http_client = _openai_http_client(follow_redirects=False) if base_url is not None else None
+
                 client = AsyncOpenAI(
                     base_url=None if base_url is None else str(base_url),
                     api_key=os.getenv("OPENAI_API_KEY") or "api-key-not-set",
                     default_headers=_resolve_headers(headers),
+                    http_client=http_client,
+                )
+                resources.push_async_callback(client.close)
+                return OpenAIProvider(openai_client=client)
+            if base_url is not None and _is_loopback_endpoint(base_url):
+                from openai import AsyncOpenAI
+
+                client = AsyncOpenAI(
+                    base_url=str(base_url),
+                    api_key=os.getenv("OPENAI_API_KEY") or "api-key-not-set",
+                    http_client=_openai_http_client(follow_redirects=False),
                 )
                 resources.push_async_callback(client.close)
                 return OpenAIProvider(openai_client=client)
@@ -1718,6 +1731,14 @@ def _unbounded_provider_factory(
         raise BuiltinConfigurationError("inference-endpoint-provider")
 
     return create_provider
+
+
+def _openai_http_client(*, follow_redirects: bool):
+    """Create the SDK transport with an explicit redirect policy for local-only endpoints."""
+
+    import httpx
+
+    return httpx.AsyncClient(follow_redirects=follow_redirects)
 
 
 def _resolve_headers(headers: Mapping[str, SecretStr]) -> dict[str, str]:

@@ -190,8 +190,7 @@ class DecisionMemoryWriteGate:
             resolved_hold_on = _policy_hold_on(policy)
             if hold_on is not None and hold_on is not resolved_hold_on:
                 raise ValueError("the hold direction must match the supplied policy")  # noqa: TRY003
-            if policy.version != _policy_version(resolved_hold_on, threshold):
-                raise ValueError("the operational parameters must match the supplied policy version")  # noqa: TRY003
+            _validate_memory_write_policy(policy, hold_on=resolved_hold_on, threshold=threshold)
         self._decision_model = decision_model
         self._hold_on = resolved_hold_on
         self._threshold = threshold
@@ -350,7 +349,8 @@ class DecisionMemoryWriteGate:
             else None,
             metadata={"candidate_count": len(request.candidates), "evidence_count": len(request.evidence)},
         )
-        emit_decision_observation(observation)
+        if not request.defer_observation_emission:
+            emit_decision_observation(observation)
         if request.observation_sink is None:
             return
         try:
@@ -449,6 +449,37 @@ def _policy_hold_on(policy: DecisionPolicy, /) -> DecisionOutcome:
     if len(holding) != 1 or holding[0] is DecisionOutcome.ABSTAIN:
         raise ValueError("the supplied policy must map exactly one decision outcome to deny")  # noqa: TRY003
     return holding[0]
+
+
+def _validate_memory_write_policy(
+    policy: DecisionPolicy,
+    /,
+    *,
+    hold_on: DecisionOutcome,
+    threshold: float | None,
+) -> None:
+    """Reject a supplied policy whenever the specialized gate would not execute it literally."""
+
+    if policy.decision_kind != DecisionKind.MEMORY_WRITE_GATE.value:
+        raise ValueError("the supplied policy must describe the memory write gate")  # noqa: TRY003
+    if policy.consumer != "memory_write_gate":
+        raise ValueError("the supplied policy must use the memory write gate consumer")  # noqa: TRY003
+    if policy.failure_policy is not DecisionFailurePolicy.FAIL_OPEN:
+        raise ValueError("the supplied policy must fail open")  # noqa: TRY003
+    if policy.question != _GATE_QUESTION:
+        raise ValueError("the supplied policy question must match the memory write gate")  # noqa: TRY003
+    if policy.subject_selector != "candidate_text" or policy.evidence_selector != "candidate_citations":
+        raise ValueError("the supplied policy selectors must match the memory write gate")  # noqa: TRY003
+    pass_on = DecisionOutcome.NO if hold_on is DecisionOutcome.YES else DecisionOutcome.YES
+    expected_mapping = {
+        hold_on.value: DecisionVerdict.DENY.value,
+        pass_on.value: DecisionVerdict.ALLOW.value,
+        DecisionOutcome.ABSTAIN.value: DecisionVerdict.UNKNOWN.value,
+    }
+    if dict(policy.outcome_mapping) != expected_mapping:
+        raise ValueError("the supplied policy outcome mapping must match the memory write gate")  # noqa: TRY003
+    if policy.version != _policy_version(hold_on, threshold):
+        raise ValueError("the operational parameters must match the supplied policy version")  # noqa: TRY003
 
 
 def _model_identity(model: DecisionModel | None, attribute: str, /) -> str | None:
