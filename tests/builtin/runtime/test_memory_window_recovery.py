@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from powercontext.builtin.artifacts.atomic_memory.extraction import AtomicMemoryCandidate, AtomicMemoryExtractionOutput
 from powercontext.builtin.decision_observations import DecisionPrivacyBoundary
@@ -31,6 +31,7 @@ from powercontext.builtin.runtime.composition import _initialize_atomic_memory_a
 from powercontext.builtin.runtime.memory_write_gate import build_memory_write_gate
 from powercontext.builtin.runtime.relational import RelationalContexts
 from powercontext.builtin.scope import ScopeDraft
+from powercontext.server.logging import JsonFormatter
 from tests.e2e.dream_support import atomic_memory_pipeline, memory_source_text
 
 
@@ -246,6 +247,86 @@ def test_atomic_memory_audit_failure_does_not_block_shadow_write(tmp_path, caplo
         record for record in caplog.records if getattr(record, "event", None) == "decision.observation_sink_failed"
     ]
     assert len(diagnostics) == 1
+
+
+def test_atomic_memory_audit_rollback_does_not_consume_source_window(tmp_path):
+    """An audit failure that rolls back the owner transaction must retain the source window."""
+
+    async def scenario():
+        gate = build_memory_write_gate(
+            None,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.NO_EXTERNAL_CALL,
+        )
+        assert gate is not None
+        config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'atomic-gate-audit-rollback.db'}")
+        async with SQLiteProfile.open(config, tables=BUILTIN_TABLES) as profile:
+            contexts = await _ready_contexts(
+                profile,
+                candidate_pipeline=atomic_memory_pipeline(Pipeline()),
+                memory_write_gate=gate,
+            )
+            scope = await create_scope(contexts, 1)
+            context = await contexts.get(scope)
+            async with profile.database.transaction() as connection:
+                await connection.execute(
+                    text(
+                        "CREATE TRIGGER rollback_decision_observation "
+                        "BEFORE INSERT ON pc_decision_observations "
+                        "BEGIN SELECT RAISE(ROLLBACK, 'audit rolled back'); END"
+                    )
+                )
+
+            with pytest.raises(OperationalError, match="savepoint"):
+                await context.triggers.flush(limit=1)
+            assert (await context.triggers.cursor()).sequence == 0
+            assert not (await contexts.atomic_memory.for_scope(scope).list()).items
+
+    asyncio.run(scenario())
+
+
+def test_atomic_memory_audit_failure_log_omits_database_exception(tmp_path, caplog: pytest.LogCaptureFixture):
+    """Audit diagnostics expose only a bounded exception class, never a driver payload or traceback."""
+
+    marker = "x" * 8192
+
+    async def scenario():
+        gate = build_memory_write_gate(
+            None,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.NO_EXTERNAL_CALL,
+        )
+        assert gate is not None
+        config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'atomic-gate-audit-log.db'}")
+        async with SQLiteProfile.open(config, tables=BUILTIN_TABLES) as profile:
+            contexts = await _ready_contexts(
+                profile,
+                candidate_pipeline=atomic_memory_pipeline(Pipeline()),
+                memory_write_gate=gate,
+            )
+            scope = await create_scope(contexts, 1)
+            context = await contexts.get(scope)
+            async with profile.database.transaction() as connection:
+                await connection.execute(
+                    text(
+                        "CREATE TRIGGER reject_decision_observation_with_marker "
+                        "BEFORE INSERT ON pc_decision_observations "
+                        f"BEGIN SELECT RAISE(ABORT, '{marker}'); END"
+                    )
+                )
+
+            assert (await context.triggers.flush(limit=1)).current_cursor == 1
+
+    caplog.set_level("WARNING", logger="powercontext.builtin.runtime.atomic_memory_processing")
+    asyncio.run(scenario())
+    diagnostic = next(
+        record for record in caplog.records if getattr(record, "event", None) == "decision.observation_sink_failed"
+    )
+    rendered = JsonFormatter().format(diagnostic)
+    assert diagnostic.exc_info is None
+    assert diagnostic.__dict__["exception_type"] == "IntegrityError"
+    assert marker not in rendered
+    assert '"exception_type":"IntegrityError"' in rendered
 
 
 @pytest.mark.parametrize("error", [InferenceTimeoutError("embed", 60), InferenceUnavailableError("generate")])

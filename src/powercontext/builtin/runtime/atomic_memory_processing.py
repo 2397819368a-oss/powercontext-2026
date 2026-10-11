@@ -25,6 +25,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Literal, NoReturn
 
 from sqlalchemy import update
+from sqlalchemy.exc import OperationalError
 
 from powercontext._logging import log_safely
 from powercontext.artifacts import ArtifactLineage, ArtifactRef
@@ -670,12 +671,20 @@ class AtomicMemorySourceWindowProcessor:
                         datetime.now(UTC) - timedelta(days=self.decision_observation_retention_days),
                     )
         except Exception as error:
+            # SQLite RAISE(ROLLBACK, ...) invalidates the owner transaction and
+            # destroys this savepoint. Continuing would consume the source window
+            # in a new transaction after the Memory write was lost.
+            if (
+                connection.dialect.name == "sqlite"
+                and isinstance(error, OperationalError)
+                and "no such savepoint" in str(error)
+            ):
+                raise
             log_safely(
                 logger,
                 logging.WARNING,
                 "Decision observation persistence failed",
-                exc_info=error,
-                extra={"event": "decision.observation_sink_failed", "error_type": type(error).__name__},
+                extra={"event": "decision.observation_sink_failed", "exception_type": type(error).__name__},
             )
             return None
         return finalized
