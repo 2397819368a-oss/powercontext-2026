@@ -161,11 +161,11 @@ jobs:
           mkdir -p "$TMPDIR"
           collect_diagnostics() {
             df -h . /tmp
-            # A timed-out pytest process cannot run fixture cleanup. Retain
-            # bounded native logs from its isolated data directories as well
-            # as the Python stack and SQL trace.
+            # A timed-out pytest process cannot run fixture cleanup. Preserve
+            # native startup/recovery evidence too: a tail alone can omit the
+            # transaction that acquired the lock blocking the final SQL query.
             find "$TMPDIR" -type f \( -name '*.log' -o -name '*.log.wf' \) \
-              -print -exec tail -c 8388608 {} \; > seekdb-native.log
+              -printf '%P\0' | tar -czf seekdb-native.tar.gz -C "$TMPDIR" --null -T -
           }
           trap collect_diagnostics EXIT
           df -h . /tmp
@@ -202,7 +202,7 @@ jobs:
           name: seekdb-migrations-${{ matrix.python-version }}
           path: |
             seekdb-migrations.log
-            seekdb-native.log
+            seekdb-native.tar.gz
           if-no-files-found: ignore
 
   atomic-memory-clean-seekdb:
