@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts import ArtifactRef, MemoryCitation, StableHandle
 from powercontext.sources import SourceRef
 
 if TYPE_CHECKING:
@@ -285,9 +286,20 @@ class RecordService(Protocol):
         execution_context: Any = None,
     ) -> ArtifactCreated: ...
 
+<<<<<<< HEAD
     async def create_atomic_memories(
         self, scope_id: str, contents: tuple[dict[str, JsonValue], ...], *, execution_context: Any = None
     ) -> tuple[ArtifactCreated, ...]: ...
+=======
+    async def bind_artifact_handle(
+        self,
+        scope_id: str,
+        handle: StableHandle,
+        target: ArtifactRef,
+        /,
+    ) -> ArtifactRef: ...
+
+    async def resolve_artifact_handle(self, scope_id: str, handle: StableHandle, /) -> ArtifactRef: ...
 
     async def get_artifact(self, scope_id: str, family: str, artifact_id: str, /) -> ArtifactRecord: ...
 

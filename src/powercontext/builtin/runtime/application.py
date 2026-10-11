@@ -31,6 +31,7 @@ from pydantic import BaseModel, JsonValue, ValidationError
 
 from powercontext._logging import log_safely
 from powercontext.artifacts import ArtifactLineage, ArtifactRef
+from powercontext.artifacts import ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchOutcome,
@@ -564,6 +565,14 @@ class ScopedRecordApplication:
             return await self._runtime._records().create_artifact(
                 self.scope_id, family, write, execution_context=execution_context
             )
+
+    async def bind_artifact_handle(self, handle: StableHandle, target: ArtifactRef, /) -> ArtifactRef:
+        async with self._runtime._scope_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            return await self._runtime._records().bind_artifact_handle(self.scope_id, handle, target)
+
+    async def resolve_artifact_handle(self, handle: StableHandle, /) -> ArtifactRef:
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._runtime._records().resolve_artifact_handle(self.scope_id, handle)
 
     async def get_artifact(self, family: str, artifact_id: str, /) -> ArtifactRecord:
         async with self._runtime._scope_operation(self.scope_id):

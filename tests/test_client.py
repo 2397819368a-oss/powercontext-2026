@@ -41,6 +41,7 @@ from powercontext.http import (
     AccessSubject,
     ArtifactAccessResource,
     ArtifactReference,
+    BindArtifactHandleRequest,
     CaptureContentSourceRequest,
     ExactScopeSelection,
     FlushTopicMemoryRequest,
@@ -110,6 +111,39 @@ def test_client_preserves_supported_artifact_tag_queries(families) -> None:
         assert result.items == []
         assert len(sent) == 1
         assert json.loads(sent[0].content) == payload
+def test_artifact_handle_client_binds_and_resolves_exact_revision() -> None:
+    async def scenario() -> None:
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "family": "memory",
+                    "key": "preferred-language",
+                    "artifact": {"family": "memory", "artifact_id": "memory-1", "revision": 2},
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as transport:
+            client = PowerContextClient("https://memory.example", http_client=transport)
+            bound = await client.bind_artifact_handle(
+                "scope-a",
+                "memory",
+                "preferred-language",
+                BindArtifactHandleRequest(artifact_id="memory-1", revision=2),
+            )
+            resolved = await client.resolve_artifact_handle("scope-a", "memory", "preferred-language")
+
+        assert bound == resolved
+        assert [request.method for request in requests] == ["PUT", "GET"]
+        assert [request.url.path for request in requests] == [
+            "/v1/scopes/scope-a/artifact-handles/memory/preferred-language",
+            "/v1/scopes/scope-a/artifact-handles/memory/preferred-language",
+        ]
+        assert json.loads(requests[0].content) == {"artifact_id": "memory-1", "revision": 2}
+        assert requests[1].content == b""
 
     asyncio.run(scenario())
 
