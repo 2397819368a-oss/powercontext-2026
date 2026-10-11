@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Mapping
 from contextlib import suppress
@@ -32,7 +33,13 @@ _SCRIPTS_ROOT = _PLUGIN_ROOT / "scripts"
 sys.path.insert(0, str(_PLUGIN_ROOT))
 sys.path.insert(0, str(_SCRIPTS_ROOT))
 
-from bootstrap_state import clear_receipt, load_receipt, save_receipt  # noqa: E402
+from bootstrap_state import (  # noqa: E402
+    clear_receipt,
+    clear_receipt_if_matches,
+    load_receipt,
+    load_receipt_state,
+    save_receipt,
+)
 from hooks.bootstrap_context import (  # noqa: E402
     InvalidBootstrapResponse,
     validate_bootstrap_context,
@@ -130,8 +137,8 @@ def main(settings: CodexPluginSettings | None = None) -> int:
             return 0
         receipt = cast(dict[str, str], response["receipt"])
         receipt_id = receipt["receipt_id"]
+        previous_receipt = load_receipt_state(session_id)
         try:
-            save_receipt(session_id, scope_id, receipt_id)
             delivered = validate_delivery_receipt(
                 _post_json(
                     "/v1/context/bootstrap/receipts",
@@ -143,7 +150,7 @@ def main(settings: CodexPluginSettings | None = None) -> int:
             )
             _require_injected(delivered)
         except Exception:
-            clear_receipt(session_id)
+            _clear_stale_receipt_after_failed_claim(session_id, scope_id, receipt_id, previous_receipt)
             _emit_bootstrap_event("delivery_failed")
             with suppress(Exception):
                 _post_json(
@@ -154,6 +161,7 @@ def main(settings: CodexPluginSettings | None = None) -> int:
                 )
             return 0
         try:
+            save_receipt(session_id, scope_id, receipt_id)
             json.dump(
                 {
                     "hookSpecificOutput": {
@@ -165,9 +173,9 @@ def main(settings: CodexPluginSettings | None = None) -> int:
                 separators=(",", ":"),
             )
             sys.stdout.write("\n")
-        except Exception:
-            clear_receipt(session_id)
-            _emit_bootstrap_event("delivery_failed")
+            sys.stdout.flush()
+        except Exception as error:
+            _handle_output_failure(session_id, scope_id, receipt_id, error)
             return 0
     except Exception:
         return 0
@@ -281,6 +289,31 @@ def _remaining_time(deadline: float) -> float:
 def _require_injected(receipt: Mapping[str, str]) -> None:
     if receipt.get("state") != "injected":
         raise InvalidBootstrapResponse
+
+
+def _clear_stale_receipt_after_failed_claim(
+    session_id: str,
+    scope_id: str,
+    receipt_id: str,
+    previous_receipt: tuple[str, str] | None,
+) -> None:
+    if previous_receipt is not None and previous_receipt != (scope_id, receipt_id):
+        clear_receipt_if_matches(session_id, *previous_receipt)
+
+
+def _handle_output_failure(session_id: str, scope_id: str, receipt_id: str, error: Exception) -> None:
+    clear_receipt_if_matches(session_id, scope_id, receipt_id)
+    if isinstance(error, BrokenPipeError):
+        try:
+            stdout = sys.stdout.fileno()
+            descriptor = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(descriptor, stdout)
+            finally:
+                os.close(descriptor)
+        except (AttributeError, OSError, ValueError):
+            pass
+    _emit_bootstrap_event("delivery_failed")
 
 
 def _synchronize_non_ready_receipt(

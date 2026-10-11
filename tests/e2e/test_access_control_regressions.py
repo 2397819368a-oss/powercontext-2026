@@ -359,6 +359,123 @@ def test_bootstrap_retry_reauthorizes_exact_items_after_context_references_chang
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("reader_has_candidate", [False, True])
+def test_bootstrap_insert_conflict_reauthorizes_the_winning_receipt(tmp_path, monkeypatch, reader_has_candidate):
+    async def scenario():
+        async with _server(tmp_path) as (app, client, _):
+            private = await _scope(client)
+            remembered = await client.post(
+                "/v1/memory/remember",
+                json={
+                    "scope_id": private,
+                    "kind": "constraint",
+                    "text": "PRIVATE concurrent bootstrap constraint.",
+                },
+            )
+            assert remembered.status_code == 200, remembered.text
+            memory_id = remembered.json()["records"][0]["artifact"]["artifact_id"]
+            tags_path = f"/v1/scopes/{private}/artifacts/atomic-memory/{memory_id}/tags"
+            tags = await client.get(tags_path)
+            assert tags.status_code == 200, tags.text
+            tagged = await client.put(
+                tags_path,
+                headers={"If-Match": tags.headers["ETag"]},
+                json={"tags": ["bootstrap-context"]},
+            )
+            assert tagged.status_code == 200, tagged.text
+
+            created = await client.post(
+                "/v1/scopes",
+                json={
+                    "title": "Concurrent bootstrap scope",
+                    "summary": "Starts without a Context Reference",
+                    "idempotency_key": "bootstrap-insert-conflict",
+                },
+            )
+            assert created.status_code == 201, created.text
+            current = created.json()["scope_id"]
+            await _grant(client, current, "bob", "scope.viewer")
+            if reader_has_candidate:
+                public = await client.post(
+                    "/v1/memory/remember",
+                    json={
+                        "scope_id": current,
+                        "kind": "fact",
+                        "text": "Public concurrent bootstrap context.",
+                    },
+                )
+                assert public.status_code == 200, public.text
+                public_id = public.json()["records"][0]["artifact"]["artifact_id"]
+                public_tags_path = f"/v1/scopes/{current}/artifacts/atomic-memory/{public_id}/tags"
+                public_tags = await client.get(public_tags_path)
+                assert public_tags.status_code == 200, public_tags.text
+                public_tagged = await client.put(
+                    public_tags_path,
+                    headers={"If-Match": public_tags.headers["ETag"]},
+                    json={"tags": ["bootstrap-context"]},
+                )
+                assert public_tagged.status_code == 200, public_tagged.text
+            headers = {"Authorization": "Bearer bob"}
+            payload = {
+                "scope_id": current,
+                "enabled": True,
+                "lifecycle": "resume",
+                "integration": "access-regression",
+                "event_id": "concurrent-bootstrap-event",
+            }
+
+            repository = app.state.application._bootstrap_receipts
+            original_create = repository.create
+            reader_waiting = asyncio.Event()
+            release_reader = asyncio.Event()
+            first_create = True
+
+            async def pause_first_receipt(receipt):
+                nonlocal first_create
+                if first_create:
+                    first_create = False
+                    assert bool(receipt.items) is reader_has_candidate
+                    reader_waiting.set()
+                    await release_reader.wait()
+                return await original_create(receipt)
+
+            monkeypatch.setattr(repository, "create", pause_first_receipt)
+            reader_task = asyncio.create_task(client.post("/v1/context/bootstrap", headers=headers, json=payload))
+            try:
+                await asyncio.wait_for(reader_waiting.wait(), timeout=5)
+                updated = await client.put(
+                    f"/v1/scopes/{current}",
+                    json={
+                        "expected_version": created.json()["version"],
+                        "title": created.json()["title"],
+                        "summary": created.json()["summary"],
+                        "context_references": [private],
+                    },
+                )
+                assert updated.status_code == 200, updated.text
+                winner = await client.post("/v1/context/bootstrap", json=payload)
+                assert winner.status_code == 200, winner.text
+                assert winner.json()["status"] == "ready"
+                assert "PRIVATE concurrent bootstrap constraint" in winner.json()["content"]
+            finally:
+                release_reader.set()
+
+            denied = await reader_task
+            assert denied.status_code == 403, denied.text
+            assert "PRIVATE concurrent bootstrap constraint" not in denied.text
+            assert (
+                await client.get(
+                    f"/v1/scopes/{private}/artifacts/atomic-memory/{memory_id}",
+                    headers=headers,
+                )
+            ).status_code == 403
+            retry = await client.post("/v1/context/bootstrap", headers=headers, json=payload)
+            assert retry.status_code == 403
+            assert "PRIVATE concurrent bootstrap constraint" not in retry.text
+
+    asyncio.run(scenario())
+
+
 async def _grant(client, scope_id, principal, role, resource=None):
     response = await client.post(
         "/v1/access/bindings/create",

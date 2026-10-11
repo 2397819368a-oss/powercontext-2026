@@ -1376,10 +1376,15 @@ class ScopedContextApplication:
         generation_calls = 0
         memory_recoverable = False
         for scope_id in scope_ids:
+            memory_limit = (
+                builder.memory_candidate_limit + sum(identity[0] == scope_id for identity in excluded_memory)
+                if MEMORY_FAMILY in families
+                else 0
+            )
             outcome = await self._recall_scope(
                 scope_id,
                 request,
-                memory_limit=builder.memory_candidate_limit if MEMORY_FAMILY in families else 0,
+                memory_limit=memory_limit,
                 experience_limit=builder.experience_candidate_limit if EXPERIENCE_FAMILY in families else 0,
                 admission=admission,
                 reuse=reuse.get(scope_id),
@@ -1835,7 +1840,14 @@ class ScopedBootstrapApplication:
             candidates = await self._select_candidates(request, scope_ids)
             build = build_bootstrap_context(candidates, request.max_bytes)
             if build.content is None:
-                return await self._empty_result(request, event_key, build, repository)
+                return await self._empty_result(
+                    request,
+                    event_key,
+                    build,
+                    scope_ids,
+                    repository,
+                    authorize_scopes,
+                )
 
             stored, created = await repository.create(
                 self._stored_receipt(
@@ -1849,6 +1861,7 @@ class ScopedBootstrapApplication:
             )
             if not created:
                 self._require_matching_request(stored, request)
+                await self._authorize_stored_result(stored, scope_ids, authorize_scopes)
                 return await self._existing_result(stored)
             return _ready_bootstrap(stored, build.content)
 
@@ -1876,17 +1889,28 @@ class ScopedBootstrapApplication:
         if existing is None:
             return None
         self._require_matching_request(existing, request)
-        if authorize_scopes is not None:
-            stored_scope_ids = tuple(dict.fromkeys((*scope_ids, *(item.scope_id for item in existing.items))))
-            await authorize_scopes(stored_scope_ids)
+        await self._authorize_stored_result(existing, scope_ids, authorize_scopes)
         return await self._existing_result(existing)
+
+    async def _authorize_stored_result(
+        self,
+        stored: StoredBootstrapReceipt,
+        scope_ids: tuple[str, ...],
+        authorize_scopes: Callable[[tuple[str, ...]], Awaitable[None]] | None,
+    ) -> None:
+        if authorize_scopes is None:
+            return
+        stored_scope_ids = tuple(dict.fromkeys((*scope_ids, *(item.scope_id for item in stored.items))))
+        await authorize_scopes(stored_scope_ids)
 
     async def _empty_result(
         self,
         request: BootstrapContextRequest,
         event_key: str | None,
         build: BootstrapBuild,
+        scope_ids: tuple[str, ...],
         repository: BootstrapReceiptRepository,
+        authorize_scopes: Callable[[tuple[str, ...]], Awaitable[None]] | None,
     ) -> BootstrapContext:
         candidate = self._stored_receipt(
             request,
@@ -1901,6 +1925,7 @@ class ScopedBootstrapApplication:
             stored, created = await repository.create(candidate)
             if not created:
                 self._require_matching_request(stored, request)
+                await self._authorize_stored_result(stored, scope_ids, authorize_scopes)
                 return await self._existing_result(stored)
         return BootstrapContext(
             status="empty",

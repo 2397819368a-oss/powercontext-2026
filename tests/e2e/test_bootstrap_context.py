@@ -378,6 +378,102 @@ def test_bootstrap_deduplicates_complete_atomic_revision_before_recall_sufficien
     asyncio.run(scenario())
 
 
+def test_bootstrap_deduplication_replenishes_candidates_before_the_limit(tmp_path, monkeypatch) -> None:
+    assessed_memory_counts: list[int] = []
+    original_assess = RecallSufficiencyGate.assess
+
+    def observe_assess(self, candidates, *args, **kwargs):
+        assessed_memory_counts.append(sum(candidate.family == "memory" for candidate in candidates))
+        return original_assess(self, candidates, *args, **kwargs)
+
+    monkeypatch.setattr(RecallSufficiencyGate, "assess", observe_assess)
+    app = create_server_app(
+        settings=ServerSettings(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'deduplicate-before-limit.db'}"),
+            mcp=McpConfig(enabled=False),
+            metrics=MetricsConfig(enabled=False),
+            runtime=RuntimeConfig(
+                recall_gate_enabled=True,
+                recall_gate_min_top_score=0.0,
+                recall_gate_min_top_gap=0.0,
+                recall_gate_min_lexical_overlap=0.0,
+            ),
+        )
+    )
+
+    async def scenario() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as transport,
+        ):
+            client = PowerContextClient("http://testserver", http_client=transport, trust_transport_security=True)
+            scope = await client.create_scope(
+                CreateScopeRequest(
+                    title="Candidate replenishment",
+                    summary="Exclude bootstrap revisions before limiting recall",
+                    idempotency_key="candidate-replenishment",
+                )
+            )
+            memories = []
+            for index in range(22):
+                marker = f"REPLENISH-{index:02d}"
+                remembered = await client.remember_memory(
+                    RememberMemoryRequest(
+                        scope_id=scope.scope_id,
+                        kind="fact",
+                        text=f"Candidate replenishment evidence {marker} remains independently recallable.",
+                    )
+                )
+                assert len(remembered.records) == 1
+                memories.append((marker, remembered.records[0]))
+
+            recall_request = PrepareContextRequest.model_validate({
+                "scope_id": scope.scope_id,
+                "query": "candidate replenishment evidence",
+                "max_bytes": 32768,
+                "assembly": {"sections": [{"family": "memory", "limit": 8}]},
+            })
+            ordinary = await client.prepare_context(recall_request)
+            assert ordinary.content is not None
+            assert ordinary.content.count("REPLENISH-") == 8
+            assert assessed_memory_counts[-1] == 16
+            delivered = [(marker, record) for marker, record in memories if marker in ordinary.content][:6]
+            assert len(delivered) == 6
+            for _marker, record in delivered:
+                await _tag_for_bootstrap(client, scope.scope_id, record.artifact.artifact_id)
+
+            prepared = await client.prepare_bootstrap_context(
+                BootstrapContextRequest.model_validate({
+                    "scope_id": scope.scope_id,
+                    "enabled": True,
+                    "lifecycle": "startup",
+                    "integration": "acceptance",
+                    "event_id": "candidate-replenishment-event",
+                    "max_bytes": 4096,
+                })
+            )
+            assert prepared.status == "ready"
+            assert len(prepared.items) == 6
+            assert all(not item.truncated for item in prepared.items)
+            await client.record_bootstrap_delivery(
+                RecordBootstrapDeliveryRequest.model_validate({
+                    "scope_id": scope.scope_id,
+                    "receipt_id": prepared.receipt.receipt_id,
+                    "outcome": "injected",
+                })
+            )
+
+            deduplicated = await client.prepare_context(
+                recall_request.model_copy(update={"bootstrap_receipt_id": prepared.receipt.receipt_id})
+            )
+            assert deduplicated.content is not None
+            assert deduplicated.content.count("REPLENISH-") == 8
+            assert all(marker not in deduplicated.content for marker, _record in delivered)
+            assert assessed_memory_counts[-1] == 16
+
+    asyncio.run(scenario())
+
+
 def test_pending_bootstrap_retry_preserves_package_level_omission(tmp_path) -> None:
     app = create_server_app(
         settings=ServerSettings(

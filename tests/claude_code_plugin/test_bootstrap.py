@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 from hashlib import sha256
 from pathlib import Path
@@ -313,15 +314,39 @@ def test_session_start_fails_open_and_does_not_inject_when_delivery_cannot_be_re
     assert json.loads(errors.getvalue())["outcome"] == "delivery_failed"
 
 
+def test_concurrent_delivery_loser_preserves_the_winner_receipt(
+    session_start_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_start_module.save_receipt("session-1", "scope:test", "bcr_previous")
+
+    def post(path, payload, **_kwargs):
+        if path == "/v1/context/bootstrap":
+            return _ready()
+        if payload["outcome"] == "injected":
+            session_start_module.save_receipt("session-1", "scope:test", "bcr_test")
+            raise OSError
+        return {"receipt_id": "bcr_test", "state": "injected"}
+
+    monkeypatch.setattr(session_start_module, "_post_json", post)
+    monkeypatch.setattr(session_start_module, "resolve_scope_id", lambda *_args, **_kwargs: "scope:test")
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(json.dumps({"source": "startup", "session_id": "session-1", "cwd": "/workspace"})),
+    )
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    assert session_start_module.main(session_start_module.ClaudeCodePluginSettings(bootstrap_context=True)) == 0
+    assert session_start_module.load_receipt("session-1", "scope:test") == "bcr_test"
+
+
 def test_session_start_output_failure_clears_the_deduplication_receipt(
     session_start_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    class BrokenOutput:
-        def write(self, _value):
-            raise OSError
-
     def post(path, _payload, **_kwargs):
         return {"receipt_id": "bcr_test", "state": "injected"} if path.endswith("/receipts") else _ready()
 
@@ -332,10 +357,14 @@ def test_session_start_output_failure_clears_the_deduplication_receipt(
         "stdin",
         io.StringIO(json.dumps({"source": "startup", "session_id": "session-1", "cwd": "/workspace"})),
     )
-    monkeypatch.setattr(sys, "stdout", BrokenOutput())
+    read_descriptor, write_descriptor = os.pipe()
+    os.close(read_descriptor)
+    output = os.fdopen(write_descriptor, "w")
+    monkeypatch.setattr(sys, "stdout", output)
     monkeypatch.setattr(sys, "stderr", io.StringIO())
 
     assert session_start_module.main(session_start_module.ClaudeCodePluginSettings(bootstrap_context=True)) == 0
+    output.close()
     assert not list((tmp_path / "plugin-data" / "powercontext-bootstrap").glob("*.json"))
 
     monkeypatch.setattr(session_start_module, "_post_json", lambda *_args, **_kwargs: _already_delivered())
