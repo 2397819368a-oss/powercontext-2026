@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
 from powercontext.builtin.artifacts.experience import EXPERIENCE_INCUBATION_CURSOR_NAME
 from powercontext.builtin.artifacts.profile.models import PROFILE_SOURCE_WINDOW_BINDING
@@ -32,7 +33,6 @@ from powercontext.builtin.dream.generation import DreamGenerator
 from powercontext.builtin.inference.usage import bind_usage_reporter
 from powercontext.builtin.persistence.dream import DreamRepository
 from powercontext.builtin.persistence.errors import ArtifactProcessingLeadershipLostError, GenerationConflictError
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemoryExecutionContext
 from powercontext.builtin.runtime.config import BuiltinConfig
 from powercontext.builtin.runtime.processing_contracts import (
     ArtifactProcessingWorkAssignment,
@@ -208,18 +208,13 @@ async def _process_family_invocation(  # noqa: C901 - one guarded dispatch per r
                     await invocation.complete(connection, remaining_work=False)
                 return ArtifactProcessingWorkerCompletion()
         if assignment.artifact_family == "memory":
-            if security is None:
-                # Runtime-only SDK workers reuse the parent schema, whose worker
-                # composition deliberately supplies no implicit Atomic authority.
-                from powercontext.server.authz import PrincipalRef
-
-                atomic_context = AtomicMemoryExecutionContext(
-                    principal=PrincipalRef(type="service", id="local-runtime"), trusted_local=True
-                )
-            else:
-                atomic_context = AtomicMemoryExecutionContext(
+            atomic_context = (
+                None
+                if security is None
+                else ArtifactSearchExecutionContext(
                     principal=security.principal, access=security.access, audit=security.context
                 )
+            )
             result = await contexts.process_memory(
                 scope,
                 config.runtime.source_window_limit,

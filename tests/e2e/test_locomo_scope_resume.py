@@ -57,16 +57,7 @@ def test_locomo_ingestion_registers_and_resumes_its_scope_after_restart(
     async def respond(messages, info):
         prompt = next(part.content for part in messages[-1].parts if part.part_kind == "user-prompt")
         value = json.loads(prompt)
-        if "proposal" in value:
-            proposal = value["proposal"]
-            output = {
-                "action": "create",
-                "compared_ids": [item["item_id"] for item in value["related"]],
-                "content": {"kind": proposal["kind"], "text": proposal["text"]},
-                "evidence_ids": proposal["evidence_ids"],
-                "reason": "Keep the session fact as an independent memory.",
-            }
-        elif "evidence" in value:
+        if "evidence" in value and "proposal" not in value:
             output = {
                 "candidates": [
                     {
@@ -75,6 +66,15 @@ def test_locomo_ingestion_registers_and_resumes_its_scope_after_restart(
                         "evidence_ids": [value["evidence"][0]["evidence_id"]],
                     }
                 ]
+            }
+        elif "proposal" in value:
+            proposal = value["proposal"]
+            output = {
+                "action": "create",
+                "compared_ids": [item["item_id"] for item in value["related"]],
+                "content": {"kind": proposal["kind"], "text": proposal["text"]},
+                "evidence_ids": proposal["evidence_ids"],
+                "reason": "Preserve the supplied session evidence.",
             }
         else:
             output = {"label": "CORRECT"} if "gold_answer" in value else {"answer": "7 May 2023"}
@@ -113,7 +113,8 @@ def test_locomo_ingestion_registers_and_resumes_its_scope_after_restart(
         ) as runtime:
             assert runtime.scopes is not None
             descriptor = await runtime.scopes.get(registered_scope)
-            page = await runtime.memory.for_scope(descriptor.scope_id).list()
+            assert runtime.atomic_memory is not None
+            page = await runtime.atomic_memory.for_scope(descriptor.scope_id).list()
             assert len(page.items) == 1
             assert page.items[0].artifact.lineage.sources[0].source_id == "D1"
 

@@ -295,8 +295,9 @@ async def validate_runtime(label, configuration, *, dream_generator=None):
                     await client.capture_content_source(
                         CaptureContentSourceRequest(scope_id=scope.scope_id, source_id=f"task-{index}", content=content)
                     )
-                await runtime.memory.for_scope(scope.scope_id).flush()
-                entries = await runtime.memory.for_scope(scope.scope_id).list()
+                assert runtime.atomic_memory is not None
+                await runtime.atomic_memory.for_scope(scope.scope_id).flush()
+                entries = await runtime.atomic_memory.for_scope(scope.scope_id).list()
                 citations = [
                     ArtifactReference.model_validate_json(entry.ref.model_dump_json()) for entry in entries.items
                 ]
@@ -323,7 +324,6 @@ async def validate_runtime(label, configuration, *, dream_generator=None):
                 )
                 report[label]["experience_candidate"] = candidate.model_dump(mode="json")
                 assert candidate.artifact_refs and candidate.source_refs
-                assert candidate.memory_citations == []
                 assert run.input_manifest is not None and len(run.input_manifest.root_groups) == 3
                 approved = await client.approve_artifact_candidate(
                     ApproveArtifactCandidateRequest(
@@ -334,7 +334,6 @@ async def validate_runtime(label, configuration, *, dream_generator=None):
                 experience = await client.get_experience(
                     GetExperienceRequest(scope_id=scope.scope_id, artifact=approved.result_artifact)
                 )
-                assert experience.memory_citations == []
                 assert experience.artifact_refs == candidate.artifact_refs
                 assert await client.create_dream_run(scope.scope_id, request) == run
                 report[label]["experience"] = experience.model_dump(mode="json")
@@ -366,7 +365,7 @@ async def validate_runtime(label, configuration, *, dream_generator=None):
                     GetArtifactCandidateRequest(scope_id=scope.scope_id, candidate_id=skill_run.candidate.candidate_id)
                 )
                 report[label]["skill_candidate"] = skill_candidate.model_dump(mode="json")
-                assert not skill_candidate.memory_citations and skill_candidate.artifact_refs == [experience.artifact]
+                assert skill_candidate.artifact_refs == [experience.artifact]
                 skill_approved = await client.approve_artifact_candidate(
                     ApproveArtifactCandidateRequest(
                         scope_id=scope.scope_id,

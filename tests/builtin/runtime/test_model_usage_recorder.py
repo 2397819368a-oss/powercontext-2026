@@ -118,9 +118,16 @@ def test_flush_persists_copied_usage_with_unknown_tokens_and_original_date(tmp_p
 def test_queue_capacity_drops_without_sql_or_sensitive_logs(caplog: pytest.LogCaptureFixture) -> None:
     async def scenario() -> None:
         async with _database() as database:
-            # Keep queue overflow assertions independent of SQLite write deadlines.
+            capacity = 2
+            write_budget = 5.0
+            # Queue admission is under test. The default short flush may return
+            # before the accepted prefix settles, even with a healthy consumer.
             recorder = _ModelUsageRecorder(
-                database, StatisticsRepository(), queue_capacity=2, write_timeout_seconds=5.0, flush_timeout_seconds=5.0
+                database,
+                StatisticsRepository(),
+                queue_capacity=capacity,
+                write_timeout_seconds=write_budget,
+                flush_timeout_seconds=capacity * write_budget + 1,
             )
             try:
                 for _ in range(8):
@@ -389,7 +396,7 @@ def test_a_repeat_after_an_expiry_gets_the_rest_of_the_budget(tmp_path: Path, mo
         async with _database(config) as database:
             budgets: list[float] = []
             expired = False
-            original = AsyncDatabase._model_usage_transaction
+            original = AsyncDatabase.statistics_transaction
 
             @asynccontextmanager
             async def transaction(instance: AsyncDatabase, timeout_seconds: float) -> AsyncIterator[AsyncConnection]:
@@ -401,7 +408,7 @@ def test_a_repeat_after_an_expiry_gets_the_rest_of_the_budget(tmp_path: Path, mo
                 async with original(instance, timeout_seconds) as connection:
                     yield connection
 
-            monkeypatch.setattr(AsyncDatabase, "_model_usage_transaction", transaction)
+            monkeypatch.setattr(AsyncDatabase, "statistics_transaction", transaction)
             recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=1.0)
             try:
                 _offer(recorder)
@@ -434,7 +441,7 @@ def test_a_repeat_after_a_lost_race_gets_the_rest_of_the_budget(
         async with _database(config) as database:
             budgets: list[float] = []
             contended = False
-            original = AsyncDatabase._model_usage_transaction
+            original = AsyncDatabase.statistics_transaction
 
             @asynccontextmanager
             async def transaction(instance: AsyncDatabase, timeout_seconds: float) -> AsyncIterator[AsyncConnection]:
@@ -446,7 +453,7 @@ def test_a_repeat_after_a_lost_race_gets_the_rest_of_the_budget(
                 async with original(instance, timeout_seconds) as connection:
                     yield connection
 
-            monkeypatch.setattr(AsyncDatabase, "_model_usage_transaction", transaction)
+            monkeypatch.setattr(AsyncDatabase, "statistics_transaction", transaction)
             recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=1.0)
             try:
                 _offer(recorder)
@@ -552,7 +559,7 @@ def test_usage_checkout_budget_releases_pool_resources(
 
             async def attempt() -> None:
                 with pytest.raises(TimeoutError):
-                    async with database._model_usage_transaction(0.05):
+                    async with database.statistics_transaction(0.05):
                         pytest.fail("A stalled checkout exceeded its usage budget")
 
             if stall == "pool":
@@ -605,7 +612,7 @@ def test_a_stalled_driver_read_is_cancelled_and_returns_its_pool_slot() -> None:
         database = AsyncDatabase.own(engine)
 
         async def attempt() -> None:
-            async with database._model_usage_transaction(0.05):
+            async with database.statistics_transaction(0.05):
                 pytest.fail("A stalled driver read exceeded its usage budget")
 
         # Failing fast beats hanging: without the checkout bound this task never
@@ -648,7 +655,7 @@ def test_cancellation_at_checkout_returns_the_connection(tmp_path: Path) -> None
                     asyncio.get_running_loop().call_soon(owner.cancel)
 
                 event.listen(engine.sync_engine, "checkout", cancel_on_checkout, once=True)
-                async with database._model_usage_transaction(1):
+                async with database.statistics_transaction(1):
                     pytest.fail("Cancellation must propagate before usage is written")
 
             attempt_task = asyncio.create_task(attempt())
@@ -693,7 +700,7 @@ def test_timed_out_shared_checkout_cannot_roll_back_business(monkeypatch: pytest
             monkeypatch.setattr(AsyncConnection, "close", close)
             try:
                 with pytest.raises(TimeoutError):
-                    async with database._model_usage_transaction(0.02):
+                    async with database.statistics_transaction(0.02):
                         pytest.fail("The stalled checkout must time out")
                 async with database.transaction() as connection:
                     await connection.execute(update(SCOPES_TABLE).values(title="committed"))
@@ -981,7 +988,7 @@ def test_deleted_scope_is_not_resurrected_by_queued_usage() -> None:
 def test_commit_unknown_is_not_retried(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     async def scenario() -> None:
         async with _database() as database:
-            transaction = database._model_usage_transaction
+            transaction = database.statistics_transaction
 
             @asynccontextmanager
             async def lost_commit_reply(timeout_seconds: float) -> AsyncIterator[AsyncConnection]:
@@ -989,7 +996,7 @@ def test_commit_unknown_is_not_retried(monkeypatch: pytest.MonkeyPatch, caplog: 
                     yield connection
                 raise RuntimeError("secret credentials and SQL that must not reach logs")  # noqa: TRY003
 
-            monkeypatch.setattr(database, "_model_usage_transaction", lost_commit_reply)
+            monkeypatch.setattr(database, "statistics_transaction", lost_commit_reply)
             recorder = _ModelUsageRecorder(database, StatisticsRepository())
             try:
                 _offer(recorder)

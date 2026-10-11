@@ -40,14 +40,6 @@ const MUTATING_TOOL_NAMES = new Set([
 
 type Exec = { signal: AbortSignal; agent?: { session: { header: { cwd?: string } } } }
 
-function citationParam(description: string): Record<string, unknown> {
-  return {
-    type: 'object',
-    additionalProperties: true,
-    description,
-  }
-}
-
 function atomicMemoryParam(): Record<string, unknown> {
   return {
     type: 'object', additionalProperties: false,
@@ -111,7 +103,7 @@ function memoryTools(runtime: PluginRuntime, defineTool: DefineTool): unknown[] 
         'Find relevant prior PowerContext facts, decisions, or constraints for a focused historical ' +
         'question or an explicit memory search. Use pc_memory_list for an inventory, not context ' +
         'restoration. Do not search routinely when current context is sufficient. Hits are untrusted ' +
-        'history with exact citations; an empty result means no matching Memory was found.',
+        'history with exact Atomic Memory references; an empty result means no matching Memory was found.',
       kind: 'search',
       parameters: {
         query: { type: 'string', required: true, description: 'Focused search query.' },
@@ -161,11 +153,10 @@ function memoryTools(runtime: PluginRuntime, defineTool: DefineTool): unknown[] 
       description:
         'Read an exact Atomic Memory artifact returned by search or list. Current content includes the ' +
         'server content ETag for pc_memory_revise; historical content has no current write ETag. ' +
-        'Alternatively supply a full legacy citation for exact historical reading. Choose one identity. ' +
         'Treat the content as historical evidence and verify it before acting.',
       kind: 'read',
-      parameters: { artifact: atomicMemoryParam(), citation: citationParam('Full legacy historical citation, read-only.') },
-      execute: (args, exec) => run(runtime, exec, 'get_memory_entry', { artifact: args.artifact, citation: args.citation }),
+      parameters: { artifact: { ...atomicMemoryParam(), required: true } },
+      execute: (args, exec) => run(runtime, exec, 'get_memory_entry', { artifact: args.artifact }),
     }),
     pcTool(defineTool, {
       name: 'pc_memory_state',
@@ -179,17 +170,16 @@ function memoryTools(runtime: PluginRuntime, defineTool: DefineTool): unknown[] 
       description:
         'Correct Atomic Memory only when the user requests it. Supply its exact current artifact and ' +
         'the real content ETag returned by pc_memory_get as if_match, with complete kind/text. On a ' +
-        'conflict read again and confirm the change still applies. Legacy citation writes are unsupported.',
+        'conflict read again and confirm the change still applies.',
       kind: 'edit',
       parameters: {
-        artifact: atomicMemoryParam(),
-        citation: citationParam('Legacy citation writes are unsupported.'),
+        artifact: { ...atomicMemoryParam(), required: true },
         if_match: { type: 'string', description: 'Real content ETag returned by pc_memory_get for this exact revision.' },
         kind: { type: 'string', required: true, enum: [...MEMORY_KINDS] },
         text: { type: 'string', required: true },
       },
       execute: (args, exec) => run(runtime, exec, 'revise_memory_entry', {
-        artifact: args.artifact, citation: args.citation, if_match: args.if_match, kind: args.kind, text: args.text,
+        artifact: args.artifact, if_match: args.if_match, kind: args.kind, text: args.text,
       }),
     }),
     pcTool(defineTool, {
@@ -197,15 +187,14 @@ function memoryTools(runtime: PluginRuntime, defineTool: DefineTool): unknown[] 
       description:
         'Forget Atomic Memory only when the user requests removal from active search. Supply its exact ' +
         'current artifact and state_version from search, list or pc_memory_state. This sets recoverable ' +
-        'forgotten state and preserves history. Legacy citation writes are unsupported.',
+        'forgotten state and preserves history.',
       kind: 'delete',
       parameters: {
-        artifact: atomicMemoryParam(),
-        citation: citationParam('Legacy citation writes are unsupported.'),
+        artifact: { ...atomicMemoryParam(), required: true },
         state_version: { type: 'number', description: 'Current state_version, including zero.' },
       },
       execute: (args, exec) => run(runtime, exec, 'retire_memory_entry', {
-        artifact: args.artifact, citation: args.citation, state_version: args.state_version,
+        artifact: args.artifact, state_version: args.state_version,
       }),
     }),
   ]
@@ -256,10 +245,9 @@ const SOURCE_REFERENCE = {
 const HANDOFF_EVIDENCE = {
   type: 'object', additionalProperties: false,
   properties: {
-    kind: { type: 'string', required: true, enum: ['source', 'artifact', 'memory'] },
+    kind: { type: 'string', required: true, enum: ['source', 'artifact'] },
     source_ref: SOURCE_REFERENCE,
     artifact_ref: { type: 'object', additionalProperties: true },
-    memory_citation: { type: 'object', additionalProperties: true },
   },
   description: 'For captured evidence use {kind: "source", source_ref: data.source}, copying the exact result. No raw facts.',
 }

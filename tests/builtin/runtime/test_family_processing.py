@@ -45,7 +45,6 @@ from powercontext.builtin.persistence.tables import (
     MODEL_USAGE_DAILY_TABLE,
 )
 from powercontext.builtin.runtime.artifact_processing import SpawnArtifactProcessingWorkerLauncher
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemoryExecutionContext
 from powercontext.builtin.runtime.composition import _initialize_atomic_memory_authority, open_builtin_contexts
 from powercontext.builtin.runtime.config import BuiltinConfig, InferenceConfig, RuntimeConfig
 from powercontext.builtin.runtime.family_processing import (
@@ -344,13 +343,7 @@ def test_sdk_memory_worker_with_parent_schema_commits_formal_local_ownership(tmp
             assert outcome.outcome == ArtifactProcessingWorkerOutcome.SUCCEEDED
             replay = await process_family_invocation(contexts, assignment, config=config)
             assert replay.outcome == ArtifactProcessingWorkerOutcome.SUCCEEDED
-            entries = (
-                await contexts.atomic_memory.for_scope(assignment.scope_id).list(
-                    context=AtomicMemoryExecutionContext(
-                        principal=PrincipalRef(type="service", id="local-runtime"), trusted_local=True
-                    ),
-                )
-            ).items
+            entries = (await contexts.atomic_memory.for_scope(assignment.scope_id).list()).items
             assert len(entries) == 1
             assert entries[0].artifact.content.text == "Run the configuration tests."
             async with contexts.database.transaction() as connection:
@@ -360,8 +353,7 @@ def test_sdk_memory_worker_with_parent_schema_commits_formal_local_ownership(tmp
                 )
                 assert cursor is not None and cursor.cursor.sequence == 1
                 assert intent is not None and intent.handled_generation == assignment.claimed_request_generation
-                owner = (await connection.execute(select(ACCESS_OWNERS_TABLE))).mappings().one()
-                assert owner["owner_type"] == "service" and owner["owner_id"] == "local-runtime"
+                assert (await connection.execute(select(ACCESS_OWNERS_TABLE))).first() is None
 
     asyncio.run(scenario())
 

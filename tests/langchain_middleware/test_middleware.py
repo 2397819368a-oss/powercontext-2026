@@ -41,8 +41,8 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryExtractionOutput,
     AtomicMemoryGenerationPipeline,
 )
-from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
+    AtomicMemoryReconciliationContent,
     AtomicMemoryReconciliationInput,
     AtomicMemoryReconciliationOutput,
 )
@@ -92,7 +92,7 @@ class _IndependentMemoryReconciler:
             output=AtomicMemoryReconciliationOutput(
                 action="create",
                 compared_ids=tuple(item.item_id for item in request.related),
-                content=AtomicMemoryContent(kind=request.proposal.kind, text=request.proposal.text),
+                content=AtomicMemoryReconciliationContent(kind=request.proposal.kind, text=request.proposal.text),
                 evidence_ids=request.proposal.evidence_ids,
                 reason="Keep the captured turn with its exact Source evidence.",
             )

@@ -39,10 +39,6 @@ PARAMETERS = {
     "artifact_id": ("原子记忆 ID", "Exact Atomic Memory artifact_id returned by search or inventory."),
     "state_version": ("当前状态版本", "Current state_version from search, list or pc_memory_state, including zero."),
     "if_match": ("当前内容 ETag", "Real content ETag returned by pc_memory_get for this exact current revision."),
-    "citation": (
-        "精确记忆引用",
-        "Complete Memory citation returned by a prior read or mutation; do not reconstruct it.",
-    ),
     "kind": ("记忆类型", "One of the six supported curated Memory kinds."),
     "text": ("记忆正文", "Curated Memory text: nonblank after NFC/trim and at most 8192 UTF-8 bytes."),
     "reason": ("操作原因", "Reason for this explicit operation; preserve the user's intent."),
@@ -56,7 +52,7 @@ PARAMETERS = {
     "objective": ("交接目标", "The work objective to continue with the selected evidence."),
     "evidence": (
         "精确交接证据",
-        "Complete source/artifact/memory citations using their declared kind and exact fields.",
+        "Complete source/artifact citations using their declared kind and exact fields.",
     ),
     "draft": ("完整交接草稿", "Complete inspected Handoff draft, including all evidence and verification fields."),
     "handoff": ("完整待提交交接", "Complete prepared Handoff from finalize; commit persists it."),
@@ -143,13 +139,8 @@ def memory_tool_schemas(schemas):
     requests: dict[str, Any] = {}
     requests["get_memory_entry"] = {
         **deepcopy(common),
-        "required": ["scope_id"],
-        "oneOf": [{"required": ["artifact"]}, {"required": ["citation"]}],
-        "properties": {
-            "scope_id": scope,
-            "artifact": artifact,
-            "citation": {"$ref": "#/components/schemas/MemoryCitation"},
-        },
+        "required": ["scope_id", "artifact"],
+        "properties": {"scope_id": scope, "artifact": artifact},
     }
     requests["revise_memory_entry"] = {
         **deepcopy(common),
@@ -183,14 +174,9 @@ def memory_tool_schemas(schemas):
         "type": "object",
         "properties": {"kind": {"type": "string"}, "text": {"type": "string"}},
     }
-    legacy = schemas["MemoryEntry"]
     responses = {
         "list_memory_entries": {"$ref": "#/components/schemas/ListAtomicMemoryResponse"},
-        "get_memory_entry": {
-            "type": "object",
-            "properties": {**legacy["properties"], **revision["properties"]},
-            "anyOf": [revision, {"$ref": "#/components/schemas/MemoryEntry"}],
-        },
+        "get_memory_entry": revision,
         "revise_memory_entry": {"$ref": "#/components/schemas/ArtifactRevision"},
         "retire_memory_entry": {"$ref": "#/components/schemas/AtomicMemoryMutationResponse"},
     }

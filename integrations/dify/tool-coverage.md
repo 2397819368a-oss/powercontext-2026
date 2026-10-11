@@ -6,7 +6,7 @@ The provider declares exactly the following 20 tools. `generate_contract.py --ch
 | --- | --- | --- |
 | `pc_search` | `search_memory` | Memory search; default and maximum 8 hits |
 | `pc_memory_list` | `list_memory_entries` | Page through Atomic Memory, optionally including inactive states |
-| `pc_memory_get` | `get_memory_entry` | Read an exact Atomic ArtifactRef or a full historical legacy citation |
+| `pc_memory_get` | `get_memory_entry` | Read an exact Atomic ArtifactRef |
 | `pc_memory_state` | `get_atomic_memory_state` | Read the current Atomic reference, lifecycle and state version |
 | `pc_remember` | `remember_memory` | Save explicitly chosen Atomic Memory; return `changed` and `records` |
 | `pc_memory_revise` | `revise_memory_entry` | Replace exact current Atomic content using its content ETag |
@@ -27,13 +27,13 @@ The provider declares exactly the following 20 tools. `generate_contract.py --ch
 
 ## Parameter and output differences
 
-Memory tools retain their logical operation IDs. The adapter routes `pc_memory_list` to `list_atomic_memories`, Atomic reads to `get_artifact` or `get_artifact_revision`, revisions to `replace_artifact`, and forgetting to `change_atomic_memory_lifecycle`. Legacy citations support exact historical reads only.
+Memory tools retain their logical operation IDs. The adapter routes `pc_memory_list` to `list_atomic_memories`, Atomic reads to `get_artifact` or `get_artifact_revision`, revisions to `replace_artifact`, and forgetting to `change_atomic_memory_lifecycle`.
 
 The administrator supplies Scope/binding, Server URL/token, context assembly and byte budget. The model supplies only operation-specific fields. Search limit is 8 rather than the HTTP default of 10 and maximum of 50. Memory kind is restricted to the six documented kinds; normalized Memory text is bounded by 8192 UTF-8 bytes. Search query keeps the HTTP character limit. Code indexing and tag filters are outside this provider surface.
 
 Objects, arrays and nullable inputs use strings containing one JSON value. The model-facing parameter description retains the decoded schema through the default daemon's discovery path; the plugin decodes once and validates the public HTTP contract. Nullable strings need JSON quotes, explicit null is the text `null`, and optional unused parameters may be omitted. Unknown fields, malformed/non-finite JSON, empty reference objects and malformed references fail before the operation request. Generation permits a combined 1–32 Source/Artifact references; empty array defaults are encoded as `[]`. Review's explicit family uses the text `"experience"`/`"skill"`; an omitted or JSON-null filter is unfiltered. See [Workflow serialization examples](plugin/README.md).
 
-`pc_memory_get` accepts exactly one `artifact` or `citation`, each encoded as one complete JSON value. An Atomic `artifact` has `family=atomic-memory`, `artifact_id` and `revision`. A current read returns the complete `ArtifactRevision`, including `content.kind` and `content.text`, and exposes the actual Server content ETag as `etag`. An exact historical read has no current write ETag. `pc_memory_revise` requires the exact current `artifact`, that returned ETag as `if_match`, and complete `kind`/`text`. `pc_memory_retire` requires the exact current `artifact` and a nonnegative `state_version` from search, list or `pc_memory_state`; it sets `forgotten` and preserves history. Conflicts require rereading current state and checking that the requested change still applies.
+`pc_memory_get` accepts one `artifact`, encoded as one complete JSON value. An Atomic `artifact` has `family=atomic-memory`, `artifact_id` and `revision`. A current read returns the complete `ArtifactRevision`, including `content.kind` and `content.text`, and exposes the actual Server content ETag as `etag`. An exact historical read has no current write ETag. Legacy Memory citations are rejected before any request is sent. `pc_memory_revise` requires the exact current `artifact`, that returned ETag as `if_match`, and complete `kind`/`text`. `pc_memory_retire` requires the exact current `artifact` and a nonnegative `state_version` from search, list or `pc_memory_state`; it sets `forgotten` and preserves history. Conflicts require rereading current state and checking that the requested change still applies.
 
 `pc_memory_state(artifact_id)` returns `artifact`, `state`, `state_version` and nullable `merged_into_id`. States are `active`, `forgotten`, `merged` and `retired`. `pc_remember` returns `changed` and `records`; Atomic records carry their exact `artifact` and `state_version`.
 

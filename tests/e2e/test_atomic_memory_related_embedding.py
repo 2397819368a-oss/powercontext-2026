@@ -18,17 +18,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
-from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
+from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryCandidate,
     AtomicMemoryExtractionOutput,
     AtomicMemoryGenerationPipeline,
 )
-from powercontext.builtin.artifacts.atomic_memory.reconciliation import AtomicMemoryReconciliationOutput
+from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
+    AtomicMemoryReconciliationContent,
+    AtomicMemoryReconciliationInput,
+    AtomicMemoryReconciliationOutput,
+)
 from powercontext.builtin.artifacts.memory import EmbeddingProfile
 from powercontext.builtin.inference import (
     EmbeddingResult,
@@ -40,6 +45,20 @@ from powercontext.builtin.inference import (
 from powercontext.builtin.inference.minimax import MiniMaxEmbeddingModel
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig, open_builtin_contexts
+from powercontext.server.authz import (
+    AccessAction,
+    AccessAuditContext,
+    AccessBinding,
+    AccessBindingState,
+    AccessControlService,
+    AccessDecision,
+    AccessRole,
+    AccessUnavailableError,
+    BuiltinAuthorizationProvider,
+    PrincipalRef,
+    ResourceRef,
+)
+from powercontext.server.authz.repository import RelationalAccessRepository
 from tests.e2e.dream_support import memory_source_text
 
 PROFILE = EmbeddingProfile(
@@ -84,7 +103,7 @@ class _Reconciler:
                 action="revise" if request.related else "create",
                 compared_ids=compared,
                 target_ids=(request.related[0].item_id,) if request.related else (),
-                content=AtomicMemoryContent(kind="fact", text=request.proposal.text),
+                content=AtomicMemoryReconciliationContent(kind="fact", text=request.proposal.text),
                 evidence_ids=request.proposal.evidence_ids,
                 reason="Retain the preference and its supplied Source evidence.",
             )
@@ -119,6 +138,198 @@ class _SymmetricEmbedding:
 
     async def embed(self, texts, /):
         return EmbeddingResult(vectors=tuple((1.0, 0.0, 0.0) for _ in texts))
+
+
+class _ConfiguredArtifactProvider:
+    def __init__(self, repository):
+        self.builtin = BuiltinAuthorizationProvider(repository)
+        self.denied = None
+        self.unavailable = None
+
+    async def check(self, request, /):
+        requirement = (request.action, request.resource)
+        if requirement == self.unavailable:
+            raise AccessUnavailableError("configured_artifact_authority_unavailable")
+        decision = await self.builtin.check(request)
+        if requirement == self.denied:
+            return AccessDecision(False, "configured-artifact-denial", decision.policy_revision)
+        return decision
+
+    async def check_batch(self, requests, /):
+        return tuple([await self.check(request) for request in requests])
+
+    async def resolve_resource_filter(self, request, /):
+        return await self.builtin.resolve_resource_filter(request)
+
+
+class _RecordingCreateReconciler:
+    def __init__(self):
+        self.inputs: list[AtomicMemoryReconciliationInput] = []
+
+    async def generate(self, request):
+        self.inputs.append(request)
+        return GenerationResult(
+            output=AtomicMemoryReconciliationOutput(
+                action="create",
+                compared_ids=tuple(item.item_id for item in request.related),
+                content=AtomicMemoryReconciliationContent(kind="fact", text=request.proposal.text),
+                evidence_ids=request.proposal.evidence_ids,
+                reason="Retain the independent Source fact after comparing the permitted owned memories.",
+            )
+        )
+
+
+async def _configured_flush_context(contexts, principal, binding_id="related-contributor"):
+    repository = RelationalAccessRepository(contexts.database)
+    await repository.create_binding(
+        AccessBinding(
+            binding_id=binding_id,
+            subject=principal,
+            resource=ResourceRef.scope("project"),
+            role=AccessRole.SCOPE_CONTRIBUTOR,
+            granted_by=principal,
+            reason="Fixture Scope contribution authority",
+            created_at=datetime.now(UTC),
+            expires_at=None,
+            state=AccessBindingState.ACTIVE,
+            version=1,
+            policy_revision="pending",
+            idempotency_key=binding_id,
+        )
+    )
+    provider = _ConfiguredArtifactProvider(repository)
+    access = AccessControlService(provider, relationships=repository, audit=repository)
+    return (
+        ArtifactSearchExecutionContext(
+            principal=principal,
+            access=access,
+            audit=AccessAuditContext(transport="background", operation="related-source-flush"),
+        ),
+        provider,
+    )
+
+
+@pytest.mark.parametrize("denied_action", [AccessAction.ARTIFACT_READ, AccessAction.ARTIFACT_WRITE])
+def test_source_flush_compares_all_permitted_owned_matches_with_a_custom_provider(tmp_path, denied_action):
+    reconciler = _RecordingCreateReconciler()
+    pipeline = AtomicMemoryGenerationPipeline(
+        extractor=_Extractor(), reconciler=reconciler, estimator=character_token_estimator()
+    )
+    configured = _config(tmp_path)
+    configured = configured.model_copy(
+        update={"runtime": configured.runtime.model_copy(update={"atomic_memory_comparison_batch_size": 5})}
+    )
+    owner = PrincipalRef(type="user", id="related-owner")
+    other = PrincipalRef(type="user", id="other-owner")
+
+    async def scenario():
+        async with open_builtin_contexts(
+            configured, embedding_model=_SymmetricEmbedding(), candidate_pipeline=pipeline
+        ) as contexts:
+            context = await contexts.get("project")
+            memory = contexts.atomic_memory.for_scope("project")
+            execution, provider = await _configured_flush_context(contexts, owner)
+            foreign, _ = await _configured_flush_context(contexts, other, "related-other-contributor")
+            # Exceed both a comparison batch and ordinary search's default topK.
+            owned = await contexts.records.create_atomic_memories(
+                "project",
+                tuple({"kind": "fact", "text": f"Permitted owned rollout fact {number}."} for number in range(23)),
+                execution_context=execution,
+            )
+            (denied,) = await contexts.records.create_atomic_memories(
+                "project",
+                ({"kind": "fact", "text": "DENIED_OWNED_MATCH_SENTINEL"},),
+                execution_context=execution,
+            )
+            await contexts.records.create_atomic_memories(
+                "project",
+                ({"kind": "fact", "text": "FOREIGN_OWNER_MATCH_SENTINEL"},),
+                execution_context=foreign,
+            )
+            await context.triggers.flush(limit=100)
+            before = (await memory.list(limit=100)).items
+            cursor = (await context.triggers.cursor()).sequence
+            provider.denied = (
+                denied_action,
+                ResourceRef.artifact("project", family="atomic-memory", artifact_id=denied.artifact_id),
+            )
+            await contexts.records.create_source("project", "content", EQUIVALENT)
+
+            result = await context.triggers.flush(limit=1, atomic_context=execution)
+
+            assert (result.previous_cursor, result.current_cursor) == (cursor, cursor + 1)
+            compared = {
+                original.ref.artifact_id
+                for request in reconciler.inputs
+                for item in request.related
+                for original in item.original_refs
+            }
+            assert compared == {item.artifact_id for item in owned}
+            projected = "\n".join(request.model_dump_json() for request in reconciler.inputs)
+            assert "DENIED_OWNED_MATCH_SENTINEL" not in projected
+            assert "FOREIGN_OWNER_MATCH_SENTINEL" not in projected
+            after = {item.ref.artifact_id: item for item in (await memory.list(limit=100)).items}
+            for original in before:
+                assert after.pop(original.ref.artifact_id) == original
+            (created,) = after.values()
+            assert created.artifact.content.text == EQUIVALENT
+            ownership = await execution.access.artifact_owner(
+                ResourceRef.artifact("project", family="atomic-memory", artifact_id=created.ref.artifact_id)
+            )
+            assert ownership is not None and ownership.owner == owner
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("unavailable_action", [AccessAction.ARTIFACT_READ, AccessAction.ARTIFACT_WRITE])
+def test_source_flush_propagates_custom_artifact_authority_unavailable_without_advancing_cursor(
+    tmp_path, unavailable_action
+):
+    reconciler = _RecordingCreateReconciler()
+    pipeline = AtomicMemoryGenerationPipeline(
+        extractor=_Extractor(), reconciler=reconciler, estimator=character_token_estimator()
+    )
+    owner = PrincipalRef(type="user", id="related-owner")
+
+    async def scenario():
+        async with open_builtin_contexts(
+            _config(tmp_path), embedding_model=_SymmetricEmbedding(), candidate_pipeline=pipeline
+        ) as contexts:
+            context = await contexts.get("project")
+            memory = contexts.atomic_memory.for_scope("project")
+            execution, provider = await _configured_flush_context(contexts, owner)
+            (original,) = await contexts.records.create_atomic_memories(
+                "project",
+                ({"kind": "fact", "text": ORIGINAL},),
+                execution_context=execution,
+            )
+            await context.triggers.flush(limit=100)
+            before = (await memory.list()).items
+            cursor = (await context.triggers.cursor()).sequence
+            provider.unavailable = (
+                unavailable_action,
+                ResourceRef.artifact("project", family="atomic-memory", artifact_id=original.artifact_id),
+            )
+            await contexts.records.create_source("project", "content", EQUIVALENT)
+
+            with pytest.raises(AccessUnavailableError) as failure:
+                await context.triggers.flush(limit=1, atomic_context=execution)
+
+            assert failure.value.code == "configured_artifact_authority_unavailable"
+            assert (await context.triggers.cursor()).sequence == cursor
+            assert (await memory.list()).items == before
+            assert not reconciler.inputs
+
+            provider.unavailable = None
+            assert (await context.triggers.flush(limit=1, atomic_context=execution)).current_cursor == cursor + 1
+            assert {
+                read.ref.artifact_id
+                for request in reconciler.inputs
+                for item in request.related
+                for read in item.original_refs
+            } == {original.artifact_id}
+
+    asyncio.run(scenario())
 
 
 def test_source_flush_uses_minimax_query_vectors_to_recall_the_prior_identity(tmp_path):

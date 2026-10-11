@@ -19,7 +19,7 @@ import { PowerContextClient, type FetchFn } from '../src/client.ts'
 import { registerCommands, type CommandResult } from '../src/commands.ts'
 import { resolveConfig } from '../src/config.ts'
 import { createDiagnosticEmitter } from '../src/diagnostics.ts'
-import type { PluginRuntime, ToolResult } from '../src/invoke.ts'
+import { renderToolResult, type PluginRuntime, type ToolResult } from '../src/invoke.ts'
 import { resolveScopeId } from '../src/scope.ts'
 import { registerTools } from '../src/tools.ts'
 
@@ -109,12 +109,30 @@ describe.each(['tool', 'command'] as const)('registered %s failure boundary', en
     expect(h.events).toEqual([])
   })
 
+  it('surfaces a missing persisted Scope target with operator repair guidance before a write', async () => {
+    const h = fixture(async () => Response.json({
+      error: { code: 'scope_binding_target_missing', message: PRIVATE, details: { scope_id: PRIVATE } },
+    }, { status: 409, headers: { 'X-PowerContext-Request-ID': 'request-1' } }))
+    const result = await remember(h)
+    const rendered = renderToolResult({}, result)[0].text
+    expect(JSON.parse(rendered)).toMatchObject({
+      ok: false, code: 'scope_binding_target_missing', status: 409, request_id: 'request-1',
+    })
+    expect(result.message).toContain('An operator must investigate the data loss')
+    expect(result.message).toContain('restore the original Scope or explicitly repair the binding')
+    expect(result.message).toContain('Do not automatically create a replacement Scope')
+    expect(result.message).not.toContain('retry')
+    expect(rendered).not.toContain(PRIVATE)
+    expect(h.calls.map(call => call.path)).toEqual([RESOLVE_PATH])
+    expect(h.events).toEqual([])
+  })
+
   it('preserves a resource 404 and its domain code after resolving Scope', async () => {
     const h = fixture(async url => new URL(url).pathname === RESOLVE_PATH
       ? Response.json({ scope_id: 'scope-workspace' })
       : domainResponse(404, 'memory_not_found'))
     const result = entry === 'tool'
-      ? await h.tool('pc_memory_get', { citation: {} })
+      ? await h.tool('pc_memory_get', { artifact: { family: 'atomic-memory', artifact_id: 'atomic-1', revision: 1 } })
       : JSON.parse((await h.command('search API')).text)
     expect(result).toMatchObject({
       ok: false, code: 'not_found', error_code: 'memory_not_found', status: 404, request_id: 'request-1',

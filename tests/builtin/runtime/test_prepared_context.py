@@ -519,7 +519,7 @@ def test_builder_skips_an_entry_that_cannot_fit_but_keeps_a_later_shorter_one() 
 
 
 def test_builder_rejects_non_atomic_memory_recall_hits() -> None:
-    other_ref = ArtifactRef(family="memory", artifact_id="other", revision=4)
+    other_ref = ArtifactRef(family="experience", artifact_id="other", revision=4)
 
     with pytest.raises(PreparedContextInvariantError, match="memory-ref-mismatch"):
         PreparedContextBuilder().build(

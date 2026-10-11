@@ -16,14 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from contextlib import AsyncExitStack
-from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
-from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -34,15 +31,14 @@ from pydantic import SecretStr
 from sqlalchemy import insert, text
 from starlette.middleware import Middleware
 
+from powercontext.builtin.persistence.atomic_memory_identity import legacy_entry_artifact_id
 from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
-    AtomicMemoryMigrationError,
     apply_atomic_memory_migration,
     plan_atomic_memory_migration,
     verify_atomic_memory_migration,
 )
-from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
-from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
-from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE
+from powercontext.builtin.persistence.schema import create_tables
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE, MEMORY_ENTRY_VERSIONS_TABLE
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_runtime
 from powercontext.builtin.runtime.config import RuntimeConfig
 from powercontext.server.app import ServerApplication, create_app
@@ -63,39 +59,47 @@ from powercontext.server.authz.service import ReplaceBinding
 from powercontext.server.factory import create_server_app
 from powercontext.server.middleware import AuthenticationMiddleware
 from powercontext.server.settings import AccessControlConfig, BearerAuthConfig, McpConfig, MetricsConfig, ServerSettings
+from tests.e2e.atomic_memory_migration_backend import MigrationBackend, migration_index, migration_profile
 
 ACTOR = PrincipalRef(type="service", id="server-token", description="PowerContext static bearer")
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 EXPIRES_AT = datetime(2030, 1, 1, tzinfo=UTC)
 
 
-def _client(tmp_path: Path) -> TestClient:
+def _client(migration_backend: MigrationBackend) -> TestClient:
     return TestClient(
         create_server_app(
             settings=ServerSettings(
-                database=_config(tmp_path),
+                database=migration_backend.config,
                 runtime=RuntimeConfig(artifact_processing_families=()),
                 access=AccessControlConfig(mode="enforced"),
                 auth=BearerAuthConfig(enabled=True, token=SecretStr("migration-test-token")),
                 mcp=McpConfig(enabled=False),
                 metrics=MetricsConfig(enabled=False),
             ),
-            scheduler_path=tmp_path / "scheduler.db",
+            scheduler_path=migration_backend.directory / "scheduler.db",
         ),
         headers={"Authorization": "Bearer migration-test-token"},
     )
 
 
-def _config(tmp_path: Path) -> SQLiteConfig:
-    return SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'migration.db'}")
+def _snapshot(migration_backend: MigrationBackend, table: str) -> list[tuple[object, ...]]:
+    async def read() -> list[tuple[object, ...]]:
+        async with migration_profile(migration_backend.config) as profile, profile.database.transaction() as connection:
+            result = await connection.execute(text(f"SELECT * FROM {table} ORDER BY 1, 2"))  # noqa: S608
+            return [tuple(row) for row in result]
+
+    return asyncio.run(read())
 
 
-def _snapshot(tmp_path: Path, table: str) -> list[tuple[object, ...]]:
-    with sqlite3.connect(tmp_path / "migration.db") as connection:
-        return connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()  # noqa: S608
+async def _execute(migration_backend: MigrationBackend, statement: str, values: dict[str, Any]) -> None:
+    async with migration_profile(migration_backend.config) as profile, profile.database.transaction() as connection:
+        await connection.execute(text(statement), values)
 
 
-async def _seed_legacy(tmp_path: Path, scope_id: str, *, revoked: bool = False, replacement: bool = False):
+async def _seed_legacy(
+    migration_backend: MigrationBackend, scope_id: str, *, revoked: bool = False, replacement: bool = False
+):
     resources = tuple(
         ResourceRef.artifact(
             scope_id, family="memory", artifact_id="memory", selector=MemoryEntrySelector(entry_id=entry_id)
@@ -135,17 +139,11 @@ async def _seed_legacy(tmp_path: Path, scope_id: str, *, revoked: bool = False, 
         ],
     }
     async with (
-        SQLiteProfile.open(_config(tmp_path), tables=()) as profile,
+        migration_profile(migration_backend.config) as profile,
         profile.database.transaction() as connection,
     ):
         # Frozen legacy records exercise conversion independently of the current Memory models.
-        await connection.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS pc_memory_entry_versions (scope_id TEXT, family TEXT, memory_artifact_id TEXT, "
-                "entry_id TEXT, entry_version_id TEXT, version INTEGER, previous_version_id TEXT, kind TEXT, "
-                "text TEXT, source_refs BLOB, artifact_refs BLOB, entry_content_hash TEXT, created_in_revision INTEGER)"
-            )
-        )
+        await create_tables(connection, (MEMORY_ENTRY_VERSIONS_TABLE,))
         await connection.execute(
             insert(ARTIFACTS_TABLE).values(
                 scope_id=scope_id,
@@ -153,7 +151,6 @@ async def _seed_legacy(tmp_path: Path, scope_id: str, *, revoked: bool = False, 
                 artifact_id="memory",
                 revision=1,
                 content=json.dumps(content).encode(),
-                memory_citations=None,
             )
         )
         await connection.execute(
@@ -171,7 +168,8 @@ async def _seed_legacy(tmp_path: Path, scope_id: str, *, revoked: bool = False, 
         for version in versions:
             await connection.execute(
                 text(
-                    "INSERT INTO pc_memory_entry_versions VALUES "
+                    "INSERT INTO pc_memory_entry_versions (scope_id, family, memory_artifact_id, entry_id, entry_version_id, "
+                    "version, previous_version_id, kind, text, source_refs, artifact_refs, entry_content_hash, created_in_revision) VALUES "
                     "(:scope, 'memory', 'memory', :entry_id, :entry_version_id, 1, NULL, :kind, :text, "
                     ":source_refs, :artifact_refs, :entry_content_hash, 1)"
                 ),
@@ -242,86 +240,49 @@ async def _seed_legacy(tmp_path: Path, scope_id: str, *, revoked: bool = False, 
     return binding, payload
 
 
-async def _apply(tmp_path: Path):
-    async with SQLiteProfile.open(_config(tmp_path), tables=()) as profile:
+async def _apply(migration_backend: MigrationBackend):
+    async with migration_profile(migration_backend.config) as profile:
         return await apply_atomic_memory_migration(
             profile.database,
-            SQLiteAtomicMemoryIndex(),
+            migration_index(migration_backend.config),
             maintenance_confirmed=True,
         )
 
 
-def _prepare(tmp_path: Path, **options):
-    with _client(tmp_path) as client:
+def _prepare(migration_backend: MigrationBackend, **options):
+    with _client(migration_backend) as client:
         scope_id = client.get("/v1/scopes/default").json()["scope_id"]
-    return asyncio.run(_seed_legacy(tmp_path, scope_id, **options))
+    return asyncio.run(_seed_legacy(migration_backend, scope_id, **options))
 
 
 @pytest.mark.parametrize("revoked", [False, True])
-def test_legacy_grant_replay_and_conflicts_survive_migration(tmp_path: Path, revoked: bool) -> None:
-    original, payload = _prepare(tmp_path, revoked=revoked)
-    audit = _snapshot(tmp_path, "pc_access_audit")
-    receipts = _snapshot(tmp_path, "pc_access_idempotency")
-    result = asyncio.run(_apply(tmp_path))
+def test_legacy_grant_replay_and_conflicts_survive_migration(
+    migration_backend: MigrationBackend, revoked: bool
+) -> None:
+    original, payload = _prepare(migration_backend, revoked=revoked)
+    audit = _snapshot(migration_backend, "pc_access_audit")
+    receipts = _snapshot(migration_backend, "pc_access_idempotency")
+    result = asyncio.run(_apply(migration_backend))
     assert result.ready, result.errors
     assert result.counts["migrated_grant_receipts"] == 1
-    assert _snapshot(tmp_path, "pc_access_audit") == audit
-    migrated_receipts = _snapshot(tmp_path, "pc_access_idempotency")
+    assert _snapshot(migration_backend, "pc_access_audit") == audit
+    migrated_receipts = _snapshot(migration_backend, "pc_access_idempotency")
     assert len(migrated_receipts) == len(receipts)
     assert [row for row in migrated_receipts if row[2] != "binding.create"] == [
         row for row in receipts if row[2] != "binding.create"
     ]
-    with _client(tmp_path) as client:
-        for _ in range(2):
-            response = client.post("/v1/access/bindings/create", json=payload)
-            assert response.status_code == 201, response.text
-            binding = response.json()
-            assert binding["binding_id"] == original.binding_id
-            assert binding["granted_by"]["id"] == ACTOR.id
-            assert binding["state"] == ("revoked" if revoked else "active")
-            assert binding["version"] == (2 if revoked else 1)
-            if revoked:
-                assert binding["revoked_by"]["id"] == ACTOR.id
-                replay_revoke = client.post(
-                    "/v1/access/bindings/revoke",
-                    json={
-                        "binding_id": original.binding_id,
-                        "expected_version": 1,
-                        "idempotency_key": "revoke-legacy",
-                    },
-                )
-                assert replay_revoke.status_code == 200, replay_revoke.text
-                assert replay_revoke.json()["binding_id"] == original.binding_id
-        for field, value in (
-            ("subject", {"type": "user", "id": "different-reader"}),
-            ("reason", "A different grant."),
-            ("expires_at", "2031-01-01T00:00:00+00:00"),
-            (
-                "resource",
-                deepcopy(payload["resource"])
-                | {
-                    "selector": {"type": "memory_entry", "entry_id": "legacy-entry-2"},
-                },
-            ),
-        ):
-            response = client.post("/v1/access/bindings/create", json=payload | {field: value})
-            assert response.status_code == 409, response.text
-            assert response.json()["error"]["code"] == "idempotency-key"
-        atomic_resource = binding["resource"]
-        assert (
-            client.post(
-                "/v1/access/bindings/create",
-                json=payload
-                | {
-                    "resource": atomic_resource,
-                    "idempotency_key": "post-migration-grant",
-                },
-            ).status_code
-            == 201
+    with _client(migration_backend) as client:
+        legacy = client.post("/v1/access/bindings/create", json=payload)
+        assert legacy.status_code == 422, legacy.text
+        assert legacy.json()["error"]["code"] == "legacy_memory_operation_unsupported"
+        response = client.post(
+            "/v1/access/bindings/create",
+            json=_atomic_payload(payload) | {"idempotency_key": "post-migration-grant"},
         )
+        assert response.status_code == 201, response.text
 
     async def verify_role_and_current() -> None:
-        async with SQLiteProfile.open(_config(tmp_path), tables=()) as profile:
+        async with migration_profile(migration_backend.config) as profile:
             repository = RelationalAccessRepository(profile.database)
             current = await repository.get_binding(original.binding_id)
             assert current is not None
@@ -329,55 +290,60 @@ def test_legacy_grant_replay_and_conflicts_survive_migration(tmp_path: Path, rev
                 await repository.create_binding(replace(current, role=AccessRole.ARTIFACT_OWNER))
             assert error.value.code == "idempotency-key"
             async with profile.database.transaction() as connection:
-                report = await verify_atomic_memory_migration(connection, index=SQLiteAtomicMemoryIndex())
+                report = await verify_atomic_memory_migration(
+                    connection, index=migration_index(migration_backend.config)
+                )
                 assert report.ready, report.errors
 
     asyncio.run(verify_role_and_current())
 
 
-def test_apply_repairs_receipts_left_by_completed_migration(tmp_path: Path) -> None:
-    original, payload = _prepare(tmp_path, replacement=True)
+def test_apply_repairs_receipts_left_by_completed_migration(migration_backend: MigrationBackend) -> None:
+    original, payload = _prepare(migration_backend, replacement=True)
     legacy_receipt = next(
         row
-        for row in _snapshot(tmp_path, "pc_access_idempotency")
+        for row in _snapshot(migration_backend, "pc_access_idempotency")
         if row[2] == "binding.create" and row[4] == original.binding_id
     )
-    assert asyncio.run(_apply(tmp_path)).ready
-    with sqlite3.connect(tmp_path / "migration.db") as connection:
-        connection.execute(
-            "UPDATE pc_access_idempotency SET payload_hash = ? WHERE actor_id = ? AND idempotency_key_hash = ?",
-            (legacy_receipt[3], legacy_receipt[0], legacy_receipt[1]),
+    assert asyncio.run(_apply(migration_backend)).ready
+    asyncio.run(
+        _execute(
+            migration_backend,
+            "UPDATE pc_access_idempotency SET payload_hash = :payload_hash "
+            "WHERE actor_id = :actor_id AND idempotency_key_hash = :key_hash",
+            {"payload_hash": legacy_receipt[3], "actor_id": legacy_receipt[0], "key_hash": legacy_receipt[1]},
         )
+    )
 
     async def verify_before_repair() -> None:
         async with (
-            SQLiteProfile.open(_config(tmp_path), tables=()) as profile,
+            migration_profile(migration_backend.config) as profile,
             profile.database.transaction() as connection,
         ):
             for report in (
-                await verify_atomic_memory_migration(connection, index=SQLiteAtomicMemoryIndex()),
-                await plan_atomic_memory_migration(connection, index=SQLiteAtomicMemoryIndex()),
+                await verify_atomic_memory_migration(connection, index=migration_index(migration_backend.config)),
+                await plan_atomic_memory_migration(connection, index=migration_index(migration_backend.config)),
             ):
                 assert not report.ready
                 assert any("rerun apply" in error for error in report.errors), report.errors
                 assert report.counts["pending_grant_receipts"] == 1
 
     asyncio.run(verify_before_repair())
-    before = _snapshot(tmp_path, "pc_access_relationships")
-    audit = _snapshot(tmp_path, "pc_access_audit")
-    noncreate = [row for row in _snapshot(tmp_path, "pc_access_idempotency") if row[2] != "binding.create"]
-    result = asyncio.run(_apply(tmp_path))
+    before = _snapshot(migration_backend, "pc_access_relationships")
+    audit = _snapshot(migration_backend, "pc_access_audit")
+    noncreate = [row for row in _snapshot(migration_backend, "pc_access_idempotency") if row[2] != "binding.create"]
+    result = asyncio.run(_apply(migration_backend))
     assert result.ready, result.errors
     assert result.counts["imported_entries"] == 0
     assert result.counts["migrated_grant_receipts"] == 1
-    assert _snapshot(tmp_path, "pc_access_relationships") == before
-    assert _snapshot(tmp_path, "pc_access_audit") == audit
-    assert [row for row in _snapshot(tmp_path, "pc_access_idempotency") if row[2] != "binding.create"] == noncreate
-    with _client(tmp_path) as client:
-        response = client.post("/v1/access/bindings/create", json=payload)
-        assert response.status_code == 201, response.text
-        assert response.json()["binding_id"] == original.binding_id
-        assert response.json()["state"] == "revoked"
+    assert _snapshot(migration_backend, "pc_access_relationships") == before
+    assert _snapshot(migration_backend, "pc_access_audit") == audit
+    assert [
+        row for row in _snapshot(migration_backend, "pc_access_idempotency") if row[2] != "binding.create"
+    ] == noncreate
+    with _client(migration_backend) as client:
+        legacy = client.post("/v1/access/bindings/create", json=payload)
+        assert legacy.status_code == 422, legacy.text
         replacement = client.post(
             "/v1/access/bindings/replace",
             json={
@@ -394,63 +360,60 @@ def test_apply_repairs_receipts_left_by_completed_migration(tmp_path: Path) -> N
         assert replacement.status_code == 200, replacement.text
         assert replacement.json()["previous"]["binding_id"] == original.binding_id
         assert replacement.json()["current"]["subject"]["id"] == "replacement-reader"
-    repeated = asyncio.run(_apply(tmp_path))
+    repeated = asyncio.run(_apply(migration_backend))
     assert repeated.ready, repeated.errors
     assert repeated.counts["migrated_grant_receipts"] == 0
 
 
 @pytest.mark.parametrize("mutation", ["hash", "actor", "result", "missing"])
 @pytest.mark.parametrize("already_migrated", [False, True])
-def test_migration_rejects_unverifiable_grant_receipts(tmp_path: Path, mutation: str, already_migrated: bool) -> None:
-    original, _payload = _prepare(tmp_path)
+def test_migration_rejects_unverifiable_grant_receipts(
+    migration_backend: MigrationBackend, mutation: str, already_migrated: bool
+) -> None:
+    original, _payload = _prepare(migration_backend)
     if already_migrated:
-        assert asyncio.run(_apply(tmp_path)).ready
-    with sqlite3.connect(tmp_path / "migration.db") as connection:
-        if mutation == "missing":
-            connection.execute("DELETE FROM pc_access_idempotency WHERE result_binding_id = ?", (original.binding_id,))
-        else:
-            column, value = {
-                "hash": ("payload_hash", "0" * 64),
-                "actor": ("actor_id", "other-actor"),
-                "result": ("result_binding_id", "other-binding"),
-            }[mutation]
-            connection.execute(
-                f"UPDATE pc_access_idempotency SET {column} = ? WHERE result_binding_id = ?",  # noqa: S608
-                (value, original.binding_id),
-            )
-    before = _snapshot(tmp_path, "pc_access_idempotency")
-    if already_migrated:
-        with pytest.raises(AtomicMemoryMigrationError, match="receipt"):
-            asyncio.run(_apply(tmp_path))
+        assert asyncio.run(_apply(migration_backend)).ready
+    if mutation == "missing":
+        statement = "DELETE FROM pc_access_idempotency WHERE result_binding_id = :binding_id"
+        values = {"binding_id": original.binding_id}
     else:
-        result = asyncio.run(_apply(tmp_path))
-        assert not result.ready
-        assert any("receipt" in error for error in result.errors), result.errors
-    assert _snapshot(tmp_path, "pc_access_idempotency") == before
+        column, value = {
+            "hash": ("payload_hash", "0" * 64),
+            "actor": ("actor_id", "other-actor"),
+            "result": ("result_binding_id", "other-binding"),
+        }[mutation]
+        statement = f"UPDATE pc_access_idempotency SET {column} = :value WHERE result_binding_id = :binding_id"  # noqa: S608
+        values = {"value": value, "binding_id": original.binding_id}
+    asyncio.run(_execute(migration_backend, statement, values))
+    before = _snapshot(migration_backend, "pc_access_idempotency")
+    result = asyncio.run(_apply(migration_backend))
+    assert not result.ready
+    assert any("receipt" in error for error in result.errors), result.errors
+    assert _snapshot(migration_backend, "pc_access_idempotency") == before
 
 
 @pytest.mark.parametrize("entrypoint", ["factory", "adapter"])
-def test_server_startup_keeps_grant_projection_current(tmp_path: Path, entrypoint: str) -> None:
-    _original, payload = _prepare(tmp_path)
-    assert asyncio.run(_apply(tmp_path)).ready
+def test_server_startup_keeps_grant_projection_current(migration_backend: MigrationBackend, entrypoint: str) -> None:
+    _original, payload = _prepare(migration_backend)
+    assert asyncio.run(_apply(migration_backend)).ready
 
     async def scenario() -> None:
         async with AsyncExitStack() as resources:
             if entrypoint == "factory":
-                app = cast(FastAPI, _client(tmp_path).app)
+                app = cast(FastAPI, _client(migration_backend).app)
             else:
                 access = await resources.enter_async_context(
                     open_builtin_access_control(
-                        _config(tmp_path),
+                        migration_backend.config,
                         bootstrap_administrators=(ACTOR,),
                     )
                 )
                 runtime = await resources.enter_async_context(
                     open_builtin_runtime(
                         BuiltinConfig(
-                            database=_config(tmp_path), runtime=RuntimeConfig(artifact_processing_families=())
+                            database=migration_backend.config, runtime=RuntimeConfig(artifact_processing_families=())
                         ),
-                        scheduler_path=tmp_path / "adapter-scheduler.db",
+                        scheduler_path=migration_backend.directory / "adapter-scheduler.db",
                     )
                 )
                 authentication = StaticBearerAuthenticationProvider("migration-test-token", ACTOR)
@@ -472,15 +435,17 @@ def test_server_startup_keeps_grant_projection_current(tmp_path: Path, entrypoin
 
             async def verify() -> None:
                 async with (
-                    SQLiteProfile.open(_config(tmp_path), tables=()) as profile,
+                    migration_profile(migration_backend.config) as profile,
                     profile.database.transaction() as connection,
                 ):
-                    report = await verify_atomic_memory_migration(connection, index=SQLiteAtomicMemoryIndex())
+                    report = await verify_atomic_memory_migration(
+                        connection, index=migration_index(migration_backend.config)
+                    )
                     assert report.ready, report.errors
 
             response = await client.post(
                 "/v1/access/bindings/create",
-                json=payload
+                json=_atomic_payload(payload)
                 | {
                     "subject": {"type": "user", "id": "startup-reader"},
                     "idempotency_key": "startup-grant",
@@ -513,3 +478,17 @@ def test_server_startup_keeps_grant_projection_current(tmp_path: Path, entrypoin
             await verify()
 
     asyncio.run(scenario())
+
+
+def _atomic_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    resource = payload["resource"]
+    artifact_id = legacy_entry_artifact_id(
+        resource["scope_id"], resource["identity"]["artifact_id"], resource["selector"]["entry_id"]
+    )
+    return payload | {
+        "resource": {
+            "type": "artifact",
+            "scope_id": resource["scope_id"],
+            "identity": {"family": "atomic-memory", "artifact_id": artifact_id},
+        }
+    }

@@ -112,8 +112,9 @@ subordinate to current user, repository, and system instructions.
 Ordinary coding needs no routine Memory calls. Use sufficient current context when continuing work. For an explicit
 memory search (search my memories / 搜索记忆), call search_memory with a focused query, mode auto, and at most eight
 hits. search_memory and list_memory_entries return current Atomic Memory records with real ArtifactRef and state_version.
-Use list_atomic_memories for explicit state filters and pagination. get_memory_entry requires exactly one historical
-citation or legacy logical target; target returns current Atomic Memory and does not follow merged_into_id automatically.
+Use list_atomic_memories for explicit state filters and pagination. get_memory_entry accepts only a legacy logical
+target; it returns current Atomic Memory and does not follow merged_into_id automatically. Historical citations are
+unsupported.
 For new identities use get_artifact for the current content and get_artifact_revision for exact historical content.
 get_artifact and replace_artifact return {artifact, etag, status_code}; etag is the exact HTTP content ETag.
 The MCP replace_artifact tool supports family atomic-memory only.

@@ -43,7 +43,7 @@ def list_page(items: list[dict[str, Any]], raw: str | None) -> dict[str, Any]:
 
 
 def list_links(ctx: dict[str, Any], family: str, window: dict[str, Any]) -> dict[str, Any]:
-    params = {"entry": None, "memory_id": None, "memory_revision": None, "entry_version": None}
+    params: dict[str, Any] = {}
     if family == "notes":
         params.update(artifact=None, revision=None, notes_cursor=None, notes_history=None)
     if family == "skill":
@@ -76,10 +76,6 @@ def cursor_links(request: Request, ctx: dict[str, Any], family: str, following: 
         params = {
             "artifact": None,
             "revision": None,
-            "entry": None,
-            "memory_id": None,
-            "memory_revision": None,
-            "entry_version": None,
             "notes_page": None,
         }
     previous = (

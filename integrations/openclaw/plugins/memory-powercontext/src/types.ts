@@ -21,18 +21,12 @@ export type ArtifactReference = {
   revision: number;
 };
 
-export type MemoryCitation = {
-  memory_ref: ArtifactReference;
-  entry_id: string;
-  entry_version_id: string;
-};
-
 export type AtomicMemoryInput = {
   artifact: ArtifactReference;
   state_version: number;
 };
 
-export type MemoryReference = MemoryCitation | AtomicMemoryInput | ArtifactReference;
+export type MemoryReference = AtomicMemoryInput | ArtifactReference;
 
 export type AtomicMemoryRecord = {
   artifact: ArtifactReference;
@@ -58,14 +52,6 @@ export type SearchMemoryHit = {
 export type SearchMemoryResponse = {
   mode: "fts" | "vector" | "hybrid";
   hits: SearchMemoryHit[];
-};
-
-export type MemoryEntry = {
-  citation: MemoryCitation;
-  version: number;
-  kind: string;
-  text: string;
-  state: "active" | "inactive";
 };
 
 export type ArtifactRevision = ArtifactReference & {
@@ -137,8 +123,8 @@ export function decodeCitation(value: string): MemoryReference {
   } catch {
     throw new Error("citation must be the exact powercontext citation/reference returned by memory_search");
   }
-  if (!isMemoryCitation(parsed) && !isAtomicMemoryInput(parsed) && !isAtomicMemoryRef(parsed)) {
-    throw new Error("citation is not a valid exact PowerContext memory reference");
+  if (!isAtomicMemoryInput(parsed) && !isAtomicMemoryRef(parsed)) {
+    throw new Error("citation is not a valid exact PowerContext Atomic Memory reference");
   }
   return parsed;
 }
@@ -171,20 +157,4 @@ export function atomicMemoryInput(record: AtomicMemoryRecord): AtomicMemoryInput
 export function normalizeMemoryScore(hit: SearchMemoryHit): number {
   const channels = Math.max(1, new Set(hit.matched_by).size);
   return Math.max(0, Math.min(1, hit.score / (channels / 61)));
-}
-
-export function isMemoryCitation(value: unknown): value is MemoryCitation {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const citation = value as Partial<MemoryCitation>;
-  const memory = citation.memory_ref;
-  return (
-    typeof citation.entry_id === "string" && citation.entry_id.length > 0 &&
-    typeof citation.entry_version_id === "string" && citation.entry_version_id.length > 0 &&
-    Boolean(memory) &&
-    memory?.family === "memory" &&
-    typeof memory.artifact_id === "string" && memory.artifact_id.length > 0 &&
-    Number.isInteger(memory.revision) && memory.revision >= 1
-  );
 }

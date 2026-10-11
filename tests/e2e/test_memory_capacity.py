@@ -19,14 +19,7 @@ import asyncio
 import httpx
 import pytest
 
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.builtin.records import BaseOperationNotSupportedError
-from powercontext.builtin.runtime import (
-    BuiltinConfig,
-    open_builtin_runtime,
-)
-from powercontext.builtin.runtime import RememberMemoryRequest as RuntimeRememberMemoryRequest
 from powercontext.builtin.runtime.config import RuntimeConfig
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.client import PowerContextClient, ServerResponseError
@@ -36,52 +29,6 @@ from powercontext.server.authz import PrincipalRef
 from powercontext.server.authz.composition import open_builtin_access_control
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import AccessControlConfig, BearerAuthConfig, McpConfig, ServerSettings
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-def test_runtime_collection_compaction_is_unsupported_without_mutation(tmp_path, enabled):
-    async def scenario():
-        config = BuiltinConfig(
-            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime-capacity.db'}"),
-            runtime=RuntimeConfig(
-                memory_max_active_entries=1,
-                memory_max_manifest_entries=1,
-                memory_compaction_enabled=enabled,
-                memory_compaction_min_tombstone_revisions=0,
-            ),
-        )
-        async with open_builtin_runtime(config) as runtime:
-            assert runtime.scopes is not None
-            scope = await runtime.scopes.create(
-                ScopeDraft(title="Capacity", summary="Retired collection operations", idempotency_key="capacity")
-            )
-            memory = runtime.memory.for_scope(scope.scope_id)
-            with pytest.raises(BaseOperationNotSupportedError, match="collection compaction"):
-                await memory.compact(dry_run=True)
-            assert (await memory.list()).items == ()
-            written = await memory.remember(
-                RuntimeRememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Old fact"),))
-            )
-            before = await memory.list(include_inactive=True)
-            for dry_run in (False, True):
-                with pytest.raises(BaseOperationNotSupportedError, match="collection compaction"):
-                    await memory.compact(dry_run=dry_run, expected_revision=1, limit=1, reason="Recover capacity")
-            with pytest.raises(BaseOperationNotSupportedError, match="collection capacity"):
-                await memory.capacity()
-            with pytest.raises(BaseOperationNotSupportedError, match="continuous collection changes"):
-                await memory.changes(since_revision=1)
-            assert await memory.list(include_inactive=True) == before
-            assert runtime.atomic_memory is not None
-            assert (
-                await runtime.atomic_memory.for_scope(scope.scope_id).get(written.primary.ref.artifact_id)
-                == written.primary
-            )
-            await memory.remember(
-                RuntimeRememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="New fact"),))
-            )
-            assert len((await memory.list()).items) == 2
-
-    asyncio.run(scenario())
 
 
 def test_capacity_and_refusal_through_server_and_client(tmp_path):

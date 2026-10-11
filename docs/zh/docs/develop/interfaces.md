@@ -170,7 +170,7 @@ Generation 和 revision 命令通过可重复的 `--source-ref TYPE/ID` 与
 
 `PowerContextClient` 是面向 Server-owned deployment 的 typed asynchronous HTTP client。其 request 和 response model
 从 `powercontext.http` 导出。记忆写入响应的 `records` 返回真实 ArtifactRef、正文和当前状态；后续内容编辑使用内容 ETag，
-生命周期操作使用接口要求的内容和状态版本。旧 MemoryCitation 仅用于读取保留的历史。
+生命周期操作使用接口要求的内容和状态版本。精确历史通过 Atomic Memory 的 Artifact revision 读取。
 可运行的 Client 流程见[HTTP API 生命周期教程](api-quickstart.md)，详细操作见[原子记忆](../workflows/atomic-memory.md)。
 
 Client 还提供 `generate_experience`、`propose_experience`、`get_experience`、`generate_skill`、

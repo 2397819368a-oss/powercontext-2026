@@ -38,8 +38,8 @@ Content-Type: application/json
 | `experience` | 支持 | `text`；省略模式时使用文本检索 | 已批准、处于 active 状态的 Experience head |
 | `skill` | 支持 | `text`；省略模式时使用文本检索 | 已批准、处于 active 状态的托管 Skill head；不检索外部 Skill 目录 |
 | `topic-memory` | 支持 | `text`、`vector`、`hybrid`；配置 Embedding 时默认混合检索，否则默认文本检索 | Topic Memory 当前 head，分别检索标题/摘要和详情通道 |
-| `atomic-memory` | 支持 | `text`、`vector`、`hybrid`；默认文本检索 | 调用者可读取、处于 active 状态的独立 Atomic Memory head |
-| `memory` | 不支持 | 已冻结的旧集合；兼容检索返回 Atomic Memory 记录 | 见[使用 Atomic Memory](atomic-memory.md#旧-memory-api-兼容) |
+| `atomic-memory` | 支持 | `text`、`vector`、`hybrid`；默认文本检索 | 可读取 Scope 内处于 active 状态的独立 Atomic Memory head |
+| `memory` | 已移除；此入口返回 `404` | 旧集合不再是已注册的 Artifact Family | 见[使用 Atomic Memory](atomic-memory.md#旧-memory-api-兼容) |
 | `profile` | 不支持 | 此入口不提供相关性检索 | 见[使用 Profile](use-profiles.md) |
 | `handoff` | 不支持 | 此入口不提供相关性检索 | 见 [Memory 与 Handoff](memory-and-handoff.md) |
 | `prompt` | 不支持 | 此入口不提供相关性检索 | 见[管理 Prompt](manage-prompts.md) |
@@ -139,6 +139,9 @@ Content-Type: application/json
 
 ## Atomic Memory 参数
 
+Atomic 检索要求 `scope.read`。分享单条 Artifact 允许精确读取和历史读取，不授予 Scope 检索权限。
+已退役的 `memory` Family 不作为检索回退。
+
 Atomic 通过 `text`、`vector` 或 `hybrid` 检索 active 状态的当前 head。省略模式时始终使用文本检索，配置了
 Embedding 的部署也一样。向量和混合模式要求启用匹配的索引 Profile 并配置 Embedding 模型，不会回退到文本。
 空 Scope 返回空结果之前，也会检查部署能力和参数组合。
@@ -147,7 +150,7 @@ Atomic 使用 `text` 和 `vector` 两个通道名。文本通道应用上述词�
 L2 距离语义准入规则。默认词法覆盖率为 `0.25`、最少匹配词数为 `2`、语义相似度为 `0.3`。
 文本模式不接受显式语义准入字段，向量模式不接受显式词法准入字段。权重键必须属于启用通道，权重为 `0` 也一样。
 
-Atomic 过滤条件与访问控制、active 状态资格一起应用，先于候选排名：
+先完成 Scope 读取授权，再执行检索。Atomic 过滤条件与 active 状态资格先于候选排名和截断应用：
 
 | 字段 | 合法值 |
 | --- | --- |
@@ -155,7 +158,8 @@ Atomic 过滤条件与访问控制、active 状态资格一起应用，先于候
 | `filters.tags` | 1–16 个 Tag 标签，每个 1–64 个字符，不能带首尾空白或控制字符；规范化后重复的标签会被拒绝 |
 | `filters.tag_match` | `all` 或 `any`；提供 tags 时默认 `all`，显式设置时必须同时提供 `tags` |
 
-Tag 匹配沿用 NFC 和大小写折叠规则，见[管理 Artifact Tag](manage-artifact-tags.md)。
+Tag 匹配沿用 NFC 和大小写折叠规则。迁移后的 entry 标签属于 Atomic Artifact 目标，使用 `filters.tags` 筛选。
+详见[管理 Artifact Tag](manage-artifact-tags.md)。
 
 ```http
 POST /v1/scopes/project-a/artifacts/atomic-memory/search
@@ -219,7 +223,9 @@ Experience 和 Skill 的通道名为 `text`；Atomic 使用 `text` 和 `vector`�
 实现和存储故障会保留失败状态，不转换成成功的空结果。
 
 统一检索保留 Atomic、Topic 专用检索行为、Skill Library 搜索，以及已有 SDK/内部 Experience 召回。
-旧 Memory 路由的升级契约见 [Atomic Memory 兼容说明](atomic-memory.md#旧-memory-api-兼容)。
+停服迁移会从公开 Artifact 存储移除旧 Memory 集合。保留的 `POST /v1/memory/search` 路由将请求转换为
+Atomic Memory 调用并返回 Atomic 记录，不搜索旧集合。保留入口与被拒绝操作见
+[Atomic Memory 兼容说明](atomic-memory.md#旧-memory-api-兼容)。
 其中 `POST /v1/topic-memory/search` 仍按部署默认策略检索，返回摘要命中和 `0`–`100` 的旧评分，
 不开放上述高级参数。统一 Topic 入口返回完整 Artifact 正文，归一化检索分数为 `[0, 1]`。
 专用摘要搜索和精确详情读取流程见[使用 Topic Memory](topic-memory.md)。

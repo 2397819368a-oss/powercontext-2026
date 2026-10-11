@@ -21,6 +21,18 @@ use tauri::{
     webview::InvokeRequest,
 };
 
+// Tauri mock IPC uses the host platform's local protocol; product navigation remains Windows-only.
+const LOCAL_ORIGIN: &str = if cfg!(any(windows, target_os = "android")) {
+    "http://tauri.localhost"
+} else {
+    "tauri://localhost"
+};
+
+fn test_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    // The macOS plist must be embedded once per test executable.
+    tauri::generate_context!()
+}
+
 #[test]
 fn permissions_reject_untrusted_window_origin_and_arbitrary_commands() {
     let dir = tempfile::tempdir().unwrap();
@@ -40,26 +52,21 @@ fn permissions_reject_untrusted_window_origin_and_arbitrary_commands() {
             powercontext_desktop::commands::desktop_state,
             powercontext_desktop::commands::disconnect
         ])
-        .build(tauri::generate_context!())
+        .build(test_context())
         .unwrap();
     for (label, origin, command, allowed) in [
-        ("main", "http://tauri.localhost", "foundation_info", true),
-        ("other", "http://tauri.localhost", "foundation_info", false),
+        ("main", LOCAL_ORIGIN, "foundation_info", true),
+        ("other", LOCAL_ORIGIN, "foundation_info", false),
         ("main", "https://evil.example", "foundation_info", false),
-        ("main", "http://tauri.localhost", "desktop_state", true),
-        ("other", "http://tauri.localhost", "desktop_state", false),
+        ("main", LOCAL_ORIGIN, "desktop_state", true),
+        ("other", LOCAL_ORIGIN, "desktop_state", false),
         ("main", "https://evil.example", "desktop_state", false),
-        ("main", "http://tauri.localhost", "disconnect", true),
-        ("other", "http://tauri.localhost", "disconnect", false),
+        ("main", LOCAL_ORIGIN, "disconnect", true),
+        ("other", LOCAL_ORIGIN, "disconnect", false),
         ("main", "https://evil.example", "disconnect", false),
-        (
-            "main",
-            "http://tauri.localhost",
-            "plugin:shell|execute",
-            false,
-        ),
-        ("main", "http://tauri.localhost", "fetch", false),
-        ("main", "http://tauri.localhost", "credential_read", false),
+        ("main", LOCAL_ORIGIN, "plugin:shell|execute", false),
+        ("main", LOCAL_ORIGIN, "fetch", false),
+        ("main", LOCAL_ORIGIN, "credential_read", false),
     ] {
         use tauri::Manager;
         let window = app.get_webview_window(label).unwrap_or_else(|| {
@@ -109,14 +116,14 @@ fn diagnostic_command_is_narrow_and_requires_the_trusted_window() {
         .invoke_handler(tauri::generate_handler![
             powercontext_desktop::commands::local_diagnostics
         ])
-        .build(tauri::generate_context!())
+        .build(test_context())
         .unwrap();
     for (label, origin, kind, expected_missing) in [
-        ("main", "http://tauri.localhost", "service", true),
-        ("main", "http://tauri.localhost", "integrations", true),
-        ("other", "http://tauri.localhost", "service", false),
+        ("main", LOCAL_ORIGIN, "service", true),
+        ("main", LOCAL_ORIGIN, "integrations", true),
+        ("other", LOCAL_ORIGIN, "service", false),
         ("main", "https://evil.example", "service", false),
-        ("main", "http://tauri.localhost", "shell", false),
+        ("main", LOCAL_ORIGIN, "shell", false),
     ] {
         use tauri::Manager;
         let window = app.get_webview_window(label).unwrap_or_else(|| {
@@ -156,27 +163,21 @@ fn memory_commands_reject_untrusted_callers_before_accessing_the_connection() {
         .invoke_handler(tauri::generate_handler![
             commands::remember_memory,
             commands::search_memory,
-            commands::memory_entry,
+            commands::atomic_memory_entry,
             commands::cancel_memory_reads
         ])
-        .build(tauri::generate_context!())
+        .build(test_context())
         .unwrap();
     let args = serde_json::json!({
         "generation": 0,
         "text": "synthetic permission test",
         "query": "synthetic",
-        "reference": {
-            "kind": "citation",
-            "citation": {
-                "memory_ref": {"family":"memory", "artifact_id":"test", "revision":1},
-                "entry_id":"test", "entry_version_id":"v1"
-            }
-        }
+        "artifact": {"family":"atomic-memory", "artifact_id":"test", "revision":1}
     });
     for command in [
         "remember_memory",
         "search_memory",
-        "memory_entry",
+        "atomic_memory_entry",
         "cancel_memory_reads",
     ] {
         for (label, origin) in [
@@ -204,7 +205,7 @@ fn memory_commands_reject_untrusted_callers_before_accessing_the_connection() {
             .expect_err("no connection or forbidden caller");
             assert_eq!(
                 error.get("code").and_then(serde_json::Value::as_str) == Some("not_connected"),
-                label == "main" && origin == "http://tauri.localhost",
+                label == "main" && origin == LOCAL_ORIGIN,
                 "{command} {label} {origin}: {error}"
             );
         }

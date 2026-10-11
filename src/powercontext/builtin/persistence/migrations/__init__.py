@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Explicit offline migration primitives and domain migrations; never startup backfills.
+"""Versioned, explicitly invoked migrations; never startup backfills.
 
 Bundles explicitly describe the objects they own. The experimental fixture bundle
 is an isolated four-table prototype, not a migration for a deployed PowerContext DB.

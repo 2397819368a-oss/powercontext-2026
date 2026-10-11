@@ -28,7 +28,7 @@ import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -40,44 +40,28 @@ def fixture_compatibility_profile() -> str:
     return fixture_profile()["id"]
 
 
-def memory_hit_reference(hit: dict[str, object]) -> dict[str, object]:
-    """Keep the complete exact reference from either supported search protocol."""
-    if "memory" in hit:
-        memory = cast(dict[str, object], hit["memory"])
-        return cast(dict[str, object], memory["artifact"])
-    return cast(dict[str, object], hit["citation"])
+def search_reference(hit: dict[str, Any]) -> dict[str, Any]:
+    return hit["memory"]["artifact"]
 
 
-def memory_write_reference(result: dict[str, object]) -> dict[str, object]:
-    """These independent-note fixtures require exactly one accepted memory."""
-    if "records" in result:
-        records = cast(list[dict[str, object]], result["records"])
-        if len(records) != 1:
-            raise HarnessFailure("installed_independent_write_record_count")
-        return cast(dict[str, object], records[0]["artifact"])
-    entry = cast(dict[str, object], result["entry"])
-    return cast(dict[str, object], entry["citation"])
+def saved_reference(saved: dict[str, Any]) -> dict[str, Any]:
+    if len(saved["records"]) != 1:
+        raise HarnessFailure("installed_saved_atomic_record_count")
+    return saved["records"][0]["artifact"]
 
 
-def exact_memory_text(server: httpx.Client, scope: str, reference: dict[str, object]) -> str:
-    """Read and verify the original citation or immutable Atomic revision."""
-    if "memory_ref" in reference:
-        response = server.post("/v1/memory/entries/get", json={"scope_id": scope, "citation": reference})
-        response.raise_for_status()
-        entry = response.json()
-        if entry["citation"] != reference:
-            raise HarnessFailure("installed_exact_citation_mismatch")
-        return entry["text"]
+def exact_memory_text(server: httpx.Client, scope: str, reference: dict[str, Any]) -> str:
     if reference["family"] != "atomic-memory":
-        raise HarnessFailure("installed_exact_artifact_family_mismatch")
-    segments = [scope, cast(str, reference["family"]), cast(str, reference["artifact_id"]), str(reference["revision"])]
-    scope_path, family, artifact, revision = (quote(segment, safe="") for segment in segments)
-    response = server.get(f"/v1/scopes/{scope_path}/artifacts/{family}/{artifact}/revisions/{revision}")
+        raise HarnessFailure("installed_unsupported_memory_reference")
+    response = server.get(
+        f"/v1/scopes/{quote(scope, safe='')}/artifacts/atomic-memory/"
+        f"{quote(reference['artifact_id'], safe='')}/revisions/{reference['revision']}"
+    )
     response.raise_for_status()
-    entry = response.json()
-    if entry["scope_id"] != scope or any(entry[key] != reference[key] for key in ("family", "artifact_id", "revision")):
-        raise HarnessFailure("installed_exact_artifact_revision_mismatch")
-    content = entry["content"]
+    value = response.json()
+    if value["scope_id"] != scope or any(value[key] != reference[key] for key in ("family", "artifact_id", "revision")):
+        raise HarnessFailure("installed_independent_exact_read_mismatch")
+    content = value["content"]
     if content["schema"] != "powercontext.atomic-memory.v1" or not isinstance(content["text"], str):
         raise HarnessFailure("installed_exact_atomic_content_mismatch")
     return content["text"]

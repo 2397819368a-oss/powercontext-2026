@@ -286,10 +286,10 @@ compare lifecycle state versions. Active and forgotten records can be edited; me
 `retire` is the retained host command name for reversible forgetting, checked against both the actual Artifact
 reference and its captured `state_version`. Refresh and inspect after a conflict before retrying.
 
-Get also accepts a plain exact Atomic ArtifactRef. Genuine legacy `MemoryCitation` objects with `memory_ref`,
-`entry_id`, and `entry_version_id` remain supported for exact historical reads only. Legacy revision and retirement
-writes are rejected. `/pc changes` explicitly reports unsupported collection history; use precise Artifact revision
-reads. The `powercontext_get_memory` and `powercontext_retire_memory` tools take a `reference` object, while
+Get also accepts a plain exact Atomic ArtifactRef
+(`{"family":"atomic-memory","artifact_id":...,"revision":...}`). `MemoryCitation` objects with `memory_ref`,
+`entry_id`, and `entry_version_id` are rejected locally for reads, revisions, and retirement. `/pc changes` explicitly
+reports unsupported collection history; use precise Artifact revision reads. The `powercontext_get_memory` and `powercontext_retire_memory` tools take a `reference` object, while
 `powercontext_revise_memory_entry` takes that object in `citation`.
 
 Trace enable/disable changes the current Hermes process only. Configure

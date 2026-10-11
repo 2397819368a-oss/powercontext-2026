@@ -307,8 +307,6 @@ class Client:
             )
         if operation not in {"get_memory_entry", "revise_memory_entry", "retire_memory_entry"}:
             return self.call(operation, request)
-        if "artifact" not in request:
-            return self.call("get_memory_entry", request)
         artifact = request["artifact"]
         identity = {"scope_id": scope_id, "family": artifact["family"], "artifact_id": artifact["artifact_id"]}
         if operation == "get_memory_entry":

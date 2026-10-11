@@ -18,10 +18,7 @@
 use super::profiles::{ProfileInput, ProfileRepository, ProfileView};
 use crate::{
     error::SafeError,
-    transport::{
-        ApiFailure, LEGACY_MEMORY_CONTRACT_SHA256, MemoryEntryResult, MemoryMutationResult,
-        MemoryReference, MemorySearchResponse, ServerApi, wire::*,
-    },
+    transport::{ApiFailure, ServerApi, wire::*},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -117,14 +114,14 @@ pub struct WriteRecord {
     pub operation_id: String,
     pub context: MemoryContext,
     pub status: WriteStatus,
-    pub references: Vec<MemoryReference>,
+    pub references: Vec<ArtifactReference>,
     pub error: Option<ApiFailure>,
 }
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteOutcome {
     pub record: WriteRecord,
-    pub result: Option<MemoryMutationResult>,
+    pub result: Option<crate::transport::MemorySaveResponse>,
 }
 struct WriteGuard<'a> {
     manager: &'a ConnectionManager,
@@ -333,8 +330,7 @@ impl ConnectionManager {
                     .map_err(|_| SafeError::InvalidResponse)?;
             let compatible = self.compatibility.iter().find(|c| {
                 profile.compatibility.as_ref() == Some(&c.id)
-                    && (contract["contractSha256"].as_str() == Some(&c.contract_sha256)
-                        || c.contract_sha256 == LEGACY_MEMORY_CONTRACT_SHA256)
+                    && contract["contractSha256"].as_str() == Some(&c.contract_sha256)
                     && !identity
                         .as_ref()
                         .is_err_and(|e| e.code == SafeError::InvalidResponse)
@@ -577,7 +573,7 @@ impl ConnectionManager {
         &self,
         generation: u32,
         query: &str,
-    ) -> Result<MemorySearchResponse, ApiFailure> {
+    ) -> Result<crate::transport::MemorySearchResponse, ApiFailure> {
         let (
             ReadSnapshot {
                 api,
@@ -596,15 +592,11 @@ impl ConnectionManager {
         )
         .await
     }
-    pub async fn memory_entry(
+    pub async fn atomic_memory_entry(
         &self,
         generation: u32,
-        reference: &MemoryReference,
-    ) -> Result<MemoryEntryResult, ApiFailure> {
-        let operation = match reference {
-            MemoryReference::Citation { .. } => "get_memory_entry",
-            MemoryReference::Artifact { .. } => "get_artifact_revision",
-        };
+        artifact: &ArtifactReference,
+    ) -> Result<crate::transport::AtomicMemoryDetail, ApiFailure> {
         let (
             ReadSnapshot {
                 api,
@@ -612,13 +604,13 @@ impl ConnectionManager {
                 mut cancelled,
             },
             context,
-        ) = self.memory_snapshot(generation, operation)?;
+        ) = self.memory_snapshot(generation, "get_artifact_revision")?;
         let mut query_cancelled = self.begin_memory_read(generation)?;
         Self::cancellable(
             &mut cancelled,
             Self::cancellable(&mut query_cancelled, async {
                 self.identity_unchanged(&api, &identity, generation).await?;
-                api.entry(&context.scope_id, reference).await
+                api.atomic_entry(&context.scope_id, artifact).await
             }),
         )
         .await
@@ -662,7 +654,11 @@ impl ConnectionManager {
         let result = match response {
             Ok(value) => {
                 record.status = WriteStatus::Succeeded;
-                record.references = value.references();
+                record.references = value
+                    .records
+                    .iter()
+                    .map(|record| record.artifact.clone())
+                    .collect();
                 Some(value)
             }
             Err(error) => {

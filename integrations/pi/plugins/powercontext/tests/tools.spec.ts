@@ -447,7 +447,6 @@ describe('Pi native tool surface', () => {
       candidate_id: 'candidate-1',
       expected_version: 1,
       proposal: { situation: 'before', action: 'change', outcome: 'after', lesson: 'keep tests' },
-      memory_citations: null,
       source_refs: [],
       artifact_refs: [],
     })).toBe(true)
@@ -455,6 +454,14 @@ describe('Pi native tool surface', () => {
       candidate_id: 'candidate-1',
       expected_version: 1,
       proposal: { situation: 'before', action: 'change', outcome: 'after', lesson: 'keep tests', extra: 'reject' },
+      source_refs: [],
+      artifact_refs: [],
+    })).toBe(false)
+    expect(Value.Check(revise.parameters, {
+      candidate_id: 'candidate-1',
+      expected_version: 1,
+      proposal: { situation: 'before', action: 'change', outcome: 'after', lesson: 'keep tests' },
+      memory_citations: [],
       source_refs: [],
       artifact_refs: [],
     })).toBe(false)

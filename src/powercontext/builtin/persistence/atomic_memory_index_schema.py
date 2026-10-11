@@ -16,7 +16,7 @@
 
 from typing import Any
 
-from sqlalchemy import BigInteger, CheckConstraint, Column, Index, LargeBinary, MetaData, Table, Text
+from sqlalchemy import BigInteger, CheckConstraint, Column, LargeBinary, MetaData, Table, Text
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.types import TypeEngine
 
@@ -48,9 +48,6 @@ def atomic_memory_current_table(embedding_type: TypeEngine[Any] | None = None, /
         Column("text", body_type, nullable=False),
         Column("searchable_text", body_type, nullable=False),
         Column("tag_keys", body_type, nullable=False),
-        Column("owner_type", identity_string(16), nullable=False),
-        Column("owner_id", identity_string(255), nullable=False),
-        Column("read_grants", body_type, nullable=False),
         Column("embedding", LargeBinary() if embedding_type is None else embedding_type),
         Column("profile_fingerprint", identity_string(64)),
         Column("embedding_input_hash", identity_string(64)),
@@ -61,7 +58,6 @@ def atomic_memory_current_table(embedding_type: TypeEngine[Any] | None = None, /
             "OR (embedding IS NOT NULL AND profile_fingerprint IS NOT NULL AND embedding_input_hash IS NOT NULL)",
             name="ck_pc_atomic_memory_current_embedding_metadata",
         ),
-        Index("ix_pc_atomic_memory_current_owner", "scope_id", "owner_type", "owner_id"),
     )
 
 

@@ -70,9 +70,6 @@ from .helpers import (
     config_value as _config_value,
 )
 from .helpers import (
-    entry_identity as _entry_identity,
-)
-from .helpers import (
     load_json_config as _load_json_config,
 )
 from .helpers import (
@@ -706,11 +703,11 @@ class PowerContextMemoryProvider(MemoryProvider):
             "not an explicit Memory save and may produce no Memory. Ordinary coding needs no routine calls. Use "
             "sufficient current context when continuing work. Explicit search my memories / 搜索记忆 requests require "
             "powercontext_search_memory with a focused query. Use powercontext_list_memory_entries for an explicit "
-            "inventory or audit, and powercontext_get_memory with the returned exact citation for details.\n"
+            "inventory or audit, and powercontext_get_memory with the returned exact Atomic reference for details.\n"
             "Explicit remember this / 记住这个供以后使用 requests require powercontext_remember and its successful "
             "result. A current-turn instruction, conceptual question, or preview does not request a write. Never "
             "store secrets or duplicate automatic capture. Correct or retire Memory only on request with its exact "
-            "current citation.\n"
+            "current Atomic reference.\n"
             "For a requested transfer, powercontext_handoff_current_work records the inspected boundary and returns "
             "a temporary Handoff; commit only for a requested durable milestone. Preparation does not establish "
             "commitment, acceptance, or receiver execution.\n"
@@ -1166,7 +1163,7 @@ class PowerContextMemoryProvider(MemoryProvider):
         self._memory_map[key] = citation
         self._save_memory_map()
 
-    def _find_memory_citations(self, text: str, *, scope_id: str | None = None) -> list[dict[str, Any]]:
+    def _find_memory_snapshots(self, text: str, *, scope_id: str | None = None) -> list[dict[str, Any]]:
         effective_scope_id = scope_id if scope_id is not None else self._scope_id
         try:
             response = self._client.search_memory(
@@ -1200,19 +1197,7 @@ class PowerContextMemoryProvider(MemoryProvider):
             citations.append(normalized)
         return citations
 
-    def _find_memory_citation(
-        self,
-        text: str,
-        *,
-        identity: dict[str, str] | None = None,
-        scope_id: str | None = None,
-    ) -> dict[str, Any] | None:
-        for citation in self._find_memory_citations(text, scope_id=scope_id):
-            if identity is None or _entry_identity(citation) == identity:
-                return citation
-        return None
-
-    def _mapped_memory_citation(self, scope_id: str, snapshot: dict[str, Any], text: str) -> dict[str, Any] | None:
+    def _mapped_memory_snapshot(self, scope_id: str, snapshot: dict[str, Any], text: str) -> dict[str, Any] | None:
         try:
             record = self._client.get_memory_entry(scope_id, snapshot)
         except PowerContextError as error:
@@ -1223,7 +1208,7 @@ class PowerContextMemoryProvider(MemoryProvider):
             return snapshot
         return None
 
-    def _lookup_memory_citation(
+    def _lookup_memory_snapshot(
         self,
         target: str,
         text: str,
@@ -1239,20 +1224,20 @@ class PowerContextMemoryProvider(MemoryProvider):
         # The map keeps the committed snapshot. Do not refresh its revision or
         # lifecycle version implicitly when resolving a later host mutation.
         stored = _normalize_memory_reference(self._memory_map.get(key))
-        if stored is not None and "memory_ref" not in stored:
-            return key, self._mapped_memory_citation(effective_scope_id, stored, query)
+        if stored is not None:
+            return key, self._mapped_memory_snapshot(effective_scope_id, stored, query)
         if key in self._memory_map:
-            logger.warning("Legacy Hermes memory mapping is read-only; explicitly rebind it to an Atomic snapshot")
+            logger.warning("Hermes memory mapping is not an Atomic snapshot; explicitly rebind it")
             return key, None
 
-        candidates = self._find_memory_citations(query, scope_id=effective_scope_id)
+        candidates = self._find_memory_snapshots(query, scope_id=effective_scope_id)
         target_prefix = f"{effective_scope_id}:{target}:"
         matches: list[tuple[str, dict[str, Any]]] = []
         for mapped_key, value in self._memory_map.items():
             if not mapped_key.startswith(target_prefix):
                 continue
             snapshot = _normalize_memory_reference(value)
-            if snapshot is None or "memory_ref" in snapshot:
+            if snapshot is None:
                 continue
             if snapshot in candidates:
                 matches.append((mapped_key, snapshot))
@@ -1275,7 +1260,7 @@ class PowerContextMemoryProvider(MemoryProvider):
         scope_id: str | None = None,
     ) -> None:
         effective_scope_id = scope_id if scope_id is not None else self._scope_id
-        old_key, citation = self._lookup_memory_citation(target, old_text, scope_id=effective_scope_id)
+        old_key, citation = self._lookup_memory_snapshot(target, old_text, scope_id=effective_scope_id)
         if citation is None:
             logger.debug("Skipping Hermes memory %s because old memory was not found", action)
             return

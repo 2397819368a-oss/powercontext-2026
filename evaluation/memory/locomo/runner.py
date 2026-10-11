@@ -47,7 +47,7 @@ from powercontext.builtin.artifacts.memory import (
 from powercontext.builtin.inference.errors import InferenceTimeoutError, InferenceUnavailableError
 from powercontext.builtin.inference.pydantic_ai import InferenceLimits, PydanticAIStructuredGenerator
 from powercontext.builtin.records import ArtifactRecord
-from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, SearchMemoryRequest, open_builtin_runtime
+from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, open_builtin_runtime
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryRerankTrace, AtomicMemorySearchHit
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.server.settings import ServerSettings
@@ -300,7 +300,9 @@ async def ingest_dataset(
                     runtime, run_id, conversation.sample_id, persisted_scopes.get(conversation.sample_id)
                 )
                 source_app = runtime.sources.for_scope(scope)
-                memory_app = runtime.memory.for_scope(scope)
+                if runtime.atomic_memory is None:
+                    raise RuntimeError("Atomic Memory is unavailable")  # noqa: TRY003
+                memory_app = runtime.atomic_memory.for_scope(scope)
                 for session in conversation.sessions:
                     await source_app.capture(
                         CaptureSource(
@@ -935,12 +937,10 @@ async def _evaluate_question(
     try:
         search_started = perf_counter()
         result, search_retries = await _retry_transient(
-            lambda: runtime.memory.for_scope(scope).search(
-                SearchMemoryRequest(
-                    query=question.question,
-                    limit=answer_k if rerank_mode is MemoryRerankMode.LLM else top_k,
-                    mode="hybrid",
-                )
+            lambda: runtime.atomic_memory.for_scope(scope).search(
+                question.question,
+                limit=answer_k if rerank_mode is MemoryRerankMode.LLM else top_k,
+                mode="hybrid",
             ),
             attempts=operation_retries,
         )
@@ -1202,7 +1202,11 @@ async def _all_atomic_records(application, *, include_inactive: bool = False) ->
     cursor = None
     seen_cursors: set[str] = set()
     while True:
-        page = await application.list(include_inactive=include_inactive, limit=100, cursor=cursor)
+        page = await application.list(
+            states=("active", "forgotten", "merged", "retired") if include_inactive else ("active",),
+            limit=100,
+            cursor=cursor,
+        )
         records.extend(page.items)
         cursor = page.next_cursor
         if cursor is None:
@@ -1246,8 +1250,6 @@ async def _lineage_source_ids(
         record = await application.get_artifact_revision(current.family, current.artifact_id, current.revision)
         if (record.family, record.artifact_id, record.revision) != identity:
             raise RuntimeError("Artifact read returned another evidence revision")  # noqa: TRY003
-        if record.memory_citations:
-            raise RuntimeError("LoCoMo Atomic provenance does not support legacy entry-selector citations")  # noqa: TRY003
         records[identity] = record
         visiting.add(identity)
         pending.append((current, True))
@@ -1259,7 +1261,7 @@ async def _artifact_source_maps(runtime, scope_ids: Mapping[str, str]):
     mappings: dict[str, dict[tuple[str, str, int], tuple[str, ...]]] = {}
     for sample_id, scope in scope_ids.items():
         await runtime.scopes.get(scope)
-        records = await _all_atomic_records(runtime.memory.for_scope(scope))
+        records = await _all_atomic_records(runtime.atomic_memory.for_scope(scope))
         cache: dict[tuple[str, str, int], tuple[str, ...]] = {}
         application = runtime.records.for_scope(scope)
         for record in records:

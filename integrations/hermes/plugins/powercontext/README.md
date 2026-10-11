@@ -71,9 +71,9 @@ discovery/import, Artifact Candidate review, context/source operations, and
 statistics. Explicitly mutating tools should only be used with user
 authorization.
 
-Atomic results carry real Artifact references and state versions. Exact legacy MemoryCitation reads remain supported;
-legacy writes and collection change history are explicitly unsupported. Content updates use the real content ETag;
-forgetting uses the captured reference and state version.
+Atomic results carry real Artifact references and state versions. MemoryCitation input and collection change history
+are explicitly unsupported. Content updates use the real content ETag; forgetting uses the captured reference and
+state version.
 
 When the provider is active, it also registers the bundled powercontext skill
 guide so Hermes has the workflow and authorization rules for those operations.
@@ -119,7 +119,7 @@ exposes that invocation context.
 /pc call OPERATION [PAYLOAD_JSON]
 ```
 
-For the required citation format and copy-paste examples for `/pc get`,
+For the required Atomic reference format and copy-paste examples for `/pc get`,
 `/pc revise`, and `/pc retire`, see the [memory entry operation guide](../../README.md#read-revise-or-retire-a-memory-entry).
 
 ## CLI commands

@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import (
     Experience,
     ExperienceContent,
@@ -29,7 +30,6 @@ from powercontext.builtin.artifacts.experience import (
     FailureSignature,
     FailureVerification,
 )
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.artifacts.skill import Skill, SkillContent, SkillPackageSnapshot, SkillSearchHit
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
@@ -55,7 +55,6 @@ from powercontext.builtin.runtime import (
     ProposeExperienceRequest,
     ProposeSkillRequest,
     RejectArtifactCandidateRequest,
-    RememberMemoryRequest,
     ReviseArtifactCandidateRequest,
     open_builtin_contexts,
     open_builtin_runtime,
@@ -284,9 +283,10 @@ def test_memory_write_remains_direct_and_does_not_create_a_candidate() -> None:
     async def scenario() -> None:
         async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
             scope_id = await _create_scope(runtime)
-            remembered = await runtime.memory.for_scope(scope_id).remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="decision", text="Keep Memory direct."),))
-            )
+            assert runtime.atomic_memory is not None
+            remembered = await runtime.atomic_memory.for_scope(scope_id).create((
+                AtomicMemoryContent(kind="decision", text="Keep Memory direct."),
+            ))
             inbox = await runtime.review.for_scope(scope_id).list(ListArtifactCandidatesRequest())
 
             assert remembered.changed is True

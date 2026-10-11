@@ -31,15 +31,10 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryExtractionInput,
     AtomicMemoryExtractionOutput,
 )
-from powercontext.builtin.artifacts.memory import MemoryService
 from powercontext.builtin.inference import GenerationResult
-from powercontext.builtin.persistence.generation_sources import GenerationSourceAccess
-from powercontext.builtin.persistence.memory import RelationalMemoryBackend
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
-from powercontext.builtin.runtime.relational import _RelationalMemorySourceResolver
-from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY, ContentCapture, SourceCursor
 from tests.e2e.dream_support import atomic_memory_pipeline, memory_source_text
 
@@ -96,53 +91,6 @@ class BlockingCandidatePipeline(EchoCandidatePipeline):
 
 class StateSaveFailure(RuntimeError):
     pass
-
-
-@pytest.mark.parametrize("mode", ["extract", "auto"])
-def test_explicit_memory_extraction_rejects_lineage_only_before_pipeline(mode) -> None:
-    class EmptyPipeline:
-        called = False
-
-        async def extract(self, request):
-            self.called = True
-            return ()
-
-    async def scenario() -> None:
-        pipeline = EmptyPipeline()
-        async with open_builtin_contexts(
-            BuiltinConfig(database=SQLiteConfig()),
-        ) as contexts:
-            context = await contexts.get("project")
-            created = await contexts.records.create_artifact(
-                "project",
-                "atomic-memory",
-                ArtifactWrite(content={"kind": "fact", "text": "Managed input."}),
-            )
-            async with contexts.database.transaction() as connection:
-                stored = await contexts.repositories.sources.get(connection, "project", created.sources[0])
-            assert await context.sources.get(stored.value) == stored.value
-            service = MemoryService(
-                backend=RelationalMemoryBackend(
-                    database=contexts.database,
-                    scope_id="project",
-                    artifacts=contexts.repositories.artifacts,
-                    index=contexts.index,
-                ),
-                candidate_pipeline=pipeline,
-                source_resolver=_RelationalMemorySourceResolver(
-                    database=contexts.database,
-                    scope_id="project",
-                    catalog=context.sources.catalog,
-                    access=GenerationSourceAccess(contexts.repositories.sources),
-                ),
-            )
-            with pytest.raises(SourceNotEligibleError):
-                await service.remember(memory=None, sources=(stored.value,), mode=mode)
-            assert pipeline.called is False
-            head = await contexts.records.get_artifact("project", "atomic-memory", created.artifact_id)
-            assert head.revision == 1
-
-    asyncio.run(scenario())
 
 
 def test_provider_uses_one_injected_source_registry_for_routing_and_persistence() -> None:

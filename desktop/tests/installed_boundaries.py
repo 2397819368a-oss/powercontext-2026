@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import httpx
-from installed_fixture import exact_memory_text, memory_hit_reference
+from installed_fixture import exact_memory_text, search_reference
 from real_server import HarnessFailure
 
 if TYPE_CHECKING:
@@ -55,7 +55,7 @@ def exercise_note_budget(page: InstalledPage, server: httpx.Client, scope: str) 
     hits = matches.json()["hits"]
     if len(hits) != 1:
         raise HarnessFailure("installed_boundary_note_missing_or_duplicated")
-    text = exact_memory_text(server, scope, memory_hit_reference(hits[0]))
+    text = exact_memory_text(server, scope, search_reference(hits[0]))
     if text != note or len(text.encode("utf-8")) != 8192:
         raise HarnessFailure("installed_boundary_note_truncated")
 

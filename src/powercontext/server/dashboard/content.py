@@ -115,47 +115,21 @@ async def load_stats(api: DashboardAPI, ctx: dict[str, Any]) -> None:
 async def select_note(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
     scope = ctx["scope"]
     query = request.query_params
-    legacy_fields = {"entry", "memory_id", "memory_revision", "entry_version"}
     atomic_fields = {"artifact", "revision"}
-    if legacy_fields.intersection(query):
-        if not legacy_fields.issubset(query) or atomic_fields.intersection(query):
-            raise ReadError(422, "invalid_request")
-        citation = {
-            "memory_ref": {
-                "family": "memory",
-                "artifact_id": query["memory_id"],
-                "revision": positive_revision(query["memory_revision"]),
-            },
-            "entry_id": query["entry"],
-            "entry_version_id": query["entry_version"],
-        }
-        entry = await api.read("/v1/memory/entries/get", {"scope_id": scope, "citation": citation})
-        ctx["selected_note"] = {
-            **entry,
-            **entry["citation"],
-            **entry["citation"]["memory_ref"],
-            "note_key": f"memory/{query['memory_id']}@{query['memory_revision']}/{query['entry']}/{query['entry_version']}",
-            "sources": [
-                {"source_type": source["name"], "source_id": source["source_id"]} for source in entry["source_refs"]
-            ],
-            "artifacts": entry["artifact_refs"],
-            "memory_citations": [entry["citation"]],
-        }
-    else:
-        if atomic_fields.intersection(query) and not atomic_fields.issubset(query):
-            raise ReadError(422, "invalid_request")
-        ref: dict[str, Any] | None = (
-            {"artifact_id": query["artifact"], "revision": positive_revision(query["revision"])}
-            if atomic_fields.issubset(query)
-            else next(iter(ctx["data"]["notes"]), None)
+    if atomic_fields.intersection(query) and not atomic_fields.issubset(query):
+        raise ReadError(422, "invalid_request")
+    ref: dict[str, Any] | None = (
+        {"artifact_id": query["artifact"], "revision": positive_revision(query["revision"])}
+        if atomic_fields.issubset(query)
+        else next(iter(ctx["data"]["notes"]), None)
+    )
+    if ref:
+        ctx["selected_note"] = await api.atomic_memory_get(scope, ref["artifact_id"], ref["revision"])
+        current = next(
+            (item for item in ctx["data"]["notes"] if item["note_key"] == ctx["selected_note"]["note_key"]), None
         )
-        if ref:
-            ctx["selected_note"] = await api.atomic_memory_get(scope, ref["artifact_id"], ref["revision"])
-            current = next(
-                (item for item in ctx["data"]["notes"] if item["note_key"] == ctx["selected_note"]["note_key"]), None
-            )
-            if current and "matched_by" in current:
-                ctx["selected_note"].update(matched_by=current["matched_by"], score=current["score"])
+        if current and "matched_by" in current:
+            ctx["selected_note"].update(matched_by=current["matched_by"], score=current["score"])
 
 
 async def load_record(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:

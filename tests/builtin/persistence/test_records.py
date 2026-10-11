@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -28,20 +28,16 @@ from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemory, AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import Experience
 from powercontext.builtin.artifacts.handoff import Handoff
-from powercontext.builtin.artifacts.memory import Memory
 from powercontext.builtin.artifacts.skill import Skill
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
-from powercontext.builtin.persistence.atomic_memory_identity import legacy_entry_artifact_id
 from powercontext.builtin.persistence.atomic_memory_schema import ATOMIC_MEMORY_STATES_TABLE
 from powercontext.builtin.persistence.experience_index import ExperienceIndex, NoExperienceIndex
 from powercontext.builtin.persistence.family_management import (
     ExperienceManagementWriter,
     FamilyManagementWriterRegistry,
     HandoffManagementWriter,
-    MemoryManagementWriter,
     SkillManagementWriter,
 )
-from powercontext.builtin.persistence.memory_index import NoMemoryIndex
 from powercontext.builtin.persistence.records import RelationalRecordService
 from powercontext.builtin.persistence.skill_packages import SkillPackageRepository
 from powercontext.builtin.persistence.sources import SourceRepository
@@ -58,6 +54,7 @@ from powercontext.builtin.persistence.tables import (
 from powercontext.builtin.records import (
     ArtifactRevisionPreconditionError,
     ArtifactWrite,
+    BaseOperationNotSupportedError,
     BaseValueConflictError,
     InvalidBaseAccessRequestError,
     InvalidCursorError,
@@ -67,7 +64,7 @@ from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication
 from powercontext.builtin.runtime.relational import RelationalContexts
 from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.builtin.sources import CONTENT_SOURCE_ADAPTER, ContentSource
-from powercontext.builtin.tags import ArtifactTagTarget, MemoryEntryTagTarget, TagFilter, TagPreconditionError, TagQuery
+from powercontext.builtin.tags import ArtifactTagTarget, TagFilter, TagPreconditionError, TagQuery
 
 
 class _FailingExperienceIndex(NoExperienceIndex):
@@ -211,59 +208,25 @@ def test_in_memory_sqlite_supports_concurrent_tag_reads() -> None:
     asyncio.run(scenario())
 
 
-def test_artifact_and_entry_tags_preserve_content_and_query_independently() -> None:
+def test_artifact_tags_preserve_content_and_query_independently() -> None:
     async def scenario() -> None:
-        mapped_id = legacy_entry_artifact_id("scope-a", "legacy-memory", "entry-1")
-        async with _atomic_record_services(atomic_artifact_id=mapped_id) as (contexts, records, artifacts, _):
+        async with _atomic_record_services() as (contexts, records, _, _):
             created = await records.create_artifact(
                 "scope-a", "atomic-memory", ArtifactWrite(content=_memory_content())
             )
             before = await records.get_artifact("scope-a", "atomic-memory", created.artifact_id)
-            # Retained legacy membership and its migrated identity are distinct from new writes.
-            async with contexts.database.transaction() as connection:
-                legacy = await artifacts.create(
-                    connection,
-                    "scope-a",
-                    "legacy-memory",
-                    artifacts.draft(
-                        "memory",
-                        {
-                            "manifest": {
-                                "entries": [
-                                    {
-                                        "entry_id": "entry-1",
-                                        "entry_version_id": "entry-1-v1",
-                                        "entry_content_hash": "a" * 64,
-                                        "state": "active",
-                                    }
-                                ]
-                            }
-                        },
-                    ),
-                )
-            collection = ArtifactTagTarget(family="memory", artifact_id=legacy.artifact_id)
-            collection_empty = await records.get_tags("scope-a", collection)
-            collection_tags = await records.replace_tags(
-                "scope-a", collection, ("collection-only",), expected_etag=collection_empty.etag
-            )
             independent = await contexts.records.create_artifact(
                 "scope-a", "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Independent artifact."})
             )
             artifact = ArtifactTagTarget(family="atomic-memory", artifact_id=independent.artifact_id)
-            entry = MemoryEntryTagTarget(artifact_id=legacy.artifact_id, entry_id="entry-1")
             mapped = ArtifactTagTarget(family="atomic-memory", artifact_id=created.artifact_id)
             empty = await records.get_tags("scope-a", artifact)
             tagged = await records.replace_tags("scope-a", artifact, ("Project", "中文"), expected_etag=empty.etag)
-            entry_empty = await records.get_tags("scope-a", entry)
-            assert entry_empty.tags == ()
-            assert entry_empty.etag != empty.etag
-            await records.replace_tags("scope-a", entry, ("project",), expected_etag=entry_empty.etag)
+            mapped_empty = await records.get_tags("scope-a", mapped)
+            assert mapped_empty.tags == ()
+            assert mapped_empty.etag != empty.etag
+            await records.replace_tags("scope-a", mapped, ("project",), expected_etag=mapped_empty.etag)
             assert await records.get_artifact("scope-a", "atomic-memory", created.artifact_id) == before
-            assert (await records.get_artifact_revision("scope-a", "memory", legacy.artifact_id, 1)).content == (
-                legacy.content.model_dump(mode="json", by_alias=True)
-            )
-            assert (await records.get_tags("scope-a", mapped)).tags == ("project",)
-            assert await records.get_tags("scope-a", collection) == collection_tags
             page = await records.query_tags("scope-a", TagQuery(tags=("PROJECT",), limit=1))
             assert len(page.items) == 1 and page.next_cursor
             second = await records.query_tags("scope-a", TagQuery(tags=("project",), limit=1, cursor=page.next_cursor))
@@ -293,7 +256,7 @@ def test_artifact_and_entry_tags_preserve_content_and_query_independently() -> N
             with pytest.raises(TagPreconditionError):
                 await records.replace_tags("scope-a", artifact, ("lost update",), expected_etag=empty.etag)
             await records.replace_tags("scope-a", artifact, (), expected_etag=tagged.etag)
-            assert (await records.get_tags("scope-a", entry)).tags == ("project",)
+            assert (await records.get_tags("scope-a", mapped)).tags == ("project",)
 
     asyncio.run(scenario())
 
@@ -332,7 +295,7 @@ def _services(
         counters[kind] += 1
         if kind == "atomic-memory" and atomic_artifact_id is not None:
             return atomic_artifact_id
-        prefixes = {"source": "src", "memory": "mem", "atomic-memory": "mem", "experience": "exp", "skill": "skill"}
+        prefixes = {"source": "src", "atomic-memory": "mem", "experience": "exp", "skill": "skill"}
         return f"{prefixes.get(kind, kind)}-{counters[kind]}"
 
     if atomic_memory_application is not None:
@@ -345,27 +308,16 @@ def _services(
         return contexts.records, contexts.repositories.artifacts, contexts.repositories.sources
 
     sources = SourceRepository((CONTENT_SOURCE_ADAPTER,))
-    artifacts = ArtifactRepository((Handoff, Memory, AtomicMemory, Experience, Skill), sources=sources)
-    memory_index = NoMemoryIndex()
+    artifacts = ArtifactRepository((Handoff, AtomicMemory, Experience, Skill), sources=sources)
     selected_experience_index = NoExperienceIndex() if experience_index is None else experience_index
     packages = SkillPackageRepository()
     writers = FamilyManagementWriterRegistry((
-        MemoryManagementWriter(
-            database=profile.database,
-            artifacts=artifacts,
-            index=memory_index,
-            embedding_model=None,
-            id_factory=new_id,
-        ),
         ExperienceManagementWriter(artifacts, selected_experience_index),
         SkillManagementWriter(artifacts, selected_experience_index, packages),
         HandoffManagementWriter(
             database=profile.database,
             artifacts=artifacts,
             sources=sources,
-            memory_index=memory_index,
-            id_factory=new_id,
-            memory_artifact_id="memory",
             handoff_artifact_id="handoff",
         ),
     ))
@@ -756,4 +708,23 @@ def test_base_access_reuses_existing_tables_without_lifecycle_columns() -> None:
     assert "created_at" not in SOURCES_TABLE.c
     assert "created_at" not in ARTIFACTS_TABLE.c
     assert "deleted_at" not in ARTIFACT_HEADS_TABLE.c
-    assert ArtifactRef(family="memory", artifact_id="memory-1", revision=1).revision == 1
+
+
+def test_legacy_memory_family_is_unsupported_for_generic_reads_and_tags() -> None:
+    async def scenario() -> None:
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as profile:
+            records, _, _ = _services(profile)
+            for read in (
+                records.get_artifact("scope", "memory", "memory"),
+                records.get_artifact_revision("scope", "memory", "memory", 1),
+                records.list_artifact_revisions("scope", "memory", "memory", limit=10, cursor=None),
+                records.query_artifacts("scope", "memory", limit=10, cursor=None),
+            ):
+                with pytest.raises(BaseOperationNotSupportedError):
+                    await read
+        with pytest.raises(ValidationError):
+            TagQuery.model_validate({"tags": ("shared",), "families": ("memory",)})
+        with pytest.raises(ValidationError):
+            ArtifactTagTarget.model_validate({"family": "memory", "artifact_id": "memory"})
+
+    asyncio.run(scenario())

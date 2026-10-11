@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .helpers import normalize_memory_reference
+from .helpers import normalize_memory_reference, reject_legacy_citation
 from .powercontext_client_config import normalize_server_url, resolve_allow_insecure_http
 
 if TYPE_CHECKING:
@@ -244,7 +244,7 @@ class PowerContextClient:
             return self.revise_memory_entry(
                 request["scope_id"], request["citation"], kind=request["kind"], text=request["text"]
             )
-        if operation == "get_memory_entry":
+        if operation == "get_memory_entry" and "target" not in request:
             return self.get_memory_entry(request["scope_id"], request["citation"])
         if operation == "retire_memory_entry":
             return self.retire_memory_entry(request["scope_id"], request["citation"])
@@ -335,12 +335,11 @@ class PowerContextClient:
         return self._request("/v1/memory/remember", payload)
 
     @staticmethod
-    def _memory_reference(citation: dict[str, Any], *, writable: bool = False) -> dict[str, Any]:
+    def _memory_reference(citation: dict[str, Any]) -> dict[str, Any]:
+        reject_legacy_citation(citation)
         normalized = normalize_memory_reference(citation)
         if normalized is None:
             raise ValueError("Invalid exact Memory reference")  # noqa: TRY003
-        if writable and "memory_ref" in normalized:
-            raise ValueError("Legacy MemoryCitation is read-only; use a current Atomic Memory reference")  # noqa: TRY003
         return normalized
 
     @staticmethod
@@ -349,8 +348,6 @@ class PowerContextClient:
 
     def get_memory_entry(self, scope_id: str, citation: dict[str, Any]) -> dict[str, Any]:
         reference = self._memory_reference(citation)
-        if "memory_ref" in reference:
-            return self._request("/v1/memory/entries/get", {"scope_id": scope_id, "citation": reference})
         ref = reference.get("artifact", reference)
         result = self._request(f"{self._memory_path(scope_id, ref)}/revisions/{ref['revision']}", method="GET")
         if normalize_memory_reference(result) != ref or not isinstance(result.get("content"), dict):
@@ -358,7 +355,7 @@ class PowerContextClient:
         return result
 
     def get_memory_state(self, scope_id: str, citation: dict[str, Any]) -> dict[str, Any]:
-        reference = self._memory_reference(citation, writable=True)
+        reference = self._memory_reference(citation)
         ref = reference.get("artifact", reference)
         path = f"{self._memory_path(scope_id, ref)}/state"
         result = self._request(path, method="GET")
@@ -379,7 +376,7 @@ class PowerContextClient:
         kind: str,
         text: str,
     ) -> dict[str, Any]:
-        reference = self._memory_reference(citation, writable=True)
+        reference = self._memory_reference(citation)
         ref = reference.get("artifact", reference)
         path = self._memory_path(scope_id, ref)
         response_headers: dict[str, str] = {}
@@ -414,7 +411,7 @@ class PowerContextClient:
         """Compatibility tool name: forgetting is reversible, unlike terminal retirement."""
         if reason:
             raise ValueError("Atomic lifecycle operations do not accept the legacy reason field")  # noqa: TRY003
-        reference = self._memory_reference(citation, writable=True)
+        reference = self._memory_reference(citation)
         if "artifact" not in reference:
             reference = self.get_memory_state(scope_id, reference)
         return self._request(

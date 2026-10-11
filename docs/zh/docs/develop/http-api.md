@@ -208,7 +208,7 @@ Principal，并注入 Authorization Provider。HTTP 与 MCP 使用同一个策�
 ```
 
 Atomic Memory 正文最多为 8192 个 UTF-8 字节，超过限制返回 HTTP `422`。
-旧 citation 修订、停用和集合级并发前提返回 `legacy_memory_operation_unsupported`，不能通过删除并发前提自动重试。
+旧 citation 读取、修订、停用和集合级并发前提返回 `legacy_memory_operation_unsupported`，不能通过删除并发前提自动重试。
 新内容编辑缺少 `If-Match` 返回 `428`，版本过期返回 `412`；合并和生命周期状态冲突返回 `409`。
 完整错误及替代操作见[原子记忆](../workflows/atomic-memory.md)。
 

@@ -24,7 +24,6 @@ from typing import TypeVar
 
 from powercontext.artifacts import ArtifactAddress, ArtifactRef
 from powercontext.builtin.artifacts.experience import Experience, ExperienceSearchHit, render_experience
-from powercontext.builtin.artifacts.memory.models import MemoryCitation
 from powercontext.builtin.artifacts.profile.models import Profile
 from powercontext.builtin.artifacts.topic_memory import TopicMemory, TopicMemorySearchHit
 from powercontext.builtin.runtime.atomic_memory import AtomicMemorySearchHit
@@ -105,7 +104,8 @@ class PreparedContextBuild:
     ``omissions`` is always filled by the Builder. The RFC 1560 recall trace is deliberately
     **not** a field here: ``ScopedContextApplication._prepare`` returns ``build.context`` and
     discards the rest, so such a field would have no production observer. The trace is
-    delivered through the Runtime's optional ``RecallEffortSink`` instead.
+    delivered to the Runtime's scoped statistics recorder or an explicit
+    ``RecallEffortSink`` instead.
     """
 
     context: PreparedContext
@@ -114,16 +114,7 @@ class PreparedContextBuild:
     code_origins: tuple[CodeEvidenceRef, ...] = ()
 
 
-@dataclass(frozen=True)
-class MemoryEntryAddress:
-    """Identify one exact Memory entry version across Scope boundaries."""
-
-    memory: ArtifactAddress
-    entry_id: str
-    entry_version_id: str
-
-
-PreparedContextOrigin = MemoryCitation | ArtifactRef | MemoryEntryAddress | ArtifactAddress
+PreparedContextOrigin = ArtifactRef | ArtifactAddress
 
 
 @dataclass(frozen=True)
@@ -686,14 +677,6 @@ def _render(entries: Sequence[_PreparedContextEntry]) -> str:
 
 def _text_item(entry: _PreparedContextEntry) -> ContextTextItem:
     origin = entry.origin
-    if isinstance(origin, MemoryEntryAddress):
-        return ContextTextItem(
-            artifact=origin.memory,
-            content=entry.content,
-            recall_rank=0,
-            entry_id=origin.entry_id,
-            entry_version_id=origin.entry_version_id,
-        )
     if isinstance(origin, ArtifactAddress):
         return ContextTextItem(artifact=origin, content=entry.content, recall_rank=0)
     raise PreparedContextInvariantError("text-scope-missing")

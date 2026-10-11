@@ -127,7 +127,6 @@ class DashboardAPI:
                     {"name": source["source_type"], "source_id": source["source_id"]} for source in value["sources"]
                 ],
                 "artifact_refs": value["artifacts"],
-                "memory_citations": value.get("memory_citations", []),
             },
         )
 
@@ -148,7 +147,6 @@ class DashboardAPI:
                 {"source_type": source["name"], "source_id": source["source_id"]} for source in value["source_refs"]
             ],
             "artifacts": value["artifact_refs"],
-            "memory_citations": value.get("memory_citations", []),
         }
 
     async def records(

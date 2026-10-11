@@ -228,7 +228,7 @@ Errors use one JSON envelope:
 ```
 
 Atomic Memory text is limited to 8192 UTF-8 bytes; oversized content returns HTTP `422`.
-Legacy citation mutations and collection revision preconditions return `legacy_memory_operation_unsupported`.
+Legacy citation reads and mutations and collection revision preconditions return `legacy_memory_operation_unsupported`.
 Do not retry by silently discarding a precondition. Content edits return `428` for a missing `If-Match` or `412`
 for a stale ETag; merge and lifecycle state conflicts return `409`. See [Atomic Memory](../workflows/atomic-memory.md)
 for error handling and replacement operations.

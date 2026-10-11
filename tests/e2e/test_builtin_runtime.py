@@ -19,12 +19,13 @@ import json
 
 import pytest
 
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryCandidate,
     AtomicMemoryExtractionInput,
     AtomicMemoryExtractionOutput,
 )
-from powercontext.builtin.artifacts.memory import MemoryEntryInput, MemoryRerankDecision
+from powercontext.builtin.artifacts.memory import MemoryRerankDecision
 from powercontext.builtin.inference import GenerationResult, InferenceUsage
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.records import ArtifactWrite
@@ -33,8 +34,6 @@ from powercontext.builtin.runtime import (
     CaptureSource,
     CommitConnectorCheckpoint,
     PrepareContextRequest,
-    RememberMemoryRequest,
-    SearchMemoryRequest,
     SubmitSourceObservation,
     open_builtin_contexts,
     open_builtin_runtime,
@@ -141,10 +140,9 @@ def test_builtin_runtime_uses_sqlite_fts_without_vector_extension(tmp_path, monk
                     metadata={"origin": "e2e"},
                 )
             )
-            flushed = await runtime.memory.for_scope(project.scope_id).flush()
-            found = await runtime.memory.for_scope(project.scope_id).search(
-                SearchMemoryRequest(query="atomic SQL provider")
-            )
+            assert runtime.atomic_memory is not None
+            flushed = await runtime.atomic_memory.for_scope(project.scope_id).flush()
+            found = await runtime.atomic_memory.for_scope(project.scope_id).search("atomic SQL provider")
             prepared = await runtime.context.for_scope(project.scope_id).prepare(
                 PrepareContextRequest(query="atomic SQL provider")
             )
@@ -201,12 +199,13 @@ def test_prepare_context_reads_only_direct_context_references() -> None:
                     idempotency_key="child",
                 )
             )
-            shared_memory = await runtime.memory.for_scope(shared.scope_id).remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Shared direct context evidence."),))
-            )
-            await runtime.memory.for_scope(middle.scope_id).remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Middle reverse-only evidence."),))
-            )
+            assert runtime.atomic_memory is not None
+            shared_memory = await runtime.atomic_memory.for_scope(shared.scope_id).create((
+                AtomicMemoryContent(kind="fact", text="Shared direct context evidence."),
+            ))
+            await runtime.atomic_memory.for_scope(middle.scope_id).create((
+                AtomicMemoryContent(kind="fact", text="Middle reverse-only evidence."),
+            ))
 
             direct = await runtime.context.for_scope(middle.scope_id).prepare(
                 PrepareContextRequest(query="direct context evidence")
@@ -263,19 +262,16 @@ def test_prepare_context_keeps_referenced_scope_eligible_when_local_recall_is_fu
                     idempotency_key="reader-full-recall",
                 )
             )
-            await runtime.memory.for_scope(reader.scope_id).remember(
-                RememberMemoryRequest(
-                    entries=tuple(
-                        MemoryEntryInput(kind="fact", text=f"Candidate saturation local evidence {index}.")
-                        for index in range(16)
-                    )
+            assert runtime.atomic_memory is not None
+            await runtime.atomic_memory.for_scope(reader.scope_id).create(
+                tuple(
+                    AtomicMemoryContent(kind="fact", text=f"Candidate saturation local evidence {index}.")
+                    for index in range(16)
                 )
             )
-            shared_memory = await runtime.memory.for_scope(shared.scope_id).remember(
-                RememberMemoryRequest(
-                    entries=(MemoryEntryInput(kind="fact", text="Candidate saturation shared evidence."),)
-                )
-            )
+            shared_memory = await runtime.atomic_memory.for_scope(shared.scope_id).create((
+                AtomicMemoryContent(kind="fact", text="Candidate saturation shared evidence."),
+            ))
 
             prepared = await runtime.context.for_scope(reader.scope_id).prepare(
                 PrepareContextRequest(query="candidate saturation evidence")
@@ -319,9 +315,10 @@ def test_prepare_build_reports_no_recall_effort_while_the_gate_is_disabled() -> 
             scope = await runtime.scopes.create(
                 ScopeDraft(title="Gate off", summary="Disabled gate", idempotency_key="gate-off")
             )
-            await runtime.memory.for_scope(scope.scope_id).remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Disabled gate evidence."),))
-            )
+            assert runtime.atomic_memory is not None
+            await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(kind="fact", text="Disabled gate evidence."),
+            ))
             request = PrepareContextRequest(query="disabled gate evidence")
             application = runtime.context.for_scope(scope.scope_id)
             async with runtime._scope_operation(scope.scope_id) as descriptor:
@@ -343,13 +340,12 @@ def test_same_scope_read_only_searches_do_not_serialize_reranking() -> None:
             scope = await runtime.scopes.create(
                 ScopeDraft(title="Parallel", summary="Concurrent read acceptance", idempotency_key="parallel-search")
             )
-            memory = runtime.memory.for_scope(scope.scope_id)
-            await memory.remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Parallel search fact."),))
-            )
+            assert runtime.atomic_memory is not None
+            memory = runtime.atomic_memory.for_scope(scope.scope_id)
+            await memory.create((AtomicMemoryContent(kind="fact", text="Parallel search fact."),))
 
-            first = asyncio.create_task(memory.search(SearchMemoryRequest(query="parallel", mode="fts", limit=1)))
-            second = asyncio.create_task(memory.search(SearchMemoryRequest(query="parallel", mode="fts", limit=1)))
+            first = asyncio.create_task(memory.search("parallel", mode="text", limit=1))
+            second = asyncio.create_task(memory.search("parallel", mode="text", limit=1))
             pages = await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
 
             assert all(page.rerank is not None for page in pages)

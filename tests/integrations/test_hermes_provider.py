@@ -117,8 +117,6 @@ class FakeClient:
 
     def get_memory_entry(self, scope_id, citation):
         self.calls.append(("get_memory_entry", (scope_id, citation), {}))
-        if "memory_ref" in citation:
-            return {"text": "a memory", "citation": citation}
         ref = citation.get("artifact", citation)
         return json.loads(json.dumps(self._memory_history[(ref["artifact_id"], ref["revision"])]))
 
@@ -1504,17 +1502,10 @@ def test_http_client_preserves_domain_error_details(hermes_modules):
     )
 
     with pytest.raises(client_module.PowerContextHTTPError) as caught:
-        client.get_memory_entry(
-            "project:test",
-            {
-                "memory_ref": {"family": "memory", "artifact_id": "memory", "revision": 1},
-                "entry_id": "missing",
-                "entry_version_id": "missing-v1",
-            },
-        )
+        client.get_memory_entry("project:test", {"family": "atomic-memory", "artifact_id": "am-1", "revision": 1})
 
     assert caught.value.status == 404
-    assert caught.value.path == "/v1/memory/entries/get"
+    assert caught.value.path == "/v1/scopes/project%3Atest/artifacts/atomic-memory/am-1/revisions/1"
     assert caught.value.code == "memory_not_found"
     assert caught.value.server_message == "entry missing"
 
@@ -1541,18 +1532,38 @@ def test_http_client_forwards_authorization_and_preserves_access_denial(hermes_m
     )
 
     with pytest.raises(client_module.PowerContextHTTPError) as caught:
-        client.get_memory_entry(
-            "project:test",
-            {
-                "memory_ref": {"family": "memory", "artifact_id": "memory", "revision": 1},
-                "entry_id": "forbidden",
-                "entry_version_id": "forbidden-v1",
-            },
-        )
+        client.get_memory_entry("project:test", {"family": "atomic-memory", "artifact_id": "am-1", "revision": 1})
 
     assert caught.value.status == 403
     assert caught.value.code == "access_denied"
     assert caught.value.server_message == "scope access denied"
+
+
+def test_legacy_memory_citation_is_rejected_before_any_request(hermes_modules, provider_and_client):
+    provider_module, _cli_module = hermes_modules
+    legacy = {
+        "memory_ref": {"family": "memory", "artifact_id": "memory", "revision": 1},
+        "entry_id": "entry-1",
+        "entry_version_id": "entry-1-v1",
+    }
+    client = provider_module.PowerContextClient(
+        "http://powercontext.test:8000",
+        allow_insecure_http=True,
+        transport=lambda _request, _timeout: pytest.fail("Legacy citation must not reach HTTP"),
+    )
+    for call in (
+        lambda: client.get_memory_entry("project:test", legacy),
+        lambda: client.revise_memory_entry("project:test", legacy, kind="decision", text="Read only."),
+        lambda: client.retire_memory_entry("project:test", legacy),
+    ):
+        with pytest.raises(ValueError, match="MemoryCitation is unsupported"):
+            call()
+
+    provider, fake = provider_and_client
+    fake.calls.clear()
+    result = json.loads(provider.handle_tool_call("powercontext_get_memory", {"reference": legacy}))
+    assert "MemoryCitation is unsupported" in result["error"]
+    assert fake.calls == []
 
 
 def test_guidance_references_available_provider_tools_without_a_skill(hermes_modules) -> None:

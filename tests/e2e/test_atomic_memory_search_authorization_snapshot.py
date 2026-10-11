@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Search authorization and content share a snapshot after external inference."""
+"""Search uses current Scope authority and a business snapshot after inference."""
 
 from __future__ import annotations
 
@@ -30,13 +30,14 @@ import pytest
 from pydantic import SecretStr
 from sqlalchemy.engine import make_url
 
+from powercontext.artifacts import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.memory import EmbeddingProfile
 from powercontext.builtin.inference import EmbeddingResult
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.seekdb import SeekDBConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemoryExecutionContext, AtomicMemorySecurity
+from powercontext.builtin.runtime.atomic_memory import AtomicMemoryAccess
 from powercontext.builtin.runtime.config import DatabaseConfig, RuntimeConfig
 from powercontext.client import ForbiddenResponseError, PowerContextClient
 from powercontext.http import (
@@ -52,7 +53,14 @@ from powercontext.server.authentication import (
     AuthenticationResult,
     ProviderReadiness,
 )
-from powercontext.server.authz import AccessAuditContext, AccessRole, CreateBinding, PrincipalRef, ResourceRef
+from powercontext.server.authz import (
+    AccessAuditContext,
+    AccessDeniedError,
+    AccessRole,
+    CreateBinding,
+    PrincipalRef,
+    ResourceRef,
+)
 from powercontext.server.authz.composition import open_builtin_access_control, open_casbin_access_control
 from powercontext.server.authz.service import AccessControlService
 from powercontext.server.factory import create_server_app
@@ -185,8 +193,8 @@ async def _revoke_and_create(admin: PowerContextClient, scope_id: str, binding):
 
 
 async def _assert_current_access_revoked(viewer: PowerContextClient, scope_id: str, created) -> None:
-    current = await viewer.search_atomic_memory(SearchAtomicMemoryRequest(scope_id=scope_id, query="alpha"))
-    assert current.hits == []
+    with pytest.raises(ForbiddenResponseError):
+        await viewer.search_atomic_memory(SearchAtomicMemoryRequest(scope_id=scope_id, query="alpha"))
     with pytest.raises(ForbiddenResponseError):
         await viewer.get_artifact(scope_id, "atomic-memory", created.artifact.artifact_id)
 
@@ -214,8 +222,8 @@ def test_search_rechecks_access_after_query_embedding(backend: str, provider: st
                 created = await asyncio.wait_for(_revoke_and_create(admin, scope_id, binding), timeout=20)
             finally:
                 embedding.resume_query.set()
-                result = await asyncio.wait_for(pending, timeout=20)
-            assert result.hits == []
+                with pytest.raises(ForbiddenResponseError):
+                    await asyncio.wait_for(pending, timeout=20)
             await _assert_current_access_revoked(viewer, scope_id, created)
 
     asyncio.run(scenario())
@@ -300,9 +308,9 @@ def test_separate_policy_database_pins_content_before_allow(tmp_path, monkeypatc
                 ),
                 context=audit,
             )
-            context = AtomicMemoryExecutionContext(VIEWER, access, audit)
+            context = ArtifactSearchExecutionContext(VIEWER, access, audit)
             memory = contexts.atomic_memory.for_scope("project")
-            filters = AtomicMemorySecurity.filters
+            filters = AtomicMemoryAccess.filters
             authorized, resume = asyncio.Event(), asyncio.Event()
 
             async def pause_after_allow(*args, **kwargs):
@@ -312,7 +320,7 @@ def test_separate_policy_database_pins_content_before_allow(tmp_path, monkeypatc
                 return result
 
             with monkeypatch.context() as patch:
-                patch.setattr(AtomicMemorySecurity, "filters", pause_after_allow)
+                patch.setattr(AtomicMemoryAccess, "filters", pause_after_allow)
                 pending = asyncio.create_task(memory.search("alpha", mode=mode, context=context))
                 try:
                     await asyncio.wait_for(authorized.wait(), timeout=20)
@@ -331,7 +339,8 @@ def test_separate_policy_database_pins_content_before_allow(tmp_path, monkeypatc
                     result = await asyncio.wait_for(pending, timeout=20)
             assert [hit.hit.artifact_ref.artifact_id for hit in result.hits] == [original.artifact_id]
             assert [hit.text for hit in result.hits] == ["Alpha original body."]
-            assert (await memory.search("alpha", mode=mode, context=context)).hits == ()
+            with pytest.raises(AccessDeniedError):
+                await memory.search("alpha", mode=mode, context=context)
 
     asyncio.run(scenario())
 
@@ -386,7 +395,7 @@ def test_search_pins_access_and_content_without_blocking_writers(
             _server(database, provider, tmp_path, _Embedding()) as (_, admin, viewer),
         ):
             scope_id, original, binding = await _seed(admin)
-            filters = AtomicMemorySecurity.filters
+            filters = AtomicMemoryAccess.filters
             authorized = asyncio.Event()
             resume = asyncio.Event()
 
@@ -397,7 +406,7 @@ def test_search_pins_access_and_content_without_blocking_writers(
                 return result
 
             with monkeypatch.context() as patch:
-                patch.setattr(AtomicMemorySecurity, "filters", pause_after_access)
+                patch.setattr(AtomicMemoryAccess, "filters", pause_after_access)
                 pending = asyncio.create_task(
                     viewer.search_atomic_memory(
                         SearchAtomicMemoryRequest(scope_id=scope_id, query="alpha", mode=AtomicMemorySearchMode(mode))

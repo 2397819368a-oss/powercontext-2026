@@ -194,7 +194,6 @@ ARTIFACTS_TABLE = Table(
     Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
     Column("revision", Integer, primary_key=True),
     Column("content", _canonical_payload_type(), nullable=False),
-    Column("memory_citations", _canonical_payload_type(), nullable=True),
 )
 
 ARTIFACT_HEADS_TABLE = Table(
@@ -340,7 +339,6 @@ ARTIFACT_CANDIDATE_VERSIONS_TABLE = Table(
     Column("proposal", _canonical_payload_type(), nullable=False),
     Column("source_refs", _canonical_payload_type(), nullable=False),
     Column("artifact_refs", _canonical_payload_type(), nullable=False),
-    Column("memory_citations", _canonical_payload_type(), nullable=True),
     Column("target_family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH)),
     Column("target_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
     Column("target_revision", Integer),
@@ -904,6 +902,44 @@ RECALL_TOKEN_DAILY_TABLE = Table(
     CheckConstraint("recalled_tokens >= 0", name="ck_pc_recall_token_daily_recalled_nonnegative"),
 )
 
+RECALL_EFFORT_DAILY_TABLE = Table(
+    "pc_recall_effort_daily",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("usage_date", Date, primary_key=True),
+    Column("policy_id", identity_string(128), primary_key=True),
+    Column("assessment", identity_string(64), primary_key=True),
+    *(
+        Column(
+            name,
+            BigInteger,
+            CheckConstraint(f"{name} >= 0", name=f"ck_recall_effort_{name}_nonnegative"),
+            nullable=False,
+        )
+        for name in (
+            "preparations",
+            "rounds",
+            "expanded_preparations",
+            "admission_expansions",
+            "policy_floor_expansions",
+            "candidate_round_samples",
+            "candidates_assessed",
+            "final_candidate_pool",
+            "added_embeddings",
+            "added_generation_calls",
+            "truncated_items",
+            "dropped_items",
+            "dropped_below_min_bytes",
+            "dropped_no_fitting_truncation",
+        )
+    ),
+    CheckConstraint(
+        "dropped_items = dropped_below_min_bytes + dropped_no_fitting_truncation",
+        name="ck_pc_recall_effort_daily_drop_total",
+    ),
+)
+
+
 SHARED_TABLES = (
     SOURCE_JOURNAL_HEADS_TABLE,
     SOURCES_TABLE,
@@ -941,6 +977,8 @@ MAX_MEMORY_ENTRY_KIND_LENGTH = 128
 MAX_MEMORY_HASH_LENGTH = 64
 
 
+# Retained, unused legacy entry history. It no longer references public
+# Artifact rows: migrated collections live only in the Memory archive.
 MEMORY_ENTRY_VERSIONS_TABLE = Table(
     "pc_memory_entry_versions",
     SHARED_METADATA,
@@ -971,16 +1009,6 @@ MEMORY_ENTRY_VERSIONS_TABLE = Table(
         "entry_version_id",
         name="uq_pc_memory_entry_versions_identity",
     ),
-    ForeignKeyConstraint(
-        ("scope_id", "family", "memory_artifact_id", "created_in_revision"),
-        (
-            "pc_artifacts.scope_id",
-            "pc_artifacts.family",
-            "pc_artifacts.artifact_id",
-            "pc_artifacts.revision",
-        ),
-        ondelete="RESTRICT",
-    ),
     CheckConstraint("version > 0", name="ck_pc_memory_entry_versions_version_positive"),
     CheckConstraint(
         "created_in_revision > 0",
@@ -999,16 +1027,6 @@ MEMORY_ENTRY_HEADS_TABLE = Table(
     Column("entry_version_id", identity_string(MAX_MEMORY_ENTRY_ID_LENGTH), nullable=False),
     Column("entry_content_hash", identity_string(MAX_MEMORY_HASH_LENGTH), nullable=False),
     Column("searchable_text", _entry_text_type(), nullable=False),
-    ForeignKeyConstraint(
-        ("scope_id", "family", "memory_artifact_id", "head_revision"),
-        (
-            "pc_artifacts.scope_id",
-            "pc_artifacts.family",
-            "pc_artifacts.artifact_id",
-            "pc_artifacts.revision",
-        ),
-        ondelete="RESTRICT",
-    ),
     ForeignKeyConstraint(
         ("scope_id", "memory_artifact_id", "entry_id", "entry_version_id"),
         (
@@ -1069,7 +1087,7 @@ ARTIFACT_TAGS_TABLE = Table(
     Index("ix_pc_artifact_tags_key", "scope_id", "tag_key_hash", "family", "target_type", "artifact_id", "target_id"),
 )
 
-STATISTICS_TABLES = (MODEL_USAGE_DAILY_TABLE, RECALL_TOKEN_DAILY_TABLE)
+STATISTICS_TABLES = (MODEL_USAGE_DAILY_TABLE, RECALL_TOKEN_DAILY_TABLE, RECALL_EFFORT_DAILY_TABLE)
 
 DREAM_RUNS_TABLE = Table(
     "pc_dream_runs",

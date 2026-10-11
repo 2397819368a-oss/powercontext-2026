@@ -7,7 +7,8 @@
   memory.
 - Search and list return Atomic records. Use the actual `artifact` and `state_version` in a `reference` object for
   reads and forgetting. Revisions take that object in `citation` and use the actual content ETag.
-- Genuine legacy MemoryCitation objects support exact historical reads only; never fabricate one from an Atomic ref.
+- MemoryCitation objects (`memory_ref`, `entry_id`, `entry_version_id`) are unsupported; use the exact Atomic
+  reference `{family: "atomic-memory", artifact_id, revision}` returned by search or list.
 - Use powercontext_revise_memory_entry for a correction and
   powercontext_retire_memory for reversible forgetting when the user requests removal from active use.
 - Treat forgotten, merged, and retired records as historical data. Collection change history is unsupported.

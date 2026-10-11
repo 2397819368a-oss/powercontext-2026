@@ -155,6 +155,17 @@ whatever the task's multi-step reward
 strategy; earlier steps' rewards are recorded for diagnosis only. A task may not set `min_reward` on an earlier
 step, because Harbor would then skip the recall step when that step's unrelated job falls short.
 
+`e2e/bub/paired-tasks/` holds three such workloads, each with a different answer shape:
+`project-decision-continuation` asks for a name and a count, `api-contract-continuation` for a URL path and a header
+name, and `revised-decision-continuation` for a value that was revised before the session together with the value it
+replaced, both stated in one message, so a run that keeps only the first value scores 0. All three run by default, so
+a default run takes about three times as long as one workload; `--id` selects one. The three share one capture-session
+shape, a fact stated in the first user message next to a one-word edit, and differ in what is asked back, so three
+passes show three answer shapes recalled, not three ways of capturing. Harbor keeps the container between the two
+sessions, so each capture step's verifier, after recording its diagnostic reward, resets the workspace to the
+corrected README: notes the capture agent wrote there cannot stand in for memory in the recall session. The reset
+covers the workspace only; a file the agent writes elsewhere in the container is not reset.
+
 The `paired` command runs each selected workload with PowerContext off and on, in separate containers, and repeats
 this for `--trials` trials. The arm that runs first alternates between trials. `--host` selects the agent host for
 both arms: `bub` by default, `codex`, `claude-code`, `opencode`, or `pi`. Each host uses its own PowerContext
@@ -183,14 +194,17 @@ harness holds that value in its own environment and gives Harbor a reference to 
 reference and no part of the token. The token still lets an ON agent read other Scopes on the same Server, including
 earlier trials'.
 
-After each ON session the harness records the Scope's Server statistics. When another session follows, it first
-flushes the Scope, standing in for the time that passes between real sessions, and repeats the flush until the Scope
-has processed every captured Source, a flush makes no progress, or 20 rounds pass. This runs from a Harbor agent-end
-hook after the agent's timed phase, so it does not use the agent's time budget. A failed flush or statistics read is
-recorded as a treatment failure rather than replacing the agent's own outcome, so a timed-out session still counts as
-a timeout. Host plugins flush on different schedules, so the harness flushes the same way for every host. The
-Server's generation model therefore takes part in the ON arm; the run fails early when the Server does not report
-`memory_extraction`.
+After each ON session the harness records the Scope's Server statistics. When another session follows, it first flushes
+the Scope, standing in for the time that passes between real sessions, and repeats the flush until the Scope has
+processed every captured Source, a flush makes no progress, or 20 rounds pass. This runs from a Harbor agent-end hook
+after the agent's timed phase, so it does not use the agent's time budget. A failed flush or statistics read is recorded
+as a treatment failure rather than replacing the agent's own outcome, so a timed-out session still counts as a timeout.
+The one exception is HTTP 503 `artifact_owner_pending`: a host plugin's own end-of-session flush can still be running on
+the Server after the plugin stops waiting for it, and until that request records who owns the Memory it created, the
+Server answers a flush of the Scope, and reads that list its Memory, with this code. The harness retries such a call
+after 1, 2, 4, and 8 seconds before it records the failure. Host plugins flush on different schedules, so the harness
+flushes the same way for every host. The Server's generation model therefore takes part in the ON arm; the run fails
+early when the Server does not report `memory_extraction`.
 
 An ON run counts only when Server statistics for its Scope show that Sources were captured before the scored session
 (during it, for a single-session workload) and that the integration asked PowerContext for context during it.
@@ -356,6 +370,49 @@ report cannot tell that from a real 0. The report shows `n/a` when no run report
 
 The report is marked preliminary. With two trials the intervals are wide, which is the point: they show how little
 such a pilot can say. The command does not yet check the Default Scope for leaks or run in the fixed Compose harness.
+
+### MemoryCode workloads
+
+`e2e/bub/paired-tasks/memorycode/` holds continuation workloads built from MemoryCode (Rakotonirina et al., "From Tools
+to Teammates: Evaluating LLMs in Multi-Session Coding Interactions", ACL 2025; Apache-2.0), a published dataset rather
+than tasks written for this harness. In each dialogue a mentor gives a mentee coding guidelines across mentoring
+sessions, such as a prefix for argument names or a decorator on every function, updates some of them, and talks about
+unrelated topics. `e2e/bub/scripts/memorycode_tasks.py` turns a dialogue into one task: an agent session per mentoring
+session, which gives the agent that session's transcript and asks only for an acknowledgement, then a recall session
+that asks for code for the dialogue's history eval queries, one file each, following the mentor's latest guidelines
+without restating them. The paper gives the model the whole history in one prompt; here the recall session sees no
+transcript, so what it knows of the guidelines comes from the host's memory. Each mentoring session's verifier empties
+the workspace, so notes the agent writes there cannot stand in for that memory.
+
+The recall step grades the files with MemoryCode's own object extraction and checks, ported to
+`e2e/bub/scripts/memorycode_grade.py` with upstream's quirks: a guideline about objects that a file does not define is
+not scored for that file, and a name rule checks the first name of each object. Upstream grades the first fenced block
+of a chat answer; a file that parses is graded whole, so a fenced example in a docstring does not replace it. An answer
+without code scores 0 on every guideline, which here means a missing or empty file. The trial reward is 1 only when at
+least one guideline applies and every output follows every guideline that applies to it. The verifier's reward file also
+records the counts of applicable and passed checks and, when any check applies, MemoryCode's macro score over outputs;
+each arm's observation keeps them under `harbor.rewards`. The task image does not install `pedantic`, the module the
+decorator guidelines name, so an agent that runs its code sees an import error; this is the same in both arms.
+
+The manifests pin 50 short dialogues, 10 for each count of one to five mentoring sessions, drawn with seed 1705. The
+dataset is not copied into this repository. Generate the tasks from a MemoryCode checkout at the pinned revision: the
+script writes them to `e2e/bub/memorycode-tasks/`, which git ignores, and fails when a task's checksum differs from its
+manifest. Every task holds a copy of the grader, so after changing the grader or the task format, `--pin` writes the new
+checksums for the same dialogues; `--sample N` draws another sample, with `--seed`, and replaces the manifests.
+
+```bash
+git clone https://github.com/Cohere-Labs-Community/MemoryCode /path/to/MemoryCode
+git -C /path/to/MemoryCode checkout 1ab87e119b2f9a498de8075219e1c07f6041b394
+uv run --project e2e/bub python e2e/bub/scripts/memorycode_tasks.py /path/to/MemoryCode
+make harness-paired ARGS='--host pi --manifest e2e/bub/paired-tasks/memorycode --trials 1'
+```
+
+`--category memorycode-sessions-3` selects the dialogues with three mentoring sessions. Each session's transcript is 175
+to 971 words in this sample, and the Server's generation model extracts Memory from it while the harness settles the
+Scope between sessions. With `deepseek/deepseek-v4-pro` through OpenRouter the default 30-second
+`POWERCONTEXT_SERVER_INFERENCE_GENERATION_TIMEOUT_SECONDS` often expired and the run became an integration failure; 120
+seconds was enough. A dialogue with five mentoring sessions runs six agent sessions per arm, and its ON arm also waits
+for each extraction, so plan a few minutes per dialogue.
 
 ### Task-completion workloads
 

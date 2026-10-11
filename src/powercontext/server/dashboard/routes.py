@@ -94,10 +94,6 @@ def links(request: Request, ctx: dict[str, Any]):
                     "artifact",
                     "revision",
                     "kind",
-                    "entry",
-                    "memory_id",
-                    "memory_revision",
-                    "entry_version",
                     "cursor",
                     "experience_cursor",
                     "skill_cursor",
@@ -133,8 +129,8 @@ def links(request: Request, ctx: dict[str, Any]):
             record = ctx["data"].get("handoff")
         if record:
             query.update(artifact=record["artifact_id"], revision=record["revision"])
-        if destination == "notes" and {"artifact", "revision", "entry"}.intersection(params):
-            for key in ("artifact", "revision", "entry", "memory_id", "memory_revision", "entry_version"):
+        if destination == "notes" and {"artifact", "revision"}.intersection(params):
+            for key in ("artifact", "revision"):
                 query.pop(key, None)
         reading_link_context(request, ctx, destination, params, query)
         if "scope" in params and params["scope"] != ctx["scope"]:

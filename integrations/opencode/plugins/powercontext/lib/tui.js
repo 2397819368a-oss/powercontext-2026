@@ -551,6 +551,17 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
+	search_artifacts: {
+		method: "POST",
+		path: "/v1/scopes/{scope_id}/artifacts/{family}/search",
+		location: "body",
+		scopeMode: "none",
+		pathParameters: ["scope_id", "family"],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
 	search_topic_memory: {
 		method: "POST",
 		path: "/v1/topic-memory/search",
@@ -1721,15 +1732,6 @@ async function requestMemoryOperation(client, operationId, payload, scopeId, sig
 		"revise_memory_entry",
 		"retire_memory_entry"
 	].includes(operationId)) return void 0;
-	if (body.citation !== void 0 && body.artifact !== void 0) throw new MemoryOperationError("invalid_request", "Choose one exact artifact reference or one historical citation.");
-	if (body.artifact === void 0) {
-		if (operationId !== "get_memory_entry") throw new MemoryOperationError("unsupported", "Legacy Memory citations are read-only. Use an Atomic Memory artifact reference for changes.");
-		if (body.citation === void 0) throw new MemoryOperationError("invalid_request", "Supply an Atomic Memory reference or a full historical citation.");
-		return client.request("get_memory_entry", {
-			scope_id: scopeId,
-			citation: body.citation
-		}, signal);
-	}
 	const ref = atomicReference(body.artifact);
 	const identity = {
 		scope_id: scopeId,

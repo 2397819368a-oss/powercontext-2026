@@ -190,25 +190,32 @@ See [configuration](../operate/configuration.md#atomic-memory) for signing keys,
 
 ## Legacy Memory API compatibility
 
-Retaining a route does not retain its old response model. New memories and revisions produce real `atomic-memory`
-ArtifactRefs only, with no new collection revision, entry_version_id or MemoryCitation.
+Only five legacy Memory routes remain, and the server request layer translates them into Atomic Memory calls.
+Retaining a route does not retain its old response model: results carry real `atomic-memory` ArtifactRefs only, with
+no collection revision, entry_version_id or MemoryCitation.
 
-| Legacy call | Behavior and response after upgrade |
+| Retained call | Behavior and response after upgrade |
 | --- | --- |
-| `entries/get` with an old `citation` | Returns the old `MemoryEntry`, validating membership and the exact entry version in that collection revision |
-| `entries/get` with an old `target` | Returns a current `AtomicMemoryRecord`; see the two read modes below |
-| Exact revision read of an old collection Artifact | Retains the old body, manifest and changes; the frozen head does not describe current memories after upgrade |
-| `search` | Keeps request modes `auto/fts/vector/hybrid` and tag_filter; returns `mode` and `hits`, whose `memory` is an AtomicMemoryRecord |
-| `entries/list` | Returns `entries: AtomicMemoryRecord[]` and `next_cursor`; `include_inactive=true` includes all four states |
+| `entries/get` with an old `target` | Computes the Atomic ID from the old collection and entry IDs and returns the current `AtomicMemoryRecord` |
+| `entries/list` | Returns the Scope's `entries: AtomicMemoryRecord[]` and `next_cursor`; `include_inactive=true` includes all four states |
+| `search` | Runs `fts` as `text` mode and keeps `auto/vector/hybrid` and tag_filter; each hit's `memory` is an AtomicMemoryRecord |
 | `remember` with omitted or null `expected_revision` | Creates independent memories; returns `changed` and `records: AtomicMemoryRecord[]` |
-| `flush` | Runs Atomic Source processing, retaining status/cursors/counts; `memory` is null, held_count is 0 and hold_codes is empty |
-| Tags GET/PUT for a valid old entry target | Maps to new Artifact tags, preserving the old target response and tag ETag concurrency checks; compacted targets return 404 |
-| `remember` with a non-null collection `expected_revision` | Rejected before writes; reconstruct the intended concurrency contract with the new API |
-| `entries/revise` or `entries/retire` with an old citation | Rejected before writes; use Atomic Replace or the forgotten lifecycle respectively |
-| `changes`, `capacity` or collection compact | No continuous changes stream across migration, collection capacity or compaction; read historical changes from exact retained revisions |
-| `family=memory` Create/Replace or collection rollback | Rejected; use independent Artifact writes and restoration |
+| `flush` | Runs Atomic Source processing, keeping the existing consumption progress, status and counts; `memory` is null, held_count is 0 and hold_codes is empty |
 
-Unsupported legacy collection operations return HTTP `422` with `error.code: "legacy_memory_operation_unsupported"`.
+The following legacy operations are rejected before execution and never read legacy storage:
+
+- `entries/get` with an old `citation`. Read exact history through `ArtifactRef(atomic-memory, artifact_id, revision)`.
+- `remember` with a non-null collection `expected_revision`. Reconstruct the intended concurrency contract with the
+  new API.
+- `entries/revise` and `entries/retire`. Use Atomic Replace or the forgotten lifecycle respectively.
+- `changes`, `capacity` and collection compaction.
+- `family=memory` Create, Replace and collection rollback. Use independent Artifact writes and restoration.
+- Reading or replacing old collection tags, and tag queries that explicitly select the `memory` family or
+  `memory_entry` targets. Default tag queries exclude legacy Memory; migrated entry tags are read and written on the
+  Atomic Artifact target.
+- Access checks and binding creation that use the old `memory_entry` selector.
+
+Unsupported legacy operations return HTTP `422` with `error.code: "legacy_memory_operation_unsupported"`.
 `error.details` contains `operation`, replacement `alternatives` routes and `instruction`, plus `kind` and `name`.
 Alternatives are empty when no replacement operation exists. Clients must not automatically drop collection CAS
 preconditions and retry.
@@ -222,31 +229,25 @@ Read the current memory by its old logical identity through `POST /v1/memory/ent
 }
 ```
 
-The server validates the retained legacy identity, maps it to a new Artifact and reads its current head/state.
-If the original memory is merged, it returns that object's frozen content, merged state and merged_into_id;
-it does not follow the result automatically.
-
-Exact historical reads still use the original citation:
-
-```json
-{
-  "scope_id": "S",
-  "citation": {
-    "memory_ref": {"family": "memory", "artifact_id": "OLD", "revision": 7},
-    "entry_id": "E",
-    "entry_version_id": "V3"
-  }
-}
-```
-
-Supply exactly one mode. A citation never discards its revision to read latest. Newly created memories use their new
-Artifact IDs directly.
+Within the requested Scope, the server maps the old identity to its Atomic Artifact and reads that head and current
+state. If the original memory is merged, it returns that object's frozen content, merged state and merged_into_id; it
+does not follow the result automatically. Newly created memories use their new Artifact IDs directly.
 
 Python Client methods retain the old names, but `remember_memory` returns `.records`, `search_memory` hits use
-`.memory.artifact`, and `list_memory_entries` returns `.entries` and `.next_cursor`. `get_memory_entry` directly returns
-`MemoryEntry | AtomicMemoryRecord`: citation mode has `.citation`; target mode has `.artifact`. Upgrade the SDK and
-handle the actual model. Old collection `.memory` and citation fields do not apply to new results. Inspect unsupported
+`.memory.artifact`, and `list_memory_entries` returns `.entries` and `.next_cursor`. `get_memory_entry` accepts only the
+target mode and returns an `AtomicMemoryRecord` with `.artifact`. Upgrade the SDK and handle the actual model. Old
+collection `.memory` and citation fields do not apply to new results. Inspect unsupported
 errors through `ServerResponseError.status_code`, `.code` and `.details`.
 New methods include `get_atomic_memory_state`, `list_atomic_memories`, `search_atomic_memory`, `merge_atomic_memories`,
 `change_atomic_memory_lifecycle`, `preview_atomic_memory_restoration` and `restore_atomic_memory`. Use generic Artifact
 Client methods for creation, replacement and exact historical reads.
+
+Search and list require `scope.read`, following the Memory and Topic Memory Scope boundary. An individual
+Artifact share permits its exact get and history reads; it does not grant a Scope inventory or search.
+If Scope read is revoked before reranking or context assembly, the request returns `403` even when an individual share remains.
+Source extraction enumerates the complete same-Scope threshold set owned by its principal, then checks the
+configured authorizer for Artifact read and write before comparing a memory. Denied candidates are skipped;
+authorization failures stop processing. The immutable Owner columns are only an extraction prefilter.
+
+Scope checks using the same database with supported Builtin or Casbin providers share the business snapshot.
+Independent decision stores and custom providers retain their configured read consistency contracts.

@@ -27,14 +27,12 @@ import { resolvePowerContextScope } from "./scope.js";
 import {
   decodeCitation,
   encodeCitation,
-  isMemoryCitation,
   isAtomicMemoryInput,
   isAtomicMemoryRecord,
   atomicMemoryInput,
   normalizeMemoryScore,
   isMemoryMatchedBy,
   type ArtifactRevision,
-  type MemoryEntry,
   type SearchMemoryResponse,
 } from "./types.js";
 
@@ -135,22 +133,15 @@ export class PowerContextMemoryManager implements MemorySearchManager {
       params.scopeId ??
       this.citationScopes.get(params.relPath) ??
       (await resolvePowerContextScope(this.client, this.getConfig(), { agentId: this.agentId }));
-    let textBody: string;
-    if (isMemoryCitation(citation)) {
-      const entry = await this.client.post<MemoryEntry>("/v1/memory/entries/get", { scope_id: scopeId, citation });
-      textBody = entry.text;
-    } else {
-      const ref = isAtomicMemoryInput(citation) ? citation.artifact : citation;
-      const record = await this.client.get<ArtifactRevision>(
-        `/v1/scopes/${encodeURIComponent(scopeId)}/artifacts/atomic-memory/${encodeURIComponent(ref.artifact_id)}/revisions/${ref.revision}`,
-      );
-      if (record.family !== ref.family || record.artifact_id !== ref.artifact_id || record.revision !== ref.revision ||
-          typeof record.content?.text !== "string") {
-        throw new Error("PowerContext returned a different or invalid Artifact revision");
-      }
-      textBody = record.content.text;
+    const ref = isAtomicMemoryInput(citation) ? citation.artifact : citation;
+    const record = await this.client.get<ArtifactRevision>(
+      `/v1/scopes/${encodeURIComponent(scopeId)}/artifacts/atomic-memory/${encodeURIComponent(ref.artifact_id)}/revisions/${ref.revision}`,
+    );
+    if (record.family !== ref.family || record.artifact_id !== ref.artifact_id || record.revision !== ref.revision ||
+        typeof record.content?.text !== "string") {
+      throw new Error("PowerContext returned a different or invalid Artifact revision");
     }
-    const allLines = textBody.split("\n");
+    const allLines = record.content.text.split("\n");
     if (allLines.at(-1) === "") {
       allLines.pop();
     }

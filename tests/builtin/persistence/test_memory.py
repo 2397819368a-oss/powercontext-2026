@@ -94,12 +94,12 @@ def test_sqlite_memory_backend_commits_authoritative_history_and_fts() -> None:
                     "project",
                     "decision",
                     AtomicMemoryContent(kind="decision", text="Use one atomic composition boundary."),
-                    application.default_context,
+                    None,
                     lineage=ArtifactLineage(sources=(SourceRef(source_type="content", source_id=source.name),)),
                 )
             prepared = await application.service.prepare_change(plan)
             async with contexts.database.transaction() as connection:
-                first = (await application.service.commit(connection, prepared, application.default_context)).primary
+                first = (await application.service.commit(connection, prepared, None)).primary
             second = await contexts.records.replace_artifact(
                 "project",
                 "atomic-memory",

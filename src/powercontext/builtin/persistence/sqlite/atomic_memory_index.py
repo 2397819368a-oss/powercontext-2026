@@ -34,12 +34,11 @@ from powercontext.builtin.persistence.atomic_memory_index import (
     AtomicMemorySearchRequest,
     RelationalAtomicMemoryIndex,
     atomic_memory_channel_hits,
-    atomic_memory_coverage_sql,
     atomic_memory_filter_sql,
     atomic_memory_profile_fingerprint,
     atomic_memory_vector_sql,
     combine_atomic_memory_channels,
-    freeze_atomic_memory_query_time,
+    sqlite_fts_coverage_sql,
 )
 from powercontext.builtin.persistence.atomic_memory_index_schema import (
     ATOMIC_MEMORY_PROJECTION_FORMAT,
@@ -59,9 +58,6 @@ _FTS_COLUMNS = (
     "text",
     "searchable_text",
     "tag_keys",
-    "owner_type",
-    "owner_id",
-    "read_grants",
     "identity_token",
 )
 _HIT_COLUMNS = "artifact_id, revision, state_version, kind, text"
@@ -100,6 +96,7 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
             # their trigger replacement and backfill in the caller's transaction.
             await connection.exec_driver_sql("BEGIN")
         await create_tables(connection, self.tables)
+        await self.require_current_schema(connection)
         if self.profile is not None:
             try:
                 await connection.exec_driver_sql("SELECT vec_version()")
@@ -189,7 +186,6 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
     ) -> AtomicMemorySearchChannels:
         if connection.dialect.name != "sqlite":
             raise AtomicMemoryIndexError("sqlite", "SQLite Atomic Memory index requires SQLite")
-        request = freeze_atomic_memory_query_time(request)
         eligibility, parameters = atomic_memory_filter_sql(request.filters, "sqlite")
         parameters["scope_id"] = scope_id
         limit_sql = "" if limit is None else " LIMIT :result_limit"
@@ -201,11 +197,8 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
             match_query = fts_match_query(request.query)
             terms, required = fts_query_requirements(request.query, floor=request.admission)
             if match_query is not None:
-                coverage = []
-                for index, term in enumerate(terms):
-                    key = f"fts_term_{index}"
-                    parameters[key] = f" {term} "
-                    coverage.append(f"CASE WHEN instr(' ' || searchable_text || ' ', :{key}) > 0 THEN 1 ELSE 0 END")
+                coverage, coverage_parameters = sqlite_fts_coverage_sql(terms)
+                parameters.update(coverage_parameters)
                 parameters.update(fts_query=match_query, fts_required=required)
                 rows = (
                     await connection.execute(
@@ -213,7 +206,7 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                             f"SELECT {_HIT_COLUMNS}, -bm25({_FTS_TABLE}) AS score, "  # noqa: S608
                             f"bm25({_FTS_TABLE}) AS raw_score, 'sqlite_bm25' AS score_metric FROM {_FTS_TABLE} "
                             "WHERE searchable_text MATCH :fts_query AND scope_id = :scope_id "
-                            f"AND ({eligibility}) AND ({atomic_memory_coverage_sql(coverage)}) >= :fts_required "
+                            f"AND ({eligibility}) AND {coverage} >= :fts_required "
                             f"ORDER BY score DESC, artifact_id{limit_sql}"
                         ),
                         parameters,

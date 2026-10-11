@@ -18,8 +18,8 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   FoundationInfo,
   WriteOutcome,
-  MemoryReference,
-  MemoryEntryResult,
+  AtomicMemoryDetail,
+  ArtifactReference,
   MemorySearchResponse,
   DiagnosticKind,
   DiagnosticReport,
@@ -37,8 +37,8 @@ export const desktopApi = {
     invoke<WriteOutcome>("remember_memory", { generation, text }),
   search: (generation: number, query: string) =>
     invoke<MemorySearchResponse>("search_memory", { generation, query }),
-  entry: (generation: number, reference: MemoryReference) =>
-    invoke<MemoryEntryResult>("memory_entry", { generation, reference }),
+  atomicEntry: (generation: number, artifact: ArtifactReference) =>
+    invoke<AtomicMemoryDetail>("atomic_memory_entry", { generation, artifact }),
   cancelMemory: (generation: number) =>
     invoke<void>("cancel_memory_reads", { generation }),
   diagnostics: (kind: DiagnosticKind) =>

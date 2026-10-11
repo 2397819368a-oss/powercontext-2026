@@ -23,8 +23,7 @@ import pytest
 from powercontext.builtin.artifacts.memory import MemoryRerankDecision
 from powercontext.builtin.inference import InferenceUsage
 from powercontext.builtin.runtime.application import ScopedContextApplication
-from powercontext.builtin.runtime.atomic_memory import ScopedAtomicMemory
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemorySecurity
+from powercontext.builtin.runtime.atomic_memory import AtomicMemoryAccess, ScopedAtomicMemory
 from powercontext.builtin.runtime.recall_sufficiency import REASON_EXPANSION_FAILED, RecallSufficiencyPolicy
 from tests.e2e.test_access_control_regressions import _grant, _scope, _server
 
@@ -142,7 +141,7 @@ def test_prepare_drops_changed_candidates_and_keeps_available_evidence(tmp_path,
 
 
 @pytest.mark.parametrize("retain", [False, True])
-def test_prepare_excludes_candidates_whose_read_grant_was_revoked(tmp_path, monkeypatch, retain):
+def test_prepare_rejects_scope_revocation_even_when_an_artifact_share_remains(tmp_path, monkeypatch, retain):
     async def scenario():
         async with _server(tmp_path) as (_, client, _):
             scope_id = await _scope(client)
@@ -167,14 +166,7 @@ def test_prepare_excludes_candidates_whose_read_grant_was_revoked(tmp_path, monk
                 client.post("/v1/context/prepare", headers=_VIEWER, json={"scope_id": scope_id, **_PREPARE})
             )
             response = await _finish_read(pending, pause, lambda: _revoke(client, binding))
-            assert response.status_code == 200, response.text
-            body = response.json()
-            if retain:
-                assert body["status"] == "ready"
-                assert "Alpha retained evidence." in body["content"]
-                assert "revoked private body" not in body["content"]
-            else:
-                assert body["status"] == "empty" and body["content"] is None
+            assert response.status_code == 403, response.text
 
     asyncio.run(scenario())
 
@@ -295,6 +287,10 @@ def test_rerank_filters_candidates_changed_since_the_retrieval_snapshot(tmp_path
                 else (lambda: _change(client, scope_id, changed, operation))
             )
             response = await _finish_read(pending, pause, mutate)
+            if operation == "revoke":
+                assert response.status_code == 403, response.text
+                assert reranker.inputs == []
+                return
             assert response.status_code == 200, response.text
             texts = [hit["memory"]["text"] for hit in response.json()["hits"]]
             assert texts == (["Alpha retained evidence."] if retain else [])
@@ -310,7 +306,7 @@ def test_list_pins_scope_authorization_and_records_to_one_snapshot(tmp_path, mon
             original = await _remember(client, scope_id, "Alpha authorized original body.")
             binding = await _grant(client, scope_id, "viewer", "scope.viewer")
             pause = _Pause()
-            filters = AtomicMemorySecurity.filters
+            filters = AtomicMemoryAccess.filters
 
             async def paused(*args, **kwargs):
                 result = await filters(*args, **kwargs)
@@ -322,7 +318,7 @@ def test_list_pins_scope_authorization_and_records_to_one_snapshot(tmp_path, mon
                 await _remember(client, scope_id, "Alpha new private body.")
 
             with monkeypatch.context() as patch:
-                patch.setattr(AtomicMemorySecurity, "filters", paused)
+                patch.setattr(AtomicMemoryAccess, "filters", paused)
                 pending = asyncio.create_task(
                     client.post("/v1/atomic-memory/list", headers=_VIEWER, json={"scope_id": scope_id})
                 )
@@ -330,7 +326,6 @@ def test_list_pins_scope_authorization_and_records_to_one_snapshot(tmp_path, mon
             assert response.status_code == 200, response.text
             assert [item["artifact"] for item in response.json()["items"]] == [original["artifact"]]
             current = await client.post("/v1/atomic-memory/list", headers=_VIEWER, json={"scope_id": scope_id})
-            assert current.status_code == 200, current.text
-            assert current.json()["items"] == []
+            assert current.status_code == 403, current.text
 
     asyncio.run(scenario())

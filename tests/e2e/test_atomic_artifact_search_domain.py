@@ -268,7 +268,7 @@ def test_atomic_public_missing_selected_authority_is_internal_failure(tmp_path, 
             if boundary == "candidate-validation":
                 monkeypatch.setattr(contexts.atomic_memory.artifacts, "get_many", missing)
             else:
-                monkeypatch.setattr(contexts.atomic_memory.service, "get", missing)
+                monkeypatch.setattr(contexts.atomic_memory.artifacts, "latest", missing)
             with pytest.raises(ArtifactSearchContractError):
                 await service(contexts).search("project", "atomic-memory", {"query": "alpha"})
             with pytest.raises(RepositoryNotFoundError):
@@ -317,9 +317,7 @@ def test_atomic_bounded_public_search_keeps_complete_related_enumeration(tmp_pat
             assert len(bounded.matches) == 100 and bounded.artifacts is not None
             application = contexts.atomic_memory
             async with application.database.transaction(consistent_snapshot=True) as connection:
-                filters = await application.security.filters(
-                    "project", application.default_context, connection=connection
-                )
+                filters = await application.security.filters(connection, "project", None)
                 complete = await application.index.enumerate_related(
                     connection, "project", AtomicMemoryRelatedRequest("alpha", filters)
                 )

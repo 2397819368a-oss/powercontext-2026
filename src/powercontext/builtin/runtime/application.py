@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
@@ -39,7 +39,6 @@ from powercontext.artifacts.search import (
 from powercontext.builtin.artifacts.atomic_memory.models import (
     AtomicMemoryContent,
     AtomicMemoryMutationResult,
-    AtomicMemoryRecord,
 )
 from powercontext.builtin.artifacts.experience import (
     EXPERIENCE_INCUBATION_WINDOW_LIMIT,
@@ -65,24 +64,7 @@ from powercontext.builtin.artifacts.handoff import (
     PrepareHandoff,
     PrepareHandoffHint,
 )
-from powercontext.builtin.artifacts.memory import (
-    EmbeddingProfile,
-    Memory,
-    MemoryCapacity,
-    MemoryCitation,
-    MemoryCompactionResult,
-    MemoryEntryVersion,
-    MemoryQueryEmbedding,
-    MemoryService,
-    MemoryWritePlan,
-    MemoryWriteVerdict,
-)
-from powercontext.builtin.artifacts.memory.errors import (
-    CapabilityNotSupportedError,
-    InvalidMemoryCitationError,
-    MemoryEntryNotFoundError,
-    MemoryWriteRejectedError,
-)
+from powercontext.builtin.artifacts.memory import EmbeddingProfile, MemoryQueryEmbedding
 from powercontext.builtin.artifacts.profile.service import RelationalProfileService
 from powercontext.builtin.artifacts.prompt import (
     GeneratePromptDemonstrations,
@@ -149,8 +131,6 @@ from powercontext.builtin.persistence.artifact_governance import (
     ArtifactGovernance,
     ArtifactLifecycleState,
 )
-from powercontext.builtin.persistence.atomic_memory_compatibility import resolve_legacy_memory_target
-from powercontext.builtin.persistence.atomic_memory_identity import legacy_entry_artifact_id
 from powercontext.builtin.persistence.skill_publications import SkillPublication
 from powercontext.builtin.publication import ArtifactPublicationApplication
 from powercontext.builtin.records import (
@@ -159,7 +139,6 @@ from powercontext.builtin.records import (
     ArtifactRecordPage,
     ArtifactRevisionPage,
     ArtifactWrite,
-    BaseOperationNotSupportedError,
     BaseValueConflictError,
     LogicalArtifactRecord,
     RecordService,
@@ -176,10 +155,10 @@ from powercontext.builtin.runtime._scope_cache import (
     ScopeEvictor,
 )
 from powercontext.builtin.runtime.artifact_search import ArtifactSearchService
-from powercontext.builtin.runtime.atomic_memory import AtomicMemoryPage, AtomicMemorySearchHit, AtomicMemorySearchPage
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemoryExecutionContext
+from powercontext.builtin.runtime.atomic_memory import AtomicMemorySearchHit
 from powercontext.builtin.runtime.decision_model import DecisionModel
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
+from powercontext.builtin.runtime.extraction_diagnostics import ExtractionDiagnostics
 from powercontext.builtin.runtime.models import (
     ApproveArtifactCandidateRequest,
     CaptureSource,
@@ -189,34 +168,27 @@ from powercontext.builtin.runtime.models import (
     ExperienceIncubationResult,
     ExternalSkillList,
     ExternalSkillScanResult,
+    ExtractionStatus,
     GenerateExperienceRequest,
     GenerateSkillRequest,
     GetArtifactCandidateRequest,
     GetExperienceRequest,
-    GetMemoryEntryRequest,
     GetSkillRequest,
     GetTopicMemoryRequest,
     ImportExternalSkillRequest,
     ListArtifactCandidatesRequest,
     ListExternalSkillsRequest,
-    MemoryChangesPage,
-    MemoryEntryRecord,
     MemoryFlushResult,
-    MemoryMutationResult,
     PrepareContextRequest,
     PreparedContext,
     ProposeExperienceRequest,
     ProposeSkillRequest,
     RejectArtifactCandidateRequest,
-    RememberMemoryRequest,
     ResolveExternalSkillRequest,
-    RetireMemoryEntryRequest,
     ReviewedCandidate,
     ReviewedCandidatePage,
     ReviseArtifactCandidateRequest,
-    ReviseMemoryEntryRequest,
     RuntimeCapabilities,
-    SearchMemoryRequest,
     SearchTopicMemoryRequest,
     SkillCandidate,
     SourceReceipt,
@@ -250,6 +222,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     MEMORY_FAMILY,
     REASON_AT_MAX_ROUNDS,
     REASON_EXPANSION_FAILED,
+    REASON_WEAK_TOP_ONE,
     TOPIC_MEMORY_FAMILY,
     RecallEffort,
     RecallExpander,
@@ -303,7 +276,7 @@ from powercontext.builtin.work import (
     project_work_continuity,
 )
 from powercontext.context import PowerContext
-from powercontext.errors import ArtifactNotFoundError, RevisionConflictError, SourceConflictError
+from powercontext.errors import SourceConflictError
 from powercontext.sources import ConnectorBinding, SourceDefinitionManifest, SourceRef
 
 if TYPE_CHECKING:
@@ -622,10 +595,6 @@ class ScopedRecordApplication:
                 self.scope_id, family, artifact_id, limit=limit, cursor=cursor
             )
 
-    async def current_memory_entry(self, artifact_id: str, entry_id: str, /) -> MemoryEntryVersion:
-        async with self._runtime._scope_operation(self.scope_id):
-            return await self._runtime._records().current_memory_entry(self.scope_id, artifact_id, entry_id)
-
     async def logical_artifacts(self) -> tuple[LogicalArtifactRecord, ...]:
         async with self._runtime._scope_operation(self.scope_id):
             return await self._runtime._records().logical_artifacts(self.scope_id)
@@ -852,7 +821,7 @@ class StatisticsApplication:
         )
 
 
-_PREPARE_ATOMIC_CONTEXT: ContextVar[AtomicMemoryExecutionContext | None] = ContextVar(
+_PREPARE_ATOMIC_CONTEXT: ContextVar[ArtifactSearchExecutionContext | None] = ContextVar(
     "prepare_atomic_context", default=None
 )
 
@@ -870,7 +839,7 @@ class ScopedContextApplication:
         /,
         *,
         authorize_scopes: Callable[[tuple[str, ...]], Awaitable[None]] | None = None,
-        atomic_context: AtomicMemoryExecutionContext | None = None,
+        atomic_context: ArtifactSearchExecutionContext | None = None,
     ) -> PreparedContext:
         if (
             request.assembly is not None
@@ -890,19 +859,27 @@ class ScopedContextApplication:
 
     async def _prepare(self, request: PrepareContextRequest, scope: ScopeDescriptor, /) -> PreparedContext:
         build, effort = await self._prepare_build(request, scope)
-        if effort is not None and self._runtime._recall_effort_sink is not None:
+        if effort is not None:
             try:
-                await self._runtime._recall_effort_sink(effort)
+                # An explicit sink replaces the relational recorder. Both receive
+                # the same final trace, and one preparation is never recorded twice.
+                if self._runtime._recall_effort_sink is not None:
+                    await self._runtime._recall_effort_sink(effort)
+                elif self._runtime._statistics_service is not None:
+                    await self._runtime._statistics(self.scope_id).record_recall_effort(
+                        effort,
+                        self._runtime._clock().astimezone(UTC).date(),
+                    )
             except Exception as error:
                 log_safely(
                     logger,
                     logging.ERROR,
                     "Recall effort sink failed",
-                    exc_info=error,
                     extra={
                         "event": "context.recall_gate.sink_failed",
                         "outcome": "failure",
                         "unit": "context",
+                        "error_type": type(error).__name__,
                     },
                 )
         if self._runtime._recall_token_estimator is not None:
@@ -936,7 +913,7 @@ class ScopedContextApplication:
         The controlled expansion loop lives here. It runs at most ``policy.max_rounds`` extra
         searches, each of which only lowers the admission floor for the families the caller
         already selected — never a new family, a larger ``limit``, or a different ``mode``.
-        Every gate or expansion error degrades to the round-zero candidate set.
+        Every gate or expansion error preserves the last committed candidate set.
 
         Returns ``(build, effort)``. The RFC 1560 trace is **not** a field of the build:
         ``_prepare`` returns ``build.context`` and discards the rest, so a field there would
@@ -1126,11 +1103,13 @@ class ScopedContextApplication:
         """Run the bounded expansion loop and return the winning candidates plus the trace.
 
         Candidates accumulate across rounds; only new identities are ever added, so an earlier
-        round's candidate is never removed. Any error returns the round-zero candidates unchanged
+        round's candidate is never removed. Any error returns the last committed candidates unchanged
         and records ``expansion-failed`` — the gate can never turn a successful prepare into a
         failure. For a consistent signal basis, ``candidates_by_round`` counts the *un-truncated*
         accumulated pool (no family is clamped while the gate is consulting it); the Builder
-        ceilings are applied once, on the returned candidates only.
+        ceilings are applied once, on the returned candidates only. Committed candidates keep the
+        latest round's fused order inside those ceilings, so evidence surfaced by a later round is
+        deliverable instead of trailing the round-zero prefix.
         """
 
         gate = RecallSufficiencyGate()
@@ -1160,6 +1139,7 @@ class ScopedContextApplication:
             memory_hits=_flatten_memory_hits(memory_candidates),
             topic_memory_hits=topic_memory_hits,
             experience_hits=_flatten_experience_hits(experience_candidates),
+            memory_scope_ids=tuple(group.scope_id for group in memory_candidates for _hit in group.hits),
         )
         round_zero_count = len(candidates)
         candidates_by_round = [round_zero_count]
@@ -1167,6 +1147,10 @@ class ScopedContextApplication:
         added_embeddings = 0
         added_generation_calls = 0
         admission_by_family = list(round_zero.admissions)
+        last_signals = None
+        committed_memory = memory_candidates
+        committed_experience = experience_candidates
+        committed_topic = topic_memory_hits
         try:
             budget = builder.probe_budget(
                 request=request,
@@ -1184,6 +1168,7 @@ class ScopedContextApplication:
                 budget=budget,
                 families_expected=families_expected,
             )
+            last_signals = assessment.signals
             while not assessment.sufficient and families_recoverable > 0 and len(expansions) < policy.max_rounds:
                 plan = expander.plan(len(expansions) + 1, policy)
                 issued = await self._recall_round(
@@ -1195,68 +1180,81 @@ class ScopedContextApplication:
                     reuse=reuse,
                     topic_reuse=topic_reuse,
                 )
+                memory_ranks: dict[Any, int] = {}
                 for group in issued.memory:
                     _ensure_memory_heads_stable(group, memory_versions)
                     bucket = memory_hits_by_scope.setdefault(group.scope_id, [])
                     for hit in group.hits:
                         identity = _memory_identity(group.scope_id, hit)
+                        memory_ranks[identity] = len(memory_ranks)
                         if identity in seen_memory:
                             continue
                         seen_memory.add(identity)
                         bucket.append(hit)
+                experience_ranks: dict[Any, int] = {}
                 for group in issued.experience:
                     bucket = experience_hits_by_scope.setdefault(group.scope_id, [])
                     for hit in group.hits:
                         identity = _experience_identity(group.scope_id, hit)
+                        experience_ranks[identity] = len(experience_ranks)
                         if identity in seen_experience:
                             continue
                         seen_experience.add(identity)
                         bucket.append(hit)
+                topic_ranks = {_topic_identity(hit): index for index, hit in enumerate(issued.topic_memory.hits)}
                 for hit in issued.topic_memory.hits:
                     identity = _topic_identity(hit)
                     if identity in seen_topic:
                         continue
                     seen_topic.add(identity)
                     accumulated_topic.append(hit)
-                expansions.append(plan.action)
-                added_embeddings += issued.embedding_calls
-                added_generation_calls += issued.generation_calls
-                admission_by_family = list(issued.admissions)
-                families_recoverable = _families_with_recoverable_candidates(
-                    families, issued.admissions, memory_recoverable=issued.memory_recoverable
-                )
                 candidates = build_recall_candidates(
                     memory_hits=_flatten_scope_memory(memory_hits_by_scope, scope_ids),
                     topic_memory_hits=tuple(accumulated_topic),
                     experience_hits=_flatten_scope_experience(experience_hits_by_scope, scope_ids),
+                    memory_scope_ids=tuple(
+                        scope_id for scope_id in scope_ids for _hit in memory_hits_by_scope.get(scope_id, ())
+                    ),
                 )
-                candidates_by_round.append(len(candidates))
+                staged_memory = _limit_expanded_memory_candidates(
+                    [
+                        PreparedMemoryCandidates(
+                            scope_id=scope_id,
+                            hits=_latest_round_order(
+                                memory_hits_by_scope.get(scope_id, ()),
+                                memory_ranks,
+                                lambda hit, s=scope_id: _memory_identity(s, hit),
+                            ),
+                        )
+                        for scope_id in scope_ids
+                    ],
+                    memory_candidates,
+                    builder.memory_candidate_limit,
+                )
+                staged_topic = _latest_round_order(accumulated_topic, topic_ranks, _topic_identity)[
+                    : builder.topic_memory_candidate_limit
+                ]
+                staged_experience = _limit_expanded_experience_candidates(
+                    [
+                        PreparedExperienceCandidates(
+                            scope_id=scope_id,
+                            hits=_latest_round_order(
+                                experience_hits_by_scope.get(scope_id, ()),
+                                experience_ranks,
+                                lambda hit, s=scope_id: _experience_identity(s, hit),
+                            ),
+                        )
+                        for scope_id in scope_ids
+                    ],
+                    experience_candidates,
+                    builder.experience_candidate_limit,
+                )
                 budget = builder.probe_budget(
                     request=request,
                     current_scope_id=self.scope_id,
-                    memory_candidates=_limit_expanded_memory_candidates(
-                        [
-                            PreparedMemoryCandidates(
-                                scope_id=scope_id,
-                                hits=tuple(memory_hits_by_scope.get(scope_id, ())),
-                            )
-                            for scope_id in scope_ids
-                        ],
-                        memory_candidates,
-                        builder.memory_candidate_limit,
-                    ),
-                    topic_memory_hits=tuple(accumulated_topic[: builder.topic_memory_candidate_limit]),
-                    experience_candidates=_limit_expanded_experience_candidates(
-                        [
-                            PreparedExperienceCandidates(
-                                scope_id=scope_id,
-                                hits=tuple(experience_hits_by_scope.get(scope_id, ())),
-                            )
-                            for scope_id in scope_ids
-                        ],
-                        experience_candidates,
-                        builder.experience_candidate_limit,
-                    ),
+                    memory_candidates=staged_memory,
+                    topic_memory_hits=staged_topic,
+                    experience_candidates=staged_experience,
                     profile_candidates=profile_candidates,
                 )
                 assessment = gate.assess(
@@ -1267,13 +1265,31 @@ class ScopedContextApplication:
                     budget=budget,
                     families_expected=families_expected,
                 )
-            if not assessment.sufficient and families_recoverable > 0 and len(expansions) >= policy.max_rounds:
+                committed_memory = staged_memory
+                committed_experience = staged_experience
+                committed_topic = staged_topic
+                expansions.append(plan.action)
+                added_embeddings += issued.embedding_calls
+                added_generation_calls += issued.generation_calls
+                admission_by_family = list(issued.admissions)
+                families_recoverable = _families_with_recoverable_candidates(
+                    families, issued.admissions, memory_recoverable=issued.memory_recoverable
+                )
+                candidates_by_round.append(len(candidates))
+                last_signals = assessment.signals
+            if (
+                not assessment.sufficient
+                and assessment.reason != REASON_WEAK_TOP_ONE
+                and families_recoverable > 0
+                and len(expansions) >= policy.max_rounds
+            ):
                 assessment = replace(assessment, reason=REASON_AT_MAX_ROUNDS)
+            reason = assessment.reason
         except Exception as error:
             log_safely(
                 logger,
                 logging.ERROR,
-                "Recall sufficiency expansion failed; keeping the round-zero candidates",
+                "Recall sufficiency expansion failed; keeping the last committed candidates",
                 exc_info=error,
                 extra={
                     "event": "context.recall_gate.expansion_failed",
@@ -1281,53 +1297,20 @@ class ScopedContextApplication:
                     "unit": "context",
                 },
             )
-            return (
-                memory_candidates,
-                experience_candidates,
-                topic_memory_hits,
-                recall_effort(
-                    policy=policy,
-                    assessment=REASON_EXPANSION_FAILED,
-                    expansion_actions=expansions,
-                    candidates_by_round=candidates_by_round,
-                    admission_by_family=admission_by_family,
-                    added_embeddings=added_embeddings,
-                    added_generation_calls=added_generation_calls,
-                ),
-            )
-        capped_topic = tuple(accumulated_topic[: builder.topic_memory_candidate_limit])
+            reason = REASON_EXPANSION_FAILED
         return (
-            _limit_expanded_memory_candidates(
-                [
-                    PreparedMemoryCandidates(
-                        scope_id=scope_id,
-                        hits=tuple(memory_hits_by_scope.get(scope_id, ())),
-                    )
-                    for scope_id in scope_ids
-                ],
-                memory_candidates,
-                builder.memory_candidate_limit,
-            ),
-            _limit_expanded_experience_candidates(
-                [
-                    PreparedExperienceCandidates(
-                        scope_id=scope_id,
-                        hits=tuple(experience_hits_by_scope.get(scope_id, ())),
-                    )
-                    for scope_id in scope_ids
-                ],
-                experience_candidates,
-                builder.experience_candidate_limit,
-            ),
-            capped_topic,
+            committed_memory,
+            committed_experience,
+            committed_topic,
             recall_effort(
                 policy=policy,
-                assessment=assessment.reason,
+                assessment=reason,
                 expansion_actions=expansions,
                 candidates_by_round=candidates_by_round,
                 admission_by_family=admission_by_family,
                 added_embeddings=added_embeddings,
                 added_generation_calls=added_generation_calls,
+                signals=last_signals,
             ),
         )
 
@@ -1708,6 +1691,22 @@ def _topic_identity(hit: TopicMemorySearchHit) -> tuple[str, int]:
     return (hit.artifact_ref.artifact_id, hit.artifact_ref.revision)
 
 
+_HitT = TypeVar("_HitT")
+
+
+def _latest_round_order(
+    hits: Sequence[_HitT],
+    ranks: Mapping[Any, int],
+    identity: Callable[[_HitT], Any],
+) -> tuple[_HitT, ...]:
+    """Order hits by the latest round's fused ranking, keeping the accumulated order for
+    identities the latest round did not re-admit. A fused hit that only entered the window
+    under a lowered floor must rank inside the delivery cap, not behind the round-zero prefix."""
+    if not ranks:
+        return tuple(hits)
+    return tuple(sorted(hits, key=lambda hit: ranks.get(identity(hit), len(ranks))))
+
+
 def _admission_keyword(admission: AdmissionFloor | None) -> dict[str, Any]:
     """Forward ``admission`` only when set, keeping today's exact downstream calls otherwise."""
 
@@ -1738,7 +1737,6 @@ class ScopedExperienceApplication:
                 request.proposal,
                 sources=request.sources,
                 artifacts=request.artifacts,
-                memory_citations=request.memory_citations,
                 target=request.target,
                 reason=request.reason,
             )
@@ -2313,17 +2311,17 @@ class ScopedWorkApplication:
         unavailable = _unavailable_evidence(resolution)
         if request.status == "accepted" and unavailable:
             raise InvalidRuntimeRequestError("handoff-evidence-unavailable")
-        receipt_record = HandoffReceipt(
-            receiver=request.receiver,
-            status=request.status,
-            selection=request.selection,
-            selected_revision=resolution.selected_revision,
-            prepared_digest=(None if request.prepared is None else content_digest(request.prepared)),
-            receiver_checks=request.receiver_checks,
-            evidence_status="unavailable" if unavailable else "available",
-            unavailable_evidence=unavailable,
-            message=request.message,
-        )
+        receipt_record = HandoffReceipt.model_validate({
+            "receiver": request.receiver,
+            "status": request.status,
+            "selection": request.selection,
+            "selected_revision": resolution.selected_revision,
+            "prepared_digest": None if request.prepared is None else content_digest(request.prepared),
+            "receiver_checks": request.receiver_checks,
+            "evidence_status": "unavailable" if unavailable else "available",
+            "unavailable_evidence": tuple(citation.model_dump() for citation in unavailable),
+            "message": request.message,
+        })
         receipt = await self._capture(HANDOFF_RECEIPT_SOURCE_KIND, request.source_id, receipt_record)
         return HandoffAcknowledgement(resolution=resolution, receipt=receipt)
 
@@ -2476,7 +2474,6 @@ class ScopedReviewApplication:
                 request.proposal,
                 sources=request.sources,
                 artifacts=request.artifacts,
-                memory_citations=request.memory_citations,
                 target=request.target,
                 reason=request.reason,
             )
@@ -2542,6 +2539,26 @@ class ScopedAtomicMemoryApplication:
                     })
                 return result
 
+    async def create(self, contents: Sequence[AtomicMemoryContent], /, *, context=None) -> AtomicMemoryMutationResult:
+        """Create explicit Atomic Memories in one all-or-nothing batch."""
+        values = tuple(content.model_dump(mode="json", by_alias=True, exclude_none=True) for content in contents)
+        async with self._runtime._scoped_operation(self.scope_id, embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING):
+            created = await self._runtime._records().create_atomic_memories(
+                self.scope_id, values, execution_context=context
+            )
+            records = tuple([await self._scoped.get(item.artifact_id, context=context) for item in created])
+        return AtomicMemoryMutationResult(
+            changed=True, records=records, primary_artifact_id=records[0].artifact.artifact_id
+        )
+
+    async def flush(self, /, *, limit: int | None = None, context=None) -> MemoryFlushResult:
+        """Process the next scoped Source window into Atomic Memory."""
+        return await self._runtime._flush_sources(self.scope_id, limit=limit, context=context)
+
+    async def cursor(self) -> SourceCursor:
+        async with self._runtime._context(self.scope_id) as runtime_context:
+            return await runtime_context.triggers.cursor()
+
     async def merge(self, inputs, content, **kwargs):
         async with self._runtime._scoped_operation(self.scope_id, embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING):
             return await self._scoped.merge(inputs, content, **kwargs)
@@ -2565,156 +2582,9 @@ class AtomicMemoryRuntimeApplication:
     def __init__(self, runtime: BuiltinRuntime, application) -> None:
         self._runtime = runtime
         self._application = application
-        self.default_context = application.default_context
-        self.refresh_access = application.refresh_access
 
     def for_scope(self, scope_id: str, /) -> ScopedAtomicMemoryApplication:
         return ScopedAtomicMemoryApplication(self._runtime, self._application, scope_id)
-
-
-class ScopedMemoryApplication:
-    """Explicit compatibility adapter for the retired collection Memory API."""
-
-    def __init__(self, runtime: BuiltinRuntime, scope_id: str) -> None:
-        self._runtime = runtime
-        self.scope_id = validate_scope_id(scope_id)
-
-    def _atomic(self):
-        application = self._runtime.atomic_memory
-        if application is None:
-            raise BaseOperationNotSupportedError("artifact_family", "atomic-memory", "runtime application")
-        return application.for_scope(self.scope_id)
-
-    async def remember(self, request: RememberMemoryRequest, /, *, atomic_context=None) -> AtomicMemoryMutationResult:
-        if request.expected_revision is not None:
-            raise BaseOperationNotSupportedError("artifact_family", "memory", "collection revision precondition")
-        if any(entry.entry is not None for entry in request.entries):
-            raise BaseOperationNotSupportedError("artifact_family", "memory", "collection entry mutation")
-        if any(entry.sources or entry.artifacts for entry in request.entries):
-            raise BaseOperationNotSupportedError("artifact_family", "memory", "legacy object evidence")
-        contents = tuple(
-            AtomicMemoryContent(kind=entry.kind, text=entry.text).model_dump(
-                mode="json",
-                by_alias=True,
-                exclude_none=True,
-            )
-            for entry in request.entries
-        )
-        async with self._runtime._scoped_operation(self.scope_id, embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING):
-            created = await self._runtime._records().create_atomic_memories(
-                self.scope_id,
-                contents,
-                execution_context=atomic_context,
-            )
-            records = tuple([await self._atomic().get(item.artifact_id, context=atomic_context) for item in created])
-        return AtomicMemoryMutationResult(
-            changed=True, records=records, primary_artifact_id=records[0].artifact.artifact_id
-        )
-
-    async def search(self, request: SearchMemoryRequest, /, *, atomic_context=None) -> AtomicMemorySearchPage:
-        with self._runtime._stage(
-            _MEMORY_SEARCH_STAGE,
-            attributes={_MEMORY_SEARCH_REQUESTED_MODE: request.mode, _MEMORY_SEARCH_LIMIT: request.limit},
-        ) as span:
-            result = await self._atomic().search(
-                request.query,
-                mode="text" if request.mode == "fts" else request.mode,
-                limit=request.limit,
-                tag_filter=request.tag_filter,
-                context=atomic_context,
-                _trace=False,
-            )
-            if span is not None:
-                span.set_attributes({
-                    _MEMORY_SEARCH_MODE: "fts" if result.mode == "text" else result.mode,
-                    _MEMORY_SEARCH_RESULT_COUNT: len(result.hits),
-                    "powercontext.memory.search.embedding_calls": result.embedding_calls,
-                    "powercontext.memory.search.generation_calls": result.generation_calls,
-                })
-            return result
-
-    async def capacity(self) -> MemoryCapacity:
-        raise BaseOperationNotSupportedError("artifact_family", "memory", "collection capacity")
-
-    async def compact(
-        self, *, dry_run=False, limit=None, reason=None, expected_revision=None
-    ) -> MemoryCompactionResult:
-        raise BaseOperationNotSupportedError("artifact_family", "memory", "collection compaction")
-
-    async def list(
-        self, *, include_inactive=False, tag_filter=None, limit=50, cursor=None, atomic_context=None
-    ) -> AtomicMemoryPage:
-        return await self._atomic().list(
-            states=("active", "forgotten", "merged", "retired") if include_inactive else ("active",),
-            tag_filter=tag_filter,
-            limit=limit,
-            cursor=cursor,
-            context=atomic_context,
-        )
-
-    async def get(
-        self, request: GetMemoryEntryRequest, /, *, atomic_context=None
-    ) -> MemoryEntryRecord | AtomicMemoryRecord:
-        if request.target is not None:
-            async with self._runtime._scope_operation(self.scope_id):
-                application = self._runtime.atomic_memory
-                if application is None:
-                    raise BaseOperationNotSupportedError("artifact_family", "atomic-memory", "legacy target lookup")
-                async with application._application.database.transaction() as connection:
-                    artifact_id = await resolve_legacy_memory_target(
-                        connection,
-                        application._application.artifacts,
-                        self.scope_id,
-                        request.target.artifact_id,
-                        request.target.entry_id,
-                    )
-                return await self._atomic().get(artifact_id, context=atomic_context)
-        citation = request.citation
-        if citation is None:
-            raise InvalidRuntimeRequestError("memory-address")
-        async with self._runtime._context(self.scope_id) as context:
-            service = context.artifacts.memory
-            memory = await service.revision(citation.memory_ref)
-            entry = await _cited_entry(service, memory, citation)
-            # Validate exact membership first; authority belongs to the mapped identity.
-            await self._atomic().get(
-                legacy_entry_artifact_id(self.scope_id, citation.memory_ref.artifact_id, citation.entry_id),
-                context=atomic_context,
-            )
-            return _entry_record(memory, entry)
-
-    async def revise(self, request: ReviseMemoryEntryRequest, /) -> MemoryMutationResult:
-        raise BaseOperationNotSupportedError("artifact_family", "memory", "citation revise")
-
-    async def retire(self, request: RetireMemoryEntryRequest, /) -> MemoryMutationResult:
-        raise BaseOperationNotSupportedError("artifact_family", "memory", "citation retire")
-
-    async def changes(self, *, since_revision=None) -> MemoryChangesPage:
-        raise BaseOperationNotSupportedError("artifact_family", "memory", "continuous collection changes")
-
-    async def flush(self, /, *, limit=None, atomic_context=None) -> MemoryFlushResult:
-        async with self._runtime._context(
-            self.scope_id,
-            generation_purpose=ModelUsagePurpose.MEMORY_EXTRACTION,
-            embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING,
-        ) as context:
-            window_limit = self._runtime.source_window_limit if limit is None else limit
-            async with self._runtime._locked(self.scope_id):
-                return await context.triggers.flush(limit=window_limit, atomic_context=atomic_context)
-
-    async def cursor(self) -> SourceCursor:
-        async with self._runtime._context(self.scope_id) as context:
-            return await context.triggers.cursor()
-
-
-class MemoryApplication:
-    """Select the application service for one Memory family scope."""
-
-    def __init__(self, runtime: BuiltinRuntime) -> None:
-        self._runtime = runtime
-
-    def for_scope(self, scope_id: str, /) -> ScopedMemoryApplication:
-        return ScopedMemoryApplication(self._runtime, scope_id)
 
 
 class ScopedTopicMemoryApplication:
@@ -2839,7 +2709,7 @@ class ScheduledSourceProcessor:
                     try:
                         runner = self._runtime._scheduled_source_runner
                         result = (
-                            await self._runtime.memory.for_scope(scope_id).flush()
+                            await self._runtime._flush_sources(scope_id)
                             if runner is None
                             else await runner(scope_id, self._runtime)
                         )
@@ -2981,6 +2851,7 @@ class BuiltinRuntime:
         *,
         provider: PowerContextProvider[BuiltinSources, BuiltinArtifacts, BuiltinTriggers],
         capabilities: RuntimeCapabilities,
+        extraction_diagnostics: ExtractionDiagnostics | None = None,
         code_service: CodeService | None = None,
         source_window_limit: int = 100,
         context_assembly_max_entries: int = 8,
@@ -3043,6 +2914,7 @@ class BuiltinRuntime:
             raise _RuntimeConfigurationError("scope_cache_size")
         self._provider = provider
         self._capabilities = capabilities
+        self._extraction_diagnostics = extraction_diagnostics
         self._review_service = review_service
         self.profiles = profiles
         self.subject_sources = subject_sources
@@ -3131,7 +3003,6 @@ class BuiltinRuntime:
         self.external_skills = ExternalSkillApplication(self)
         self.handoff = HandoffApplication(self)
         self.work = WorkApplication(self)
-        self.memory = MemoryApplication(self)
         self.topic_memory = TopicMemoryApplication(self)
         self.records = RecordApplication(self)
         self.prompts = PromptApplication(self)
@@ -3155,6 +3026,13 @@ class BuiltinRuntime:
     async def capabilities(self) -> RuntimeCapabilities:
         async with self._operation():
             return self._capabilities
+
+    def extraction_status(self) -> ExtractionStatus | None:
+        """Read local observations without querying storage or calling a model."""
+
+        if self._extraction_diagnostics is None:
+            return None
+        return self._extraction_diagnostics.snapshot(self.artifact_processing_supervisor)
 
     async def readiness(self) -> RuntimeReadiness:
         """Check whether the Runtime and its assembled dependencies can accept work."""
@@ -3405,6 +3283,24 @@ class BuiltinRuntime:
     def _lock(self, scope_id: str) -> asyncio.Lock:
         return self._scope_cache.lock(validate_scope_id(scope_id))
 
+    async def _flush_sources(self, scope_id: str, *, limit: int | None = None, context=None) -> MemoryFlushResult:
+        async with self._context(
+            scope_id,
+            generation_purpose=ModelUsagePurpose.MEMORY_EXTRACTION,
+            embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING,
+        ) as runtime_context:
+            window_limit = self.source_window_limit if limit is None else limit
+            async with self._locked(scope_id):
+                try:
+                    result = await runtime_context.triggers.flush(limit=window_limit, atomic_context=context)
+                except Exception as error:
+                    if self._extraction_diagnostics is not None:
+                        self._extraction_diagnostics.failed(error)
+                    raise
+                if result.processed and self._extraction_diagnostics is not None:
+                    self._extraction_diagnostics.succeeded()
+                return result
+
     @asynccontextmanager
     async def _locked(self, scope_id: str) -> AsyncIterator[None]:
         """Serialize writes for one scope and trace only the wait, not the critical section."""
@@ -3545,87 +3441,3 @@ def _bounded_topic_memory_recall_query(query: str) -> str:
         selected.append(term[:available])
         characters += separator + min(len(term), available)
     return " ".join(selected)
-
-
-async def _head_or_none(service: MemoryService, artifact_id: str) -> Memory | None:
-    try:
-        return await service.head(artifact_id)
-    except ArtifactNotFoundError:
-        return None
-
-
-def _is_stale_memory_search(error: CapabilityNotSupportedError | InvalidMemoryCitationError) -> bool:
-    return (isinstance(error, CapabilityNotSupportedError) and error.capability == "head") or (
-        isinstance(error, InvalidMemoryCitationError) and error.code == "memory-mismatch"
-    )
-
-
-def _raise_if_held(plan: MemoryWritePlan) -> None:
-    """Surface a gate refusal as a structured error so the caller can read code and reason."""
-
-    decision = plan.decision
-    if decision is None or decision.verdict is not MemoryWriteVerdict.HOLD:
-        return
-    code = "unspecified" if decision.code is None else decision.code.value
-    raise MemoryWriteRejectedError(code, decision.reason)
-
-
-def _validate_expected_revision(memory: Memory | None, expected_revision: int | None) -> None:
-    if expected_revision is None:
-        return
-    if memory is None:
-        raise ArtifactNotFoundError(expected_revision)
-    if memory.revision != expected_revision:
-        raise RevisionConflictError(expected_revision, memory)
-
-
-def _validate_memory_identity(memory_artifact_id: str, memory: Memory) -> None:
-    if memory.artifact_id != memory_artifact_id:
-        raise ArtifactNotFoundError(memory.as_ref())
-
-
-async def _current_citation(
-    service: MemoryService,
-    memory_artifact_id: str,
-    citation: MemoryCitation,
-) -> tuple[Memory, MemoryEntryVersion]:
-    current = await service.head(memory_artifact_id)
-    if citation.memory_ref.artifact_id != current.artifact_id:
-        raise ArtifactNotFoundError(citation.memory_ref)
-    if citation.memory_ref.revision != current.revision:
-        raise RevisionConflictError(citation.memory_ref, current)
-    return current, await _cited_entry(service, current, citation)
-
-
-async def _cited_entry(
-    service: MemoryService,
-    memory: Memory,
-    citation: MemoryCitation,
-) -> MemoryEntryVersion:
-    if not any(
-        item.entry_id == citation.entry_id and item.entry_version_id == citation.entry_version_id
-        for item in memory.content.manifest.entries
-    ):
-        raise MemoryEntryNotFoundError(citation.entry_id)
-    return await service.validate_citation(citation)
-
-
-def _entry_record(memory: Memory, entry: MemoryEntryVersion) -> MemoryEntryRecord:
-    manifest_entry = next(
-        item
-        for item in memory.content.manifest.entries
-        if item.entry_id == entry.entry_id and item.entry_version_id == entry.entry_version_id
-    )
-    return MemoryEntryRecord(
-        memory_ref=memory.as_ref(),
-        state=manifest_entry.state,
-        entry=entry,
-    )
-
-
-async def _last_changed_entry(service: MemoryService, memory: Memory) -> MemoryEntryRecord | None:
-    if not memory.content.changes:
-        return None
-    entry_id = memory.content.changes[-1].entry_id
-    entry = next((item for item in await service.entries(memory) if item.entry_id == entry_id), None)
-    return None if entry is None else _entry_record(memory, entry)

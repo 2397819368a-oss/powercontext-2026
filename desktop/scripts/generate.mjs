@@ -34,7 +34,6 @@ const wanted = [
   "get_default_scope",
   "remember_memory",
   "search_memory",
-  "get_memory_entry",
   "get_artifact_revision",
 ];
 const operations = {};
@@ -72,9 +71,6 @@ function collectSchemas(value) {
 for (const item of Object.values(contract.paths))
   for (const op of Object.values(item))
     if (wanted.includes(op?.operationId)) collectSchemas(op);
-// The qualified legacy Server still returns historical Memory search hits.
-for (const name of ["SearchMemoryHit", "MemoryUsedSearchMode"])
-  collectSchemas({ $ref: `#/components/schemas/${name}` });
 function rustType(schema) {
   if (schema.$ref) return schema.$ref.split("/").at(-1);
   switch (schema.type) {
@@ -89,8 +85,7 @@ function rustType(schema) {
     case "array":
       return `Vec<${rustType(schema.items)}>`;
     case "object":
-      if (schema.additionalProperties === true)
-        return "std::collections::BTreeMap<String, serde_json::Value>";
+      if (schema.additionalProperties === true) return "serde_json::Value";
       if (
         schema.additionalProperties &&
         typeof schema.additionalProperties === "object"
@@ -107,14 +102,7 @@ const rustModels = [...schemaNames]
     const schema = contract.components.schemas[name];
     const derive =
       "#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize, ts_rs::TS)]";
-    if (schema.oneOf && schema.type !== "object") {
-      const members = schema.oneOf.map((value) => {
-        if (!value.$ref) throw new Error(`Unsupported union member in ${name}`);
-        const member = rustType(value);
-        return `    ${member}(${member}),`;
-      });
-      return `${derive}\n#[serde(untagged)]\npub enum ${name} {\n${members.join("\n")}\n}\n`;
-    }
+    if (schema.$ref) return `pub type ${name} = ${rustType(schema)};\n`;
     if (schema.enum) {
       const values = schema.enum.filter((v) => v !== null);
       const members = values.map(
@@ -126,25 +114,37 @@ const rustModels = [...schemaNames]
       );
       return `${derive}\npub enum ${name} {\n${members.join("\n")}\n}\n`;
     }
+    if (schema.oneOf && !schema.type) {
+      const members = schema.oneOf.map((variant) => {
+        if (!variant.$ref) throw new Error("Unsupported inline wire union");
+        const type = rustType(variant);
+        return `    ${type}(${type}),`;
+      });
+      return `${derive}\n#[serde(untagged)]\npub enum ${name} {\n${members.join("\n")}\n}\n`;
+    }
     if (schema.type !== "object")
       return `pub type ${name} = ${rustType(schema)};\n`;
     const fields = Object.entries(schema.properties).map(([field, value]) => {
       let type = rustType(value);
       if (value.nullable || !schema.required?.includes(field))
         type = `Option<${type}>`;
-      return `${!schema.required?.includes(field) ? '    #[serde(skip_serializing_if = "Option::is_none")]\n    #[ts(optional = nullable)]\n' : ""}    pub r#${field}: ${type},`;
+      const opaque =
+        value.type === "object" && value.additionalProperties === true
+          ? '    #[ts(type = "Record<string, unknown>")]\n'
+          : "";
+      return `${!schema.required?.includes(field) ? '    #[serde(skip_serializing_if = "Option::is_none")]\n    #[ts(optional = nullable)]\n' : ""}${opaque}    pub r#${field}: ${type},`;
     });
     return `${derive}\n#[serde(deny_unknown_fields)]\npub struct ${name} {\n${fields.join("\n")}\n}\n`;
   })
   .join("\n");
-const rustDeclarations = `\n#[rustfmt::skip]\npub fn declarations(config: &ts_rs::Config) -> Vec<String> {\n    vec![\n        <serde_json::Value as ts_rs::TS>::decl(config),\n${[
+const rustDeclarations = `\n#[rustfmt::skip]\npub fn declarations(config: &ts_rs::Config) -> Vec<String> {\n    vec![\n${[
   ...schemaNames,
 ]
   .sort()
   .map((name) => {
     const schema = contract.components.schemas[name];
     return schema.$ref
-      ? `        String::from("type ${name} = ${rustType(schema)};"),`
+      ? `        format!("type ${name} = {};", <${rustType(schema)} as ts_rs::TS>::name(config)),`
       : `        <${name} as ts_rs::TS>::decl(config),`;
   })
   .join("\n")}\n    ]\n}\n`;

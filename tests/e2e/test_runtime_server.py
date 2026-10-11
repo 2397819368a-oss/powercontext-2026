@@ -51,11 +51,7 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
     HandoffReportConfig,
     InferenceConfig,
-    MemorySearchPage,
-    ScopedMemoryApplication,
-)
-from powercontext.builtin.runtime import (
-    SearchMemoryRequest as RuntimeSearchMemoryRequest,
+    ScopedAtomicMemoryApplication,
 )
 from powercontext.client import PowerContextClient, ServerResponseError
 from powercontext.errors import RevisionConflictError
@@ -78,7 +74,6 @@ from powercontext.http import (
     HandoffSourceCitation,
     ListMemoryChangesRequest,
     ListMemoryEntriesRequest,
-    MemoryCitation,
     PrepareContextRequest,
     PublishArtifactRequest,
     ReadinessStatus,
@@ -261,6 +256,9 @@ def test_server_databases_share_source_to_memory_search_behavior(
             **_ACCESS_READINESS_CHECKS,
         }
         assert capabilities.source_types == ["content"]
+        assert ref.family == "atomic-memory"
+        assert ref.family in capabilities.artifact_families
+        assert "memory" in capabilities.artifact_families
         assert capabilities.memory_extraction is True
         assert capabilities.search_modes == ["auto", "fts"]
         assert capabilities.context_versions == ["powercontext.prepared-context.v1"]
@@ -519,6 +517,7 @@ def test_sdk_handoff_lifecycle_reaches_generation_and_persistence(tmp_path: Path
 
         assert capabilities.artifact_families == [
             "memory",
+            "atomic-memory",
             "topic-memory",
             "experience",
             "skill",
@@ -837,11 +836,11 @@ def test_sdk_memory_lifecycle_reaches_one_composed_runtime(tmp_path: Path) -> No
             forgotten_exact = await client.get_artifact_revision(
                 scope_id, ref.family, ref.artifact_id, revised.revision
             )
-            legacy = MemoryCitation.model_validate({
+            legacy = {
                 "memory_ref": {"family": "memory", "artifact_id": "legacy-collection", "revision": 1},
                 "entry_id": "legacy-entry",
                 "entry_version_id": "legacy-version",
-            })
+            }
             with pytest.raises(ServerResponseError) as inactive:
                 await client.revise_memory_entry(
                     ReviseMemoryEntryRequest(
@@ -928,16 +927,10 @@ def test_memory_search_returns_revision_conflict_as_http_409(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    async def conflicting_search(
-        _self: ScopedMemoryApplication,
-        _request: RuntimeSearchMemoryRequest,
-        /,
-        *,
-        atomic_context=None,
-    ) -> MemorySearchPage:
+    async def conflicting_search(_self: ScopedAtomicMemoryApplication, _query: str, **_kwargs: object) -> None:
         raise RevisionConflictError("stale", "current")
 
-    monkeypatch.setattr(ScopedMemoryApplication, "search", conflicting_search)
+    monkeypatch.setattr(ScopedAtomicMemoryApplication, "search", conflicting_search)
     app = create_server_app(settings=_server_settings(tmp_path / "runtime.db"))
 
     with TestClient(app) as transport:
@@ -1078,14 +1071,56 @@ def test_runtime_server_accepts_normalized_memory_byte_limit(tmp_path: Path, tex
         assert listed.json()["entries"] == remembered.json()["records"]
 
 
+def test_runtime_server_rejects_legacy_memory_tag_targets(tmp_path: Path) -> None:
+    app = create_server_app(settings=_server_settings(tmp_path / "runtime.db"))
+
+    with TestClient(app) as transport:
+        scope = transport.get("/v1/scopes/default")
+        scope.raise_for_status()
+        scope_id = scope.json()["scope_id"]
+        remembered = transport.post(
+            "/v1/memory/remember", json={"scope_id": scope_id, "kind": "fact", "text": "Tagged migrations."}
+        )
+        remembered.raise_for_status()
+        artifact_id = remembered.json()["records"][0]["artifact"]["artifact_id"]
+        empty = transport.get(f"/v1/scopes/{scope_id}/artifacts/atomic-memory/{artifact_id}/tags")
+        empty.raise_for_status()
+        tagged = transport.put(
+            f"/v1/scopes/{scope_id}/artifacts/atomic-memory/{artifact_id}/tags",
+            json={"tags": ["project"]},
+            headers={"If-Match": empty.headers["ETag"]},
+        )
+        tagged.raise_for_status()
+        collection = f"/v1/scopes/{scope_id}/artifacts/memory/legacy-collection/tags"
+        responses = [
+            transport.get(collection),
+            transport.put(collection, json={"tags": ["project"]}, headers={"If-Match": '"tags:legacy"'}),
+            transport.post(
+                f"/v1/scopes/{scope_id}/artifact-tags/query", json={"tags": ["project"], "families": ["memory"]}
+            ),
+            transport.post(
+                f"/v1/scopes/{scope_id}/artifact-tags/query",
+                json={"tags": ["project"], "target_types": ["memory_entry"]},
+            ),
+        ]
+        for response in responses:
+            assert response.status_code == 422
+            assert response.json()["error"]["code"] == "legacy_memory_operation_unsupported"
+        current = transport.post(f"/v1/scopes/{scope_id}/artifact-tags/query", json={"tags": ["project"]})
+        current.raise_for_status()
+        assert [item["target"] for item in current.json()["items"]] == [
+            {"type": "artifact", "family": "atomic-memory", "artifact_id": artifact_id}
+        ]
+
+
 def test_runtime_server_keeps_unstructured_memory_errors_private(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    async def invalid_remember(_self: ScopedMemoryApplication, _request: object, /, *, atomic_context=None) -> None:
+    async def invalid_create(_self: ScopedAtomicMemoryApplication, _contents: object, /, *, context=None) -> None:
         raise InvalidMemoryCandidateError("canonical", "private implementation detail")
 
-    monkeypatch.setattr(ScopedMemoryApplication, "remember", invalid_remember)
+    monkeypatch.setattr(ScopedAtomicMemoryApplication, "create", invalid_create)
     app = create_server_app(settings=_server_settings(tmp_path / "runtime.db"))
 
     with TestClient(app) as transport:

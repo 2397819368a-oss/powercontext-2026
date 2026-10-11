@@ -101,7 +101,6 @@ async def _cleanup(contexts: RelationalContexts, scopes: list[str]) -> None:
             *BUILTIN_TABLES,
             *ACCESS_TABLES,
             *ATOMIC_MEMORY_TABLES,
-            *contexts.index.tables,
             *contexts.atomic_memory.index.tables,
         ))
         scoped_tables = [table for table in tables if "scope_id" in table.c]

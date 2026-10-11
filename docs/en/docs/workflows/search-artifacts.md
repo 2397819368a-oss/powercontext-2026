@@ -39,8 +39,8 @@ The built-in deployment currently exposes these capabilities through this route:
 | `experience` | Supported | `text`; omitted mode selects text | Approved, active Experience heads |
 | `skill` | Supported | `text`; omitted mode selects text | Approved, active managed Skill heads; external Skill catalogs are excluded |
 | `topic-memory` | Supported | `text`, `vector`, `hybrid`; default is hybrid with configured Embedding, otherwise text | Current Topic Memory heads, including title/summary and detail channels |
-| `atomic-memory` | Supported | `text`, `vector`, `hybrid`; default is text | Active independent Atomic Memory heads visible to the caller |
-| `memory` | Unsupported | Frozen legacy collection; compatibility search returns Atomic Memory records | See [Use Atomic Memory](atomic-memory.md#legacy-memory-api-compatibility) |
+| `atomic-memory` | Supported | `text`, `vector`, `hybrid`; default is text | Active independent Atomic Memory heads in the readable Scope |
+| `memory` | Removed; this route returns `404` | Legacy collections are no longer a registered Artifact Family | See [Use Atomic Memory](atomic-memory.md#legacy-memory-api-compatibility) |
 | `profile` | Unsupported | No relevance search through this route | See [Use Profiles](use-profiles.md) |
 | `handoff` | Unsupported | No relevance search through this route | See [Memory and Handoff](memory-and-handoff.md) |
 | `prompt` | Unsupported | No relevance search through this route | See [Manage Prompts](manage-prompts.md) |
@@ -144,6 +144,9 @@ incompatible Profiles, and storage failures do not trigger text fallback.
 
 ## Atomic Memory controls
 
+Atomic search requires `scope.read`. Sharing an individual Artifact permits exact reads and history access,
+but does not grant Scope search. The retired `memory` Family is not a search fallback.
+
 Atomic searches active current heads through `text`, `vector`, or `hybrid`. Omitted mode always selects text, including
 deployments with Embedding. Vector and hybrid require a matching enabled index Profile and configured Embedding model;
 these requests do not fall back to text. Capability and parameter checks run before an empty Scope can return no results.
@@ -153,7 +156,8 @@ L2-derived semantic rule as Topic to vectors. The admission defaults are lexical
 terms `2`, and semantic similarity `0.3`. Explicit semantic admission is invalid in text mode; explicit lexical
 admission is invalid in vector mode. Weight keys must belong to enabled channels, even when their weight is `0`.
 
-Atomic filters run with access and active-state eligibility before candidate ranking:
+Scope read is authorized before retrieval. Atomic filters and active-state eligibility apply before candidate
+ranking and truncation:
 
 | Field | Accepted values |
 | --- | --- |
@@ -161,7 +165,8 @@ Atomic filters run with access and active-state eligibility before candidate ran
 | `filters.tags` | One to 16 tag labels, each 1–64 characters, with no surrounding whitespace or control characters; duplicates after tag normalization are rejected |
 | `filters.tag_match` | `all` or `any`; defaults to `all` when tags are supplied and requires `tags` when explicit |
 
-Tags use the existing NFC and case-folded matching rules. See [Manage Artifact tags](manage-artifact-tags.md).
+Tags use the existing NFC and case-folded matching rules. Migrated entry tags belong to the Atomic Artifact target;
+search them with `filters.tags`. See [Manage Artifact tags](manage-artifact-tags.md).
 
 ```http
 POST /v1/scopes/project-a/artifacts/atomic-memory/search
@@ -228,7 +233,9 @@ an empty Scope does not bypass validation. Model timeout/unavailability returns 
 not permitted (`503`). Implementation and storage failures remain failures, rather than successful empty results.
 
 Unified search preserves the dedicated Atomic and Topic search behavior, Skill Library search, and existing
-SDK/internal Experience recall. The legacy Memory routes have the explicit upgrade contracts described in
+SDK/internal Experience recall. Legacy Memory collections are removed from public Artifact storage by the offline
+migration. The retained `POST /v1/memory/search` route translates requests into Atomic Memory calls and returns Atomic
+records; it does not search old collections. The retained routes and rejected operations are described in
 [Atomic Memory compatibility](atomic-memory.md#legacy-memory-api-compatibility). In particular,
 `POST /v1/topic-memory/search` still chooses the deployment
 default and returns summary hits with its legacy score scale of `0`–`100`; it does not expose these advanced controls.

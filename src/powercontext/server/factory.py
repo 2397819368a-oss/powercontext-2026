@@ -27,6 +27,7 @@ from fastapi.routing import APIRoute
 from starlette.middleware import Middleware
 
 from powercontext._logging import log_safely
+from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.extraction import AtomicMemoryGenerationPipeline
 from powercontext.builtin.artifacts.experience import ExperienceCandidatePipeline, ExperienceGenerator
 from powercontext.builtin.artifacts.handoff import HandoffGenerationPipeline
@@ -36,20 +37,20 @@ from powercontext.builtin.artifacts.skill import ExternalSkillProvider, SkillGen
 from powercontext.builtin.dream.generation import DreamGenerator
 from powercontext.builtin.inference import EmbeddingModel
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.records import BaseOperationNotSupportedError
 from powercontext.builtin.runtime import (
     BuiltinRuntime,
     ExperienceIncubationResult,
-    MemoryEntryRecord,
     MemoryFlushResult,
 )
 from powercontext.builtin.runtime.application import ScheduledExperienceRunner, ScheduledSourceRunner
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemoryExecutionContext
 from powercontext.builtin.runtime.composition import open_builtin_runtime
 from powercontext.builtin.runtime.config import BuiltinConfig
 from powercontext.builtin.runtime.processing_registry import processing_capabilities
 from powercontext.builtin.sources import CONTENT_SOURCE_NAME
 from powercontext.http import (
     Capabilities,
+    ExtractionStatus,
     MemorySearchMode,
     PreparedContextSchema,
     PromptCapability,
@@ -67,7 +68,6 @@ from powercontext.server.authz import (
     AccessAction,
     AccessAuditContext,
     AccessControlService,
-    MemoryEntrySelector,
     PrincipalRef,
     ResourceRef,
     access_control_for_mode,
@@ -258,7 +258,20 @@ def create_server_app(  # noqa: C901
             app.state.application = runtime
             app.state.access_control = active_access_control
             app.state.authentication_provider = configured_authentication
-            app.state.capabilities = await _server_capabilities(runtime)
+            capabilities = await _server_capabilities(runtime)
+
+            def current_capabilities() -> Capabilities:
+                extraction = runtime.extraction_status()
+                return capabilities.model_copy(
+                    update={
+                        "extraction": (
+                            None if extraction is None else ExtractionStatus.model_validate(extraction.model_dump())
+                        ),
+                    }
+                )
+
+            app.state.capabilities = capabilities
+            app.state.capability_provider = current_capabilities
             await readiness_probe()
             try:
                 yield
@@ -266,6 +279,7 @@ def create_server_app(  # noqa: C901
                 _log_lifecycle("server.stopping", "PowerContext Server is stopping")
                 readiness_probe.unbind()
                 app.state.application = None
+                app.state.capability_provider = None
                 app.state.access_control = configured_access_control
                 app.state.authentication_provider = configured_authentication
                 app.state.capabilities = Capabilities(
@@ -402,8 +416,10 @@ def _scheduled_access_runners(
         context = AccessAuditContext(transport="background", operation="process_source_window")
         await access.bootstrap_static_scope(principal, scope_id, context=context)
         await access.require(principal, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(scope_id), context=context)
-        return await runtime.memory.for_scope(scope_id).flush(
-            atomic_context=AtomicMemoryExecutionContext(principal=principal, access=access, audit=context),
+        if runtime.atomic_memory is None:
+            raise BaseOperationNotSupportedError("artifact_family", "atomic-memory", "runtime application")
+        return await runtime.atomic_memory.for_scope(scope_id).flush(
+            context=ArtifactSearchExecutionContext(principal=principal, access=access, audit=context),
         )
 
     async def incubate_experience(scope_id: str, runtime: BuiltinRuntime) -> ExperienceIncubationResult:
@@ -485,16 +501,6 @@ def _scheduled_principal(
     if legacy_static_principal is not None:
         return legacy_static_principal
     raise ValueError("scheduled processing in enforced mode requires ACCESS_BACKGROUND_PRINCIPAL_ID")  # noqa: TRY003
-
-
-def _memory_resource(scope_id: str, entry: MemoryEntryRecord) -> ResourceRef:
-    citation = entry.citation
-    return ResourceRef.artifact(
-        scope_id,
-        family="memory",
-        artifact_id=citation.memory_ref.artifact_id,
-        selector=MemoryEntrySelector(entry_id=citation.entry_id),
-    )
 
 
 class _ServerReadinessProbe:
@@ -597,7 +603,16 @@ async def _server_capabilities(runtime: BuiltinRuntime) -> Capabilities:
     capabilities = await runtime.capabilities()
     return Capabilities(
         source_types=[CONTENT_SOURCE_NAME],
-        artifact_families=["memory", "topic-memory", "experience", "skill", "handoff", "profile", "prompt"],
+        artifact_families=[
+            "memory",
+            "atomic-memory",
+            "topic-memory",
+            "experience",
+            "skill",
+            "handoff",
+            "profile",
+            "prompt",
+        ],
         prompts={
             key: PromptCapability.model_validate_json(value.model_dump_json())
             for key, value in capabilities.prompts.items()

@@ -53,7 +53,7 @@ not replace those schemas or enforce their constraints. It contains no scenario 
 ## mcp__powercontext__create_dream_run
 
 - Required: `idempotency_key: string`, `operation: "refine_experience" | "derive_skill"`, `scope_id: string`.
-- Optional: `artifacts: array<ArtifactReference> = []`, `memory_citations: array<MemoryCitation> = []`, `sources: array<DreamSourceReference> = []`, `target: ArtifactReference | null`.
+- Optional: `artifacts: array<ArtifactReference> = []`, `sources: array<DreamSourceReference> = []`, `target: ArtifactReference | null`.
 
 ## mcp__powercontext__create_scope
 
@@ -118,7 +118,7 @@ not replace those schemas or enforce their constraints. It contains no scenario 
 ## mcp__powercontext__get_memory_entry
 
 - Required: `scope_id: string`.
-- Optional: `citation: MemoryCitation`, `target: LegacyMemoryTarget`.
+- Optional: `citation: object`, `target: LegacyMemoryTarget`.
 
 ## mcp__powercontext__get_scope
 
@@ -198,7 +198,7 @@ not replace those schemas or enforce their constraints. It contains no scenario 
 ## mcp__powercontext__propose_experience
 
 - Required: `artifact_refs: array<ArtifactReference>`, `proposal: ExperienceProposal`, `scope_id: string`, `source_refs: array<SourceReference>`.
-- Optional: `memory_citations: array<MemoryCitation> = []`, `reason: string | null`, `target: ArtifactReference | null`.
+- Optional: `reason: string | null`, `target: ArtifactReference | null`.
 
 ## mcp__powercontext__propose_skill
 
@@ -253,7 +253,7 @@ not replace those schemas or enforce their constraints. It contains no scenario 
 ## mcp__powercontext__revise_artifact_candidate
 
 - Required: `artifact_refs: array<ArtifactReference>`, `candidate_id: string`, `expected_version: integer`, `proposal: ExperienceProposal | SkillProposal | ProfileWriteContent`, `scope_id: string`, `source_refs: array<SourceReference>`.
-- Optional: `memory_citations: array<MemoryCitation> | null`, `reason: string | null`, `target: ArtifactReference | null`.
+- Optional: `reason: string | null`, `target: ArtifactReference | null`.
 
 ## mcp__powercontext__scan_external_skills
 

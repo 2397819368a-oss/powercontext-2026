@@ -17,13 +17,14 @@
 from __future__ import annotations
 
 import math
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, NoReturn
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from powercontext.artifacts import ArtifactLineage, ArtifactRef
+from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
 from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryEvidence,
@@ -53,9 +54,8 @@ from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.errors import GenerationConflictError
 from powercontext.builtin.persistence.memory_windows import MemorySourceWindowRepository
 from powercontext.builtin.persistence.sources import SourceRepository
-from powercontext.builtin.persistence.tables import SOURCE_JOURNAL_HEADS_TABLE
-from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemoryExecutionContext
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, SOURCE_JOURNAL_HEADS_TABLE
+from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication, deferred_decision_audit
 from powercontext.builtin.runtime.models import MemoryFlushResult
 from powercontext.builtin.runtime.processing_execution import ScopeInvocation
 from powercontext.builtin.runtime.protocols import RuntimeTracing
@@ -125,20 +125,23 @@ class AtomicMemorySourceWindowProcessor:
         limit: int,
         *,
         processing: ScopeInvocation | None = None,
-        context: AtomicMemoryExecutionContext | None = None,
+        context: ArtifactSearchExecutionContext | None = None,
     ) -> MemoryFlushResult:
-        selected_context = self.application.default_context if context is None else context
-        with self._stage("memory.flush", {"powercontext.memory.flush.source_count": 0}) as span:
-            if self.prompts is not None:
-                legacy = await self.prompts.read_configuration(scope_id, "memory.extract")
-                if legacy.mode == "custom":
-                    raise PromptError("legacy_memory_prompt_unsupported", during_inference=True)
-                async with (
-                    self.prompts.bind(scope_id, "atomic_memory.extract"),
-                    self.prompts.bind(scope_id, "atomic_memory.reconcile"),
-                ):
-                    return await self._retry_window(scope_id, limit, processing, selected_context, span)
-            return await self._retry_window(scope_id, limit, processing, selected_context, span)
+        selected_context = context
+        # Scope checks may retain a separate configured audit connection. Flush its
+        # decision events after every business transaction in this operation closes.
+        async with deferred_decision_audit(selected_context):
+            with self._stage("memory.flush", {"powercontext.memory.flush.source_count": 0}) as span:
+                if self.prompts is not None:
+                    legacy = await self.prompts.read_configuration(scope_id, "memory.extract")
+                    if legacy.mode == "custom":
+                        raise PromptError("legacy_memory_prompt_unsupported", during_inference=True)
+                    async with (
+                        self.prompts.bind(scope_id, "atomic_memory.extract"),
+                        self.prompts.bind(scope_id, "atomic_memory.reconcile"),
+                    ):
+                        return await self._retry_window(scope_id, limit, processing, selected_context, span)
+                return await self._retry_window(scope_id, limit, processing, selected_context, span)
 
     async def _retry_window(self, scope_id, limit, processing, context, span) -> MemoryFlushResult:
         for attempt in range(3):
@@ -158,7 +161,6 @@ class AtomicMemorySourceWindowProcessor:
         application = self.application
         trigger = SourceWindowTrigger()
         async with application.database.transaction() as connection:
-            await application.security.lock_transaction(connection, scope_id, context)
             if processing is not None:
                 await processing.start(connection)
             await application.security.authorize(connection, scope_id, context, "read")
@@ -215,7 +217,6 @@ class AtomicMemorySourceWindowProcessor:
 
     async def _reduce_window(self, scope_id, context, processing, cursor, state, action, high_watermark):
         async with self.application.database.transaction() as connection:
-            await self.application.security.lock_transaction(connection, scope_id, context)
             if processing is not None:
                 await processing.guard(connection)
             await self.cursors.save(
@@ -235,7 +236,7 @@ class AtomicMemorySourceWindowProcessor:
     async def _inspect_decisions(self, scope_id, workset, context):
         application = self.application
         plans = []
-        async with application.security.read_transaction(context) as (connection, read_context):
+        async with self._read_transaction(context) as connection:
             for item in workset.changes():
                 lineage = ArtifactLineage(sources=item.sources, artifacts=item.artifacts)
                 if len(item.origins) >= 2:
@@ -245,7 +246,7 @@ class AtomicMemorySourceWindowProcessor:
                         application.id_factory("atomic-memory"),
                         item.origins,
                         item.content,
-                        read_context,
+                        context,
                         lineage=lineage,
                     )
                 else:
@@ -255,7 +256,7 @@ class AtomicMemorySourceWindowProcessor:
                         scope_id,
                         application.id_factory("atomic-memory") if original is None else original.ref.artifact_id,
                         item.content,
-                        read_context,
+                        context,
                         expected_revision=None if original is None else original.ref.revision,
                         expected_state_version=None if original is None else original.state_version,
                         lineage=lineage,
@@ -289,9 +290,8 @@ class AtomicMemorySourceWindowProcessor:
             },
         ):
             async with application.database.transaction() as connection:
-                # Every Atomic write uses policy -> journal -> heads. Source capture's
-                # journal reservation prevents the exact window changing under validation.
-                await application.security.lock_transaction(connection, scope_id, context)
+                # Every Atomic write uses journal -> heads. Source capture's journal
+                # reservation prevents the exact window changing under validation.
                 await connection.execute(
                     update(SOURCE_JOURNAL_HEADS_TABLE)
                     .where(SOURCE_JOURNAL_HEADS_TABLE.c.scope_id == scope_id)
@@ -426,21 +426,26 @@ class AtomicMemorySourceWindowProcessor:
         return workset, tuple(artifacts.values())
 
     async def _load_related_items(self, scope_id, hits, context, workset, artifacts):
+        from powercontext.server.authz import AccessDeniedError
+
         recalled = []
         for hit in hits:
-            async with self.application.security.read_transaction(context) as (connection, read_context):
-                record = await self.application.service.get(
-                    connection, scope_id, hit.artifact_ref.artifact_id, read_context
-                )
-                await self.application.security.authorize(connection, scope_id, read_context, "write", record.ref)
-                if (
-                    record.ref != hit.artifact_ref
-                    or record.state.state_version != hit.state_version
-                    or record.state.state is not AtomicMemoryStateValue.ACTIVE
-                    or record.artifact.content.kind != hit.kind
-                    or record.artifact.content.text != hit.text
-                ):
-                    _conflict("Related memory changed before comparison")
+            try:
+                async with self._read_transaction(context) as connection:
+                    record = await self.application.service.get(
+                        connection, scope_id, hit.artifact_ref.artifact_id, context
+                    )
+                    await self.application.security.authorize(connection, scope_id, context, "write", record.ref)
+                    if (
+                        record.ref != hit.artifact_ref
+                        or record.state.state_version != hit.state_version
+                        or record.state.state is not AtomicMemoryStateValue.ACTIVE
+                        or record.artifact.content.kind != hit.kind
+                        or record.artifact.content.text != hit.text
+                    ):
+                        _conflict("Related memory changed before comparison")
+            except AccessDeniedError:
+                continue
             content = AtomicMemoryContent(kind=hit.kind, text=hit.text)
             supported = AtomicMemoryArtifactEvidence(
                 evidence_id=f"artifact:{record.ref.artifact_id}@{record.ref.revision}",
@@ -463,7 +468,8 @@ class AtomicMemorySourceWindowProcessor:
 
     async def _recall(self, scope_id, query, context):
         application = self.application
-        filters = await application.security.filters(scope_id, context, writable=True)
+        async with self._read_transaction(context) as connection:
+            filters = await application.security.filters(connection, scope_id, context)
         mode = self.config.related_mode
         profile = application.index.capabilities.embedding_profile
         if mode == "auto":
@@ -507,10 +513,10 @@ class AtomicMemorySourceWindowProcessor:
     async def _authorize_model_input(
         self, scope_id, context, reads, source_refs, artifact_refs=(), *, generation_sources=()
     ):
-        async with self.application.security.read_transaction(context) as (connection, read_context):
-            await self.application.security.authorize(connection, scope_id, read_context, "read")
-            await self.application.security.authorize(connection, scope_id, read_context, "create")
-            await self.application.security.authorize_sources(connection, scope_id, read_context, source_refs)
+        async with self._read_transaction(context) as connection:
+            await self.application.security.authorize(connection, scope_id, context, "read")
+            await self.application.security.authorize(connection, scope_id, context, "create")
+            await self.application.security.authorize_sources(connection, scope_id, context, source_refs)
             current_sources = await self.sources.get_many(
                 connection, scope_id, tuple(item.ref for item in generation_sources)
             )
@@ -519,20 +525,28 @@ class AtomicMemorySourceWindowProcessor:
             ):
                 _conflict("Source generation basis changed before model inference")
             for read in reads:
-                current = await self.application.service.get(connection, scope_id, read.ref.artifact_id, read_context)
+                current = await self.application.service.get(connection, scope_id, read.ref.artifact_id, context)
                 if current.as_read() != read:
                     _conflict("Memory basis changed before model comparison")
-                await self.application.security.authorize(connection, scope_id, read_context, "write", read.ref)
+                await self.application.security.authorize(connection, scope_id, context, "write", read.ref)
             for ref in artifact_refs:
-                await self._authorize_artifact(connection, scope_id, read_context, ref)
+                await self._authorize_artifact(connection, scope_id, context, ref)
 
     async def _authorize_artifact(self, connection, scope_id, context, ref):
-        # Frozen collection lineage is historical metadata, never per-entry authority.
-        # Source-window generation already requires Scope read; shared entry grants alone
-        # cannot expose the collection's supporting Sources.
-        await self.application.security.authorize(
-            connection, scope_id, context, "read", None if ref.family == "memory" else ref
-        )
+        await self.application.security.authorize(connection, scope_id, context, "read", ref)
+
+    @asynccontextmanager
+    async def _read_transaction(self, context):
+        # Builtin authority shares the preparation snapshot; configured providers
+        # retain their own decision boundary. Audit writes flush after this read.
+        async with (
+            deferred_decision_audit(context),
+            self.application.database.transaction(consistent_snapshot=True) as connection,
+        ):
+            if connection.dialect.name == "sqlite":
+                # Pin business data before an external policy decision can race with new content.
+                await connection.execute(select(ARTIFACT_HEADS_TABLE.c.scope_id).limit(1))
+            yield connection
 
     def _stage(self, name, attributes):
         return nullcontext(None) if self.tracing is None else self.tracing.stage(name, attributes=attributes)

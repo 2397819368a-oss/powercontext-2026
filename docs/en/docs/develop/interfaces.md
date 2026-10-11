@@ -187,8 +187,8 @@ automatically includes the target in Artifact evidence. Managed Skill revision a
 
 `PowerContextClient` is the typed asynchronous HTTP client for a Server-owned deployment. Its request and response
 models are exported from `powercontext.http`. Memory mutation `records` contain real ArtifactRefs, content, and current
-state. Content edits use the content ETag; lifecycle operations use the required content and state versions. Legacy
-MemoryCitations read retained history. See the [HTTP API lifecycle tutorial](api-quickstart.md) for a runnable client
+state. Content edits use the content ETag; lifecycle operations use the required content and state versions. Exact
+history is read as Atomic Memory Artifact revisions. See the [HTTP API lifecycle tutorial](api-quickstart.md) for a runnable client
 flow and [Atomic Memory](../workflows/atomic-memory.md) for lifecycle operations.
 
 The Client also exposes `generate_experience`, `propose_experience`, `get_experience`, `generate_skill`,

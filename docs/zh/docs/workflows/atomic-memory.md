@@ -181,25 +181,29 @@ operation 和 target 向 restorations 提交原 token：
 
 ## 旧 Memory API 兼容
 
-旧路由保留不代表旧响应模型仍适用。升级后的新记忆和 revision 只产生真实的 `atomic-memory` ArtifactRef，
-不分配旧集合版本、entry_version_id 或新 MemoryCitation。
+旧 Memory 路由只保留五个入口，由 server 请求层转换为 Atomic 调用。保留路由不代表旧响应模型仍适用：
+结果只包含真实的 `atomic-memory` ArtifactRef，不分配旧集合版本、entry_version_id 或 MemoryCitation。
 
-| 旧调用 | 升级后行为与响应 |
+| 保留入口 | 升级后行为与响应 |
 | --- | --- |
-| `entries/get` 传旧 `citation` | 返回旧 `MemoryEntry`，校验当时集合成员与精确 entry 版本 |
-| `entries/get` 传旧 `target` | 返回当前 `AtomicMemoryRecord`；见下面的两种读取模式 |
-| 旧集合的精确 Artifact revision 读取 | 保留原集合正文、manifest 和 changes；冻结 head 不代表升级后的当前记忆 |
-| `search` | 保留 `auto/fts/vector/hybrid` 请求模式与 tag_filter；响应为 `mode`、`hits`，每个 hit 的 `memory` 是 AtomicMemoryRecord |
-| `entries/list` | 返回 `entries: AtomicMemoryRecord[]` 与 `next_cursor`；`include_inactive=true` 包含四态 |
+| `entries/get` 传旧 `target` | 用旧集合 ID 和 entry ID 计算对应 Atomic ID，返回当前 `AtomicMemoryRecord` |
+| `entries/list` | 返回 Scope 下的 `entries: AtomicMemoryRecord[]` 与 `next_cursor`；`include_inactive=true` 包含四态 |
+| `search` | `fts` 按 `text` 模式执行，`auto/vector/hybrid` 与 tag_filter 保留；每个 hit 的 `memory` 是 AtomicMemoryRecord |
 | `remember` 不传或传 null `expected_revision` | 创建独立记忆；返回 `changed`、`records: AtomicMemoryRecord[]` |
-| `flush` | 运行 Atomic Source 处理，保留 status、cursor、计数；`memory` 为 null，held_count 为 0、hold_codes 为空 |
-| 有效旧 entry target 的标签 GET/PUT | 映射到新 Artifact 标签，保留旧 target 响应和旧标签 ETag 并发校验；已 compact 目标为 404 |
-| `remember` 非空集合 `expected_revision` | 写入前拒绝；调用方按原并发意图改用新 API |
-| `entries/revise`、`entries/retire` 传旧 citation | 写入前拒绝；分别改用 Atomic Replace 和 forgotten lifecycle |
-| `changes`、`capacity`、集合 compact | 不支持跨迁移集合变更流、集合容量或压缩；历史 changes 从精确旧 revision 读取 |
-| `family=memory` Create/Replace、集合回滚 | 拒绝；改用独立 Artifact 写入与恢复 |
+| `flush` | 运行 Atomic Source 处理，保留原消费进度、status 和计数；`memory` 为 null，held_count 为 0、hold_codes 为空 |
 
-不支持的旧集合操作返回 HTTP `422`、`error.code: "legacy_memory_operation_unsupported"`。
+以下旧行为在执行前拒绝，不读取旧存储：
+
+- `entries/get` 传旧 `citation`。精确历史读取使用 `ArtifactRef(atomic-memory, artifact_id, revision)`。
+- `remember` 带非空集合 `expected_revision`。调用方按原并发意图改用新 API。
+- `entries/revise`、`entries/retire`。分别改用 Atomic Replace 和 forgotten lifecycle。
+- `changes`、`capacity` 和集合 compact。
+- `family=memory` 的创建、替换和集合回滚。改用独立 Artifact 写入与恢复。
+- 旧集合标签的读取和替换，以及在标签查询中显式选择 `memory` family 或 `memory_entry` 目标。默认标签查询不包含旧 Memory；
+  迁移后的 entry 标签通过 Atomic Artifact 目标读写。
+- 以旧 `memory_entry` selector 发起的授权检查和 binding 创建。
+
+不支持的旧操作返回 HTTP `422`、`error.code: "legacy_memory_operation_unsupported"`。
 `error.details` 包含 `operation`、替代 `alternatives` 路由和 `instruction`，并保留 `kind`、`name`。
 无对应操作时 alternatives 为空。客户端不得自动删除旧集合 CAS 前提后重试。
 
@@ -212,29 +216,23 @@ operation 和 target 向 restorations 提交原 token：
 }
 ```
 
-服务端验证保留的旧身份，映射到新 Artifact，再读取新 head 和当前状态。若原记忆已 merged，
-返回原对象的冻结正文、merged 状态及 merged_into_id；不会跳到合并结果。
-
-精确历史读取仍使用原 citation：
-
-```json
-{
-  "scope_id": "S",
-  "citation": {
-    "memory_ref": {"family": "memory", "artifact_id": "OLD", "revision": 7},
-    "entry_id": "E",
-    "entry_version_id": "V3"
-  }
-}
-```
-
-两种模式必须且只能选一种。citation 不会忽略版本改查最新；升级后新建记忆直接用新 Artifact ID。
+服务端在请求 Scope 中把旧身份映射到对应 Atomic Artifact，再读取其 head 和当前状态。若原记忆已 merged，
+返回原对象的冻结正文、merged 状态及 merged_into_id；不会跳到合并结果。升级后新建的记忆直接使用新 Artifact ID。
 
 Python Client 方法沿用旧名称，但 `remember_memory` 返回 `.records`，`search_memory` 的 hit 使用
 `.memory.artifact`，`list_memory_entries` 返回 `.entries` 和 `.next_cursor`。
-`get_memory_entry` 直接返回 `MemoryEntry | AtomicMemoryRecord`：citation 模式具有 `.citation`，target 模式具有 `.artifact`。
+`get_memory_entry` 只接受 target 模式，返回具有 `.artifact` 的 `AtomicMemoryRecord`。
 应升级 SDK 并按实际模型处理；旧集合 `.memory` 和 citation 字段不能用于新结果。
 unsupported 通过 `ServerResponseError.status_code`、`.code`、`.details` 检查。
 新入口包括 `get_atomic_memory_state`、`list_atomic_memories`、`search_atomic_memory`、
 `merge_atomic_memories`、`change_atomic_memory_lifecycle`、`preview_atomic_memory_restoration` 和 `restore_atomic_memory`；
 创建、修订与精确历史读取使用通用 Artifact Client 方法。
+
+搜索和列表沿用 Memory、Topic Memory 的 Scope 边界，要求 `scope.read`。单条 Artifact 分享允许
+精确读取和历史读取，不授予整个 Scope 的列表或搜索权限。重排或上下文组装前若 Scope 读取权限已被
+撤销，请求返回 `403`，即使单条分享仍有效。Source 提取会完整枚举同 Scope 中满足阈值、
+属于当前主体的记忆，再由实际配置的授权服务检查 Artifact 读取和写入权限后交给模型比较。明确拒绝的
+候选会被跳过；授权服务故障会终止处理。不可变的 Owner 列只用于提取时的所有者预筛选。
+
+使用同一数据库的受支持 Builtin 或 Casbin 服务进行 Scope 检查时，授权读取与业务数据共享快照。
+独立的决策存储和自定义服务保留各自配置的读取一致性契约。

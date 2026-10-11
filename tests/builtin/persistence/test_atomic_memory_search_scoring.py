@@ -223,7 +223,7 @@ def test_atomic_backend_sql_returns_raw_separately_without_changing_legacy_order
         result = await index.search(
             cast(AsyncConnection, connection),
             "project",
-            AtomicMemorySearchRequest("needle", AtomicMemoryIndexFilter(scope_read=True), limit=7),
+            AtomicMemorySearchRequest("needle", AtomicMemoryIndexFilter(), limit=7),
         )
         assert "AS raw_score" in connection.sql and f"'{metric}' AS score_metric" in connection.sql
         assert "ORDER BY score DESC, artifact_id LIMIT :result_limit" in connection.sql

@@ -265,11 +265,6 @@ class _VectorMemoryIndex:
     async def refresh_tags(self, connection: AsyncConnection, scope_id: str, artifact_id: str, tag_keys, /):
         pass
 
-    async def refresh_access(
-        self, connection: AsyncConnection, scope_id: str, artifact_id: str, owner_type, owner_id, read_grants, /
-    ):
-        pass
-
 
 def test_observability_signals_correlate_without_counting_the_mcp_bridge(caplog, tmp_path) -> None:
     exporter = InMemorySpanExporter()
@@ -828,9 +823,9 @@ def test_memory_read_stage_spans_are_bounded_and_nested(monkeypatch, tmp_path) -
     assert search_attributes == {
         "powercontext.operation.name": "memory.search",
         "powercontext.operation.unit": "stage",
-        "powercontext.memory.search.requested_mode": "fts",
+        "powercontext.memory.search.requested_mode": "text",
         "powercontext.memory.search.limit": 1,
-        "powercontext.memory.search.mode": "fts",
+        "powercontext.memory.search.mode": "text",
         "powercontext.memory.search.result_count": 1,
         "powercontext.memory.search.embedding_calls": 0,
         "powercontext.memory.search.generation_calls": 1,
@@ -854,10 +849,10 @@ def test_memory_read_stage_spans_are_bounded_and_nested(monkeypatch, tmp_path) -
     }
 
     no_match_search = _only_child(spans, no_match_application, "memory.search")
-    assert (no_match_search.attributes or {})["powercontext.memory.search.mode"] == "fts"
+    assert (no_match_search.attributes or {})["powercontext.memory.search.mode"] == "text"
     assert not _children(spans, no_match_search, "memory.rerank")
     no_memory_search = _only_child(spans, no_memory_application, "memory.search")
-    assert (no_memory_search.attributes or {})["powercontext.memory.search.mode"] == "fts"
+    assert (no_memory_search.attributes or {})["powercontext.memory.search.mode"] == "text"
     assert not _children(spans, no_memory_search, "memory.rerank")
 
     prepared_by_result_count = {

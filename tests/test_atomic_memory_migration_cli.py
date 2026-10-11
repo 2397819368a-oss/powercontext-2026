@@ -164,3 +164,79 @@ def test_apply_and_rebuild_retain_writable_sqlite_initialization(tmp_path, monke
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {"pc_atomic_memory_states", "pc_atomic_memory_current", "pc_atomic_memory_current_fts"} <= tables
+
+
+def test_obsolete_development_projection_requires_explicit_rebuild(tmp_path, monkeypatch, maintenance_cli):
+    from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndexError
+    from powercontext.builtin.records import ArtifactWrite
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+
+    database = tmp_path / "obsolete-current.db"
+    database_config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")
+    config = BuiltinConfig(database=database_config)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", database_config.url)
+
+    async def seed():
+        async with open_builtin_contexts(config) as contexts:
+            await contexts.get("project")
+            created = await contexts.records.create_artifact(
+                "project", "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Retain exact history."})
+            )
+            memory = contexts.atomic_memory.for_scope("project")
+            return await memory.get(created.artifact_id), await memory.search("exact history", mode="text")
+
+    original, baseline_search = asyncio.run(seed())
+    with closing(sqlite3.connect(database)) as connection:
+        authority = {
+            name: connection.execute(f"SELECT * FROM {name}").fetchall()  # noqa: S608 - fixed authority table names
+            for name in [
+                "pc_artifacts",
+                "pc_artifact_heads",
+                "pc_atomic_memory_states",
+                "pc_access_owners",
+                "pc_access_relationships",
+            ]
+        }
+        definition = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pc_atomic_memory_current'"
+        ).fetchone()[0]
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(pc_atomic_memory_current)")]
+        rows = connection.execute("SELECT * FROM pc_atomic_memory_current").fetchall()
+        # Reproduce the prior development table: copied grants were required and had no default.
+        connection.execute("DROP TABLE pc_atomic_memory_current")
+        connection.execute(definition.replace("PRIMARY KEY", "read_grants TEXT NOT NULL, PRIMARY KEY", 1))
+        names = ", ".join([*columns, "read_grants"])
+        values = ", ".join("?" for _ in [*columns, "read_grants"])
+        connection.executemany(
+            f"INSERT INTO pc_atomic_memory_current ({names}) VALUES ({values})",  # noqa: S608 - local schema columns
+            [(*row, "[]") for row in rows],
+        )
+        connection.commit()
+
+    async def rejected():
+        with pytest.raises(AtomicMemoryIndexError, match="atomic-memory-rebuild-projection --maintenance-confirmed"):
+            async with open_builtin_contexts(config):
+                pytest.fail("The obsolete current table must not be accepted for normal writes")
+
+    asyncio.run(rejected())
+    result = CliRunner().invoke(
+        maintenance_cli, ["server", "atomic-memory-rebuild-projection", "--maintenance-confirmed"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["ready"] is True
+    with closing(sqlite3.connect(database)) as connection:
+        for name, retained in authority.items():
+            assert connection.execute(f"SELECT * FROM {name}").fetchall() == retained  # noqa: S608 - fixed table names
+
+    async def read_and_write():
+        async with open_builtin_contexts(config) as contexts:
+            memory = contexts.atomic_memory.for_scope("project")
+            assert await memory.get(original.ref.artifact_id, revision=1) == original
+            assert await memory.search("exact history", mode="text") == baseline_search
+            created = await contexts.records.create_artifact(
+                "project", "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "New searchable fact."})
+            )
+            result = await memory.search("searchable", mode="text")
+            assert [hit.hit.artifact_ref.artifact_id for hit in result.hits] == [created.artifact_id]
+
+    asyncio.run(read_and_write())

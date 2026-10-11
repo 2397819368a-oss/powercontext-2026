@@ -64,13 +64,13 @@ Artifact reference, content, state, and state version. The host's `score` and `m
 `matched-channel-count / 61`, clamped to 0–1; this is a relative rank measure, not confidence or semantic similarity.
 Response `matched_by` values are `text` and `vector`; the request still uses `fts` or `auto` mode.
 Get reads the exact generic Artifact revision and returns at most 120 lines and 12,000 characters per read.
-Genuine legacy MemoryCitation paths still use `/v1/memory/entries/get` for exact historical reads.
+Paths encode Atomic references (`{family: "atomic-memory", artifact_id, revision}`, with `state_version` when known);
+any other path is rejected locally before a request is sent.
 
 Store returns real Atomic records and an encoded snapshot path. Revise requires the captured content revision,
 reads the current content ETag, and sends it in `If-Match`; a content conflict requires inspection before retrying.
 Manual content edits use content revision CAS and do not include lifecycle state CAS. The compatibility tool
 `powercontext_memory_retire` performs reversible forgetting with the captured Artifact reference and `state_version`.
-Legacy MemoryCitations are read-only. No collection revision or entry identifier is synthesized.
 
 Eligible user prompts from direct/private sessions are captured separately as Content Sources with a deterministic
 source id, so repeated captures are idempotent. Group, channel, and incognito sessions are excluded. The plugin never

@@ -21,7 +21,6 @@ import httpx
 import opendalfs
 import pytest
 from fastapi import FastAPI
-from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryCandidate,
     AtomicMemoryExtractionInput,
@@ -29,6 +28,7 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryGenerationPipeline,
 )
 from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
+    AtomicMemoryReconciliationContent,
     AtomicMemoryReconciliationInput,
     AtomicMemoryReconciliationOutput,
 )
@@ -122,7 +122,7 @@ class IndependentMemoryReconciler:
             output=AtomicMemoryReconciliationOutput(
                 action="create",
                 compared_ids=tuple(item.item_id for item in request.related),
-                content=AtomicMemoryContent(kind=request.proposal.kind, text=request.proposal.text),
+                content=AtomicMemoryReconciliationContent(kind=request.proposal.kind, text=request.proposal.text),
                 evidence_ids=request.proposal.evidence_ids,
                 reason="Preserve each independent file snapshot with its exact Source evidence.",
             )

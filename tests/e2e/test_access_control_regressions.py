@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -77,6 +78,50 @@ async def _scope(client):
     )
     assert result.status_code == 201, result.text
     return result.json()["scope_id"]
+
+
+@pytest.mark.parametrize("backend", ["builtin", "casbin"])
+@pytest.mark.parametrize("target_contributor", [False, True])
+def test_missing_subject_target_preserves_authorization(tmp_path, backend, target_contributor):
+    async def scenario():
+        async with _server(tmp_path, backend) as (_, client, _):
+            origin = await _scope(client)
+            path = f"/v1/scopes/{origin}/subject-sources"
+            payload = {"subject_key": "private-subject", "content": "Subject evidence"}
+            created = await client.post(path, json=payload)
+            assert created.status_code == 201, created.text
+            target = created.json()["subject_scope_id"]
+            await _grant(client, origin, "writer", "scope.contributor")
+            if target_contributor:
+                await _grant(client, target, "writer", "scope.contributor")
+            headers = {"Authorization": "Bearer writer"}
+            healthy = await client.post(path, headers=headers, json=payload)
+            assert healthy.status_code == (201 if target_contributor else 403), healthy.text
+            if not target_contributor:
+                assert target not in healthy.text
+            sources_before = await client.get(f"/v1/scopes/{origin}/sources")
+            assert sources_before.status_code == 200, sources_before.text
+
+            # Simulate out-of-band loss while preserving bindings and access grants.
+            with sqlite3.connect(tmp_path / "regressions.db") as connection:
+                connection.execute("DELETE FROM pc_scopes WHERE scope_id = ?", (target,))
+
+            missing = await client.post(path, headers=headers, json=payload)
+            if target_contributor:
+                assert missing.status_code == 409, missing.text
+                assert missing.json()["error"]["code"] == "scope_binding_target_missing"
+                assert missing.json()["error"]["details"]["scope_id"] == target
+            else:
+                assert missing.status_code == 403, missing.text
+                assert missing.json()["error"]["code"] == healthy.json()["error"]["code"]
+                assert target not in missing.text
+            sources_after = await client.get(f"/v1/scopes/{origin}/sources")
+            assert sources_after.status_code == 200, sources_after.text
+            assert {item["source_id"] for item in sources_after.json()["items"]} == {
+                item["source_id"] for item in sources_before.json()["items"]
+            }
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("backend", ["builtin", "casbin"])
@@ -498,6 +543,8 @@ def test_owner_failure_blocks_collections_and_context_before_content(tmp_path, m
                     "/v1/context/prepare",
                     {"scope_id": current, "query": "OWNER_PENDING_PRIVATE_CONTENT", "assembly": {}},
                 ),
+                ("POST", "/v1/atomic-memory/list", {"scope_id": scope_id}),
+                ("POST", "/v1/atomic-memory/search", {"scope_id": scope_id, "query": "OWNER_PENDING_PRIVATE_CONTENT"}),
                 ("POST", "/v1/memory/entries/list", {"scope_id": scope_id}),
                 ("POST", "/v1/memory/search", {"scope_id": scope_id, "query": "OWNER_PENDING_PRIVATE_CONTENT"}),
                 ("POST", "/v1/context/prepare", {"scope_id": scope_id, "query": "OWNER_PENDING_PRIVATE_CONTENT"}),
@@ -1210,5 +1257,73 @@ def test_atomic_state_read_keeps_content_and_lifecycle_in_one_snapshot(tmp_path,
             assert current.json()["artifact"]["revision"] == 2
             assert current.json()["state"] == "forgotten"
             assert current.json()["state_version"] == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("provider", ["builtin", "casbin", "custom"])
+def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_path, provider):
+    class ConfiguredProvider:
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def check(self, request):
+            return await self.inner.check(request)
+
+        async def check_batch(self, requests):
+            return await self.inner.check_batch(requests)
+
+    async def scenario():
+        async with _server(tmp_path, "builtin" if provider == "custom" else provider) as (_, client, access):
+            if provider == "custom":
+                access.provider = ConfiguredProvider(access.provider)
+            scope_id = await _scope(client)
+            response = await client.post(
+                "/v1/memory/remember", json={"scope_id": scope_id, "kind": "fact", "text": "Alpha scope fact."}
+            )
+            assert response.status_code == 200, response.text
+            memory = response.json()["records"][0]
+            identity = memory["artifact"]["artifact_id"]
+            path = f"/v1/scopes/{scope_id}/artifacts/atomic-memory/{identity}"
+            await _grant(
+                client,
+                scope_id,
+                "reader",
+                "artifact.viewer",
+                resource={
+                    "type": "artifact",
+                    "scope_id": scope_id,
+                    "identity": {"family": "atomic-memory", "artifact_id": identity},
+                    "selector": None,
+                },
+            )
+            reader = {"Authorization": "Bearer reader"}
+            for endpoint in [path, path + "/revisions/1", path + "/revisions"]:
+                exact = await client.get(endpoint, headers=reader)
+                assert exact.status_code == 200, exact.text
+            queries = [
+                ("/v1/atomic-memory/search", {"scope_id": scope_id, "query": "alpha"}),
+                ("/v1/memory/search", {"scope_id": scope_id, "query": "alpha"}),
+                ("/v1/atomic-memory/list", {"scope_id": scope_id}),
+                ("/v1/memory/entries/list", {"scope_id": scope_id}),
+            ]
+            for endpoint, payload in queries:
+                denied = await client.post(endpoint, headers=reader, json=payload)
+                assert denied.status_code == 403, denied.text
+            additional = await client.post(
+                "/v1/memory/remember", json={"scope_id": scope_id, "kind": "fact", "text": "Alpha unshared fact."}
+            )
+            assert additional.status_code == 200, additional.text
+            additional_memory = additional.json()["records"][0]
+            await _grant(client, scope_id, "reader", "scope.viewer")
+            # Scope authority reads another principal's current memory.
+            for endpoint, payload in queries:
+                allowed = await client.post(endpoint, headers=reader, json=payload)
+                assert allowed.status_code == 200, allowed.text
+            search = await client.post(queries[0][0], headers=reader, json=queries[0][1])
+            assert {hit["memory"]["artifact"]["artifact_id"] for hit in search.json()["hits"]} == {
+                identity,
+                additional_memory["artifact"]["artifact_id"],
+            }
 
     asyncio.run(scenario())

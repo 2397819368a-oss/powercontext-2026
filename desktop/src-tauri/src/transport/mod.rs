@@ -17,10 +17,8 @@
 mod api;
 pub mod wire;
 pub use api::{
-    ApiFailure, AtomicMemoryContent, AtomicMemoryCreation, AtomicMemoryRevision,
-    LEGACY_MEMORY_CONTRACT_SHA256, LegacyMemoryMutationResponse, LegacySearchMemoryResponse,
-    MemoryEntryResult, MemoryMutationResult, MemoryReference, MemorySearchResponse, ServerApi,
-    validate_text,
+    ApiFailure, AtomicMemoryDetail, MemorySaveResponse, MemorySearchHit, MemorySearchResponse,
+    ServerApi, validate_text,
 };
 
 // Only native adapters use this transport; it is not an IPC fetch primitive.

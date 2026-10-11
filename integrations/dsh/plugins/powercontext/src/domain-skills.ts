@@ -32,7 +32,7 @@ Current instructions and live repository state outrank historical evidence. Pres
   forgotten, merged or retired memories.
 - Use \`pc_memory_get\` with the exact returned Atomic Memory \`artifact\` when immutable
   content is needed. Current content includes the real server content ETag; historical
-  content has no current write ETag. Full legacy citations support exact historical reads only.
+  content has no current write ETag.
 - Use \`pc_memory_state\` to inspect the current reference, lifecycle and \`state_version\`.
 
 ## Write only on request
@@ -45,7 +45,7 @@ one-time approval before any named PowerContext mutation runs.
 Before \`pc_memory_revise\`, read the current Atomic Memory and pass its exact
 \`artifact\` and returned content ETag as \`if_match\`. For \`pc_memory_retire\`,
 pass the current exact \`artifact\` and \`state_version\`; this sets recoverable
-\`forgotten\` state and preserves history. Legacy citation writes are unsupported.
+\`forgotten\` state and preserves history.
 After a conflict, read again and retry once only if the requested change still applies.
 `,
   },

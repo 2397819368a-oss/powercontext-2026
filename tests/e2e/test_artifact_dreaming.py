@@ -35,7 +35,6 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryExtractionOutput,
 )
 from powercontext.builtin.artifacts.experience import ExperienceContent
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.artifacts.skill import SkillContent
 from powercontext.builtin.dream.generation import DreamGenerationInput
 from powercontext.builtin.dream.models import DreamError, DreamPlan
@@ -59,7 +58,6 @@ from powercontext.builtin.runtime import (
     PrepareContextRequest,
     ProposeExperienceRequest,
     ProposeSkillRequest,
-    RememberMemoryRequest,
     ReviseArtifactCandidateRequest,
     RuntimeConfig,
 )
@@ -236,11 +234,12 @@ async def seed(runtime: BuiltinRuntime):
             metadata={},
         )
     )
-    await runtime.memory.for_scope(scope.scope_id).flush()
-    await runtime.memory.for_scope(scope.scope_id).remember(
-        RememberMemoryRequest(entries=(MemoryEntryInput(kind="private_note", text="UNSELECTED_SIBLING_SENTINEL"),))
-    )
-    entries = await runtime.memory.for_scope(scope.scope_id).list()
+    assert runtime.atomic_memory is not None
+    await runtime.atomic_memory.for_scope(scope.scope_id).flush()
+    await runtime.atomic_memory.for_scope(scope.scope_id).create((
+        AtomicMemoryContent(kind="private_note", text="UNSELECTED_SIBLING_SENTINEL"),
+    ))
+    entries = await runtime.atomic_memory.for_scope(scope.scope_id).list()
     citation = next(item.ref for item in entries.items if item.artifact.content.kind == "working_note")
     return scope.scope_id, captured.source_ref, citation
 
@@ -280,7 +279,6 @@ def test_memory_dream_approval_and_skill_preserve_exact_provenance(database: Dat
             candidate = await runtime.review.for_scope(scope).get(
                 GetArtifactCandidateRequest(candidate_id=run.candidate.candidate_id)
             )
-            assert candidate.memory_citations == ()
             assert candidate.artifacts == (citation,)
             assert candidate.sources == (root,)
             followup = PrepareContextRequest(query=experience().lesson)
@@ -296,7 +294,6 @@ def test_memory_dream_approval_and_skill_preserve_exact_provenance(database: Dat
             artifact = await runtime.experience.for_scope(scope).get(
                 GetExperienceRequest(artifact=approved.result_artifact)
             )
-            assert artifact.lineage.memory_citations == ()
             assert artifact.lineage.artifacts == (citation,)
             approved_context = await runtime.context.for_scope(scope).prepare(followup)
             assert approved_context.status == "ready" and approved_context.content is not None
@@ -318,7 +315,6 @@ def test_memory_dream_approval_and_skill_preserve_exact_provenance(database: Dat
             skill_candidate = await runtime.review.for_scope(scope).get(
                 GetArtifactCandidateRequest(candidate_id=derived.candidate.candidate_id)
             )
-            assert skill_candidate.memory_citations == ()
             assert skill_candidate.artifacts == (artifact.as_ref(),)
             skill_approval = await runtime.review.for_scope(scope).approve(
                 ApproveArtifactCandidateRequest(
@@ -423,7 +419,6 @@ def test_review_rechecks_memory_and_revision_omission_preserves_citations(databa
                     artifacts=(citation,),
                 )
             )
-            assert revised.memory_citations == ()
             assert revised.artifacts == (citation,)
             await forget_memory(runtime, scope, citation)
             with pytest.raises(EvidenceResolutionError, match="memory_entry_inactive"):
@@ -442,7 +437,6 @@ def test_review_rechecks_memory_and_revision_omission_preserves_citations(databa
                     artifacts=(),
                 )
             )
-            assert cleared.memory_citations == ()
             assert cleared.artifacts == ()
             approved = await runtime.review.for_scope(scope).approve(
                 ApproveArtifactCandidateRequest(
@@ -533,15 +527,8 @@ def test_dream_http_client_accepts_active_and_terminal_replays(database: Databas
                     artifact_refs=candidate.artifact_refs,
                 )
                 retained = await client.revise_artifact_candidate(revision)
-                assert retained.memory_citations == candidate.memory_citations
-                retained = await client.revise_artifact_candidate(
-                    revision.model_copy(update={"expected_version": retained.version, "memory_citations": None})
-                )
-                assert retained.memory_citations == candidate.memory_citations
-                cleared = await client.revise_artifact_candidate(
-                    revision.model_copy(update={"expected_version": retained.version, "memory_citations": []})
-                )
-                assert cleared.memory_citations == []
+                assert retained.source_refs == candidate.source_refs
+                assert retained.artifact_refs == candidate.artifact_refs
                 assert await client.get_dream_run(scope, complete.run_id) == complete
 
     asyncio.run(scenario())
@@ -657,6 +644,14 @@ def test_enforced_access_rechecks_background_actor_and_attests_candidate(databas
                 dream_candidate_attester=adapter.attest_candidate,
             ) as runtime:
                 scope, _, citation = await seed(runtime)
+                assert runtime.atomic_memory is not None
+                for record in (await runtime.atomic_memory.for_scope(scope).list()).items:
+                    await access.establish_artifact_owner(
+                        ResourceRef.artifact(scope, family=record.ref.family, artifact_id=record.ref.artifact_id),
+                        admin,
+                        idempotency_key=f"dream-memory-owner:{record.ref.artifact_id}",
+                        context=context,
+                    )
                 await access.create_binding(
                     admin,
                     CreateBinding(
@@ -785,8 +780,99 @@ def test_enforced_access_rechecks_background_actor_and_attests_candidate(databas
                         )
                     )
                     assert ownership is not None and ownership.owner == author
-                    assert approved.json()["memory_citations"] == []
                     assert approved.json()["artifact_refs"] == [citation.model_dump(mode="json")]
+
+    asyncio.run(scenario())
+
+
+def test_dream_candidate_attestation_preserves_configured_casbin_denial(tmp_path: Path) -> None:
+    from powercontext.server.authz import AccessAction, AccessControlService, AccessRole, PrincipalRef, ResourceRef
+    from powercontext.server.authz.composition import open_builtin_access_control, open_casbin_access_control
+    from powercontext.server.authz.service import AccessAuditContext, CreateBinding
+    from powercontext.server.dream_access import DreamAccess, principal_identity
+
+    database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'dream.db'}")
+    decision_database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'decisions.db'}")
+    admin = PrincipalRef(type="service", id="dream-admin")
+    author = PrincipalRef(type="user", id="dream-author")
+    context = AccessAuditContext(transport="background", operation="test_dream")
+
+    async def scenario() -> None:
+        async with (
+            open_builtin_access_control(database, bootstrap_administrators=(admin,)) as relationships,
+            open_casbin_access_control(decision_database, bootstrap_administrators=(admin,)) as decisions,
+        ):
+            access = AccessControlService(
+                decisions.provider, relationships=relationships.relationships, audit=relationships.audit
+            )
+            adapter = DreamAccess(access)
+            attempted_candidate_id: str | None = None
+
+            async def attest_candidate(connection, record, candidate_id, family):
+                nonlocal attempted_candidate_id
+                attempted_candidate_id = candidate_id
+                # The configured decision authority revokes contribution while
+                # the relationship store still contains the contributor grant.
+                await decisions.revoke_binding(
+                    admin,
+                    contributor.binding_id,
+                    expected_version=contributor.version,
+                    idempotency_key="revoke-decision-contributor",
+                    context=context,
+                )
+                await adapter.attest_candidate(connection, record, candidate_id, family)
+
+            async with open_builtin_runtime(
+                config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=Generator(),
+                dream_authorizer=adapter.authorize,
+                dream_authorization_context=access.defer_decision_audit,
+                dream_candidate_attester=attest_candidate,
+            ) as runtime:
+                scope, _, citation = await seed(runtime)
+                resource = ResourceRef.scope(scope)
+                contribution = CreateBinding(
+                    subject=author,
+                    resource=resource,
+                    role=AccessRole.SCOPE_CONTRIBUTOR,
+                    idempotency_key="dream-contributor",
+                )
+                await relationships.create_binding(admin, contribution, context=context)
+                contributor = await decisions.create_binding(admin, contribution, context=context)
+                await decisions.create_binding(
+                    admin,
+                    CreateBinding(
+                        subject=author,
+                        resource=resource,
+                        role=AccessRole.SCOPE_VIEWER,
+                        idempotency_key="dream-viewer",
+                    ),
+                    context=context,
+                )
+                memory = ResourceRef.artifact(scope, family=citation.family, artifact_id=citation.artifact_id)
+                for authority in (relationships, decisions):
+                    await authority.establish_artifact_owner(
+                        memory, admin, idempotency_key="dream-memory-owner", context=context
+                    )
+                dream = runtime.dream.for_scope(scope, principal_id=principal_identity(author))
+                accepted = await dream.create(
+                    CreateDreamRunRequest(
+                        operation="refine_experience", artifacts=(citation,), idempotency_key="decision-revoked"
+                    )
+                )
+                await process_pending(runtime)
+                run = await dream.get(GetDreamRunRequest(run_id=accepted.run_id))
+                assert (run.status, run.error, run.candidate) == ("failed", "access_revoked", None)
+                assert attempted_candidate_id is not None
+                assert await access.candidate_owner(scope, attempted_candidate_id) is None
+                assert (await runtime.review.for_scope(scope).list(ListArtifactCandidatesRequest())).candidates == ()
+                assert (
+                    await relationships.check(author, AccessAction.SCOPE_CONTRIBUTE, resource, context=context)
+                ).allowed
+                assert not (
+                    await access.check(author, AccessAction.SCOPE_CONTRIBUTE, resource, context=context)
+                ).allowed
 
     asyncio.run(scenario())
 
@@ -858,10 +944,6 @@ def test_additive_migration_preserves_existing_experience_and_candidate(database
         engine = create_async_engine(url, hide_parameters=True)
         try:
             async with engine.begin() as connection:
-                await connection.exec_driver_sql("ALTER TABLE pc_artifacts DROP COLUMN memory_citations")
-                await connection.exec_driver_sql(
-                    "ALTER TABLE pc_artifact_candidate_versions DROP COLUMN memory_citations"
-                )
                 await connection.exec_driver_sql("DROP TABLE pc_dream_runs")
         finally:
             await engine.dispose()
@@ -871,7 +953,6 @@ def test_additive_migration_preserves_existing_experience_and_candidate(database
                 GetExperienceRequest(artifact=approved.result_artifact)
             )
             assert restored.content == experience()
-            assert restored.lineage.memory_citations == ()
             assert restored.lineage.sources == (root,)
             restored_candidate = await runtime.review.for_scope(scope).get(
                 GetArtifactCandidateRequest(
@@ -1166,17 +1247,13 @@ def test_memory_without_task_sources_cannot_produce_experience(database: Databas
                     )
                 )
             ).scope_id
-            await runtime.memory.for_scope(scope).remember(
-                RememberMemoryRequest(
-                    entries=(
-                        MemoryEntryInput(
-                            kind="preference",
-                            text="I prefer retrying writes without checking the previous result.",
-                        ),
-                    )
-                )
-            )
-            citation = (await runtime.memory.for_scope(scope).list()).items[0].ref
+            await runtime.atomic_memory.for_scope(scope).create((
+                AtomicMemoryContent(
+                    kind="preference",
+                    text="I prefer retrying writes without checking the previous result.",
+                ),
+            ))
+            citation = (await runtime.atomic_memory.for_scope(scope).list()).items[0].ref
             accepted = await runtime.dream.for_scope(scope).create(
                 CreateDreamRunRequest(
                     operation="refine_experience",
@@ -1319,7 +1396,7 @@ def test_multiple_entries_and_experience_reusing_a_source_keep_one_root(database
             config(database), candidate_pipeline=atomic_memory_pipeline(EchoPipeline()), dream_generator=generator
         ) as runtime:
             scope, root, citation = await seed(runtime)
-            entries = await runtime.memory.for_scope(scope).list()
+            entries = await runtime.atomic_memory.for_scope(scope).list()
             citations = tuple(item.ref for item in entries.items if item.artifact.content.kind == "working_note")
             assert len(citations) == 2
             candidate = await runtime.experience.for_scope(scope).propose(
@@ -1352,7 +1429,6 @@ def test_multiple_entries_and_experience_reusing_a_source_keep_one_root(database
                 GetArtifactCandidateRequest(candidate_id=run.candidate.candidate_id)
             )
             assert result.sources == (root,)
-            assert result.memory_citations == ()
             assert {ref.model_dump_json() for ref in result.artifacts} == {
                 ref.model_dump_json() for ref in (approved.result_artifact, *citations)
             }
@@ -1606,8 +1682,8 @@ def test_ordinary_experience_revisions_do_not_inherit_dream_depth_budget(
             )
             citations = ()
             if with_memory:
-                await runtime.memory.for_scope(scope).flush()
-                entries = await runtime.memory.for_scope(scope).list()
+                await runtime.atomic_memory.for_scope(scope).flush()
+                entries = await runtime.atomic_memory.for_scope(scope).list()
                 citations = (entries.items[0].ref,)
             target = None
             for revision in range(1, 13):

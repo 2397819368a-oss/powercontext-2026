@@ -17,21 +17,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
 from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from sqlite3 import SQLITE_CANTOPEN
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import typer
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
-from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
-    apply_atomic_memory_migration,
-    plan_atomic_memory_migration,
-    verify_atomic_memory_migration,
-)
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.processing_migration import (
@@ -66,6 +62,9 @@ from powercontext.server.settings import (
     UnauthenticatedNonLoopbackBindError,
 )
 from powercontext.server.tracing import configure_server_tracing
+
+if TYPE_CHECKING:
+    from powercontext.builtin.persistence.migrations.atomic_memory_references import CandidateDecision
 
 HELP_OPTION_NAMES = ("-h", "--help")
 
@@ -182,15 +181,27 @@ def atomic_memory_migrate(
     maintenance_confirmed: Annotated[
         bool, typer.Option(help="Confirm every old API, host and Worker is stopped and input writes are paused.")
     ] = False,
+    decisions: Annotated[
+        Path | None,
+        typer.Option(help="JSON decisions replacing Candidate evidence that cited only whole Memory collections."),
+    ] = None,
 ) -> None:
-    """Convert frozen Memory v1 history to independent Atomic Memory artifacts."""
+    """Archive Memory v1, convert its history and references to Atomic Memory, and remove it from public tables."""
+
+    from powercontext.builtin.persistence.migrations.atomic_memory_references import load_decisions
 
     if action == "apply" and not maintenance_confirmed:
         raise typer.BadParameter("apply requires --maintenance-confirmed after stopping every old writer")  # noqa: TRY003
+    try:
+        loaded = {} if decisions is None else load_decisions(json.loads(decisions.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise typer.BadParameter(f"invalid decision file: {error}") from error  # noqa: TRY003
     with server_settings_context(env_file=env_file) as settings:
         try:
             ready = asyncio.run(
-                _atomic_memory_maintenance(settings, action, maintenance_confirmed=maintenance_confirmed)
+                _atomic_memory_maintenance(
+                    settings, action, maintenance_confirmed=maintenance_confirmed, decisions=loaded
+                )
             )
         except OperationalError as error:
             sqlite_code = getattr(error.orig, "sqlite_errorcode", None)
@@ -234,6 +245,7 @@ async def _atomic_memory_maintenance(
     *,
     maintenance_confirmed: bool,
     batch_size: int = 100,
+    decisions: dict[tuple[str, str, int], CandidateDecision] | None = None,
 ) -> bool:
     from powercontext.builtin.artifacts.memory import EmbeddingProfile
 
@@ -281,16 +293,24 @@ async def _atomic_memory_maintenance(
                     batch_size=batch_size,
                 )
             else:
+                from powercontext.builtin.persistence.migrations.atomic_memory_v1 import apply_atomic_memory_migration
+
                 report = await apply_atomic_memory_migration(
                     profile.database,
                     index,
                     maintenance_confirmed=maintenance_confirmed,
                     embedding_model=embedding_model,
+                    decisions=decisions,
                 )
         else:
+            from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
+                plan_atomic_memory_migration,
+                verify_atomic_memory_migration,
+            )
+
             async with profile.database.transaction() as connection:
                 report = (
-                    await plan_atomic_memory_migration(connection, index=index)
+                    await plan_atomic_memory_migration(connection, index=index, decisions=decisions)
                     if action == "plan"
                     else await verify_atomic_memory_migration(connection, index=index)
                 )

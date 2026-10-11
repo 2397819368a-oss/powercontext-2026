@@ -13,7 +13,7 @@ Memory 保存持久的决策、约束和事实。每条新记忆使用独立的 
 1. 完成 [Quick Start](../get-started/quickstart.md)，让不同会话解析到相同 Scope。
 2. 显式请 Agent 保存信息。直接调用 `remember_memory` 不需要模型。
 3. 使用 `search_memory` 搜索，或在宿主提供对应工具时用 `list_memory_entries` 和 `get_memory_entry` 检查条目。
-   引用新结果时保留返回的精确 ArtifactRef；旧 citation 只用于迁移前的精确历史。
+   引用结果时保留返回的精确 ArtifactRef；精确历史按 Atomic Memory revision 读取。
 4. 使用通用 Artifact Replace 修订正文，或通过 Atomic lifecycle 将记忆设为 forgotten；正文和历史保留，
    可使用恢复接口重新在役。修订正文需要当前正文 ETag，遗忘需要精确引用和 state_version。
 

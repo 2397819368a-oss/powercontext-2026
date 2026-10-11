@@ -18,9 +18,9 @@ import type { ClientSuccess, JsonObject, PowerContextClient } from './client.ts'
 import type { OperationId } from './operations.generated.ts'
 
 export class MemoryOperationError extends Error {
-  readonly code: 'invalid_request' | 'unsupported'
+  readonly code: 'invalid_request'
 
-  constructor(code: 'invalid_request' | 'unsupported', message: string) {
+  constructor(code: 'invalid_request', message: string) {
     super(message)
     this.name = 'MemoryOperationError'
     this.code = code
@@ -64,19 +64,6 @@ export async function requestMemoryOperation(
     }, signal)
   }
   if (!['get_memory_entry', 'revise_memory_entry', 'retire_memory_entry'].includes(operationId)) return undefined
-  if (body.citation !== undefined && body.artifact !== undefined) {
-    throw new MemoryOperationError('invalid_request', 'Choose one exact artifact reference or one historical citation.')
-  }
-  if (body.artifact === undefined) {
-    if (operationId !== 'get_memory_entry') {
-      throw new MemoryOperationError('unsupported',
-        'Legacy Memory citations are read-only. Use an Atomic Memory artifact reference for changes.')
-    }
-    if (body.citation === undefined) {
-      throw new MemoryOperationError('invalid_request', 'Supply an Atomic Memory reference or a full historical citation.')
-    }
-    return client.request('get_memory_entry', { scope_id: scopeId, citation: body.citation }, signal)
-  }
   const ref = atomicReference(body.artifact)
   const identity = { scope_id: scopeId, family: ref.family, artifact_id: ref.artifact_id }
   if (operationId === 'get_memory_entry') {

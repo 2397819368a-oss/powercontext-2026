@@ -248,32 +248,9 @@ async def _read_policy_revision(connection: AsyncConnection) -> str:
 class RelationalAccessRepository:
     """Persist logical bindings, direct ownership and minimized audit events."""
 
-    def __init__(
-        self, database: AsyncDatabase, *, connection: AsyncConnection | None = None, projection_hook=None
-    ) -> None:
+    def __init__(self, database: AsyncDatabase, *, connection: AsyncConnection | None = None) -> None:
         self._database = database
         self._bound_connection = connection
-        self._projection_hook = projection_hook
-
-    def set_atomic_memory_projection_hook(self, hook) -> None:
-        """Bind same-transaction refreshes for direct Atomic Memory authority."""
-        self._projection_hook = hook
-
-    async def _refresh_atomic_memory_projection(self, connection: AsyncConnection, resource: ResourceRef) -> None:
-        if resource.family == "atomic-memory" and self._projection_hook is not None:
-            from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
-
-            # Binding writes already own the policy head, matching domain policy -> head locks.
-            await connection.execute(
-                update(ARTIFACT_HEADS_TABLE)
-                .where(
-                    ARTIFACT_HEADS_TABLE.c.scope_id == resource.scope_id,
-                    ARTIFACT_HEADS_TABLE.c.family == "atomic-memory",
-                    ARTIFACT_HEADS_TABLE.c.artifact_id == resource.artifact_id,
-                )
-                .values(revision=ARTIFACT_HEADS_TABLE.c.revision)
-            )
-            await self._projection_hook(connection, resource)
 
     async def _pin_read_snapshot(self, connection: AsyncConnection) -> None:
         """Open the read transaction for this repository's policy snapshot.
@@ -509,7 +486,6 @@ class RelationalAccessRepository:
             established = replace(relation, policy_revision=str(revision))
             try:
                 await connection.execute(insert(ACCESS_OWNERS_TABLE).values(_owner_row(established)))
-                await self._refresh_atomic_memory_projection(connection, established.resource)
             except IntegrityError as error:
                 raise AccessConflictError("artifact-owner") from error
         return established
@@ -633,7 +609,7 @@ class RelationalAccessRepository:
             and connection.engine is not self._database.engine
         ):
             raise AccessUnavailableError("transactional_relationships_unavailable")
-        return RelationalAccessRepository(self._database, connection=connection, projection_hook=self._projection_hook)
+        return RelationalAccessRepository(self._database, connection=connection)
 
     async def decision_snapshot(
         self,
@@ -754,7 +730,6 @@ class RelationalAccessRepository:
                 )
             except IntegrityError as error:
                 raise AccessConflictError("idempotency-key") from error
-            await self._refresh_atomic_memory_projection(connection, created.resource)
         return created
 
     async def revoke_binding(
@@ -815,7 +790,6 @@ class RelationalAccessRepository:
                 payload_hash=payload_hash,
                 result_binding_id=binding_id,
             )
-            await self._refresh_atomic_memory_projection(connection, revoked.resource)
         return revoked
 
     async def replace_binding(
@@ -905,7 +879,6 @@ class RelationalAccessRepository:
                 )
             except IntegrityError as error:
                 raise AccessConflictError("idempotency-key") from error
-            await self._refresh_atomic_memory_projection(connection, created.resource)
         return BindingReplacement(revoked, created)
 
     async def append_audit(self, event: AccessAuditEvent, /) -> AccessAuditEvent:

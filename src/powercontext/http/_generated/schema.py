@@ -37,7 +37,10 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "503": {"$ref": "#/components/responses/Unavailable"},
                 },
                 "x-powercontext-scope-mode": "current",
-                "x-powercontext-access": {"resolver": "atomic_memory_domain_access"},
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
             }
         },
         "/v1/atomic-memory/search": {
@@ -67,7 +70,10 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "503": {"$ref": "#/components/responses/Unavailable"},
                 },
                 "x-powercontext-scope-mode": "current",
-                "x-powercontext-access": {"resolver": "atomic_memory_domain_access"},
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
             }
         },
         "/v1/atomic-memory/merges": {
@@ -695,6 +701,14 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "get": {
                 "tags": ["scopes"],
                 "summary": "Get the default Scope binding target",
+                "description": "A missing default binding returns 404 "
+                "scope_not_found. A persisted default "
+                "binding whose target is missing returns "
+                "409 scope_binding_target_missing with "
+                "details.scope_id; repair the binding or "
+                "restore its target explicitly instead of "
+                "automatically provisioning a "
+                "replacement.",
                 "operationId": "get_default_scope",
                 "responses": {
                     "200": {
@@ -702,6 +716,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScopeDescriptor"}}},
                     },
                     "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
                     "401": {"$ref": "#/components/responses/Unauthorized"},
                     "403": {"$ref": "#/components/responses/Forbidden"},
                     "503": {"$ref": "#/components/responses/Unavailable"},
@@ -768,7 +783,22 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "Scope from the repository, "
                 "branch, directory, or prompt, "
                 "and do not change bindings "
-                "while diagnosing availability.",
+                "while diagnosing availability. "
+                "No resolvable binding, or an "
+                "unknown explicit Scope ID, "
+                "returns 404 scope_not_found. A "
+                "persisted durable or default "
+                "binding whose target is missing "
+                "returns 409 "
+                "scope_binding_target_missing "
+                "with details.scope_id. "
+                "Resolution stops at that "
+                "binding without falling back or "
+                "creating a replacement Scope. "
+                "Operator repair is required; "
+                "clients must not treat this "
+                "conflict as an unprovisioned "
+                "identity.",
                 "operationId": "resolve_scope_binding",
                 "requestBody": {
                     "content": {
@@ -782,6 +812,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ScopeDescriptor"}}},
                     },
                     "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
                     "401": {"$ref": "#/components/responses/Unauthorized"},
                     "403": {"$ref": "#/components/responses/Forbidden"},
                     "503": {"$ref": "#/components/responses/Unavailable"},
@@ -1908,12 +1939,12 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "post": {
                 "tags": ["memory"],
                 "summary": "Search active Atomic Memory through the legacy query input",
-                "description": "Search current active Atomic Memory with "
-                "permission filtering before limits. "
-                "Returns true Atomic ArtifactRefs and "
-                "state versions, never synthetic old "
-                "collection citations. Empty results are "
-                "valid.",
+                "description": "Require Scope read and search current "
+                "active Atomic Memory with content "
+                "filters before limits. Returns true "
+                "Atomic ArtifactRefs and state versions, "
+                "never synthetic old collection "
+                "citations. Empty results are valid.",
                 "operationId": "search_memory",
                 "requestBody": {
                     "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchMemoryRequest"}}},
@@ -1934,7 +1965,10 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "503": {"$ref": "#/components/responses/Unavailable"},
                     "500": {"$ref": "#/components/responses/InternalError"},
                 },
-                "x-powercontext-access": {"resolver": "atomic_memory_domain_access"},
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
                 "x-powercontext-scope-mode": "current",
             }
         },
@@ -2001,24 +2035,26 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "503": {"$ref": "#/components/responses/Unavailable"},
                     "500": {"$ref": "#/components/responses/InternalError"},
                 },
-                "x-powercontext-access": {"resolver": "atomic_memory_domain_access"},
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
                 "x-powercontext-scope-mode": "current",
             }
         },
         "/v1/memory/entries/get": {
             "post": {
                 "tags": ["memory"],
-                "summary": "Read exact legacy history or mapped current Atomic Memory",
-                "description": "Supply exactly one citation or "
-                "target. A citation reads its exact "
-                "frozen historical entry version. A "
-                "legacy target must exist in its "
-                "frozen latest manifest, then maps "
+                "summary": "Read the current Atomic Memory mapped from a legacy target",
+                "description": "A legacy logical target maps "
                 "deterministically to current Atomic "
                 "Memory with current state. Merged "
                 "targets are returned without "
                 "automatically following their "
-                "result.",
+                "result. Exact historical citations "
+                "are unsupported; read exact Atomic "
+                "revisions through the Artifact "
+                "revision endpoint.",
                 "operationId": "get_memory_entry",
                 "requestBody": {
                     "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GetMemoryEntryRequest"}}},
@@ -2121,8 +2157,10 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "summary": "Unsupported continuous legacy collection changes",
                 "description": "Continuous legacy collection changes "
                 "have no Atomic equivalent and return "
-                "operation_not_supported. Exact "
-                "historical references remain readable.",
+                "operation_not_supported. Legacy "
+                "collection history is archived offline; "
+                "read exact Atomic Memory revisions "
+                "through the Artifact API.",
                 "operationId": "list_memory_changes",
                 "requestBody": {
                     "content": {
@@ -2132,7 +2170,11 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 },
                 "responses": {
                     "200": {
-                        "description": "Compact changes through the selected Memory Revision.",
+                        "description": "Reserved legacy "
+                        "response shape; "
+                        "this operation "
+                        "returns "
+                        "operation_not_supported.",
                         "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
                         "content": {
                             "application/json": {"schema": {"$ref": "#/components/schemas/ListMemoryChangesResponse"}}
@@ -5141,12 +5183,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "required": ["changed", "restored", "retired", "undo_merge_results"],
             },
             "LegacyMemoryTarget": {"$ref": "#/components/schemas/MemoryEntryTagTarget"},
-            "GetMemoryEntryResponse": {
-                "oneOf": [
-                    {"$ref": "#/components/schemas/MemoryEntry"},
-                    {"$ref": "#/components/schemas/AtomicMemoryRecord"},
-                ]
-            },
+            "GetMemoryEntryResponse": {"$ref": "#/components/schemas/AtomicMemoryRecord"},
             "AtomicMemoryContentSchema": {"type": "string", "enum": ["powercontext.atomic-memory.v1"]},
             "AtomicMemorySearchMode": {"type": "string", "enum": ["text", "vector", "hybrid"]},
             "AtomicMemoryRestorationOperation": {"type": "string", "enum": ["restore", "undo_merge"]},
@@ -5375,11 +5412,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "content": {"additionalProperties": True, "type": "object"},
                     "sources": {"items": {"$ref": "#/components/schemas/SourceTypeReference"}, "type": "array"},
                     "artifacts": {"items": {"$ref": "#/components/schemas/ArtifactReference"}, "type": "array"},
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "default": [],
-                    },
                     "content_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
                 },
                 "type": "object",
@@ -5694,11 +5726,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "type": "array",
                         "default": [],
                     },
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "default": [],
-                    },
                     "sources": {
                         "items": {"$ref": "#/components/schemas/DreamSourceReference"},
                         "type": "array",
@@ -5716,12 +5743,12 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "type": "object",
                 "required": ["operation", "idempotency_key"],
                 "description": "Select 1-20 exact Experience "
-                "or Memory citations after "
-                "deduplication, with at most "
-                "32 combined references "
+                "or Atomic Memory Artifacts "
+                "after deduplication, with at "
+                "most 32 combined references "
                 "including Sources. Only "
                 "refine_experience accepts "
-                "Memory citations or a "
+                "Atomic Memory Artifacts or a "
                 "target.",
             },
             "DreamBudget": {
@@ -5773,11 +5800,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "type": "array",
                         "default": [],
                     },
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "default": [],
-                    },
                     "sources": {
                         "items": {"$ref": "#/components/schemas/DreamSourceReference"},
                         "type": "array",
@@ -5813,14 +5835,8 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "digest": {"type": "string"},
                     "source": {"$ref": "#/components/schemas/DreamSourceReference", "nullable": True},
                     "artifact": {"$ref": "#/components/schemas/ArtifactReference", "nullable": True},
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "default": [],
-                    },
                     "role": {"$ref": "#/components/schemas/DreamEvidenceRole"},
                     "historical": {"type": "boolean", "default": False},
-                    "current_entry_version_id": {"type": "string", "nullable": True},
                 },
                 "additionalProperties": False,
                 "type": "object",
@@ -5857,6 +5873,33 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "budget": {"$ref": "#/components/schemas/DreamBudget"},
                     "prompt_version": {"type": "string", "default": "powercontext.dream.v1"},
                     "model_config_id": {"type": "string", "nullable": True},
+                    "historical_data": {
+                        "additionalProperties": True,
+                        "type": "object",
+                        "description": "Original "
+                        "request "
+                        "and "
+                        "input "
+                        "manifest "
+                        "of a "
+                        "terminal "
+                        "run "
+                        "migrated "
+                        "from "
+                        "the "
+                        "legacy "
+                        "Memory "
+                        "format. "
+                        "Present "
+                        "only "
+                        "on "
+                        "such "
+                        "runs; "
+                        "never "
+                        "accepted "
+                        "as "
+                        "evidence.",
+                    },
                 },
                 "additionalProperties": False,
                 "type": "object",
@@ -5873,26 +5916,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "ArtifactCandidate": {
                 "properties": {
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "maxItems": 32,
-                        "description": "Exact "
-                        "Memory "
-                        "entry "
-                        "provenance; "
-                        "non-empty "
-                        "only "
-                        "for "
-                        "Experience. "
-                        "Counted "
-                        "toward "
-                        "the "
-                        "combined "
-                        "evidence "
-                        "bound.",
-                        "default": [],
-                    },
                     "permissions": {
                         "$ref": "#/components/schemas/CandidatePermissions",
                         "description": "Current "
@@ -6014,6 +6037,31 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "type": "boolean",
                         "description": "Whether pending Sources can be extracted into Memory.",
                     },
+                    "extraction": {
+                        "$ref": "#/components/schemas/ExtractionStatus",
+                        "description": "Live "
+                        "Memory "
+                        "extraction "
+                        "diagnostics. "
+                        "Null "
+                        "means "
+                        "diagnostics "
+                        "are not "
+                        "supplied "
+                        "by this "
+                        "runtime. "
+                        "This "
+                        "read "
+                        "does "
+                        "not "
+                        "call a "
+                        "model "
+                        "or "
+                        "prove "
+                        "provider "
+                        "connectivity.",
+                        "nullable": True,
+                    },
                     "experience_generation": {
                         "type": "boolean",
                         "description": "Whether the configured model can generate reviewed Experience Candidates.",
@@ -6058,6 +6106,355 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "search_modes",
                     "context_versions",
                 ],
+            },
+            "ExtractionStatus": {
+                "properties": {
+                    "configuration": {
+                        "type": "string",
+                        "enum": ["configured", "unconfigured", "unknown"],
+                        "description": "Whether "
+                        "a "
+                        "local "
+                        "extraction "
+                        "model "
+                        "or "
+                        "custom "
+                        "pipeline "
+                        "is "
+                        "assembled. "
+                        "Configured "
+                        "does "
+                        "not "
+                        "verify "
+                        "credentials "
+                        "or "
+                        "connectivity. "
+                        "Unknown "
+                        "means "
+                        "execution "
+                        "is "
+                        "external "
+                        "and "
+                        "its "
+                        "configuration "
+                        "is "
+                        "not "
+                        "observed.",
+                    },
+                    "background": {"$ref": "#/components/schemas/ExtractionBackground"},
+                    "observation": {"$ref": "#/components/schemas/ExtractionObservation"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["configuration", "background", "observation"],
+            },
+            "ExtractionBackground": {
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "enum": ["local", "external", "none"],
+                        "description": "Placement "
+                        "of "
+                        "the "
+                        "Memory "
+                        "Supervisor. "
+                        "None "
+                        "means "
+                        "no "
+                        "background "
+                        "executor; "
+                        "synchronous "
+                        "flush "
+                        "may "
+                        "still "
+                        "work.",
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": ["leader", "standby"],
+                        "description": "Current "
+                        "local "
+                        "Supervisor "
+                        "leadership "
+                        "role. "
+                        "Standby "
+                        "is "
+                        "normal; "
+                        "null "
+                        "means "
+                        "no "
+                        "running "
+                        "local "
+                        "Supervisor.",
+                        "nullable": True,
+                    },
+                    "state": {
+                        "type": "string",
+                        "enum": ["running", "degraded", "stopped", "unknown"],
+                        "description": "Local "
+                        "Supervisor "
+                        "lifecycle "
+                        "and "
+                        "control "
+                        "state, "
+                        "independent "
+                        "of "
+                        "individual "
+                        "worker "
+                        "outcomes. "
+                        "A "
+                        "running "
+                        "Supervisor "
+                        "may "
+                        "be "
+                        "retrying "
+                        "failed "
+                        "workers. "
+                        "External "
+                        "state "
+                        "is "
+                        "unknown.",
+                    },
+                    "automatic_processing_enabled": {
+                        "type": "boolean",
+                        "description": "Whether "
+                        "this "
+                        "process "
+                        "schedules "
+                        "automatic "
+                        "Memory "
+                        "extraction. "
+                        "False "
+                        "still "
+                        "permits "
+                        "explicit "
+                        "flush "
+                        "and "
+                        "recovery "
+                        "of "
+                        "accepted "
+                        "work. "
+                        "Null "
+                        "means "
+                        "the "
+                        "external "
+                        "worker "
+                        "schedule "
+                        "is "
+                        "unknown.",
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["location", "state"],
+            },
+            "ExtractionObservation": {
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["unverified", "observed"],
+                        "description": "Unverified "
+                        "means "
+                        "no "
+                        "execution "
+                        "outcome "
+                        "or "
+                        "control "
+                        "failure "
+                        "has "
+                        "been "
+                        "observed "
+                        "in "
+                        "this "
+                        "window. "
+                        "Observed "
+                        "means "
+                        "at "
+                        "least "
+                        "one "
+                        "success "
+                        "or "
+                        "failure "
+                        "is "
+                        "recorded; "
+                        "neither "
+                        "value "
+                        "is "
+                        "a "
+                        "health "
+                        "verdict.",
+                    },
+                    "since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "UTC "
+                        "start "
+                        "of "
+                        "this "
+                        "Runtime's "
+                        "observation "
+                        "window. "
+                        "Records "
+                        "cover "
+                        "this "
+                        "process "
+                        "and "
+                        "its "
+                        "child "
+                        "Memory "
+                        "workers, "
+                        "reset "
+                        "on "
+                        "Runtime "
+                        "restart, "
+                        "and "
+                        "do "
+                        "not "
+                        "include "
+                        "remote "
+                        "workers "
+                        "or "
+                        "a "
+                        "durable "
+                        "per-Scope "
+                        "failure "
+                        "history.",
+                    },
+                    "last_failure": {
+                        "$ref": "#/components/schemas/ExtractionFailure",
+                        "description": "Most "
+                        "recent "
+                        "historical "
+                        "failure. "
+                        "Retained "
+                        "after "
+                        "subsequent "
+                        "success, "
+                        "possibly "
+                        "in "
+                        "another "
+                        "Scope. "
+                        "This "
+                        "is "
+                        "not "
+                        "an "
+                        "unresolved-incident "
+                        "indicator; "
+                        "null "
+                        "does "
+                        "not "
+                        "prove "
+                        "health.",
+                        "nullable": True,
+                    },
+                    "last_success_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "UTC "
+                        "time "
+                        "of "
+                        "the "
+                        "most "
+                        "recent "
+                        "local "
+                        "successful "
+                        "nonempty "
+                        "synchronous "
+                        "flush "
+                        "or "
+                        "acknowledged "
+                        "Memory "
+                        "worker "
+                        "invocation. "
+                        "This "
+                        "does "
+                        "not "
+                        "prove "
+                        "that "
+                        "a "
+                        "model "
+                        "was "
+                        "called "
+                        "or "
+                        "that "
+                        "any "
+                        "previous "
+                        "failure "
+                        "has "
+                        "recovered.",
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["status", "since"],
+            },
+            "ExtractionFailure": {
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Sanitized "
+                        "category: "
+                        "model_configuration_error, "
+                        "model_timeout, "
+                        "model_unavailable, "
+                        "invalid_model_output, "
+                        "worker_timeout, "
+                        "worker_crash, "
+                        "invalid_worker_result, "
+                        "missing_durable_acknowledgement, "
+                        "supervisor_failed, "
+                        "lease_renewal_failed, "
+                        "scope_discovery_failed, "
+                        "or "
+                        "processing_failed. "
+                        "Raw "
+                        "exception "
+                        "messages, "
+                        "model "
+                        "inputs, "
+                        "and "
+                        "credentials "
+                        "are "
+                        "never "
+                        "returned.",
+                    },
+                    "stage": {
+                        "type": "string",
+                        "enum": ["inference", "flush", "worker", "supervisor", "lease_renewal", "scope_discovery"],
+                        "description": "Inference "
+                        "for "
+                        "recognized "
+                        "model "
+                        "failures; "
+                        "otherwise "
+                        "the "
+                        "boundary "
+                        "where "
+                        "failure "
+                        "was "
+                        "observed. "
+                        "Flush "
+                        "or "
+                        "worker "
+                        "does "
+                        "not "
+                        "identify "
+                        "the "
+                        "failing "
+                        "internal "
+                        "component.",
+                    },
+                    "occurred_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "UTC time when this process observed the failure.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["code", "stage", "occurred_at"],
             },
             "FamilyCount": {
                 "properties": {
@@ -6896,14 +7293,12 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "oneOf": [
                     {"$ref": "#/components/schemas/HandoffSourceCitation"},
                     {"$ref": "#/components/schemas/HandoffArtifactCitation"},
-                    {"$ref": "#/components/schemas/HandoffMemoryCitation"},
                 ],
                 "discriminator": {
                     "propertyName": "kind",
                     "mapping": {
                         "source": "#/components/schemas/HandoffSourceCitation",
                         "artifact": "#/components/schemas/HandoffArtifactCitation",
-                        "memory": "#/components/schemas/HandoffMemoryCitation",
                     },
                 },
             },
@@ -6966,15 +7361,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["claim", "state_index", "status", "unavailable_evidence"],
-            },
-            "HandoffMemoryCitation": {
-                "properties": {
-                    "kind": {"type": "string", "enum": ["memory"]},
-                    "memory_citation": {"$ref": "#/components/schemas/MemoryCitation"},
-                },
-                "additionalProperties": False,
-                "type": "object",
-                "required": ["kind", "memory_citation"],
             },
             "HandoffOmission": {
                 "properties": {
@@ -7151,26 +7537,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "ExperienceArtifact": {
                 "properties": {
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "maxItems": 32,
-                        "description": "Exact "
-                        "Memory "
-                        "entry "
-                        "provenance; "
-                        "non-empty "
-                        "only "
-                        "for "
-                        "Experience. "
-                        "Counted "
-                        "toward "
-                        "the "
-                        "combined "
-                        "evidence "
-                        "bound.",
-                        "default": [],
-                    },
                     "artifact": {"$ref": "#/components/schemas/ArtifactReference"},
                     "content": {"$ref": "#/components/schemas/ExperienceProposal"},
                     "source_refs": {"items": {"$ref": "#/components/schemas/SourceReference"}, "type": "array"},
@@ -7268,26 +7634,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "SkillArtifact": {
                 "properties": {
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "maxItems": 32,
-                        "description": "Exact "
-                        "Memory "
-                        "entry "
-                        "provenance; "
-                        "non-empty "
-                        "only "
-                        "for "
-                        "Experience. "
-                        "Counted "
-                        "toward "
-                        "the "
-                        "combined "
-                        "evidence "
-                        "bound.",
-                        "default": [],
-                    },
                     "artifact": {"$ref": "#/components/schemas/ArtifactReference"},
                     "content": {"$ref": "#/components/schemas/SkillProposal"},
                     "source_refs": {"items": {"$ref": "#/components/schemas/SourceReference"}, "type": "array"},
@@ -8111,16 +8457,32 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "oneOf": [{"required": ["citation"]}, {"required": ["target"]}],
                 "properties": {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
-                    "citation": {"$ref": "#/components/schemas/MemoryCitation"},
+                    "citation": {
+                        "type": "object",
+                        "description": "Legacy "
+                        "exact "
+                        "Memory "
+                        "entry "
+                        "citation. "
+                        "Requests "
+                        "that "
+                        "supply "
+                        "it "
+                        "are "
+                        "rejected "
+                        "as "
+                        "unsupported.",
+                    },
                     "target": {"$ref": "#/components/schemas/LegacyMemoryTarget"},
                 },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["scope_id"],
-                "description": "Supply exactly one exact "
-                "historical citation or a "
-                "legacy logical target mapped "
-                "to current Atomic Memory.",
+                "description": "Supply a legacy logical "
+                "target mapped to current "
+                "Atomic Memory. A supplied "
+                "citation is rejected as "
+                "unsupported.",
                 "x-powercontext-exclusive-fields": ["citation", "target"],
             },
             "GetTopicMemoryRequest": {
@@ -8271,20 +8633,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "type": "object",
                 "required": ["scope_id"],
             },
-            "MemoryEntry": {
-                "properties": {
-                    "citation": {"$ref": "#/components/schemas/MemoryCitation"},
-                    "version": {"type": "integer", "minimum": 1.0},
-                    "kind": {"type": "string"},
-                    "text": {"type": "string"},
-                    "state": {"$ref": "#/components/schemas/MemoryEntryState"},
-                    "source_refs": {"items": {"$ref": "#/components/schemas/SourceReference"}, "type": "array"},
-                    "artifact_refs": {"items": {"$ref": "#/components/schemas/ArtifactReference"}, "type": "array"},
-                },
-                "additionalProperties": False,
-                "type": "object",
-                "required": ["citation", "version", "kind", "text", "state", "source_refs", "artifact_refs"],
-            },
             "MemoryMutationResponse": {
                 "properties": {
                     "changed": {"type": "boolean"},
@@ -8293,21 +8641,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["changed", "records"],
-            },
-            "MemoryCitation": {
-                "properties": {
-                    "memory_ref": {"$ref": "#/components/schemas/ArtifactReference"},
-                    "entry_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
-                    "entry_version_id": {
-                        "type": "string",
-                        "maxLength": 128,
-                        "minLength": 1,
-                        "pattern": "^[\\x21-\\x7E]+$",
-                    },
-                },
-                "additionalProperties": False,
-                "type": "object",
-                "required": ["memory_ref", "entry_id", "entry_version_id"],
             },
             "MemoryRevisionChanges": {
                 "properties": {
@@ -8749,26 +9082,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "ContextAssemblyMetadata": {"type": "string", "enum": ["confidence", "recall_rank"]},
             "ProposeExperienceRequest": {
                 "properties": {
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "maxItems": 32,
-                        "description": "Exact "
-                        "Memory "
-                        "entry "
-                        "provenance; "
-                        "non-empty "
-                        "only "
-                        "for "
-                        "Experience. "
-                        "Counted "
-                        "toward "
-                        "the "
-                        "combined "
-                        "evidence "
-                        "bound.",
-                        "default": [],
-                    },
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "proposal": {"$ref": "#/components/schemas/ExperienceProposal"},
                     "source_refs": {
@@ -8998,7 +9311,22 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "RetireMemoryEntryRequest": {
                 "properties": {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
-                    "citation": {"$ref": "#/components/schemas/MemoryCitation"},
+                    "citation": {
+                        "type": "object",
+                        "description": "Legacy "
+                        "exact "
+                        "Memory "
+                        "entry "
+                        "citation. "
+                        "Requests "
+                        "that "
+                        "supply "
+                        "it "
+                        "are "
+                        "rejected "
+                        "as "
+                        "unsupported.",
+                    },
                     "reason": {"type": "string", "maxLength": 512, "nullable": True},
                 },
                 "additionalProperties": False,
@@ -9018,32 +9346,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "ReviseArtifactCandidateRequest": {
                 "properties": {
-                    "memory_citations": {
-                        "items": {"$ref": "#/components/schemas/MemoryCitation"},
-                        "type": "array",
-                        "maxItems": 32,
-                        "description": "Omission "
-                        "or "
-                        "null "
-                        "retains "
-                        "the "
-                        "current "
-                        "citations; "
-                        "an "
-                        "explicit "
-                        "array "
-                        "replaces "
-                        "them, "
-                        "including "
-                        "an "
-                        "empty "
-                        "array. "
-                        "Non-empty "
-                        "only "
-                        "for "
-                        "Experience.",
-                        "nullable": True,
-                    },
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "candidate_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
                     "expected_version": {"type": "integer", "minimum": 1.0},
@@ -9107,7 +9409,22 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "ReviseMemoryEntryRequest": {
                 "properties": {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
-                    "citation": {"$ref": "#/components/schemas/MemoryCitation"},
+                    "citation": {
+                        "type": "object",
+                        "description": "Legacy "
+                        "exact "
+                        "Memory "
+                        "entry "
+                        "citation. "
+                        "Requests "
+                        "that "
+                        "supply "
+                        "it "
+                        "are "
+                        "rejected "
+                        "as "
+                        "unsupported.",
+                    },
                     "kind": {"type": "string", "maxLength": 128, "minLength": 1},
                     "text": {
                         "type": "string",
@@ -9119,17 +9436,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["scope_id", "citation", "kind", "text"],
-            },
-            "SearchMemoryHit": {
-                "properties": {
-                    "citation": {"$ref": "#/components/schemas/MemoryCitation"},
-                    "text": {"type": "string"},
-                    "score": {"type": "number", "maximum": 1.0, "minimum": 0.0},
-                    "matched_by": {"items": {"$ref": "#/components/schemas/MemoryMatchedBy"}, "type": "array"},
-                },
-                "additionalProperties": False,
-                "type": "object",
-                "required": ["citation", "text", "score", "matched_by"],
             },
             "SearchTopicMemoryHit": {
                 "properties": {
@@ -9691,12 +9997,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "mutation "
                         "precondition.",
                     },
-                    "reference": {
-                        "oneOf": [
-                            {"$ref": "#/components/schemas/ArtifactReference"},
-                            {"$ref": "#/components/schemas/MemoryCitation"},
-                        ]
-                    },
+                    "reference": {"$ref": "#/components/schemas/ArtifactReference"},
                 },
                 "additionalProperties": False,
                 "type": "object",
@@ -10145,8 +10446,6 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "enum": ["topic_fts", "topic_vector", "detail_fts", "detail_vector"],
             },
             "TopicMemoryUsedSearchMode": {"type": "string", "enum": ["fts", "hybrid"]},
-            "MemoryEntryState": {"type": "string", "enum": ["active", "inactive"]},
-            "MemoryMatchedBy": {"type": "string", "enum": ["fts", "vector"]},
             "MemorySearchMode": {"type": "string", "enum": ["auto", "fts", "vector", "hybrid"]},
             "MemoryUsedSearchMode": {"type": "string", "enum": ["fts", "vector", "hybrid"]},
             "HandoffClaim": {"type": "string", "enum": ["state", "next_action"]},

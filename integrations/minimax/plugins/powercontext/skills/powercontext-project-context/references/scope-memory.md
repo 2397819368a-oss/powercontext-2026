@@ -16,8 +16,9 @@ Use `create_scope` only when the user needs a separate boundary for work results
   Default to active memories. Include forgotten, merged, or retired memories only for an explicit audit.
 - Use `get_artifact_revision` with the exact `atomic-memory` ArtifactRef to inspect immutable content and lineage.
   Use `get_artifact` for current content and `get_atomic_memory_state` for current lifecycle state.
-- `get_memory_entry` reads retained legacy history using a complete old citation, or resolves a migrated logical target.
-  Never manufacture a legacy citation from a new ArtifactRef.
+- `get_memory_entry` only adapts a legacy `target` with `type: "memory_entry"`, `family: "memory"`,
+  the collection's `artifact_id`, and `entry_id` to the migrated Atomic's current content.
+  Legacy citations and collection history are unsupported. Use `get_artifact_revision` with an Atomic ArtifactRef for exact history.
 
 Use `search_topic_memory` and `get_topic_memory` for Topic Memory. Preserve empty search results; an empty result
 does not authorize a Scope change or full inventory. Check the actual tool catalog before calling any operation.

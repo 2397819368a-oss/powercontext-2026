@@ -60,12 +60,10 @@ from powercontext.errors import RevisionConflictError
 from powercontext.sources import SourceRef
 
 
-class AtomicMemorySecurity(Protocol):
-    """Explicit policy shared by HTTP and background callers; none is implicit."""
+class AtomicMemoryAuthorization(Protocol):
+    """Shared access decisions applied inside the caller's business transaction."""
 
     def subject(self, context: Any) -> str: ...
-
-    async def lock_transaction(self, connection: AsyncConnection, scope_id: str, context: Any) -> None: ...
 
     async def authorize(
         self,
@@ -96,7 +94,6 @@ class AtomicMemoryProjections(Protocol):
         scope_id: str,
         record: AtomicMemoryRecord,
         prepared: PreparedAtomicMemoryProjection,
-        execution_context: Any,
     ) -> None: ...
 
     async def remove(self, connection: AsyncConnection, scope_id: str, artifact_id: str) -> None: ...
@@ -118,7 +115,7 @@ class AtomicMemoryService:
         *,
         artifacts: ArtifactRepository,
         states: AtomicMemoryStateRepository,
-        security: AtomicMemorySecurity,
+        security: AtomicMemoryAuthorization,
         projections: AtomicMemoryProjections,
         merge_tags: MergeTags,
         preview_signer: AtomicMemoryPreviewSigner | None = None,
@@ -402,7 +399,6 @@ class AtomicMemoryService:
     ) -> None:
         """Allow no-op processing plans to protect their actual decision dependencies."""
 
-        await self.security.lock_transaction(connection, scope_id, context)
         await self.artifacts.lock_heads(connection, scope_id, tuple(read.ref for read in reads))
         await self._check_dependencies(connection, scope_id, reads, context, for_update=True)
 
@@ -439,7 +435,6 @@ class AtomicMemoryService:
             for _, projection in item.projections:
                 self.projections.validate_prepared(projection)
         reads = _unique_reads((*read_set, *(read for plan in plans for read in plan.reads)))
-        await self.security.lock_transaction(connection, scope_id, context)
         await self.artifacts.lock_heads(connection, scope_id, tuple(read.ref for read in reads))
         for plan in plans:
             await self._validate_preview(connection, plan, context)
@@ -574,7 +569,7 @@ class AtomicMemoryService:
         if state.state is AtomicMemoryStateValue.ACTIVE:
             if projection is None:
                 raise AtomicMemoryRelationError("active publication requires a prepared projection")  # noqa: TRY003
-            await self.projections.publish(connection, scope_id, record, projection, context)
+            await self.projections.publish(connection, scope_id, record, projection)
         else:
             await self.projections.remove(connection, scope_id, write.artifact_id)
         return record
@@ -621,7 +616,7 @@ class AtomicMemoryService:
     @staticmethod
     def _draft(content: AtomicMemoryContent, lineage: ArtifactLineage | None) -> AtomicMemoryDraft:
         evidence = lineage or ArtifactLineage()
-        if evidence.memory_citations or evidence.publication_source is not None:
+        if evidence.publication_source is not None:
             raise AtomicMemoryRelationError("Atomic Memory accepts direct Sources and exact in-Scope Artifacts")  # noqa: TRY003
         try:
             text = normalize_text(content.text)

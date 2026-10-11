@@ -467,6 +467,17 @@ class ListDreamRunsRequest(BaseModel):
     limit: Annotated[StrictInt, Field(ge=1, le=100)] = 20
 
 
+class CreateDreamRunRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    operation: DreamOperation
+    artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
+    sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
+    target: ArtifactReference | None = None
+    idempotency_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^\\S(?:[\\s\\S]*\\S)?$")]
+
+
 class DreamBudget(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -506,6 +517,19 @@ class DreamEvidenceEdge(BaseModel):
     upstream_id: StrictStr
 
 
+class DreamEvidenceNode(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    evidence_id: StrictStr
+    kind: DreamEvidenceKind
+    digest: StrictStr
+    source: DreamSourceReference | None = None
+    artifact: ArtifactReference | None = None
+    role: DreamEvidenceRole
+    historical: StrictBool = False
+
+
 class DreamRootEvidenceGroup(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -522,6 +546,93 @@ class ApproveArtifactCandidateRequest(BaseModel):
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     candidate_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
     expected_version: Annotated[StrictInt, Field(ge=1)]
+
+
+class Configuration(StrEnum):
+    CONFIGURED = "configured"
+    UNCONFIGURED = "unconfigured"
+    UNKNOWN = "unknown"
+
+
+class Location(StrEnum):
+    LOCAL = "local"
+    EXTERNAL = "external"
+    NONE = "none"
+
+
+class Role(StrEnum):
+    LEADER = "leader"
+    STANDBY = "standby"
+
+
+class State(StrEnum):
+    RUNNING = "running"
+    DEGRADED = "degraded"
+    STOPPED = "stopped"
+    UNKNOWN = "unknown"
+
+
+class ExtractionBackground(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    location: Annotated[
+        Location,
+        Field(
+            description="Placement of the Memory Supervisor. None means no background executor; synchronous flush may still work."
+        ),
+    ]
+    role: Annotated[
+        Role | None,
+        Field(
+            description="Current local Supervisor leadership role. Standby is normal; null means no running local Supervisor."
+        ),
+    ] = None
+    state: Annotated[
+        State,
+        Field(
+            description="Local Supervisor lifecycle and control state, independent of individual worker outcomes. A running Supervisor may be retrying failed workers. External state is unknown."
+        ),
+    ]
+    automatic_processing_enabled: Annotated[
+        StrictBool | None,
+        Field(
+            description="Whether this process schedules automatic Memory extraction. False still permits explicit flush and recovery of accepted work. Null means the external worker schedule is unknown."
+        ),
+    ] = None
+
+
+class Status1(StrEnum):
+    UNVERIFIED = "unverified"
+    OBSERVED = "observed"
+
+
+class Stage(StrEnum):
+    INFERENCE = "inference"
+    FLUSH = "flush"
+    WORKER = "worker"
+    SUPERVISOR = "supervisor"
+    LEASE_RENEWAL = "lease_renewal"
+    SCOPE_DISCOVERY = "scope_discovery"
+
+
+class ExtractionFailure(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    code: Annotated[
+        StrictStr,
+        Field(
+            description="Sanitized category: model_configuration_error, model_timeout, model_unavailable, invalid_model_output, worker_timeout, worker_crash, invalid_worker_result, missing_durable_acknowledgement, supervisor_failed, lease_renewal_failed, scope_discovery_failed, or processing_failed. Raw exception messages, model inputs, and credentials are never returned."
+        ),
+    ]
+    stage: Annotated[
+        Stage,
+        Field(
+            description="Inference for recognized model failures; otherwise the boundary where failure was observed. Flush or worker does not identify the failing internal component."
+        ),
+    ]
+    occurred_at: Annotated[AwareDatetime, Field(description="UTC time when this process observed the failure.")]
 
 
 class FamilyCount(BaseModel):
@@ -891,15 +1002,11 @@ class HandoffArtifactCitation(BaseModel):
     artifact_ref: ArtifactReference
 
 
-class Kind1(StrEnum):
-    MEMORY = "memory"
-
-
 class Trust3(StrEnum):
     UNTRUSTED_HISTORY = "untrusted_history"
 
 
-class Kind2(StrEnum):
+class Kind1(StrEnum):
     SOURCE = "source"
 
 
@@ -1509,16 +1616,7 @@ class ListExternalSkillsRequest(BaseModel):
     include_unavailable: StrictBool = False
 
 
-class MemoryCitation(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    memory_ref: ArtifactReference
-    entry_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
-    entry_version_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
-
-
-class Kind3(StrEnum):
+class Kind2(StrEnum):
     CHANGES = "changes"
 
 
@@ -1529,7 +1627,7 @@ class CodeChangesOperation(BaseModel):
     kind: Literal["changes"]
 
 
-class Kind4(StrEnum):
+class Kind3(StrEnum):
     MAP = "map"
 
 
@@ -1550,7 +1648,7 @@ class CodeMapOperation(BaseModel):
         return self
 
 
-class Kind5(StrEnum):
+class Kind4(StrEnum):
     READ = "read"
 
 
@@ -1572,7 +1670,7 @@ class CodeReadOperation(BaseModel):
         return self
 
 
-class Kind6(StrEnum):
+class Kind5(StrEnum):
     CALLERS = "callers"
     CALLEES = "callees"
     IMPACT = "impact"
@@ -1596,7 +1694,7 @@ class CodeRelationOperation(BaseModel):
         return self
 
 
-class Kind7(StrEnum):
+class Kind6(StrEnum):
     SYMBOLS = "symbols"
     EXPLORE = "explore"
 
@@ -1618,7 +1716,7 @@ class CodeSearchOperation(BaseModel):
         return self
 
 
-class Kind8(StrEnum):
+class Kind7(StrEnum):
     STATUS = "status"
 
 
@@ -1629,7 +1727,7 @@ class CodeStatusOperation(BaseModel):
     kind: Literal["status"]
 
 
-class Kind9(StrEnum):
+class Kind8(StrEnum):
     AFFECTED_TESTS = "affected_tests"
     IMPACT_CHANGES = "impact_changes"
 
@@ -1689,7 +1787,7 @@ class GitObjectFormat(StrEnum):
     SHA256 = "sha256"
 
 
-class Status1(StrEnum):
+class Status2(StrEnum):
     OK = "ok"
     PARTIAL = "partial"
 
@@ -1707,7 +1805,7 @@ class CodeQueryResult(BaseModel):
     dirty: StrictBool
     checked_at: StrictStr
     operation: StrictStr
-    status: Status1 = Status1.OK
+    status: Status2 = Status2.OK
     items: list[dict[str, Any]] | None = None
     coverage: dict[str, Any] | None = None
     limitations: list[StrictStr] | None = None
@@ -1717,7 +1815,7 @@ class Schema5(StrEnum):
     POWERCONTEXT_CODE_STATUS_V1 = "powercontext.code-status.v1"
 
 
-class Status2(StrEnum):
+class Status3(StrEnum):
     DISABLED = "disabled"
     MISSING = "missing"
     BUILDING = "building"
@@ -1738,7 +1836,7 @@ class CodeStatus(BaseModel):
     )
     schema_: Annotated[Schema5, Field(alias="schema")] = Schema5.POWERCONTEXT_CODE_STATUS_V1
     scope_id: StrictStr
-    status: Status2
+    status: Status3
     freshness: Freshness = Freshness.UNKNOWN
     fingerprint: Annotated[StrictStr | None, Field(pattern="^[0-9a-f]{64}$")] = None
     engine: StrictStr = "powercontext-native-v1"
@@ -1813,7 +1911,10 @@ class RetireMemoryEntryRequest(BaseModel):
         extra="forbid",
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    citation: MemoryCitation
+    citation: Annotated[
+        dict[str, Any],
+        Field(description="Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."),
+    ]
     reason: Annotated[StrictStr | None, Field(max_length=512)] = None
 
 
@@ -1832,7 +1933,10 @@ class ReviseMemoryEntryRequest(BaseModel):
         extra="forbid",
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    citation: MemoryCitation
+    citation: Annotated[
+        dict[str, Any],
+        Field(description="Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."),
+    ]
     kind: Annotated[StrictStr, Field(max_length=128, min_length=1)]
     text: Annotated[StrictStr, Field(description="Must not exceed 8192 UTF-8 bytes after normalization.", min_length=1)]
     reason: Annotated[StrictStr | None, Field(max_length=512)] = None
@@ -2256,7 +2360,7 @@ class TaggedTarget(BaseModel):
             pattern="^sha256:[0-9a-f]{64}$",
         ),
     ]
-    reference: ArtifactReference | MemoryCitation
+    reference: ArtifactReference
 
 
 class ArtifactTagPage(BaseModel):
@@ -2347,7 +2451,7 @@ class PromptDemonstration(BaseModel):
     expected_output: Annotated[Any, Field(description="Desired JSON output matching the registered Prompt Definition.")]
 
 
-class Status3(StrEnum):
+class Status4(StrEnum):
     SUPPORTED = "supported"
     DISABLED = "disabled"
     UNSUPPORTED = "unsupported"
@@ -2376,7 +2480,7 @@ class PromptCapability(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    status: Status3
+    status: Status4
     reason: Annotated[Reason | None, Field(...)]
     definition_version: StrictStr
     builtin_version: StrictStr
@@ -2429,7 +2533,7 @@ class PromptConfiguration(BaseModel):
     )
     scope_id: StrictStr
     prompt_key: PromptKey
-    status: Status3
+    status: Status4
     reason: Annotated[Reason1 | None, Field(...)]
     mode: Mode3
     artifact: Annotated[ArtifactReference | None, Field(...)]
@@ -2599,16 +2703,6 @@ class TopicMemoryMatchedBy(StrEnum):
 class TopicMemoryUsedSearchMode(StrEnum):
     FTS = "fts"
     HYBRID = "hybrid"
-
-
-class MemoryEntryState(StrEnum):
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-
-
-class MemoryMatchedBy(StrEnum):
-    FTS = "fts"
-    VECTOR = "vector"
 
 
 class MemorySearchMode(StrEnum):
@@ -3241,6 +3335,10 @@ class LegacyMemoryTarget(RootModel[MemoryEntryTagTarget]):
     root: MemoryEntryTagTarget
 
 
+class GetMemoryEntryResponse(RootModel[AtomicMemoryRecord]):
+    root: AtomicMemoryRecord
+
+
 class FlushProfileResponse(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -3302,7 +3400,6 @@ class ArtifactRevision(BaseModel):
     content: dict[str, Any]
     sources: list[SourceTypeReference]
     artifacts: list[ArtifactReference]
-    memory_citations: Annotated[list[MemoryCitation], Field(validate_default=True)] = []
     content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
 
 
@@ -3314,59 +3411,87 @@ class HandoffReceiptIdentity(BaseModel):
     receiver_identity_matches: StrictBool
 
 
-class CreateDreamRunRequest(BaseModel):
+class DreamInputManifest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    operation: DreamOperation
+    transform_version: StrictStr = "powercontext.dream.evidence.v1"
     artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
-    memory_citations: Annotated[list[MemoryCitation], Field(validate_default=True)] = []
     sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
+    nodes: Annotated[list[DreamEvidenceNode], Field(validate_default=True)] = []
+    edges: Annotated[list[DreamEvidenceEdge], Field(validate_default=True)] = []
+    root_groups: Annotated[list[DreamRootEvidenceGroup], Field(validate_default=True)] = []
+    projection_digest: StrictStr
+    projection_bytes: StrictInt
+    incomplete: StrictBool = False
+
+
+class DreamRun(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: StrictStr
+    run_id: StrictStr
+    operation: DreamOperation
+    status: DreamStatus = DreamStatus.QUEUED
+    outcome: DreamOutcome | None = None
     target: ArtifactReference | None = None
-    idempotency_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^\\S(?:[\\s\\S]*\\S)?$")]
+    candidate: DreamCandidateRef | None = None
+    reason: StrictStr | None = None
+    error: StrictStr | None = None
+    accepted_at: AwareDatetime
+    started_at: AwareDatetime | None = None
+    completed_at: AwareDatetime | None = None
+    attempt_count: StrictInt = 0
+    input_manifest: DreamInputManifest | None = None
+    usage: DreamUsage | None = None
+    budget: DreamBudget | None = None
+    prompt_version: StrictStr = "powercontext.dream.v1"
+    model_config_id: Annotated[StrictStr | None, Field(...)]
+    historical_data: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description="Original request and input manifest of a terminal run migrated from the legacy Memory format. Present only on such runs; never accepted as evidence."
+        ),
+    ] = None
 
 
-class DreamEvidenceNode(BaseModel):
+class DreamRunPage(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    evidence_id: StrictStr
-    kind: DreamEvidenceKind
-    digest: StrictStr
-    source: DreamSourceReference | None = None
-    artifact: ArtifactReference | None = None
-    memory_citations: Annotated[list[MemoryCitation], Field(validate_default=True)] = []
-    role: DreamEvidenceRole
-    historical: StrictBool = False
-    current_entry_version_id: StrictStr | None = None
+    runs: list[DreamRun]
+    next_cursor: StrictStr | None = None
 
 
-class Capabilities(BaseModel):
+class ExtractionObservation(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    prompts: Annotated[dict[str, PromptCapability], Field(validate_default=True)] = {}
-    artifact_dreaming: Annotated[
-        StrictBool, Field(description="Whether asynchronous Artifact Dream execution is configured.")
-    ] = False
-    source_types: list[StrictStr]
-    artifact_families: list[StrictStr]
-    memory_extraction: Annotated[StrictBool, Field(description="Whether pending Sources can be extracted into Memory.")]
-    experience_generation: Annotated[
-        StrictBool, Field(description="Whether the configured model can generate reviewed Experience Candidates.")
-    ] = False
-    managed_skill_generation: Annotated[
-        StrictBool, Field(description="Whether the configured model can generate reviewed managed Skill Candidates.")
-    ] = False
-    external_skill_registry: Annotated[
-        StrictBool,
-        Field(description="Whether host-local external Skill discovery and exact resolution are configured."),
-    ] = False
-    handoff_generation: Annotated[
-        StrictBool, Field(description="Whether exact evidence can be generated into an inspectable Handoff Draft.")
+    status: Annotated[
+        Status1,
+        Field(
+            description="Unverified means no execution outcome or control failure has been observed in this window. Observed means at least one success or failure is recorded; neither value is a health verdict."
+        ),
     ]
-    search_modes: list[MemorySearchMode]
-    context_versions: list[PreparedContextSchema]
+    since: Annotated[
+        AwareDatetime,
+        Field(
+            description="UTC start of this Runtime's observation window. Records cover this process and its child Memory workers, reset on Runtime restart, and do not include remote workers or a durable per-Scope failure history."
+        ),
+    ]
+    last_failure: Annotated[
+        ExtractionFailure | None,
+        Field(
+            description="Most recent historical failure. Retained after subsequent success, possibly in another Scope. This is not an unresolved-incident indicator; null does not prove health."
+        ),
+    ] = None
+    last_success_at: Annotated[
+        AwareDatetime | None,
+        Field(
+            description="UTC time of the most recent local successful nonempty synchronous flush or acknowledged Memory worker invocation. This does not prove that a model was called or that any previous failure has recovered."
+        ),
+    ] = None
 
 
 class CandidateFamilyCount(BaseModel):
@@ -3488,14 +3613,6 @@ class SourceObservationReceipt(BaseModel):
     )
     source: SourceReference
     position: Annotated[StrictInt, Field(ge=1)]
-
-
-class HandoffMemoryCitation(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    kind: Literal["memory"]
-    memory_citation: MemoryCitation
 
 
 class HandoffSourceCitation(BaseModel):
@@ -3684,7 +3801,10 @@ class GetMemoryEntryRequest(BaseModel):
         extra="forbid",
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    citation: MemoryCitation | None = None
+    citation: Annotated[
+        dict[str, Any] | None,
+        Field(description="Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."),
+    ] = None
     target: LegacyMemoryTarget | None = None
 
     @model_validator(mode="after")
@@ -3748,19 +3868,6 @@ class ListArtifactCandidatesRequest(BaseModel):
     limit: Annotated[StrictInt, Field(ge=1, le=100)] = 50
 
 
-class MemoryEntry(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    citation: MemoryCitation
-    version: Annotated[StrictInt, Field(ge=1)]
-    kind: StrictStr
-    text: StrictStr
-    state: MemoryEntryState
-    source_refs: list[SourceReference]
-    artifact_refs: list[ArtifactReference]
-
-
 class MemoryMutationResponse(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -3815,14 +3922,6 @@ class ProposeExperienceRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation],
-        Field(
-            description="Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            max_length=32,
-            validate_default=True,
-        ),
-    ] = []
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     proposal: ExperienceProposal
     source_refs: Annotated[
@@ -3844,7 +3943,7 @@ class ProposeExperienceRequest(BaseModel):
 
     @model_validator(mode="after")
     def _reject_excess_candidate_evidence(self):
-        if len(self.source_refs) + len(self.artifact_refs) + len(self.memory_citations or ()) > 32:
+        if len(self.source_refs) + len(self.artifact_refs) > 32:
             raise ValueError(  # noqa: TRY003
                 "source_refs and artifact_refs together must not exceed 32 references"
             )
@@ -3958,13 +4057,6 @@ class ReviseArtifactCandidateRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation] | None,
-        Field(
-            description="Omission or null retains the current citations; an explicit array replaces them, including an empty array. Non-empty only for Experience.",
-            max_length=32,
-        ),
-    ] = None
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     candidate_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
     expected_version: Annotated[StrictInt, Field(ge=1)]
@@ -3988,21 +4080,11 @@ class ReviseArtifactCandidateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _reject_excess_candidate_evidence(self):
-        if len(self.source_refs) + len(self.artifact_refs) + len(self.memory_citations or ()) > 32:
+        if len(self.source_refs) + len(self.artifact_refs) > 32:
             raise ValueError(  # noqa: TRY003
                 "source_refs and artifact_refs together must not exceed 32 references"
             )
         return self
-
-
-class SearchMemoryHit(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    citation: MemoryCitation
-    text: StrictStr
-    score: Annotated[StrictFloat, Field(ge=0.0, le=1.0)]
-    matched_by: list[MemoryMatchedBy]
 
 
 class SearchTopicMemoryHit(BaseModel):
@@ -4167,10 +4249,6 @@ class ListAccessAuditRequest(BaseModel):
     limit: Annotated[StrictInt, Field(ge=1, le=500)] = 100
 
 
-class GetMemoryEntryResponse(RootModel[MemoryEntry | AtomicMemoryRecord]):
-    root: MemoryEntry | AtomicMemoryRecord
-
-
 class CreateSubjectSourceResponse(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -4181,66 +4259,10 @@ class CreateSubjectSourceResponse(BaseModel):
     sources: Annotated[list[SourceRecord], Field(max_length=2, min_length=2)]
 
 
-class DreamInputManifest(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    transform_version: StrictStr = "powercontext.dream.evidence.v1"
-    artifacts: Annotated[list[ArtifactReference], Field(validate_default=True)] = []
-    memory_citations: Annotated[list[MemoryCitation], Field(validate_default=True)] = []
-    sources: Annotated[list[DreamSourceReference], Field(validate_default=True)] = []
-    nodes: Annotated[list[DreamEvidenceNode], Field(validate_default=True)] = []
-    edges: Annotated[list[DreamEvidenceEdge], Field(validate_default=True)] = []
-    root_groups: Annotated[list[DreamRootEvidenceGroup], Field(validate_default=True)] = []
-    projection_digest: StrictStr
-    projection_bytes: StrictInt
-    incomplete: StrictBool = False
-
-
-class DreamRun(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    scope_id: StrictStr
-    run_id: StrictStr
-    operation: DreamOperation
-    status: DreamStatus = DreamStatus.QUEUED
-    outcome: DreamOutcome | None = None
-    target: ArtifactReference | None = None
-    candidate: DreamCandidateRef | None = None
-    reason: StrictStr | None = None
-    error: StrictStr | None = None
-    accepted_at: AwareDatetime
-    started_at: AwareDatetime | None = None
-    completed_at: AwareDatetime | None = None
-    attempt_count: StrictInt = 0
-    input_manifest: DreamInputManifest | None = None
-    usage: DreamUsage | None = None
-    budget: DreamBudget | None = None
-    prompt_version: StrictStr = "powercontext.dream.v1"
-    model_config_id: Annotated[StrictStr | None, Field(...)]
-
-
-class DreamRunPage(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    runs: list[DreamRun]
-    next_cursor: StrictStr | None = None
-
-
 class ArtifactCandidate(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation],
-        Field(
-            description="Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            max_length=32,
-            validate_default=True,
-        ),
-    ] = []
     permissions: Annotated[
         CandidatePermissions | None,
         Field(description="Current Principal permissions in enforced mode; advisory and checked again on mutation."),
@@ -4271,7 +4293,7 @@ class ArtifactCandidate(BaseModel):
 
     @model_validator(mode="after")
     def _reject_excess_candidate_evidence(self):
-        if len(self.source_refs) + len(self.artifact_refs) + len(self.memory_citations or ()) > 32:
+        if len(self.source_refs) + len(self.artifact_refs) > 32:
             raise ValueError(  # noqa: TRY003
                 "source_refs and artifact_refs together must not exceed 32 references"
             )
@@ -4286,10 +4308,22 @@ class ArtifactCandidatePage(BaseModel):
     next_cursor: Annotated[StrictStr | None, Field(...)]
 
 
-class HandoffCitation(RootModel[HandoffSourceCitation | HandoffArtifactCitation | HandoffMemoryCitation]):
-    root: Annotated[
-        HandoffSourceCitation | HandoffArtifactCitation | HandoffMemoryCitation, Field(discriminator="kind")
+class ExtractionStatus(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    configuration: Annotated[
+        Configuration,
+        Field(
+            description="Whether a local extraction model or custom pipeline is assembled. Configured does not verify credentials or connectivity. Unknown means execution is external and its configuration is not observed."
+        ),
     ]
+    background: ExtractionBackground
+    observation: ExtractionObservation
+
+
+class HandoffCitation(RootModel[HandoffSourceCitation | HandoffArtifactCitation]):
+    root: Annotated[HandoffSourceCitation | HandoffArtifactCitation, Field(discriminator="kind")]
 
 
 class HandoffEvidenceCheck(BaseModel):
@@ -4332,14 +4366,6 @@ class ExperienceArtifact(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation],
-        Field(
-            description="Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            max_length=32,
-            validate_default=True,
-        ),
-    ] = []
     artifact: ArtifactReference
     content: ExperienceProposal
     source_refs: list[SourceReference]
@@ -4350,14 +4376,6 @@ class SkillArtifact(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    memory_citations: Annotated[
-        list[MemoryCitation],
-        Field(
-            description="Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            max_length=32,
-            validate_default=True,
-        ),
-    ] = []
     artifact: ArtifactReference
     content: SkillProposal
     source_refs: list[SourceReference]
@@ -4452,6 +4470,40 @@ class ActivateHandoffRequest(BaseModel):
     objective: Annotated[StrictStr, Field(max_length=8192, min_length=1, pattern=".*\\S.*")]
     evidence: Annotated[list[HandoffCitation], Field(max_length=32, validate_default=True)] = []
     max_bytes: Annotated[StrictInt, Field(ge=512, le=32768)] = 8000
+
+
+class Capabilities(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    prompts: Annotated[dict[str, PromptCapability], Field(validate_default=True)] = {}
+    artifact_dreaming: Annotated[
+        StrictBool, Field(description="Whether asynchronous Artifact Dream execution is configured.")
+    ] = False
+    source_types: list[StrictStr]
+    artifact_families: list[StrictStr]
+    memory_extraction: Annotated[StrictBool, Field(description="Whether pending Sources can be extracted into Memory.")]
+    extraction: Annotated[
+        ExtractionStatus | None,
+        Field(
+            description="Live Memory extraction diagnostics. Null means diagnostics are not supplied by this runtime. This read does not call a model or prove provider connectivity."
+        ),
+    ] = None
+    experience_generation: Annotated[
+        StrictBool, Field(description="Whether the configured model can generate reviewed Experience Candidates.")
+    ] = False
+    managed_skill_generation: Annotated[
+        StrictBool, Field(description="Whether the configured model can generate reviewed managed Skill Candidates.")
+    ] = False
+    external_skill_registry: Annotated[
+        StrictBool,
+        Field(description="Whether host-local external Skill discovery and exact resolution are configured."),
+    ] = False
+    handoff_generation: Annotated[
+        StrictBool, Field(description="Whether exact evidence can be generated into an inspectable Handoff Draft.")
+    ]
+    search_modes: list[MemorySearchMode]
+    context_versions: list[PreparedContextSchema]
 
 
 class WorkClaim(BaseModel):

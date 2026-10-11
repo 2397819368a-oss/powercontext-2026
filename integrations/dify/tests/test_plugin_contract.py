@@ -160,9 +160,9 @@ def test_atomic_retire_uses_zero_state_version_and_recoverable_forgotten_state(r
     assert result["ok"] is True and result["data"] == receipt
 
 
-@pytest.mark.parametrize("tool", ["pc_memory_revise", "pc_memory_retire"])
-def test_legacy_citations_remain_read_only(registry, transport, tool):
-    calls = transport(lambda _request: pytest.fail("Legacy citation mutations must not reach HTTP"))
+@pytest.mark.parametrize("tool", ["pc_memory_get", "pc_memory_revise", "pc_memory_retire"])
+def test_legacy_citation_input_is_rejected_before_http(registry, transport, tool):
+    calls = transport(lambda _request: pytest.fail("Legacy citation input must not reach HTTP"))
     parameters = {
         "citation": json.dumps(
             {
@@ -233,7 +233,7 @@ def test_workflow_results_expose_context_references_and_complete_handoffs(regist
     content.validate("已保留的上下文")
     content.validate(None)
     memory = loaded["pc_memory_get"][0].output_schema["properties"]["result"]
-    assert {"memory_ref", "entry_id", "entry_version_id"} <= memory["properties"]["citation"]["properties"].keys()
+    assert {"artifact_id", "revision", "content", "etag"} <= memory["properties"].keys()
     draft = loaded["pc_handoff_prepare"][0].output_schema["properties"]["result"]
     assert {"objective", "state", "disposition", "next_action", "omissions"} <= draft["properties"].keys()
     prepared = loaded["pc_handoff_finalize"][0].output_schema["properties"]["result"]
@@ -432,7 +432,7 @@ def test_combined_generation_reference_budget_is_enforced(registry, transport):
         "pc_experience_generate",
         {
             "source_refs": json.dumps([ref] * 17),
-            "artifact_refs": json.dumps([{"family": "memory", "artifact_id": "m-1", "revision": 1}] * 16),
+            "artifact_refs": json.dumps([ATOMIC_REF] * 16),
         },
     )
     assert result["error"]["code"] == "invalid_request"

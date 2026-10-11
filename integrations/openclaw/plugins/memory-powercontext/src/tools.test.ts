@@ -145,15 +145,11 @@ describe("PowerContext tools", () => {
       agentId: "main",
       sessionKey: "agent:main:telegram:direct:user-1",
     } as OpenClawPluginToolContext;
-    const citation = encodeCitation({
-      memory_ref: { family: "memory", artifact_id: "artifact-1", revision: 1 },
-      entry_id: "entry-1",
-      entry_version_id: "version-1",
-    });
+    const citation = encodeCitation({ family: "atomic-memory", artifact_id: "artifact-1", revision: 1 });
     const config = () => resolvePowerContextConfig(undefined, { endpoint: "https://powercontext.test" });
     const domainClient = (status: number) => ({
       async post() {
-        throw new PowerContextRequestError("/v1/memory/entries/get", "domain error", status);
+        throw new PowerContextRequestError("/v1/scope-bindings/resolve", "domain error", status);
       },
     }) as unknown as PowerContextClient;
 

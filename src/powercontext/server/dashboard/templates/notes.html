@@ -27,7 +27,7 @@ limitations under the License.
 {{ page_heading(t.notes, t.notes_subtitle) }}
 {{ search_form(t.search_notes, 8192, mode=search_mode) }}
 {% if not search_query %}<nav class="nav nav-pills mb-3" aria-label="{{ t.note_state }}">
-  {% for state in ['active', 'forgotten', 'merged', 'retired'] %}<a class="nav-link {% if note_state == state %}active{% endif %}" href="{{ link('notes', note_state=state, artifact=none, revision=none, entry=none, memory_id=none, memory_revision=none, entry_version=none, notes_cursor=none, notes_history=none, notes_page=none) }}">{{ t['memory_state_' ~ state] }}</a>{% endfor %}
+  {% for state in ['active', 'forgotten', 'merged', 'retired'] %}<a class="nav-link {% if note_state == state %}active{% endif %}" href="{{ link('notes', note_state=state, artifact=none, revision=none, notes_cursor=none, notes_history=none, notes_page=none) }}">{{ t['memory_state_' ~ state] }}</a>{% endfor %}
 </nav>{% endif %}
 {% if search_query and not errors.get('notes') %}<p class="text-secondary memory-search-mode">{{ t.memory_requested_mode }}: {{ t.get('memory_mode_' ~ search_mode, search_mode) }} · {{ t.memory_used_mode }}: {{ t.get('memory_mode_' ~ search_used_mode, search_used_mode) if search_used_mode else t.unknown_value }}</p>{% endif %}
 {% if search_limited %}<p class="text-secondary">{{ t.notes_search_limit }}</p>{% endif %}

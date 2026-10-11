@@ -14,7 +14,7 @@ selects relevant history for one request; it is temporary and does not create an
 1. Complete the [Quick Start](../get-started/quickstart.md) and keep the resolved Scope consistent across sessions.
 2. Explicitly ask the Agent to save the information. A direct `remember_memory` write does not require a model.
 3. Search with `search_memory`, or inspect entries with `list_memory_entries` and `get_memory_entry` where the host
-   exposes them. Preserve exact ArtifactRefs for new results; legacy citations read exact history from before migration.
+   exposes them. Preserve the exact ArtifactRefs they return; exact history is read as Atomic Memory revisions.
 4. Replace content through the generic Artifact API or mark it forgotten through Atomic lifecycle. Content and history
    remain available for restoration. Replacement requires the content ETag; forgetting requires the exact reference and state_version.
 

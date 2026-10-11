@@ -31,7 +31,7 @@ import json
 import unicodedata
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from time import perf_counter
@@ -40,8 +40,7 @@ from typing import Any, ClassVar, Literal
 
 import rfc8785
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
-from sqlalchemy import BigInteger, CheckConstraint, Column, Index, MetaData, String, Table, inspect, text
-from sqlalchemy.dialects.mysql import VARCHAR
+from sqlalchemy import BigInteger, CheckConstraint, Column, Index, MetaData, Table, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import Artifact
@@ -50,25 +49,55 @@ from powercontext.builtin.persistence.atomic_memory_identity import legacy_entry
 from powercontext.builtin.persistence.atomic_memory_index import (
     AtomicMemoryIndex,
     AtomicMemoryProjectionPublisher,
-    AtomicMemoryProjectionSecurity,
-    AtomicMemoryReadGrant,
     PreparedAtomicMemoryProjection,
     atomic_memory_embedding_input_hash,
     atomic_memory_profile_fingerprint,
+    drop_obsolete_atomic_memory_projection,
+)
+from powercontext.builtin.persistence.atomic_memory_readiness import (
+    AtomicMemoryMigrationError,
+    assert_atomic_memory_migration_ready,
 )
 from powercontext.builtin.persistence.database import AsyncDatabase
-from powercontext.builtin.persistence.errors import PersistenceError
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
+    ARCHIVE_TABLE_NAME,
+    LEGACY_CITATION_COLUMN,
+    LegacyCollection,
+    archive_collection,
+    ensure_archive_table,
+    frozen_identity,
+    load_collections,
+)
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
+    BINDING_COLUMNS as _BINDING_COLUMNS,
+)
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
+    HEAD_COLUMNS as _HEAD_COLUMNS,
+)
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
+    IDEMPOTENCY_COLUMNS as _IDEMPOTENCY_COLUMNS,
+)
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
+    OWNER_COLUMNS as _OWNER_COLUMNS,
+)
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import (
+    TAG_COLUMNS as _TAG_COLUMNS,
+)
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import rows as _rows
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import table_names as _tables
+from powercontext.builtin.persistence.migrations.atomic_memory_references import (
+    CandidateDecision,
+    convert_references,
+    drop_legacy_citation_columns,
+    drop_legacy_foreign_keys,
+    remove_legacy_collections,
+    residual_issues,
+)
 
 MIGRATION_ID = "powercontext.memory.v1-to-atomic-memory.v1"
 _FAMILY = "atomic-memory"
 _PROJECTION_FORMAT = "powercontext.atomic-memory.current.v1"
 _ENTRY_HASH_DOMAIN = b"powercontext:entry-content:v1\0"
-
-
-class AtomicMemoryMigrationError(PersistenceError):
-    def __init__(self, errors: tuple[str, ...]) -> None:
-        self.errors = errors
-        super().__init__("Atomic Memory offline migration is not ready: " + "; ".join(errors))
 
 
 class AtomicMemoryMigrationReport(BaseModel):
@@ -142,6 +171,9 @@ class _Entry:
     state_version: int
     collection_revision: int
     collection_content_hash: str
+    owners: tuple[dict[str, Any], ...] = ()
+    tags: tuple[dict[str, Any], ...] = ()
+    bindings: tuple[dict[str, Any], ...] = ()
 
     @property
     def artifact_id(self) -> str:
@@ -158,6 +190,7 @@ class _Inventory:
     counts: dict[str, int]
     errors: tuple[str, ...]
     processing_snapshot_hash: str
+    collections: Mapping[tuple[str, str], LegacyCollection] = field(default_factory=dict)
 
 
 # Only the two Family tables are new. A separate metadata and fixed types keep
@@ -165,18 +198,14 @@ class _Inventory:
 _STATE_METADATA = MetaData()
 
 
-def _identity(length: int) -> Any:
-    return String(length).with_variant(VARCHAR(length, collation="utf8mb4_bin"), "mysql")
-
-
 _STATES = Table(
     "pc_atomic_memory_states",
     _STATE_METADATA,
-    Column("scope_id", _identity(256), primary_key=True),
-    Column("artifact_id", _identity(128), primary_key=True),
-    Column("state", _identity(16), nullable=False),
+    Column("scope_id", frozen_identity(256), primary_key=True),
+    Column("artifact_id", frozen_identity(128), primary_key=True),
+    Column("state", frozen_identity(16), nullable=False),
     Column("state_version", BigInteger, nullable=False),
-    Column("merged_into_id", _identity(128)),
+    Column("merged_into_id", frozen_identity(128)),
     CheckConstraint("state IN ('active', 'forgotten', 'merged', 'retired')", name="ck_pc_atomic_memory_state"),
     CheckConstraint("state_version >= 0", name="ck_pc_atomic_memory_state_version"),
     CheckConstraint(
@@ -187,16 +216,15 @@ _STATES = Table(
 )
 Index("ix_pc_atomic_memory_states_management", _STATES.c.scope_id, _STATES.c.state)
 
-_ARTIFACT_COLUMNS = ("scope_id", "family", "artifact_id", "revision", "content", "memory_citations")
-_HEAD_COLUMNS = (
+_LINEAGE_ARTIFACT_COLUMNS = (
     "scope_id",
     "family",
     "artifact_id",
     "revision",
-    "searchable_text",
-    "lifecycle_state",
-    "replacement_artifact_id",
-    "governance_generation",
+    "ordinal",
+    "upstream_family",
+    "upstream_artifact_id",
+    "upstream_revision",
 )
 _VERSION_COLUMNS = (
     "scope_id",
@@ -212,72 +240,6 @@ _VERSION_COLUMNS = (
     "artifact_refs",
     "entry_content_hash",
     "created_in_revision",
-)
-_OWNER_COLUMNS = (
-    "owner_kind",
-    "object_key_hash",
-    "scope_id",
-    "family",
-    "artifact_id",
-    "candidate_id",
-    "target_artifact_id",
-    "selector_type",
-    "selector_entry_id",
-    "owner_type",
-    "owner_id",
-    "owner_description",
-    "established_at",
-    "policy_revision",
-    "idempotency_key",
-)
-_TAG_COLUMNS = (
-    "scope_id",
-    "family",
-    "artifact_id",
-    "target_type",
-    "target_id",
-    "tag_key_hash",
-    "tag_key",
-    "tag",
-    "assigned_at",
-)
-_BINDING_COLUMNS = (
-    "binding_id",
-    "subject_type",
-    "subject_id",
-    "subject_description",
-    "resource_key_hash",
-    "resource_type",
-    "deployment_id",
-    "scope_id",
-    "family",
-    "artifact_id",
-    "selector_type",
-    "selector_entry_id",
-    "role",
-    "singleton_key",
-    "granted_by_type",
-    "granted_by_id",
-    "granted_by_description",
-    "reason",
-    "created_at",
-    "expires_at",
-    "state",
-    "version",
-    "policy_revision",
-    "idempotency_key",
-    "revoked_at",
-    "revoked_by_type",
-    "revoked_by_id",
-    "revoked_by_description",
-)
-_IDEMPOTENCY_COLUMNS = (
-    "actor_id",
-    "idempotency_key_hash",
-    "operation",
-    "payload_hash",
-    "result_binding_id",
-    "secondary_binding_id",
 )
 _PROCESSING_TABLES = (
     "pc_sources",
@@ -365,18 +327,6 @@ _PROCESSING_COLUMNS = {
         "reason",
     },
 }
-
-
-async def _tables(connection: AsyncConnection) -> set[str]:
-    return set(await connection.run_sync(lambda value: inspect(value).get_table_names()))
-
-
-async def _rows(
-    connection: AsyncConnection, table: str, columns: tuple[str, ...], where: str = "", **params: Any
-) -> list[dict[str, Any]]:
-    # Every table, column and predicate is a constant owned by this versioned resource.
-    result = await connection.execute(text(f"SELECT {', '.join(columns)} FROM {table} {where}"), params)  # noqa: S608
-    return [dict(row) for row in result.mappings()]
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -538,7 +488,8 @@ async def _processing_snapshot(connection: AsyncConnection, tables: set[str], er
         encoded: list[bytes] = []
         for row in records:
             values = dict(row)
-            if set(values) != _PROCESSING_COLUMNS[name]:
+            # Completion drops the emptied legacy citation column from Candidate revisions.
+            if set(values) - {LEGACY_CITATION_COLUMN} != _PROCESSING_COLUMNS[name] - {LEGACY_CITATION_COLUMN}:
                 errors.append(f"{name}: unsupported persisted task columns; complete processing schema migration first")
             if name == "pc_source_cursors":
                 try:
@@ -584,7 +535,10 @@ async def _inventory(connection: AsyncConnection) -> _Inventory:  # noqa: C901
     }
     if "pc_artifacts" not in tables:
         return _Inventory((), counts, (), sha256(b"").hexdigest())
-    snapshots = await _rows(connection, "pc_artifacts", _ARTIFACT_COLUMNS, "WHERE family = 'memory'")
+    legacy_present = (
+        bool(await connection.scalar(text("SELECT COUNT(*) FROM pc_artifacts WHERE family = 'memory'")))
+        or ARCHIVE_TABLE_NAME in tables
+    )
     required = {
         "pc_artifact_heads",
         "pc_memory_entry_versions",
@@ -596,26 +550,29 @@ async def _inventory(connection: AsyncConnection) -> _Inventory:  # noqa: C901
         "pc_access_relationships",
         "pc_access_idempotency",
     }
-    if snapshots and not required <= tables:
+    if legacy_present and not required <= tables:
         return _Inventory(
             (),
             counts,
             ("legacy migration tables are absent: " + ", ".join(sorted(required - tables)),),
             sha256(b"").hexdigest(),
         )
+    try:
+        collections = await load_collections(connection, tables) if legacy_present else {}
+    except ValueError as error:
+        return _Inventory((), counts, (str(error),), sha256(b"").hexdigest())
+    snapshots = [row for collection in collections.values() for row in collection.revisions]
     versions = (
         []
         if "pc_memory_entry_versions" not in tables
         else await _rows(connection, "pc_memory_entry_versions", _VERSION_COLUMNS)
     )
-    heads = (
-        []
-        if "pc_artifact_heads" not in tables
-        else await _rows(connection, "pc_artifact_heads", _HEAD_COLUMNS, "WHERE family = 'memory'")
-    )
     processing_hash = await _processing_snapshot(connection, tables, errors)
     for row in await _rows(
-        connection, "pc_artifacts", _ARTIFACT_COLUMNS, "WHERE family = 'prompt' AND artifact_id = 'memory.extract'"
+        connection,
+        "pc_artifacts",
+        ("scope_id", "revision", "content"),
+        "WHERE family = 'prompt' AND artifact_id = 'memory.extract'",
     ):
         current = await connection.scalar(
             text(
@@ -632,27 +589,36 @@ async def _inventory(connection: AsyncConnection) -> _Inventory:  # noqa: C901
                     )
             except (ValueError, AttributeError):
                 errors.append(f"{row['scope_id']}: legacy extraction Prompt is undecodable")
-    grouped_snapshots: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     grouped_versions: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for row in snapshots:
-        grouped_snapshots[(row["scope_id"], row["artifact_id"])].append(row)
     for row in versions:
         grouped_versions[(row["scope_id"], row["memory_artifact_id"])].append(row)
-    head_map = {(row["scope_id"], row["artifact_id"]): row for row in heads}
+    empty = LegacyCollection("", "", (), None, (), (), (), archived=False)
     entries: list[_Entry] = []
-    for key in sorted(set(grouped_snapshots) | set(grouped_versions)):
+    for key in sorted(set(collections) | set(grouped_versions)):
         prefix = f"{key[0]}/{key[1]}"
-        old_revisions = sorted(grouped_snapshots[key], key=lambda item: item["revision"])
+        collection = collections.get(key, empty)
+        old_revisions = sorted(collection.revisions, key=lambda item: item["revision"])
         rows = grouped_versions[key]
         counts["containers"] += 1
         counts["collection_revisions"] += len(old_revisions)
         counts["entry_versions"] += len(rows)
         try:
-            migrated = _validate_container(key, old_revisions, rows, head_map.get(key))
-            await _validate_legacy_bindings(connection, key, {entry.entry_id for entry in migrated})
+            migrated = [
+                replace(
+                    entry,
+                    owners=collection.owners_for(entry.entry_id),
+                    tags=collection.tags_for(entry.entry_id),
+                    bindings=collection.bindings_for(entry.entry_id),
+                )
+                for entry in _validate_container(key, old_revisions, rows, collection.head)
+            ]
+            await _validate_legacy_bindings(
+                connection, key, collection.bindings, {entry.entry_id for entry in migrated}
+            )
             for entry in migrated:
-                await _validate_evidence(connection, entry)
-                await _validate_owner(connection, tables, entry)
+                await _validate_evidence(connection, collections, entry)
+                _validate_owner(entry)
+                await _validate_mapped_owner(connection, entry)
                 counts[entry.state] += 1
             entries.extend(migrated)
         except (ValueError, ValidationError) as error:
@@ -662,7 +628,7 @@ async def _inventory(connection: AsyncConnection) -> _Inventory:  # noqa: C901
     counts["atomic_content_payload_bytes"] = sum(
         len(_content(row).model_dump_json(by_alias=True).encode("utf-8")) for entry in entries for row in entry.versions
     )
-    return _Inventory(tuple(entries), counts, tuple(errors), processing_hash)
+    return _Inventory(tuple(entries), counts, tuple(errors), processing_hash, collections)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -801,7 +767,9 @@ def _validate_container(  # noqa: C901
     return tuple(result)
 
 
-async def _validate_evidence(connection: AsyncConnection, entry: _Entry) -> None:
+async def _validate_evidence(
+    connection: AsyncConnection, collections: Mapping[tuple[str, str], LegacyCollection], entry: _Entry
+) -> None:
     for row in entry.versions:
         for value in _decode(row["source_refs"]):
             ref = _SourceRef.model_validate_json(_json_bytes(value), strict=True)
@@ -812,30 +780,38 @@ async def _validate_evidence(connection: AsyncConnection, entry: _Entry) -> None
             _require(present == 1, f"{entry.entry_id}: exact Source evidence is missing")
         for value in _decode(row["artifact_refs"]):
             ref = _ArtifactRef.model_validate_json(_json_bytes(value), strict=True)
-            present = await connection.scalar(
-                text(
-                    "SELECT 1 FROM pc_artifacts WHERE scope_id = :scope AND family = :family AND artifact_id = :id AND revision = :revision"
-                ),
-                {"scope": entry.scope_id, "family": ref.family, "id": ref.artifact_id, "revision": ref.revision},
-            )
+            if ref.family == "memory":
+                # A cited collection may already have left public tables for the archive.
+                collection = collections.get((entry.scope_id, ref.artifact_id))
+                present = int(
+                    collection is not None and any(item["revision"] == ref.revision for item in collection.revisions)
+                )
+            else:
+                present = await connection.scalar(
+                    text(
+                        "SELECT 1 FROM pc_artifacts WHERE scope_id = :scope AND family = :family AND artifact_id = :id AND revision = :revision"
+                    ),
+                    {"scope": entry.scope_id, "family": ref.family, "id": ref.artifact_id, "revision": ref.revision},
+                )
             _require(present == 1, f"{entry.entry_id}: exact Artifact evidence is missing")
 
 
-async def _validate_owner(connection: AsyncConnection, tables: set[str], entry: _Entry) -> None:
-    _require(
-        "pc_access_owners" in tables and "pc_access_relationships" in tables,
-        f"{entry.entry_id}: formal access schema is absent",
-    )
-    owners = await _rows(
-        connection,
-        "pc_access_owners",
-        _OWNER_COLUMNS,
-        "WHERE owner_kind = 'artifact' AND scope_id = :scope AND family = 'memory' AND artifact_id = :memory "
-        "AND selector_type = 'memory_entry' AND selector_entry_id = :entry",
-        scope=entry.scope_id,
-        memory=entry.memory_id,
-        entry=entry.entry_id,
-    )
+def _validate_owner(entry: _Entry) -> None:
+    # Without enforced access a legacy entry may have no Owner; it then maps to none.
+    _require(len(entry.owners) <= 1, f"{entry.entry_id}: per-entry Owner is ambiguous")
+    for owner in entry.owners:
+        _require(
+            owner["object_key_hash"]
+            == _digest(_resource_key(entry.scope_id, "memory", entry.memory_id, entry.entry_id)),
+            f"{entry.entry_id}: legacy Owner identity hash differs",
+        )
+        _require(
+            bool(owner["owner_id"]) and owner["owner_type"] in {"user", "service"},
+            f"{entry.entry_id}: invalid formal Owner",
+        )
+
+
+async def _validate_mapped_owner(connection: AsyncConnection, entry: _Entry) -> None:
     new_owners = await _rows(
         connection,
         "pc_access_owners",
@@ -843,16 +819,9 @@ async def _validate_owner(connection: AsyncConnection, tables: set[str], entry: 
         "WHERE owner_kind = 'artifact' AND object_key_hash = :key",
         key=_digest(_resource_key(entry.scope_id, _FAMILY, entry.artifact_id)),
     )
-    _require(len(owners) == 1, f"{entry.entry_id}: exact per-entry Owner is missing or ambiguous")
-    owner = owners[0]
-    _require(
-        owner["object_key_hash"] == _digest(_resource_key(entry.scope_id, "memory", entry.memory_id, entry.entry_id)),
-        f"{entry.entry_id}: legacy Owner identity hash differs",
-    )
-    _require(
-        bool(owner["owner_id"]) and owner["owner_type"] in {"user", "service"},
-        f"{entry.entry_id}: invalid formal Owner",
-    )
+    if not entry.owners:
+        return
+    owner = entry.owners[0]
     _require(
         not new_owners
         or (
@@ -864,15 +833,9 @@ async def _validate_owner(connection: AsyncConnection, tables: set[str], entry: 
     )
 
 
-async def _validate_legacy_bindings(connection: AsyncConnection, key: tuple[str, str], entry_ids: set[str]) -> None:
-    bindings = await _rows(
-        connection,
-        "pc_access_relationships",
-        _BINDING_COLUMNS,
-        "WHERE resource_type = 'artifact' AND scope_id = :scope AND family = 'memory' AND artifact_id = :memory",
-        scope=key[0],
-        memory=key[1],
-    )
+async def _validate_legacy_bindings(
+    connection: AsyncConnection, key: tuple[str, str], bindings: tuple[dict[str, Any], ...], entry_ids: set[str]
+) -> None:
     for binding in bindings:
         _require(
             binding["selector_type"] == "memory_entry" and bool(binding["selector_entry_id"]),
@@ -900,9 +863,12 @@ async def _validate_legacy_bindings(connection: AsyncConnection, key: tuple[str,
 
 
 async def plan_atomic_memory_migration(
-    connection: AsyncConnection, *, index: AtomicMemoryIndex | None = None
+    connection: AsyncConnection,
+    *,
+    index: AtomicMemoryIndex | None = None,
+    decisions: Mapping[tuple[str, str, int], CandidateDecision] | None = None,
 ) -> AtomicMemoryMigrationReport:
-    """Scan every legacy container and entry version without changing data."""
+    """Scan every legacy container, entry version and legacy reference without changing data."""
 
     inventory = await _inventory(connection)
     tables = await _tables(connection)
@@ -915,16 +881,24 @@ async def plan_atomic_memory_migration(
                 {"scope": entry.scope_id, "id": entry.artifact_id},
             )
             pending += present is None
+    reference_counts: dict[str, int] = {}
+    reference_errors: tuple[str, ...] = ()
+    if not inventory.errors:
+        reference_counts, reference_errors = await convert_references(
+            dict(inventory.collections), dict(decisions or {}), connection=connection
+        )
     verification = await verify_atomic_memory_migration(connection, index=index) if pending == 0 else None
+    errors = (inventory.errors if verification is None else verification.errors) + reference_errors
     return AtomicMemoryMigrationReport(
         action="plan",
-        ready=verification is not None and verification.ready,
+        ready=verification is not None and verification.ready and not reference_errors,
         counts={
             **inventory.counts,
             **({} if verification is None else verification.counts),
+            **{f"reference_{name}": value for name, value in reference_counts.items()},
             "pending_entries": pending,
         },
-        errors=inventory.errors if verification is None else verification.errors,
+        errors=tuple(dict.fromkeys(errors)),
         processing_snapshot_hash=inventory.processing_snapshot_hash,
     )
 
@@ -938,75 +912,142 @@ async def _insert(connection: AsyncConnection, table: str, columns: tuple[str, .
     )
 
 
-def _imported_refs(entry: _Entry, row: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
-    # The creating collection is an immutable provenance anchor, not every
-    # entry's generation evidence. Runtime readers resolve this imported
-    # identity against its exact retained entry version before following Sources.
+def _unique(values) -> tuple[dict[str, Any], ...]:
+    result: list[dict[str, Any]] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def _imported_sources(row: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    return _unique(
+        {"source_type": value["source_type"], "source_id": value["source_id"]} for value in _decode(row["source_refs"])
+    )
+
+
+def _imported_refs(row: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    # A legacy entry may cite a whole Memory collection; that relationship has
+    # no single Atomic target and is archived instead of becoming evidence.
+    return _unique(
+        {"family": value["family"], "artifact_id": value["artifact_id"], "revision": value["revision"]}
+        for value in _decode(row["artifact_refs"])
+        if value["family"] != "memory"
+    )
+
+
+def _anchored_refs(entry: _Entry, row: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Lineage written by the earlier import, which anchored each version to its collection write."""
     values = [
         {"family": "memory", "artifact_id": entry.memory_id, "revision": row["created_in_revision"]},
         *_decode(row["artifact_refs"]),
     ]
     if row["version"] > 1:
-        # Legacy entry evidence accumulates, while a collection revision only
-        # records the evidence supplied to that particular collection write.
-        # Following the imported predecessor retains inherited Sources without
-        # copying a lineage_only Source onto a different exact target.
         values.append({"family": _FAMILY, "artifact_id": entry.artifact_id, "revision": row["version"] - 1})
-    refs: list[dict[str, Any]] = []
-    for value in values:
-        if value not in refs:
-            refs.append(value)
-    return tuple(refs)
+    return _unique(values)
 
 
-async def _history_issues(connection: AsyncConnection, entry: _Entry) -> list[str]:
-    errors: list[str] = []
-    for row in entry.versions:
-        imported = await _rows(
+async def _insert_lineage(connection: AsyncConnection, entry: _Entry, row: Mapping[str, Any]) -> None:
+    identity = {
+        "scope_id": entry.scope_id,
+        "family": _FAMILY,
+        "artifact_id": entry.artifact_id,
+        "revision": row["version"],
+    }
+    for ordinal, source in enumerate(_imported_sources(row)):
+        await _insert(
             connection,
-            "pc_artifacts",
-            _ARTIFACT_COLUMNS,
-            "WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id AND revision = :revision",
-            scope=entry.scope_id,
-            id=entry.artifact_id,
-            revision=row["version"],
+            "pc_artifact_lineage_sources",
+            ("scope_id", "family", "artifact_id", "revision", "ordinal", "source_type", "source_id"),
+            {**identity, "ordinal": ordinal, **source},
         )
-        expected = _content(row).model_dump(mode="json", by_alias=True)
-        if (
-            len(imported) != 1
-            or _decode(imported[0]["content"]) != expected
-            or imported[0]["memory_citations"] is not None
-        ):
-            errors.append(f"{entry.entry_id}@{row['version']}: imported body differs or is missing")
-            continue
-        refs = await _rows(
+    for ordinal, ref in enumerate(_imported_refs(row)):
+        await _insert(
             connection,
             "pc_artifact_lineage_artifacts",
-            ("ordinal", "upstream_family", "upstream_artifact_id", "upstream_revision"),
-            "WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id AND revision = :revision ORDER BY ordinal",
-            scope=entry.scope_id,
-            id=entry.artifact_id,
-            revision=row["version"],
+            _LINEAGE_ARTIFACT_COLUMNS,
+            {
+                **identity,
+                "ordinal": ordinal,
+                "upstream_family": ref["family"],
+                "upstream_artifact_id": ref["artifact_id"],
+                "upstream_revision": ref["revision"],
+            },
         )
-        actual = tuple(
+
+
+async def _imported_lineage(
+    connection: AsyncConnection, entry: _Entry, revision: int
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    where = "WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id AND revision = :revision"
+    sources = await _rows(
+        connection,
+        "pc_artifact_lineage_sources",
+        ("ordinal", "source_type", "source_id"),
+        f"{where} ORDER BY ordinal",
+        scope=entry.scope_id,
+        id=entry.artifact_id,
+        revision=revision,
+    )
+    refs = await _rows(
+        connection,
+        "pc_artifact_lineage_artifacts",
+        ("ordinal", "upstream_family", "upstream_artifact_id", "upstream_revision"),
+        f"{where} ORDER BY ordinal",
+        scope=entry.scope_id,
+        id=entry.artifact_id,
+        revision=revision,
+    )
+    if [item["ordinal"] for item in sources] != list(range(len(sources))) or [item["ordinal"] for item in refs] != list(
+        range(len(refs))
+    ):
+        raise AtomicMemoryMigrationError((f"{entry.entry_id}@{revision}: imported lineage ordinals are not dense",))
+    return (
+        tuple({"source_type": item["source_type"], "source_id": item["source_id"]} for item in sources),
+        tuple(
             {
                 "family": item["upstream_family"],
                 "artifact_id": item["upstream_artifact_id"],
                 "revision": item["upstream_revision"],
             }
             for item in refs
+        ),
+    )
+
+
+async def _history_issues(connection: AsyncConnection, entry: _Entry, *, repair: bool = False) -> list[str]:
+    """Check imported versions; with ``repair``, rewrite the earlier anchored lineage to direct evidence."""
+    errors: list[str] = []
+    for row in entry.versions:
+        imported = await _rows(
+            connection,
+            "pc_artifacts",
+            ("content",),
+            "WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id AND revision = :revision",
+            scope=entry.scope_id,
+            id=entry.artifact_id,
+            revision=row["version"],
         )
-        if actual != _imported_refs(entry, row) or [item["ordinal"] for item in refs] != list(range(len(refs))):
+        expected = _content(row).model_dump(mode="json", by_alias=True)
+        if len(imported) != 1 or _decode(imported[0]["content"]) != expected:
+            errors.append(f"{entry.entry_id}@{row['version']}: imported body differs or is missing")
+            continue
+        sources, refs = await _imported_lineage(connection, entry, row["version"])
+        if sources == _imported_sources(row) and refs == _imported_refs(row):
+            continue
+        if sources or refs != _anchored_refs(entry, row):
             errors.append(f"{entry.entry_id}@{row['version']}: imported exact evidence differs")
-        direct_sources = await connection.scalar(
-            text(
-                "SELECT COUNT(*) FROM pc_artifact_lineage_sources WHERE scope_id = :scope AND family = 'atomic-memory' "
-                "AND artifact_id = :id AND revision = :revision"
-            ),
-            {"scope": entry.scope_id, "id": entry.artifact_id, "revision": row["version"]},
-        )
-        if direct_sources:
-            errors.append(f"{entry.entry_id}@{row['version']}: import unexpectedly rebound historical Sources")
+        elif repair:
+            await connection.execute(
+                text(
+                    "DELETE FROM pc_artifact_lineage_artifacts WHERE scope_id = :scope AND family = 'atomic-memory' "
+                    "AND artifact_id = :id AND revision = :revision"
+                ),
+                {"scope": entry.scope_id, "id": entry.artifact_id, "revision": row["version"]},
+            )
+            await _insert_lineage(connection, entry, row)
+        else:
+            errors.append(f"{entry.entry_id}@{row['version']}: imported lineage still uses the collection anchor")
     return errors
 
 
@@ -1035,7 +1076,7 @@ async def _head_and_state(
 async def _import_entry(connection: AsyncConnection, entry: _Entry) -> bool:
     head, state = await _head_and_state(connection, entry)
     if head is not None:
-        errors = await _history_issues(connection, entry)
+        errors = await _history_issues(connection, entry, repair=True)
         if errors or state is None or head["revision"] < entry.tail["version"]:
             raise AtomicMemoryMigrationError(tuple(errors) or (f"{entry.entry_id}: existing target is incomplete",))
         # A completed import may since have been revised, merged or retagged.
@@ -1055,41 +1096,16 @@ async def _import_entry(connection: AsyncConnection, entry: _Entry) -> bool:
         await _insert(
             connection,
             "pc_artifacts",
-            _ARTIFACT_COLUMNS,
+            ("scope_id", "family", "artifact_id", "revision", "content"),
             {
                 "scope_id": entry.scope_id,
                 "family": _FAMILY,
                 "artifact_id": entry.artifact_id,
                 "revision": row["version"],
                 "content": _content(row).model_dump_json(by_alias=True).encode("utf-8"),
-                "memory_citations": None,
             },
         )
-        for ordinal, ref in enumerate(_imported_refs(entry, row)):
-            await _insert(
-                connection,
-                "pc_artifact_lineage_artifacts",
-                (
-                    "scope_id",
-                    "family",
-                    "artifact_id",
-                    "revision",
-                    "ordinal",
-                    "upstream_family",
-                    "upstream_artifact_id",
-                    "upstream_revision",
-                ),
-                {
-                    "scope_id": entry.scope_id,
-                    "family": _FAMILY,
-                    "artifact_id": entry.artifact_id,
-                    "revision": row["version"],
-                    "ordinal": ordinal,
-                    "upstream_family": ref["family"],
-                    "upstream_artifact_id": ref["artifact_id"],
-                    "upstream_revision": ref["revision"],
-                },
-            )
+        await _insert_lineage(connection, entry, row)
     summary = "active" if entry.state == "active" else "retired" if entry.state == "retired" else "deprecated"
     await _insert(
         connection,
@@ -1118,42 +1134,22 @@ async def _import_entry(connection: AsyncConnection, entry: _Entry) -> bool:
             "merged_into_id": None,
         },
     )
-    owner = (
-        await _rows(
-            connection,
-            "pc_access_owners",
-            _OWNER_COLUMNS,
-            "WHERE owner_kind = 'artifact' AND scope_id = :scope AND family = 'memory' AND artifact_id = :memory "
-            "AND selector_type = 'memory_entry' AND selector_entry_id = :entry",
-            scope=entry.scope_id,
-            memory=entry.memory_id,
-            entry=entry.entry_id,
+    for owner in entry.owners:
+        mapped_owner = {
+            **owner,
+            "object_key_hash": _digest(_resource_key(entry.scope_id, _FAMILY, entry.artifact_id)),
+            "family": _FAMILY,
+            "artifact_id": entry.artifact_id,
+            "selector_type": None,
+            "selector_entry_id": None,
+        }
+        present = await connection.scalar(
+            text("SELECT COUNT(*) FROM pc_access_owners WHERE owner_kind = 'artifact' AND object_key_hash = :key"),
+            {"key": mapped_owner["object_key_hash"]},
         )
-    )[0]
-    mapped_owner = {
-        **owner,
-        "object_key_hash": _digest(_resource_key(entry.scope_id, _FAMILY, entry.artifact_id)),
-        "family": _FAMILY,
-        "artifact_id": entry.artifact_id,
-        "selector_type": None,
-        "selector_entry_id": None,
-    }
-    present = await connection.scalar(
-        text("SELECT COUNT(*) FROM pc_access_owners WHERE owner_kind = 'artifact' AND object_key_hash = :key"),
-        {"key": mapped_owner["object_key_hash"]},
-    )
-    if not present:
-        await _insert(connection, "pc_access_owners", _OWNER_COLUMNS, mapped_owner)
-    tags = await _rows(
-        connection,
-        "pc_artifact_tags",
-        _TAG_COLUMNS,
-        "WHERE scope_id = :scope AND family = 'memory' AND artifact_id = :memory AND target_type = 'memory_entry' AND target_id = :entry",
-        scope=entry.scope_id,
-        memory=entry.memory_id,
-        entry=entry.entry_id,
-    )
-    for tag in tags:
+        if not present:
+            await _insert(connection, "pc_access_owners", _OWNER_COLUMNS, mapped_owner)
+    for tag in entry.tags:
         await _insert(
             connection,
             "pc_artifact_tags",
@@ -1166,16 +1162,7 @@ async def _import_entry(connection: AsyncConnection, entry: _Entry) -> bool:
                 "target_id": entry.artifact_id,
             },
         )
-    bindings = await _rows(
-        connection,
-        "pc_access_relationships",
-        _BINDING_COLUMNS,
-        "WHERE resource_type = 'artifact' AND scope_id = :scope AND family = 'memory' AND artifact_id = :memory "
-        "AND selector_type = 'memory_entry' AND selector_entry_id = :entry",
-        scope=entry.scope_id,
-        memory=entry.memory_id,
-        entry=entry.entry_id,
-    )
+    bindings = entry.bindings
     new_key = _resource_key(entry.scope_id, _FAMILY, entry.artifact_id)
     for binding in bindings:
         singleton = None
@@ -1210,78 +1197,53 @@ async def _load_tags(connection: AsyncConnection, scope_id: str, artifact_id: st
     return tuple(sorted({row["tag_key"] for row in rows}))
 
 
-def _timestamp(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
-
-
-async def _load_security(
-    connection: AsyncConnection, scope_id: str, artifact_id: str, _context: Any
-) -> AtomicMemoryProjectionSecurity:
-    key = _digest(_resource_key(scope_id, _FAMILY, artifact_id))
-    owners = await _rows(
-        connection,
-        "pc_access_owners",
-        _OWNER_COLUMNS,
-        "WHERE owner_kind = 'artifact' AND object_key_hash = :key",
-        key=key,
-    )
-    if len(owners) != 1:
-        raise AtomicMemoryMigrationError((f"{scope_id}/{artifact_id}: formal Owner is absent or ambiguous",))
-    grants = await _rows(
-        connection,
-        "pc_access_relationships",
-        _BINDING_COLUMNS,
-        "WHERE resource_key_hash = :key AND state = 'active' AND role IN ('artifact.viewer', 'artifact.owner')",
-        key=key,
-    )
-    return AtomicMemoryProjectionSecurity(
-        owner_type=owners[0]["owner_type"],
-        owner_id=owners[0]["owner_id"],
-        read_grants=tuple(
-            AtomicMemoryReadGrant(
-                binding_id=row["binding_id"],
-                subject_type=row["subject_type"],
-                subject_id=row["subject_id"],
-                expires_at=_timestamp(row["expires_at"]),
-            )
-            for row in sorted(grants, key=lambda item: item["binding_id"])
-        ),
-    )
-
-
-async def apply_atomic_memory_migration(
+async def apply_atomic_memory_migration(  # noqa: C901 - One ordered offline maintenance procedure.
     database: AsyncDatabase,
     index: AtomicMemoryIndex,
     *,
     maintenance_confirmed: bool,
     embedding_model: Any = None,
+    decisions: Mapping[tuple[str, str, int], CandidateDecision] | None = None,
 ) -> AtomicMemoryMigrationReport:
-    """Prepare outside transactions; commit immutable history and projections together."""
+    """Archive, import, convert references, then remove legacy collections and citation columns from public tables."""
 
     if not maintenance_confirmed:
         raise AtomicMemoryMigrationError(("apply requires stopped old writers and --maintenance-confirmed",))
     started = perf_counter()
     async with database.transaction() as connection:
         inventory = await _inventory(connection)
-    if inventory.errors:
+        reference_errors: tuple[str, ...] = ()
+        if not inventory.errors:
+            _counts, reference_errors = await convert_references(
+                dict(inventory.collections), dict(decisions or {}), connection=connection
+            )
+    if inventory.errors or reference_errors:
         return AtomicMemoryMigrationReport(
             action="apply",
-            errors=inventory.errors,
+            errors=inventory.errors + reference_errors,
             counts=inventory.counts,
             processing_snapshot_hash=inventory.processing_snapshot_hash,
         )
     async with database.transaction() as connection:
         await connection.run_sync(lambda value: _STATE_METADATA.create_all(value, tables=[_STATES], checkfirst=True))
+        await ensure_archive_table(connection)
+        rebuilt_projection = await drop_obsolete_atomic_memory_projection(connection, index.table)
         await index.initialize(connection)
-    publisher = AtomicMemoryProjectionPublisher(
-        index, load_tags=_load_tags, load_security=_load_security, embedding_model=embedding_model
-    )
+    archived = 0
+    for scope_id, memory_id in sorted(inventory.collections):
+        async with database.transaction() as connection:
+            try:
+                archived += await archive_collection(connection, scope_id, memory_id)
+            except ValueError as error:
+                raise AtomicMemoryMigrationError((str(error),)) from error
+    async with database.transaction() as connection:
+        archived_inventory = await _inventory(connection)
+    if archived_inventory.errors:
+        raise AtomicMemoryMigrationError(archived_inventory.errors)
+    publisher = AtomicMemoryProjectionPublisher(index, embedding_model=embedding_model)
     imported = 0
     migrated_grant_receipts = 0
-    for entry in inventory.entries:
+    for entry in archived_inventory.entries:
         async with database.transaction() as connection:
             head, _state = await _head_and_state(connection, entry)
         prepared: PreparedAtomicMemoryProjection | None = None
@@ -1299,9 +1261,8 @@ async def apply_atomic_memory_migration(
                 {"scope": entry.scope_id, "id": entry.memory_id},
             )
             source = current.mappings().one_or_none()
-            if (
-                source is None
-                or source["revision"] != entry.collection_revision
+            if source is not None and (
+                source["revision"] != entry.collection_revision
                 or sha256(bytes(source["content"])).hexdigest() != entry.collection_content_hash
             ):
                 raise AtomicMemoryMigrationError(("legacy collection head changed during maintenance",))
@@ -1316,7 +1277,7 @@ async def apply_atomic_memory_migration(
                     ),
                     state=SimpleNamespace(state="active", state_version=entry.state_version),
                 )
-                await publisher.publish(connection, entry.scope_id, record, prepared, None)
+                await publisher.publish(connection, entry.scope_id, record, prepared)
             else:
                 await publisher.remove(connection, entry.scope_id, entry.artifact_id)
             imported += 1
@@ -1336,12 +1297,49 @@ async def apply_atomic_memory_migration(
                 ),
                 {"expired": datetime(1970, 1, 1, tzinfo=UTC).replace(tzinfo=None)},
             )
-        report = await verify_atomic_memory_migration(connection, index=index)
+    # Processing work was compared above; reference conversion intentionally rewrites Sources and Candidates.
+    reference_counts, reference_errors = await convert_references(
+        dict(archived_inventory.collections), dict(decisions or {}), database=database
+    )
+    if reference_errors:
+        raise AtomicMemoryMigrationError(reference_errors)
+    async with database.transaction() as connection:
+        await drop_legacy_foreign_keys(connection)
+    # Removal is the only completion evidence the startup gate reads, so the
+    # import, references and projection are accepted before any collection leaves.
+    async with database.transaction() as connection:
+        report = await _verify_atomic_memory_migration(
+            connection,
+            index=index,
+            check_projection=not rebuilt_projection,
+            thorough=True,
+            collections_removed=False,
+        )
+    if not report.ready:
+        raise AtomicMemoryMigrationError(report.errors)
+    try:
+        removed = await remove_legacy_collections(database, dict(archived_inventory.collections))
+    except ValueError as error:
+        raise AtomicMemoryMigrationError((str(error),)) from error
+    async with database.transaction() as connection:
+        await drop_legacy_citation_columns(connection)
+    async with database.transaction() as connection:
+        residual = await residual_issues(connection, await _tables(connection), thorough=False)
+    if rebuilt_projection:
+        residual.append(
+            "the obsolete development projection was recreated empty; run "
+            "powercontext server atomic-memory-rebuild-projection --maintenance-confirmed"
+        )
     return report.model_copy(
         update={
             "action": "apply",
+            "ready": not residual,
+            "errors": tuple(residual),
             "counts": {
                 **report.counts,
+                **{f"reference_{name}": value for name, value in reference_counts.items()},
+                "archived_collections": archived,
+                "removed_collections": removed,
                 "imported_entries": imported,
                 "migrated_grant_receipts": migrated_grant_receipts,
                 "elapsed_ms": int((perf_counter() - started) * 1000),
@@ -1354,16 +1352,17 @@ async def verify_atomic_memory_migration(
     connection: AsyncConnection,
     *,
     index: AtomicMemoryIndex | None = None,
+    thorough: bool = True,
 ) -> AtomicMemoryMigrationReport:
-    """Prove import plus current consistency; never reset a post-upgrade head."""
+    """Prove import, reference conversion and removal plus current consistency; never reset a post-upgrade head."""
 
-    return await _verify_atomic_memory_migration(connection, index=index, check_projection=True)
+    return await _verify_atomic_memory_migration(connection, index=index, check_projection=True, thorough=thorough)
 
 
 async def verify_atomic_memory_migration_authority(connection: AsyncConnection) -> AtomicMemoryMigrationReport:
     """Require completed history import before repairing only the derived current rows."""
 
-    return await _verify_atomic_memory_migration(connection, check_projection=False)
+    return await _verify_atomic_memory_migration(connection, check_projection=False, thorough=False)
 
 
 async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import verification with optional projection checks.
@@ -1371,11 +1370,14 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
     *,
     index: AtomicMemoryIndex | None = None,
     check_projection: bool,
+    thorough: bool,
+    collections_removed: bool = True,
 ) -> AtomicMemoryMigrationReport:
 
     inventory = await _inventory(connection)
     errors = list(inventory.errors)
     tables = await _tables(connection)
+    errors.extend(await residual_issues(connection, tables, thorough=thorough, collections_removed=collections_removed))
     required = {"pc_atomic_memory_states"}
     if check_projection:
         required.add("pc_atomic_memory_current")
@@ -1414,7 +1416,6 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
                 "public governance summary disagrees with Family state",
             )
             _require((state["state"] == "merged") == (state["merged_into_id"] is not None), "invalid merge destination")
-            security = await _load_security(connection, entry.scope_id, entry.artifact_id, None)
             legacy_bindings = await _rows(
                 connection,
                 "pc_access_relationships",
@@ -1445,7 +1446,7 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
                     await connection.execute(
                         text(
                             "SELECT revision, state_version, content_hash, projection_format, kind, text, searchable_text, tag_keys, "
-                            "owner_type, owner_id, read_grants, embedding, profile_fingerprint, embedding_input_hash "
+                            "embedding, profile_fingerprint, embedding_input_hash "
                             "FROM pc_atomic_memory_current WHERE scope_id = :scope AND artifact_id = :id"
                         ),
                         {"scope": entry.scope_id, "id": entry.artifact_id},
@@ -1464,7 +1465,7 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
                     await _rows(
                         connection,
                         "pc_artifacts",
-                        _ARTIFACT_COLUMNS,
+                        ("content",),
                         "WHERE scope_id = :scope AND family = 'atomic-memory' AND artifact_id = :id AND revision = :revision",
                         scope=entry.scope_id,
                         id=entry.artifact_id,
@@ -1492,15 +1493,6 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
                     tuple(sorted(_decode(projection["tag_keys"])))
                     == await _load_tags(connection, entry.scope_id, entry.artifact_id),
                     "projection tags differ from formal tags",
-                )
-                _require(
-                    (projection["owner_type"], projection["owner_id"]) == (security.owner_type, security.owner_id),
-                    "projection Owner differs",
-                )
-                _require(
-                    sorted(_decode(projection["read_grants"]), key=lambda item: item["binding_id"])
-                    == [grant.as_json() for grant in security.read_grants],
-                    "projection grants differ from current bindings",
                 )
                 if index is not None:
                     profile = index.capabilities.embedding_profile
@@ -1534,16 +1526,6 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
         errors=tuple(errors),
         processing_snapshot_hash=inventory.processing_snapshot_hash,
     )
-
-
-async def assert_atomic_memory_migration_ready(
-    connection: AsyncConnection, *, index: AtomicMemoryIndex | None = None
-) -> None:
-    """Read-only startup gate, independent of the processing schema marker."""
-
-    report = await verify_atomic_memory_migration(connection, index=index)
-    if not report.ready:
-        raise AtomicMemoryMigrationError(report.errors)
 
 
 __all__ = [

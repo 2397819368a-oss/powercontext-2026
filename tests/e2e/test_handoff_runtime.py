@@ -21,13 +21,13 @@ from pathlib import Path
 import pytest
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.handoff import (
     HandoffEvidenceUnavailableError,
     HandoffScopeMismatchError,
     PrepareHandoff,
     PrepareHandoffHint,
 )
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.records import ArtifactWrite
@@ -42,7 +42,6 @@ from powercontext.builtin.runtime import (
     HandoffStatement,
     InferenceConfig,
     PreparedHandoff,
-    RememberMemoryRequest,
     open_builtin_runtime,
 )
 from powercontext.builtin.runtime.relational import RelationalContexts
@@ -339,16 +338,13 @@ def test_handoff_runtime_supports_temporary_transfer_and_durable_milestones() ->
                     metadata={"origin": "e2e"},
                 )
             )
-            memory = await runtime.memory.for_scope(scope.scope_id).remember(
-                RememberMemoryRequest(
-                    entries=(
-                        MemoryEntryInput(
-                            kind="decision",
-                            text="Regression tests must use the public parser interface.",
-                        ),
-                    )
-                )
-            )
+            assert runtime.atomic_memory is not None
+            memory = await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(
+                    kind="decision",
+                    text="Regression tests must use the public parser interface.",
+                ),
+            ))
             assert memory.records
             source_citation = HandoffSourceCitation(source_ref=source.source_ref)
             memory_citation = HandoffArtifactCitation(artifact_ref=memory.primary.ref)

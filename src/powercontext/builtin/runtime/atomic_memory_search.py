@@ -14,12 +14,10 @@
 
 """Atomic Family adapter for the common Artifact search service."""
 
-from __future__ import annotations
-
 from powercontext.artifacts import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.search import AtomicArtifactSearchRequest
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication, AtomicMemorySearchPage
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemoryExecutionContext
+from powercontext.builtin.sources import validate_scope_id
 from powercontext.server.authz import AccessDeniedError, AccessIdentityRequiredError, PrincipalRef
 
 
@@ -30,22 +28,6 @@ class AtomicArtifactSearcher:
     def __init__(self, application: AtomicMemoryApplication) -> None:
         self.application = application
 
-    def _context(self, context: ArtifactSearchExecutionContext | None) -> AtomicMemoryExecutionContext:
-        if context is None:
-            return self.application.default_context
-        if type(context.trusted_local) is not bool or (context.trusted_local and context.access is not None):
-            raise AccessDeniedError()
-        principal = context.principal
-        if principal is None:
-            if not context.trusted_local or context.access is not None:
-                raise AccessIdentityRequiredError()
-            principal = self.application.default_context.principal
-        if not isinstance(principal, PrincipalRef):
-            raise AccessIdentityRequiredError()
-        if context.access is None and not context.trusted_local:
-            raise AccessDeniedError()
-        return AtomicMemoryExecutionContext(principal, context.access, context.audit, context.trusted_local)
-
     async def search(
         self,
         scope_id: str,
@@ -54,8 +36,17 @@ class AtomicArtifactSearcher:
         *,
         execution_context: ArtifactSearchExecutionContext | None = None,
     ) -> AtomicMemorySearchPage:
-        return await self.application.for_scope(scope_id).search(
-            request.query,
-            context=self._context(execution_context),
-            artifact_request=request,
+        if execution_context is not None:
+            context = execution_context
+            if type(context.trusted_local) is not bool or (context.trusted_local and context.access is not None):
+                raise AccessDeniedError()
+            if context.principal is None:
+                if not context.trusted_local or context.access is not None:
+                    raise AccessIdentityRequiredError()
+            elif not isinstance(context.principal, PrincipalRef):
+                raise AccessIdentityRequiredError()
+            if context.access is None and not context.trusted_local:
+                raise AccessDeniedError()
+        return await self.application.for_scope(validate_scope_id(scope_id)).search(
+            request.query, context=execution_context, artifact_request=request
         )

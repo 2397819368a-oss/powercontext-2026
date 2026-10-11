@@ -187,6 +187,16 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 Scope、家族、条数限制和上下文预算，并复用已经生成的查询向量。第一轮和第二轮的语义相似度下限必须保持递减顺序，违反该顺序
 会导致启动失败。启用后可能增加检索次数和延迟，请在自己的数据上评估召回结果和延迟变化。
 
+门控产生 `RecallEffort` 时，关系型 Runtime 向 `pc_recall_effort_daily` 累加一次观测，主键为
+`(scope_id, usage_date, policy_id, assessment)`，日期使用 UTC。计数包含已提交的搜索轮数、扩展动作、候选池大小、
+搜索报告的额外推理调用，以及最终字节预算造成的截断和丢弃。两个丢弃子类之和等于 `dropped_items`，非法计数在写库前拒绝。
+表中只保存主键维度和计数，不包含条目身份、查询、提示词、引用或正文。该聚合仅供内部使用，不进入统计概览或 HTTP/MCP 响应。
+
+召回工作量记录在 `POWERCONTEXT_SERVER_RUNTIME_MODEL_USAGE_WRITE_TIMEOUT_SECONDS` 预算内只尝试一次写入。
+写入失败时记录安全诊断，保持已经准备好的上下文。请求取消会等待该事务完成原生清理后再传播，保护共享的内存 SQLite 数据库。
+调用方显式传入的 `recall_effort_sink` 替代关系型记录器；关闭门控时两者都不调用。已有 SQLite 和 OceanBase 数据库通过正常的
+增量建表路径补建缺失的关系表。
+
 模型用量记账是尽力而为的，且永不阻塞模型调用。每个 Runtime 拥有一个有界记账器：接收记录时不产生任何 I/O，随后在独立的短事务
 中写入。因此统计故障、队列写满，或超出该记录自身预算的锁等待，只会丢弃该条记录并留下诊断日志，而不会让产生它的操作失败。
 操作完成、读取统计以及关闭时，都会在有界等待内冲刷已经接收的记录。业务写入等待该时长后失败属于设计行为：SQLite 同一时刻只允许一个写入者，并发写入者持锁超过配置值时，等待中的业务写就会
@@ -252,6 +262,25 @@ SQLite 使用 `all`。Dream 的模型标识在首次执行时固定，关闭自�
 受鉴权保护的 `/metrics` 暴露 `powercontext_server_artifact_processing_*` 指标，只使用 `family` 标签，涵盖 Worker 额度、
 ready/retry 队列、未确认 Scope 数、发现与调用耗时，以及完成、失败、超时次数。未确认数反映最近一次发现结果；计数器随
 Supervisor 实例重建而重置。
+
+`GET /v1/capabilities` 的 `extraction` 对象分别返回配置、后台执行状态和本地观察记录。
+读取快照不查询数据库、不调用模型，也不生成整个管道的健康结论。
+
+- `configuration` 在本地已装配提取模型、自定义管道或已注册本地 Memory worker 时为 `configured`，
+  均不可用时为 `unconfigured`。注册不验证凭证或连通性；外部执行返回 `unknown`。
+- `background.location` 为 `local`、`external` 或 `none`。本地 Supervisor 的 `role`（`leader` 或 `standby`）
+  与 `state`（`running`、`degraded` 或 `stopped`）独立，standby 属于正常状态。Worker 崩溃时，Supervisor
+  仍可能正常运行并安排重试。`automatic_processing_enabled=false` 仍允许显式处理请求。
+  外部执行的运行状态和调度配置未知；没有运行中的本地 Supervisor 时，role 为 null。
+- `observation.since` 标记本次 Runtime 本地观察窗口的起点，包含其 Memory 子进程。
+  `status=unverified` 表示尚未观察到执行结果或控制故障，`observed` 表示已有记录。
+  `last_success_at` 记录成功的非空 flush 或已确认的 Worker 调用；`last_failure` 记录安全的
+  `code`、`stage` 和 `occurred_at`，例如 `inference` 阶段的 `model_timeout` 或 `worker` 阶段的 `worker_crash`。
+  通用错误保留观察到故障的边界（`flush` 或 `worker`），不推断为模型故障。
+
+成功与失败记录独立：Scope B 成功不会清除 Scope A 的失败，也不证明 A 已恢复。
+历史失败同样不表示故障仍未解决。观察记录在 Runtime 重启后清空，不证明模型连通性或远端 Worker 健康。
+通过结构化日志定位具体 Scope 的失败与重试，通过现有指标观察队列和处理进度；本地 ready 数不代表全局 Source 积压量。
 
 远程和多用户部署必须使用 `enforced`。此模式下，HTTP、MCP 和 metrics 共用同一个 Server PEP。`/v1/access/me` 返回
 `server`/`scope`/`artifact` Resource Kind、Provider 的 batch/list/relationship 能力与 Family profile。Managed Skill 的

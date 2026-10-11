@@ -22,11 +22,7 @@ use powercontext_desktop::{
     },
     credentials::{Secret, WindowsVault},
     error::SafeError,
-    transport::{
-        Endpoint, MemoryEntryResult, MemoryMutationResult, MemoryReference, MemorySearchResponse,
-        ServerApi,
-        wire::{ArtifactReference, MemoryMutationResponse, SearchMemoryResponse},
-    },
+    transport::{Endpoint, ServerApi, wire::ArtifactReference},
 };
 use serde::Deserialize;
 #[derive(Deserialize)]
@@ -95,7 +91,12 @@ async fn main() {
         );
     }
     let capabilities = api.capabilities().await.unwrap();
-    assert!(capabilities.artifact_families.iter().any(|v| v == "memory"));
+    assert!(
+        capabilities
+            .artifact_families
+            .iter()
+            .any(|v| v == "atomic-memory")
+    );
     api.default_scope().await.unwrap();
     let scopes = api.scopes("", None).await.unwrap();
     assert!(!scopes.items.is_empty());
@@ -105,25 +106,21 @@ async fn main() {
     );
     let keyword = format!("desktop{}", uuid::Uuid::new_v4().simple());
     let text = format!("{keyword} 中文记录 café\nSecond line.");
-    let mut saved = atomic_write(api.remember(&fixture.scope_id, &text).await.unwrap());
-    assert_eq!(
-        saved.records.len(),
-        1,
-        "unique synthetic note must produce one Atomic record"
-    );
-    let entry = saved.records.pop().unwrap();
-    let reference = MemoryReference::Artifact {
-        artifact: entry.artifact.clone(),
-    };
-    let results = atomic_search(api.search(&fixture.scope_id, &keyword).await.unwrap());
+    let saved = api.remember(&fixture.scope_id, &text).await.unwrap();
+    assert_eq!(saved.records.len(), 1);
+    let entry = &saved.records[0];
+    let results = api.search(&fixture.scope_id, &keyword).await.unwrap();
     assert!(
         results
             .hits
             .iter()
-            .any(|hit| hit.memory.artifact == entry.artifact)
+            .any(|hit| hit.artifact == entry.artifact)
     );
-    let exact = api.entry(&fixture.scope_id, &reference).await.unwrap();
-    assert_exact_atomic(&exact, &fixture.scope_id, &entry.artifact, &text);
+    let exact = api
+        .atomic_entry(&fixture.scope_id, &entry.artifact)
+        .await
+        .unwrap();
+    assert_eq!(exact.text, text);
     // Exercise the same native context owner used by product IPC, not only bare HTTP adapters.
     let temporary = tempfile::tempdir().unwrap();
     let manager = ConnectionManager::with_compatibility(
@@ -155,40 +152,38 @@ async fn main() {
     let expected = format!("{keyword} 中文 café\nSecond line.");
     let saved = manager.remember(generation, &submitted).await.unwrap();
     assert_eq!(saved.record.status, WriteStatus::Succeeded);
+    let result = saved.result.unwrap();
     assert_eq!(
         saved.record.references,
-        saved.result.as_ref().unwrap().references()
+        result
+            .records
+            .iter()
+            .map(|record| record.artifact.clone())
+            .collect::<Vec<_>>()
     );
-    let mut saved = atomic_write(saved.result.unwrap());
-    assert_eq!(
-        saved.records.len(),
-        1,
-        "unique synthetic note must produce one Atomic record"
-    );
-    let entry = saved.records.pop().unwrap();
-    let reference = MemoryReference::Artifact {
-        artifact: entry.artifact.clone(),
-    };
+    assert_eq!(result.records.len(), 1);
+    let entry = &result.records[0];
     assert_eq!(entry.text, expected);
-    let matches = atomic_search(manager.search_memory(generation, &keyword).await.unwrap());
+    let matches = manager.search_memory(generation, &keyword).await.unwrap();
     assert!(
         matches
             .hits
             .iter()
-            .any(|hit| hit.memory.artifact == entry.artifact)
+            .any(|hit| hit.artifact == entry.artifact)
     );
-    let exact = manager.memory_entry(generation, &reference).await.unwrap();
-    assert_exact_atomic(&exact, &fixture.scope_id, &entry.artifact, &expected);
+    let exact = manager
+        .atomic_memory_entry(generation, &entry.artifact)
+        .await
+        .unwrap();
+    assert_eq!(exact.text, expected);
     assert_eq!(matches.hits.len(), 1);
     assert!(
-        atomic_search(
-            manager
-                .search_memory(generation, "absentuniquefixtureword")
-                .await
-                .unwrap()
-        )
-        .hits
-        .is_empty()
+        manager
+            .search_memory(generation, "absentuniquefixtureword")
+            .await
+            .unwrap()
+            .hits
+            .is_empty()
     );
     let batch = format!("batch{}", uuid::Uuid::new_v4().simple());
     let mut save_ms = vec![];
@@ -200,27 +195,33 @@ async fn main() {
             .unwrap();
         save_ms.push(start.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(result.record.status, WriteStatus::Succeeded);
-        let expected_references = result.result.as_ref().unwrap().references();
-        assert_eq!(result.record.references, expected_references);
-        let records = atomic_write(result.result.unwrap()).records;
-        assert_eq!(result.record.references.len(), records.len());
+        let records = result.result.unwrap().records;
         assert!(!records.is_empty());
+        assert_eq!(result.record.references.len(), records.len());
         for (record, reference) in records.iter().zip(&result.record.references) {
-            let exact = manager.memory_entry(generation, reference).await.unwrap();
-            assert_exact_atomic(&exact, &fixture.scope_id, &record.artifact, &record.text);
+            assert_eq!(reference, &record.artifact);
+            let exact = manager
+                .atomic_memory_entry(generation, reference)
+                .await
+                .unwrap();
+            assert_eq!(exact.artifact, *reference);
+            assert_eq!(exact.text, record.text);
         }
     }
     let mut search_ms = vec![];
     let mut exact_ms = vec![];
     for _ in 0..20 {
         let start = std::time::Instant::now();
-        let matches = atomic_search(manager.search_memory(generation, &batch).await.unwrap());
+        let matches = manager.search_memory(generation, &batch).await.unwrap();
         search_ms.push(start.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(matches.hits.len(), 10);
         let start = std::time::Instant::now();
-        let exact = manager.memory_entry(generation, &reference).await.unwrap();
+        let exact = manager
+            .atomic_memory_entry(generation, &entry.artifact)
+            .await
+            .unwrap();
         exact_ms.push(start.elapsed().as_secs_f64() * 1000.0);
-        assert_exact_atomic(&exact, &fixture.scope_id, &entry.artifact, &expected);
+        assert_eq!(exact.text, expected);
     }
     if let Some(path) = &fixture.response_loss_path {
         std::fs::write(path, b"0").unwrap();
@@ -229,26 +230,17 @@ async fn main() {
         let outcome = manager.remember(generation, &text).await.unwrap();
         assert_eq!(outcome.record.status, WriteStatus::Unknown);
         assert!(outcome.result.is_none());
-        let mut results = atomic_search(manager.search_memory(generation, &keyword).await.unwrap());
+        let results = manager.search_memory(generation, &keyword).await.unwrap();
         assert_eq!(results.hits.len(), 1);
-        let committed_record = results.hits.pop().unwrap().memory;
-        let committed_reference = MemoryReference::Artifact {
-            artifact: committed_record.artifact.clone(),
-        };
         let committed = manager
-            .memory_entry(generation, &committed_reference)
+            .atomic_memory_entry(generation, &results.hits[0].artifact)
             .await
             .unwrap();
-        assert_exact_atomic(
-            &committed,
-            &fixture.scope_id,
-            &committed_record.artifact,
-            &text,
-        );
+        assert_eq!(committed.text, text);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "1");
     }
     if let Some(reader_token) = raw["reader_token"].as_str() {
-        verify_revocation(&fixture, &raw, reader_token, &reference, &expected).await;
+        verify_revocation(&fixture, &raw, reader_token, &entry.artifact, &expected).await;
         verify_scope_pages(&fixture, &raw, &manager, generation).await;
     }
     if let Some(path) = fixture.identity_change_path {
@@ -256,7 +248,7 @@ async fn main() {
         std::fs::write(path, b"change").unwrap();
         assert_eq!(
             manager
-                .memory_entry(generation, &reference)
+                .atomic_memory_entry(generation, &entry.artifact)
                 .await
                 .err()
                 .unwrap()
@@ -267,7 +259,7 @@ async fn main() {
         assert!(state.active.is_none());
         assert!(state.generation > generation);
         assert_eq!(
-            api.entry(&fixture.scope_id, &reference)
+            api.atomic_entry(&fixture.scope_id, &entry.artifact)
                 .await
                 .err()
                 .unwrap()
@@ -293,6 +285,8 @@ async fn main() {
         "{}",
         serde_json::json!({
             "result":"passed",
+            "qualification":"candidate native real-Server evidence; product profile is separate",
+            "contractSha256":fixture.compatibility_profile.contract_sha256,
             "performance": {
                 "scope":"Native ConnectionManager round trips, including identity recheck; local fixture; no UI latency or approved budget",
                 "noteCount":13,
@@ -300,37 +294,6 @@ async fn main() {
             }
         })
     );
-}
-
-fn atomic_write(result: MemoryMutationResult) -> MemoryMutationResponse {
-    let MemoryMutationResult::Atomic(result) = result else {
-        panic!("current real Server must return the Atomic mutation protocol");
-    };
-    result
-}
-
-fn atomic_search(result: MemorySearchResponse) -> SearchMemoryResponse {
-    let MemorySearchResponse::Atomic(result) = result else {
-        panic!("current real Server must return the Atomic search protocol");
-    };
-    result
-}
-
-fn assert_exact_atomic(
-    result: &MemoryEntryResult,
-    scope: &str,
-    reference: &ArtifactReference,
-    text: &str,
-) {
-    let MemoryEntryResult::Atomic(revision) = result else {
-        panic!("Atomic references must read immutable Atomic revisions");
-    };
-    assert_eq!(revision.scope_id, scope);
-    assert_eq!(revision.family, reference.family);
-    assert_eq!(revision.artifact_id, reference.artifact_id);
-    assert_eq!(revision.revision, reference.revision);
-    assert_eq!(revision.content.schema, "powercontext.atomic-memory.v1");
-    assert_eq!(revision.content.text, text);
 }
 
 fn distribution(mut values: Vec<f64>) -> serde_json::Value {
@@ -343,7 +306,7 @@ async fn verify_revocation(
     fixture: &Fixture,
     raw: &serde_json::Value,
     reader_token: &str,
-    reference: &MemoryReference,
+    artifact: &ArtifactReference,
     expected: &str,
 ) {
     // Only the isolated test administrator mutates fixture policy; never exposed to Desktop IPC.
@@ -372,11 +335,14 @@ async fn verify_revocation(
     )
     .unwrap();
     let principal = reader.principal().await.unwrap();
-    let exact = reader.entry(&fixture.scope_id, reference).await.unwrap();
-    let MemoryReference::Artifact { artifact } = reference else {
-        panic!("revocation fixture must use its saved exact Atomic reference");
-    };
-    assert_exact_atomic(&exact, &fixture.scope_id, artifact, expected);
+    assert_eq!(
+        reader
+            .atomic_entry(&fixture.scope_id, artifact)
+            .await
+            .unwrap()
+            .text,
+        expected
+    );
     client
         .post(format!("{}/v1/access/bindings/revoke", fixture.endpoint))
         .bearer_auth(admin)
@@ -392,7 +358,7 @@ async fn verify_revocation(
     assert_eq!(reader.principal().await.unwrap(), principal);
     assert_eq!(
         reader
-            .entry(&fixture.scope_id, reference)
+            .atomic_entry(&fixture.scope_id, artifact)
             .await
             .err()
             .unwrap()

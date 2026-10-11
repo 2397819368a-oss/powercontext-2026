@@ -21,11 +21,10 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
+from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.dream.models import DreamError, DreamRecord
 from powercontext.builtin.dream.service import DreamPermission
 from powercontext.builtin.evidence.resolver import EvidenceReference
-from powercontext.builtin.persistence.atomic_memory_identity import legacy_entry_artifact_id
 from powercontext.server.authz.errors import AccessControlError, AccessDeniedError, AccessIdentityRequiredError
 from powercontext.server.authz.models import AccessAction, PrincipalRef, ResourceRef
 from powercontext.server.authz.service import AccessAuditContext, AccessControlService
@@ -53,16 +52,9 @@ def _principal(identity: str) -> PrincipalRef:
 
 
 def _resource(scope_id: str, ref: EvidenceReference | None) -> ResourceRef:
-    if isinstance(ref, MemoryCitation):
-        return ResourceRef.artifact(
-            scope_id,
-            family="atomic-memory",
-            artifact_id=legacy_entry_artifact_id(scope_id, ref.memory_ref.artifact_id, ref.entry_id),
-        )
-    if isinstance(ref, ArtifactRef) and ref.family != "memory":
+    if isinstance(ref, ArtifactRef):
         return ResourceRef.artifact(scope_id, family=ref.family, artifact_id=ref.artifact_id)
-    # Sources belong to the Scope. A bare Memory revision is unresolved metadata,
-    # never authority to expand all of its entries.
+    # Sources belong to the Scope.
     return ResourceRef.scope(scope_id)
 
 

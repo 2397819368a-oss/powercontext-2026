@@ -29,15 +29,12 @@ from fastmcp.client.transports import StreamableHttpTransport
 from jsonschema import Draft202012Validator
 
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryPage
-from powercontext.builtin.runtime.atomic_memory_security import AtomicMemoryExecutionContext
 from powercontext.server.access import HttpAccessLogMiddleware
 from powercontext.server.app import create_app
-from powercontext.server.authz import PrincipalRef
 from powercontext.server.context import is_internal_bridge
 from powercontext.server.mcp import create_mcp_server, mount_mcp
 
 ResultT = TypeVar("ResultT")
-_LOCAL_CONTEXT = AtomicMemoryExecutionContext(PrincipalRef(type="service", id="local-runtime"), trusted_local=True)
 
 
 def test_mcp_guidance_is_visible_without_loading_a_skill() -> None:
@@ -302,7 +299,7 @@ def test_mcp_describes_review_write_side_effects_for_host_approval() -> None:
         assert decision.openWorldHint is False
 
 
-def test_mcp_memory_reads_preserve_exact_and_legacy_target_addresses() -> None:
+def test_mcp_memory_reads_keep_legacy_target_and_exact_artifact_addresses() -> None:
     async def exact_entry_tool_schemas() -> dict[str, dict[str, Any]]:
         server = create_mcp_server(create_app())
         async with Client(server) as client:
@@ -317,7 +314,8 @@ def test_mcp_memory_reads_preserve_exact_and_legacy_target_addresses() -> None:
     assert set(schemas) == {"get_memory_entry", "get_artifact_revision"}
     properties = schemas["get_memory_entry"]["properties"]
     assert "memory_id" not in properties
-    assert set(properties["citation"]["properties"]) == {"memory_ref", "entry_id", "entry_version_id"}
+    # Exact legacy citations are rejected by the Server; the tool keeps them opaque.
+    assert properties["citation"]["type"] == "object" and "properties" not in properties["citation"]
     assert set(properties["target"]["properties"]) == {"type", "family", "artifact_id", "entry_id"}
     assert set(schemas["get_artifact_revision"]["required"]) == {"scope_id", "family", "artifact_id", "revision"}
 
@@ -328,15 +326,11 @@ def test_mcp_bridge_reuses_logical_request_id_and_is_marked_internal(caplog) -> 
             del scope_id
             return self
 
-        async def list(self, *, include_inactive=False, limit=50, cursor=None, tag_filter=None, atomic_context=None):
-            assert atomic_context is _LOCAL_CONTEXT
+        async def list(self, *, states=("active",), limit=50, cursor=None, tag_filter=None, context=None):
+            assert context is None
             return AtomicMemoryPage(items=())
 
-    app = create_app(
-        application=SimpleNamespace(
-            memory=MemoryApplication(), sources=object(), atomic_memory=SimpleNamespace(default_context=_LOCAL_CONTEXT)
-        )
-    )
+    app = create_app(application=SimpleNamespace(sources=object(), atomic_memory=MemoryApplication()))
     requests: list[tuple[str, str, bool]] = []
 
     @app.middleware("http")
@@ -389,15 +383,11 @@ def test_mcp_access_log_counts_the_logical_tool_call_without_the_bridge(caplog) 
             del scope_id
             return self
 
-        async def list(self, *, include_inactive=False, limit=50, cursor=None, tag_filter=None, atomic_context=None):
-            assert atomic_context is _LOCAL_CONTEXT
+        async def list(self, *, states=("active",), limit=50, cursor=None, tag_filter=None, context=None):
+            assert context is None
             return AtomicMemoryPage(items=())
 
-    app = create_app(
-        application=SimpleNamespace(
-            memory=MemoryApplication(), sources=object(), atomic_memory=SimpleNamespace(default_context=_LOCAL_CONTEXT)
-        )
-    )
+    app = create_app(application=SimpleNamespace(sources=object(), atomic_memory=MemoryApplication()))
     app.add_middleware(HttpAccessLogMiddleware, skip_paths=("/mcp",))
     mount_mcp(app, access_log=True)
 

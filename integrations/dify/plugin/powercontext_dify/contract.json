@@ -544,8 +544,7 @@
       "states"
     ],
     "get_memory_entry": [
-      "artifact",
-      "citation"
+      "artifact"
     ],
     "get_atomic_memory_state": [],
     "remember_memory": [
@@ -607,19 +606,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "scope_id"
-      ],
-      "oneOf": [
-        {
-          "required": [
-            "artifact"
-          ]
-        },
-        {
-          "required": [
-            "citation"
-          ]
-        }
+        "scope_id",
+        "artifact"
       ],
       "properties": {
         "scope_id": {
@@ -654,9 +642,6 @@
               "minimum": 1
             }
           }
-        },
-        "citation": {
-          "$ref": "#/components/schemas/MemoryCitation"
         }
       }
     },
@@ -894,15 +879,6 @@
           "decision_reason"
         ],
         "properties": {
-          "memory_citations": {
-            "type": "array",
-            "maxItems": 32,
-            "default": [],
-            "description": "Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            "items": {
-              "$ref": "#/components/schemas/MemoryCitation"
-            }
-          },
           "permissions": {
             "anyOf": [
               {
@@ -1121,13 +1097,6 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ArtifactReference"
-            }
-          },
-          "memory_citations": {
-            "type": "array",
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/MemoryCitation"
             }
           },
           "content_digest": {
@@ -1676,15 +1645,6 @@
           "artifact_refs"
         ],
         "properties": {
-          "memory_citations": {
-            "type": "array",
-            "maxItems": 32,
-            "default": [],
-            "description": "Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            "items": {
-              "$ref": "#/components/schemas/MemoryCitation"
-            }
-          },
           "artifact": {
             "$ref": "#/components/schemas/ArtifactReference"
           },
@@ -2055,23 +2015,17 @@
             "pattern": ".*\\S.*"
           },
           "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
+            "type": "object",
+            "description": "Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."
           },
           "target": {
             "$ref": "#/components/schemas/LegacyMemoryTarget"
           }
         },
-        "description": "Supply exactly one exact historical citation or a legacy logical target mapped to current Atomic Memory."
+        "description": "Supply a legacy logical target mapped to current Atomic Memory. A supplied citation is rejected as unsupported."
       },
       "GetMemoryEntryResponse": {
-        "oneOf": [
-          {
-            "$ref": "#/components/schemas/MemoryEntry"
-          },
-          {
-            "$ref": "#/components/schemas/AtomicMemoryRecord"
-          }
-        ]
+        "$ref": "#/components/schemas/AtomicMemoryRecord"
       },
       "GetSkillRequest": {
         "type": "object",
@@ -2162,17 +2116,13 @@
           },
           {
             "$ref": "#/components/schemas/HandoffArtifactCitation"
-          },
-          {
-            "$ref": "#/components/schemas/HandoffMemoryCitation"
           }
         ],
         "discriminator": {
           "propertyName": "kind",
           "mapping": {
             "source": "#/components/schemas/HandoffSourceCitation",
-            "artifact": "#/components/schemas/HandoffArtifactCitation",
-            "memory": "#/components/schemas/HandoffMemoryCitation"
+            "artifact": "#/components/schemas/HandoffArtifactCitation"
           }
         }
       },
@@ -2432,25 +2382,6 @@
               "unchanged",
               "edited"
             ]
-          }
-        }
-      },
-      "HandoffMemoryCitation": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "kind",
-          "memory_citation"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "memory"
-            ]
-          },
-          "memory_citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
           }
         }
       },
@@ -2829,82 +2760,6 @@
             ]
           }
         }
-      },
-      "MemoryCitation": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "memory_ref",
-          "entry_id",
-          "entry_version_id"
-        ],
-        "properties": {
-          "memory_ref": {
-            "$ref": "#/components/schemas/ArtifactReference"
-          },
-          "entry_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[\\x21-\\x7E]+$"
-          },
-          "entry_version_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[\\x21-\\x7E]+$"
-          }
-        }
-      },
-      "MemoryEntry": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "citation",
-          "version",
-          "kind",
-          "text",
-          "state",
-          "source_refs",
-          "artifact_refs"
-        ],
-        "properties": {
-          "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
-          },
-          "version": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "kind": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          },
-          "state": {
-            "$ref": "#/components/schemas/MemoryEntryState"
-          },
-          "source_refs": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SourceReference"
-            }
-          },
-          "artifact_refs": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ArtifactReference"
-            }
-          }
-        }
-      },
-      "MemoryEntryState": {
-        "type": "string",
-        "enum": [
-          "active",
-          "inactive"
-        ]
       },
       "MemoryEntryTagTarget": {
         "type": "object",
@@ -3549,7 +3404,8 @@
             "pattern": ".*\\S.*"
           },
           "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
+            "type": "object",
+            "description": "Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."
           },
           "reason": {
             "anyOf": [
@@ -3581,7 +3437,8 @@
             "pattern": ".*\\S.*"
           },
           "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
+            "type": "object",
+            "description": "Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."
           },
           "kind": {
             "type": "string",
@@ -3790,15 +3647,6 @@
           "artifact_refs"
         ],
         "properties": {
-          "memory_citations": {
-            "type": "array",
-            "maxItems": 32,
-            "default": [],
-            "description": "Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            "items": {
-              "$ref": "#/components/schemas/MemoryCitation"
-            }
-          },
           "artifact": {
             "$ref": "#/components/schemas/ArtifactReference"
           },

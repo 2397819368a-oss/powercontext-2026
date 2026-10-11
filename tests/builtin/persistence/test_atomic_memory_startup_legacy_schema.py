@@ -35,6 +35,7 @@ from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
 from powercontext.builtin.runtime.processing_registry import canonical_processing_manifest
 from powercontext.server.authz import ArtifactOwnerRelation, MemoryEntrySelector, PrincipalRef, ResourceRef
 from powercontext.server.authz.repository import ACCESS_TABLES, RelationalAccessRepository
+from tests.legacy_memory import add_legacy_citation_columns
 
 
 def test_sqlite_startup_rejects_unmigrated_memory_with_legacy_artifact_head_columns(tmp_path: Path) -> None:
@@ -78,6 +79,7 @@ def test_sqlite_startup_rejects_unmigrated_memory_with_legacy_artifact_head_colu
             profile.database.transaction() as connection,
         ):
             await bootstrap_processing_schema(connection, canonical_processing_manifest(config))
+            await add_legacy_citation_columns(connection)
             # Frozen legacy payloads retain the old collection and entry identities.
             await connection.execute(
                 text("INSERT INTO pc_artifacts VALUES ('project', 'memory', 'memory', 1, :content, NULL)"),
@@ -109,7 +111,9 @@ def test_sqlite_startup_rejects_unmigrated_memory_with_legacy_artifact_head_colu
             owners = connection.execute("SELECT * FROM pc_access_owners").fetchall()
 
         for _ in range(2):
-            with pytest.raises(AtomicMemoryMigrationError, match="mapped head or Family state is missing"):
+            with pytest.raises(
+                AtomicMemoryMigrationError, match="legacy Memory collections remain in public Artifact tables"
+            ):
                 async with open_builtin_contexts(config):
                     pytest.fail("Legacy Memory must complete offline conversion before normal startup")
 

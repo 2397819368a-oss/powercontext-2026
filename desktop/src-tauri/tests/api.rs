@@ -17,8 +17,7 @@
 use powercontext_desktop::{
     error::SafeError,
     transport::{
-        Endpoint, MemoryEntryResult, MemoryMutationResult, MemoryReference, MemorySearchResponse,
-        ServerApi,
+        Endpoint, ServerApi,
         wire::{ArtifactReference, ReadinessStatus},
     },
 };
@@ -177,7 +176,7 @@ fn encoded_base_paths_reject_escape_aliases_and_support_unicode() {
 
 #[tokio::test]
 async fn invalid_successful_write_response_keeps_dispatch_uncertainty() {
-    let (api, request) = fixture(200, r#"{"memory":{"family":"memory","artifact_id":"m","revision":9007199254740992},"entry":null}"#).await;
+    let (api, request) = fixture(200, r#"{"changed":true,"records":[{"artifact":{"family":"atomic-memory","artifact_id":"a","revision":9007199254740992},"kind":"note","text":"synthetic note","state":"active","state_version":0,"merged_into_id":null}]}"#).await;
     let error = api
         .remember("scope-a", "synthetic note")
         .await
@@ -189,56 +188,54 @@ async fn invalid_successful_write_response_keeps_dispatch_uncertainty() {
 }
 
 #[tokio::test]
-async fn memory_mutation_protocols_preserve_all_records_and_exact_references() {
-    let legacy = serde_json::json!({"memory":{"family":"memory","artifact_id":"m","revision":7},"entry":null});
-    let atomic = serde_json::json!({"changed":true,"records":[
-        {"artifact":{"family":"atomic-memory","artifact_id":"a","revision":2},"kind":"note","text":"first","state":"active","state_version":1,"merged_into_id":null},
-        {"artifact":{"family":"atomic-memory","artifact_id":"b","revision":4},"kind":"preference","text":"second","state":"forgotten","state_version":2,"merged_into_id":null}
-    ]});
-    for (body, count) in [(legacy, 0), (atomic, 2)] {
-        let (api, request) = fixture(200, body.to_string()).await;
-        let result = api.remember("scope-a", "synthetic note").await.unwrap();
-        assert_eq!(serde_json::to_value(&result).unwrap(), body);
-        assert_eq!(result.references().len(), count);
-        if count == 0 {
-            assert!(matches!(result, MemoryMutationResult::Legacy(_)));
-        } else {
-            assert!(matches!(result, MemoryMutationResult::Atomic(_)));
-            assert!(
-                result
-                    .references()
-                    .iter()
-                    .all(|reference| matches!(reference, MemoryReference::Artifact { .. }))
-            );
-        }
-        request.await.unwrap();
-    }
+async fn atomic_records_survive_save_search_and_exact_revision_read() {
+    let artifact =
+        serde_json::json!({"family":"atomic-memory","artifact_id":"atomic/a","revision":7});
+    let kind = "中".repeat(50);
+    let text = "中文".repeat(4500);
+    let record = serde_json::json!({"artifact":artifact,"kind":kind,"text":text,"state":"active","state_version":2,"merged_into_id":null});
+    let (api, request) = fixture(
+        200,
+        serde_json::json!({"changed":true,"records":[record]}).to_string(),
+    )
+    .await;
+    let saved = api.remember("scope-a", "synthetic note").await.unwrap();
+    assert!(saved.changed);
+    assert_eq!(saved.records[0].text, text);
+    request.await.unwrap();
+    let (api, request) = fixture(200, serde_json::json!({"mode":"text","hits":[{"memory":record,"score":1,"matched_by":["text"]}]}).to_string()).await;
+    let searched = api.search("scope-a", "synthetic").await.unwrap();
+    assert_eq!(searched.hits[0].artifact, saved.records[0].artifact);
+    request.await.unwrap();
+    let revision = serde_json::json!({"scope_id":"scope-a","family":"atomic-memory","artifact_id":"atomic/a","revision":7,"content":{"schema":"powercontext.atomic-memory.v1","kind":kind,"text":text},"sources":[{"source_type":"note","source_id":"source-a"}],"artifacts":[],"content_digest":format!("sha256:{}", "0".repeat(64))});
+    let (api, request) = fixture(200, revision.to_string()).await;
+    let exact = api
+        .atomic_entry("scope-a", &saved.records[0].artifact)
+        .await
+        .unwrap();
+    assert_eq!(exact.text, text);
+    assert_eq!(exact.kind, kind);
+    assert_eq!(exact.source_refs[0].source_id, "source-a");
+    assert!(request.await.unwrap().starts_with("GET /proxy/%E4%B8%AD%E6%96%87/v1/scopes/scope-a/artifacts/atomic-memory/atomic%2Fa/revisions/7 "));
+    let mut wrong = revision;
+    wrong["revision"] = serde_json::json!(8);
+    let (api, request) = fixture(200, wrong.to_string()).await;
+    assert_eq!(
+        api.atomic_entry("scope-a", &saved.records[0].artifact)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        SafeError::InvalidResponse
+    );
+    request.await.unwrap();
 }
 
-#[tokio::test]
-async fn search_preserves_both_protocols_without_fabricating_entry_identifiers() {
-    let legacy = serde_json::json!({"memory":{"family":"memory","artifact_id":"m","revision":7},"mode":"fts","hits":[
-        {"citation":{"memory_ref":{"family":"memory","artifact_id":"m","revision":7},"entry_id":"e","entry_version_id":"v"},"text":"legacy body","score":1.0,"matched_by":["fts"]}
-    ]});
-    let atomic = serde_json::json!({"mode":"text","hits":[
-        {"memory":{"artifact":{"family":"atomic-memory","artifact_id":"a","revision":2},"kind":"note","text":"atomic body","state":"active","state_version":1,"merged_into_id":null},"score":1.0,"matched_by":["text"]}
-    ]});
-    for (body, is_atomic) in [(legacy, false), (atomic, true)] {
-        let (api, request) = fixture(200, body.to_string()).await;
-        let result = api.search("scope-a", "body").await.unwrap();
-        assert_eq!(serde_json::to_value(&result).unwrap(), body);
-        assert_eq!(matches!(result, MemorySearchResponse::Atomic(_)), is_atomic);
-        request.await.unwrap();
-    }
-}
-
-fn atomic_reference() -> MemoryReference {
-    MemoryReference::Artifact {
-        artifact: ArtifactReference {
-            family: "atomic-memory".into(),
-            artifact_id: "atomic/?x".into(),
-            revision: 7,
-        },
+fn atomic_reference() -> ArtifactReference {
+    ArtifactReference {
+        family: "atomic-memory".into(),
+        artifact_id: "atomic/?x".into(),
+        revision: 7,
     }
 }
 
@@ -248,21 +245,20 @@ fn atomic_revision() -> serde_json::Value {
         "content":{"schema":"powercontext.atomic-memory.v1","kind":"note","text":"exact immutable text","creation":{"type":"merge","input_artifact_ids":["input-a","input-b"]}},
         "sources":[{"source_type":"document","source_id":"source 中文"}],
         "artifacts":[{"family":"atomic-memory","artifact_id":"input-a","revision":1}],
-        "memory_citations":[{"memory_ref":{"family":"memory","artifact_id":"historical","revision":3},"entry_id":"entry-a","entry_version_id":"version-a"}],
         "content_digest":format!("sha256:{}", "a".repeat(64))
     })
 }
 
 #[tokio::test]
-async fn atomic_exact_read_encodes_every_path_segment_and_preserves_complete_lineage() {
+async fn atomic_exact_read_encodes_every_path_segment_and_preserves_its_reference() {
     let body = atomic_revision();
     let (api, request) = fixture(200, body.to_string()).await;
-    let result = api
-        .entry("scope/中文?x", &atomic_reference())
-        .await
-        .unwrap();
-    assert!(matches!(result, MemoryEntryResult::Atomic(_)));
-    assert_eq!(serde_json::to_value(&result).unwrap(), body);
+    let reference = atomic_reference();
+    let result = api.atomic_entry("scope/中文?x", &reference).await.unwrap();
+    assert_eq!(result.artifact, reference);
+    assert_eq!(result.text, "exact immutable text");
+    assert_eq!(result.source_refs[0].source_type, "document");
+    assert_eq!(result.source_refs[0].source_id, "source 中文");
     assert!(request.await.unwrap().starts_with(
         "GET /proxy/%E4%B8%AD%E6%96%87/v1/scopes/scope%2F%E4%B8%AD%E6%96%87%3Fx/artifacts/atomic-memory/atomic%2F%3Fx/revisions/7 "
     ));
@@ -272,7 +268,7 @@ async fn atomic_exact_read_encodes_every_path_segment_and_preserves_complete_lin
 async fn atomic_exact_read_rejects_mismatched_identity_without_using_current() {
     for (field, value) in [
         ("scope_id", serde_json::json!("another-scope")),
-        ("family", serde_json::json!("memory")),
+        ("family", serde_json::json!("skill")),
         ("artifact_id", serde_json::json!("another-artifact")),
         ("revision", serde_json::json!(8)),
     ] {
@@ -280,7 +276,7 @@ async fn atomic_exact_read_rejects_mismatched_identity_without_using_current() {
         body[field] = value;
         let (api, request) = fixture(200, body.to_string()).await;
         let error = api
-            .entry("scope/中文?x", &atomic_reference())
+            .atomic_entry("scope/中文?x", &atomic_reference())
             .await
             .err()
             .unwrap();
@@ -290,28 +286,23 @@ async fn atomic_exact_read_rejects_mismatched_identity_without_using_current() {
 }
 
 #[tokio::test]
-async fn historical_citation_exact_read_keeps_the_original_post_and_rejects_atomic_substitution() {
-    let citation = serde_json::json!({"memory_ref":{"family":"memory","artifact_id":"historical","revision":3},"entry_id":"entry-a","entry_version_id":"version-a"});
-    let reference: MemoryReference =
-        serde_json::from_value(serde_json::json!({"kind":"citation","citation":citation})).unwrap();
-    let body = serde_json::json!({"citation":citation,"version":3,"kind":"note","text":"historical text","state":"active","source_refs":[],"artifact_refs":[]});
-    let (api, request) = fixture(200, body.to_string()).await;
-    let result = api.entry("scope-a", &reference).await.unwrap();
-    assert!(matches!(result, MemoryEntryResult::Legacy(_)));
-    assert_eq!(serde_json::to_value(&result).unwrap(), body);
-    let request = request.await.unwrap();
-    assert!(request.starts_with("POST /proxy/%E4%B8%AD%E6%96%87/v1/memory/entries/get "));
-    let sent: serde_json::Value =
-        serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-    assert_eq!(
-        sent,
-        serde_json::json!({"scope_id":"scope-a","citation":citation})
-    );
-    let current = serde_json::json!({"artifact":{"family":"atomic-memory","artifact_id":"a","revision":1},"kind":"note","text":"current","state":"active","state_version":1,"merged_into_id":null});
-    let (api, request) = fixture(200, current.to_string()).await;
-    assert_eq!(
-        api.entry("scope-a", &reference).await.err().unwrap().code,
-        SafeError::InvalidResponse
-    );
-    request.await.unwrap();
+async fn atomic_write_rejects_inconsistent_merge_state_without_losing_dispatch_uncertainty() {
+    for (state, merged_into) in [
+        ("merged", serde_json::Value::Null),
+        ("active", serde_json::json!("another-memory")),
+    ] {
+        let body = serde_json::json!({"changed":true,"records":[{
+            "artifact":{"family":"atomic-memory","artifact_id":"atomic-a","revision":1},
+            "kind":"note","text":"synthetic note","state":state,"state_version":1,"merged_into_id":merged_into
+        }]});
+        let (api, request) = fixture(200, body.to_string()).await;
+        let error = api
+            .remember("scope-a", "synthetic note")
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, SafeError::InvalidResponse);
+        assert!(error.dispatched);
+        request.await.unwrap();
+    }
 }

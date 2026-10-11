@@ -25,9 +25,9 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.memory import (
     EmbeddingProfile,
-    MemoryEntryInput,
     MemoryRerankDecision,
     MemorySearchMode,
 )
@@ -37,8 +37,6 @@ from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
     BuiltinConfig,
-    RememberMemoryRequest,
-    SearchMemoryRequest,
     open_builtin_runtime,
 )
 from powercontext.builtin.scope import ScopeDraft
@@ -112,10 +110,9 @@ def test_memory_search_stays_consistent_when_append_advances_head_before_index_q
                     idempotency_key=f"concurrent-memory-search-{uuid4()}",
                 )
             )
-            memory = runtime.memory.for_scope(scope.scope_id)
-            initial = await memory.remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Stable searchable fact."),))
-            )
+            assert runtime.atomic_memory is not None
+            memory = runtime.atomic_memory.for_scope(scope.scope_id)
+            initial = await memory.create((AtomicMemoryContent(kind="fact", text="Stable searchable fact."),))
 
             provider: Any = runtime._provider
             index = provider.atomic_memory.index
@@ -137,11 +134,11 @@ def test_memory_search_stays_consistent_when_append_advances_head_before_index_q
 
             index.search = MethodType(pause_first_search, index)
             try:
-                pending = asyncio.create_task(memory.search(SearchMemoryRequest(query="stable searchable", mode=mode)))
-                await asyncio.wait_for(paused.wait(), timeout=TIMEOUT_SECONDS)
-                new_head = await memory.remember(
-                    RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Unrelated appended fact."),))
+                pending = asyncio.create_task(
+                    memory.search("stable searchable", mode="text" if mode == "fts" else mode)
                 )
+                await asyncio.wait_for(paused.wait(), timeout=TIMEOUT_SECONDS)
+                new_head = await memory.create((AtomicMemoryContent(kind="fact", text="Unrelated appended fact."),))
                 resume.set()
                 result = await asyncio.wait_for(pending, timeout=TIMEOUT_SECONDS)
             finally:
@@ -174,18 +171,13 @@ def test_memory_search_keeps_the_completed_revision_snapshot_when_head_advances_
                     title="Rerank snapshot", summary="Stable revision snapshot", idempotency_key="rerank-snapshot"
                 )
             )
-            memory = runtime.memory.for_scope(scope.scope_id)
-            initial = await memory.remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Stable searchable fact."),))
-            )
-            pending = asyncio.create_task(
-                memory.search(SearchMemoryRequest(query="stable searchable", mode="fts", limit=1))
-            )
+            assert runtime.atomic_memory is not None
+            memory = runtime.atomic_memory.for_scope(scope.scope_id)
+            initial = await memory.create((AtomicMemoryContent(kind="fact", text="Stable searchable fact."),))
+            pending = asyncio.create_task(memory.search("stable searchable", mode="text", limit=1))
             try:
                 await asyncio.wait_for(reranker.paused.wait(), timeout=TIMEOUT_SECONDS)
-                new_head = await memory.remember(
-                    RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Unrelated appended fact."),))
-                )
+                new_head = await memory.create((AtomicMemoryContent(kind="fact", text="Unrelated appended fact."),))
                 reranker.resume.set()
                 result = await asyncio.wait_for(pending, timeout=TIMEOUT_SECONDS)
             finally:
@@ -215,10 +207,9 @@ def test_memory_search_keeps_exact_identity_when_an_unrelated_memory_is_added_be
                 )
             )
             scope_id = scope.scope_id
-            memory = runtime.memory.for_scope(scope_id)
-            initial = await memory.remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Stable searchable fact."),))
-            )
+            assert runtime.atomic_memory is not None
+            memory = runtime.atomic_memory.for_scope(scope_id)
+            initial = await memory.create((AtomicMemoryContent(kind="fact", text="Stable searchable fact."),))
 
             provider: Any = runtime._provider
             service = provider.atomic_memory.index
@@ -228,17 +219,13 @@ def test_memory_search_keeps_exact_identity_when_an_unrelated_memory_is_added_be
             async def advance_head_before_search(_self: Any, *args: Any, **kwargs: Any) -> Any:
                 nonlocal update_number
                 update_number += 1
-                await memory.remember(
-                    RememberMemoryRequest(
-                        entries=(MemoryEntryInput(kind="fact", text=f"Concurrent update {update_number}."),)
-                    )
-                )
+                await memory.create((AtomicMemoryContent(kind="fact", text=f"Concurrent update {update_number}."),))
                 return await original_search(*args, **kwargs)
 
             service.search = MethodType(advance_head_before_search, service)
             try:
                 result = await asyncio.wait_for(
-                    memory.search(SearchMemoryRequest(query="stable searchable", mode="fts")),
+                    memory.search("stable searchable", mode="text"),
                     timeout=TIMEOUT_SECONDS,
                 )
                 assert tuple(hit.hit.artifact_ref for hit in result.hits) == (initial.primary.ref,)

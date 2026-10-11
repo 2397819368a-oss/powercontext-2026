@@ -25,13 +25,12 @@ from pathlib import Path
 from typing import Any
 
 from powercontext.artifacts import ArtifactRef
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
     BuiltinConfig,
     BuiltinRuntime,
     PrepareContextRequest,
-    RememberMemoryRequest,
     open_builtin_runtime,
 )
 from powercontext.builtin.scope import ScopeDraft
@@ -70,6 +69,9 @@ async def execute(request: dict[str, Any]) -> dict[str, Any]:
     await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
     config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{directory / 'runtime.db'}"))
     async with open_builtin_runtime(config, scheduler_path=directory / "scheduler.db") as runtime:
+        memory = runtime.atomic_memory
+        if memory is None:
+            raise RuntimeError("Atomic Memory is unavailable")  # noqa: TRY003
         if request["mode"] == "seed":
             if runtime.scopes is None:
                 raise RuntimeError("The example requires the Scope registry")  # noqa: TRY003
@@ -87,23 +89,19 @@ async def execute(request: dict[str, Any]) -> dict[str, Any]:
                     idempotency_key="systemone-example:analytics",
                 )
             )
-            saved = await runtime.memory.for_scope(scope.scope_id).remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="decision", text=SCENARIO["policy"]),))
-            )
-            other_saved = await runtime.memory.for_scope(other.scope_id).remember(
-                RememberMemoryRequest(
-                    entries=(
-                        MemoryEntryInput(
-                            kind="decision",
-                            text=(
-                                f"{SCENARIO['query']}\n"
-                                "Analytics project amount policy: use Decimal ROUND_HALF_EVEN for integer cents. "
-                                "This decision belongs only to the separate analytics project."
-                            ),
-                        ),
-                    )
-                )
-            )
+            saved = await memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(kind="decision", text=SCENARIO["policy"]),
+            ))
+            other_saved = await memory.for_scope(other.scope_id).create((
+                AtomicMemoryContent(
+                    kind="decision",
+                    text=(
+                        f"{SCENARIO['query']}\n"
+                        "Analytics project amount policy: use Decimal ROUND_HALF_EVEN for integer cents. "
+                        "This decision belongs only to the separate analytics project."
+                    ),
+                ),
+            ))
             return {
                 "scope_id": scope.scope_id,
                 "other_scope_id": other.scope_id,
@@ -134,9 +132,9 @@ async def execute(request: dict[str, Any]) -> dict[str, Any]:
             summary = request["summary"]
             if not isinstance(summary, str) or not summary.strip():
                 raise ValueError("An observed outcome summary is required")  # noqa: TRY003
-            saved = await runtime.memory.for_scope(request["scope_id"]).remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text=f"invoice-outcome {summary}"),))
-            )
+            saved = await memory.for_scope(request["scope_id"]).create((
+                AtomicMemoryContent(kind="fact", text=f"invoice-outcome {summary}"),
+            ))
             return {"artifact_ref": saved.primary.ref.model_dump(mode="json"), "pid": os.getpid()}
         if request["mode"] == "resume":
             return await _prepare(runtime, request["scope_id"], "invoice-outcome")

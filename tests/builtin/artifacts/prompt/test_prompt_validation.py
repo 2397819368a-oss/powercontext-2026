@@ -239,6 +239,37 @@ def test_atomic_reconciliation_demonstration_accepts_current_published_artifact_
     PromptRegistry(builtin_prompt_definitions()).get("atomic_memory.reconcile").validate(content)
 
 
+@pytest.mark.parametrize("schema_field", ["schema", "schema_"])
+def test_atomic_reconciliation_preserves_legacy_demonstration_metadata(schema_field: str) -> None:
+    case = _atomic_artifact_case()
+    case["expected_output"]["content"].update({schema_field: "powercontext.atomic-memory.v1", "creation": None})
+    content = _content(case)
+    original = content.model_dump_json()
+    definition = PromptRegistry(builtin_prompt_definitions()).get("atomic_memory.reconcile")
+    definition.validate(content)
+    resolved = definition.resolve("scope-a", Prompt(artifact_id="atomic_memory.reconcile", revision=1, content=content))
+    assert content.model_dump_json() == original
+    assert resolved.demonstrations == content.demonstrations
+    assert resolved.demonstrations[0].expected_output == case["expected_output"]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"creation": {"type": "merge", "input_artifact_ids": ["memory-a", "memory-b"]}},
+        {"schema": "unsupported"},
+        {"schema_": "unsupported"},
+        {"revision": 1},
+    ],
+)
+def test_atomic_reconciliation_demonstrations_reject_invalid_metadata(metadata: dict[str, Any]) -> None:
+    case = _atomic_artifact_case()
+    case["expected_output"]["content"].update(metadata)
+    with pytest.raises(PromptError) as caught:
+        PromptRegistry(builtin_prompt_definitions()).get("atomic_memory.reconcile").validate(_content(case))
+    assert caught.value.code == "prompt_definition_incompatible"
+
+
 def test_atomic_reconciliation_demonstration_allows_artifact_support_without_consuming_identity() -> None:
     case = _atomic_artifact_case()
     case["input"]["related"] = []

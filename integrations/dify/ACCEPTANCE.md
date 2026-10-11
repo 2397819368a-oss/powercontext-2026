@@ -80,7 +80,7 @@ Record Dify, plugin-daemon, SDK, CLI, Python, Server SHA, package checksum and m
 - [ ] Verify HTTPS certificate validation and private-network HTTP configuration from the daemon.
 - [ ] Test read/write permissions with restricted principals and nested citations/Artifacts/Handoffs/candidates across Scope boundaries.
 - [ ] Overlap actual daemon requests using different credentials and Scopes; inspect credentials, Scope, outer deadlines and write outcomes.
-- [ ] Exercise all 20 tools with supported real generation providers, complete readback and failure/unknown branches. For Atomic Memory, verify exact current/historical content, the current `etag`, state/version readback, guarded revision/forgetting, and rejection of legacy citation writes.
+- [ ] Exercise all 20 tools with supported real generation providers, complete readback and failure/unknown branches. For Atomic Memory, verify exact current/historical content, the current `etag`, state/version readback, guarded revision/forgetting, and local rejection of legacy Memory citations.
 - [ ] Verify trusted application write controls; a model's self-reported consent must not authorize writing.
 - [ ] Agree publisher, namespace, contact and maintenance ownership, including coexistence/upgrade with `oceanbase/powermem`.
 - [ ] Submit the reviewed source/package to `langgenius/dify-plugins`; record repository acceptance and Marketplace availability separately.

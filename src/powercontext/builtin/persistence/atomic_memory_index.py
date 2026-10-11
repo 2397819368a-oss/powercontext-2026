@@ -18,14 +18,12 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel
-from sqlalchemy import Table, bindparam, delete, insert, text, update
+from sqlalchemy import Table, bindparam, delete, insert, inspect, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef, ChannelScore
@@ -42,24 +40,33 @@ from powercontext.builtin.artifacts.search import (
 )
 from powercontext.builtin.inference import EmbeddingModel
 from powercontext.builtin.persistence.atomic_memory_index_schema import ATOMIC_MEMORY_PROJECTION_FORMAT
+from powercontext.builtin.persistence.tables import ARTIFACT_TAGS_TABLE
 from powercontext.builtin.tags import TagFilter
 
 AtomicMemorySearchMode = Literal["fts", "vector", "hybrid"]
+# Columns of unreleased development layouts; their tables are derived and rebuilt rather than migrated.
+_OBSOLETE_PROJECTION_COLUMNS = frozenset({"read_grants", "owner_type", "owner_id"})
 
 
-def atomic_memory_coverage_sql(terms: Sequence[str]) -> str:
-    """Sum integer term matches with logarithmic expression depth.
+async def _projection_columns(connection: AsyncConnection, table: Table) -> set[str]:
+    def read(sync: Any) -> set[str]:
+        inspector = inspect(sync)
+        if not inspector.has_table(table.name):
+            return set()
+        return {column["name"] for column in inspector.get_columns(table.name)}
 
-    Parentheses avoid SQLite's left-associated expression depth limit without
-    removing terms or changing lexical coverage and admission.
-    """
-    expressions = list(terms)
-    while len(expressions) > 1:
-        expressions = [
-            f"({expressions[index]} + {expressions[index + 1]})" if index + 1 < len(expressions) else expressions[index]
-            for index in range(0, len(expressions), 2)
-        ]
-    return expressions[0] if expressions else "0"
+    return await connection.run_sync(read)
+
+
+async def drop_obsolete_atomic_memory_projection(connection: AsyncConnection, table: Table) -> bool:
+    """Drop a development-layout current table so initialization recreates it; authority stays unchanged."""
+
+    if not await _projection_columns(connection, table) & _OBSOLETE_PROJECTION_COLUMNS:
+        return False
+    await connection.run_sync(lambda sync: table.drop(sync))
+    if connection.dialect.name == "sqlite":
+        await connection.exec_driver_sql(f"DROP TABLE IF EXISTS {table.name}_fts")
+    return True
 
 
 class AtomicMemoryIndexError(RuntimeError):
@@ -80,49 +87,11 @@ class AtomicMemoryIndexCapabilities:
 
 
 @dataclass(frozen=True)
-class AtomicMemoryReadGrant:
-    """A current direct read binding, including its source and expiry."""
-
-    binding_id: str
-    subject_type: str
-    subject_id: str
-    expires_at: datetime | None = None
-
-    def as_json(self) -> dict[str, object]:
-        if self.expires_at is not None and self.expires_at.utcoffset() is None:
-            raise AtomicMemoryIndexError("grant-expiry", "Read grant expiry must have a timezone")
-        return {
-            "binding_id": self.binding_id,
-            "subject_type": self.subject_type,
-            "subject_id": self.subject_id,
-            "expires_at": None if self.expires_at is None else self.expires_at.timestamp(),
-        }
-
-
-@dataclass(frozen=True)
-class AtomicMemoryProjectionSecurity:
-    owner_type: str
-    owner_id: str
-    read_grants: tuple[AtomicMemoryReadGrant, ...] = ()
-
-
-@dataclass(frozen=True)
 class AtomicMemoryIndexFilter:
-    """Trusted authorization conditions, applied before scoring or truncation.
-
-    scope_read means the authorization boundary verified scope-wide body read.
-    writable always requires the formal artifact owner, including for a scope
-    administrator. Group IDs must come from the trusted identity resolver.
-    """
+    """Same-row content filters; the runtime authorizes Scope read first."""
 
     tag_filter: TagFilter | None = None
     kind: str | None = None
-    principal_type: str | None = None
-    principal_id: str | None = None
-    scope_read: bool = False
-    writable: bool = False
-    group_ids: tuple[str, ...] = ()
-    now: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -143,7 +112,6 @@ class AtomicMemoryProjection:
     state_version: int
     prepared: PreparedAtomicMemoryProjection
     tag_keys: tuple[str, ...]
-    security: AtomicMemoryProjectionSecurity
 
 
 @dataclass(frozen=True)
@@ -217,17 +185,6 @@ class AtomicMemoryIndex(Protocol):
         self, connection: AsyncConnection, scope_id: str, artifact_id: str, tag_keys: tuple[str, ...], /
     ) -> None: ...
 
-    async def refresh_access(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        artifact_id: str,
-        owner_type: str,
-        owner_id: str,
-        read_grants: tuple[AtomicMemoryReadGrant, ...],
-        /,
-    ) -> None: ...
-
 
 class AtomicMemoryProjectionPublisher:
     """Prepare vectors outside writes and publish with the authoritative transaction."""
@@ -236,13 +193,9 @@ class AtomicMemoryProjectionPublisher:
         self,
         index: AtomicMemoryIndex,
         *,
-        load_tags: Callable[[AsyncConnection, str, str], Awaitable[tuple[str, ...]]],
-        load_security: Callable[[AsyncConnection, str, str, Any], Awaitable[AtomicMemoryProjectionSecurity]],
         embedding_model: EmbeddingModel | None = None,
     ) -> None:
         self.index = index
-        self._load_tags = load_tags
-        self._load_security = load_security
         self._embedding_model = embedding_model
 
     @property
@@ -299,7 +252,6 @@ class AtomicMemoryProjectionPublisher:
         scope_id: str,
         record: Any,
         prepared: PreparedAtomicMemoryProjection,
-        execution_context: Any,
     ) -> None:
         artifact = record.artifact
         if record.state.state != "active":
@@ -309,8 +261,7 @@ class AtomicMemoryProjectionPublisher:
         if content_hash != prepared.content_hash:
             raise AtomicMemoryIndexError("prepared-content", "Prepared projection does not match the committed content")
         self.validate_prepared(prepared)
-        tags = await self._load_tags(connection, scope_id, artifact.artifact_id)
-        security = await self._load_security(connection, scope_id, artifact.artifact_id, execution_context)
+        tags = await load_atomic_memory_tags(connection, scope_id, artifact.artifact_id)
         await self.index.replace(
             connection,
             scope_id,
@@ -319,12 +270,29 @@ class AtomicMemoryProjectionPublisher:
                 state_version=record.state.state_version,
                 prepared=prepared,
                 tag_keys=tags,
-                security=security,
             ),
         )
 
     async def remove(self, connection: AsyncConnection, scope_id: str, artifact_id: str) -> None:
         await self.index.delete(connection, scope_id, artifact_id)
+
+
+async def load_atomic_memory_tags(connection: AsyncConnection, scope_id: str, artifact_id: str) -> tuple[str, ...]:
+    rows = (
+        await connection.execute(
+            select(ARTIFACT_TAGS_TABLE.c.tag_key)
+            .where(
+                ARTIFACT_TAGS_TABLE.c.scope_id == scope_id,
+                ARTIFACT_TAGS_TABLE.c.family == "atomic-memory",
+                ARTIFACT_TAGS_TABLE.c.artifact_id == artifact_id,
+                ARTIFACT_TAGS_TABLE.c.target_type == "artifact",
+                ARTIFACT_TAGS_TABLE.c.target_id == artifact_id,
+            )
+            .order_by(ARTIFACT_TAGS_TABLE.c.tag_key)
+            .with_for_update()
+        )
+    ).scalars()
+    return tuple(str(row) for row in rows)
 
 
 def atomic_memory_embedding_input(kind: str, body: str, /) -> str:
@@ -339,6 +307,16 @@ def atomic_memory_profile_fingerprint(profile: EmbeddingProfile, /) -> str:
     return sha256(canonical_json(profile.model_dump(mode="json"))).hexdigest()
 
 
+def sqlite_fts_coverage_sql(terms: tuple[str, ...], /) -> tuple[str, dict[str, object]]:
+    """Count whole terms without growing SQL depth or bind count with query length."""
+
+    return (
+        "(SELECT COUNT(*) FROM json_each(:fts_terms) AS query_term "
+        "WHERE instr(' ' || searchable_text || ' ', query_term.value) > 0)",
+        {"fts_terms": json.dumps([f" {term} " for term in terms], ensure_ascii=False)},
+    )
+
+
 def atomic_memory_filter_sql(
     filters: AtomicMemoryIndexFilter, dialect: Literal["sqlite", "mysql"], /
 ) -> tuple[str, dict[str, object]]:
@@ -346,19 +324,6 @@ def atomic_memory_filter_sql(
 
     parameters: dict[str, object] = {}
     conditions: list[str] = []
-    if (filters.principal_type is None) != (filters.principal_id is None):
-        raise AtomicMemoryIndexError("principal", "Both principal type and ID are required")
-    if filters.writable or not filters.scope_read:
-        if filters.principal_type is None:
-            raise AtomicMemoryIndexError("authorization", "Retrieval requires an authenticated or trusted read policy")
-        parameters.update(principal_type=filters.principal_type, principal_id=filters.principal_id)
-        owner = "(owner_type = :principal_type AND owner_id = :principal_id)"
-        if filters.writable:
-            conditions.append(owner)
-        else:
-            grant, grant_parameters = _atomic_memory_read_grant_sql(filters, dialect)
-            parameters.update(grant_parameters)
-            conditions.append(f"({owner} OR {grant})")
     if filters.tag_filter is not None:
         tags: list[str] = []
         for index, tag_key in enumerate(filters.tag_filter.keys):
@@ -375,46 +340,6 @@ def atomic_memory_filter_sql(
         conditions.append("kind = :kind_filter" if dialect == "sqlite" else "BINARY kind = BINARY :kind_filter")
         parameters["kind_filter"] = filters.kind
     return " AND ".join(conditions) or "1 = 1", parameters
-
-
-def _atomic_memory_read_grant_sql(
-    filters: AtomicMemoryIndexFilter, dialect: Literal["sqlite", "mysql"]
-) -> tuple[str, dict[str, object]]:
-    now = datetime.now(UTC) if filters.now is None else filters.now
-    if now.utcoffset() is None:
-        raise AtomicMemoryIndexError("clock", "Authorization query time must have a timezone")
-    parameters: dict[str, object] = {"access_now": now.timestamp()}
-    if dialect == "sqlite":
-        subject = (
-            "(json_extract(g.value, '$.subject_type') = :principal_type "
-            "AND json_extract(g.value, '$.subject_id') = :principal_id)"
-        )
-        expiry = "json_extract(g.value, '$.expires_at')"
-        source = "json_each(read_grants) AS g"
-    else:
-        subject = "(BINARY g.subject_type = BINARY :principal_type AND BINARY g.subject_id = BINARY :principal_id)"
-        expiry = "g.expires_at"
-        source = (
-            "JSON_TABLE(read_grants, '$[*]' COLUMNS("
-            "subject_type VARCHAR(16) PATH '$.subject_type', "
-            "subject_id VARCHAR(255) PATH '$.subject_id', "
-            "expires_at DOUBLE PATH '$.expires_at' NULL ON EMPTY)) AS g"
-        )
-    subjects = [subject]
-    for index, group_id in enumerate(filters.group_ids):
-        key = f"access_group_{index}"
-        parameters[key] = group_id
-        subjects.append(
-            f"(json_extract(g.value, '$.subject_type') = 'group' AND json_extract(g.value, '$.subject_id') = :{key})"
-            if dialect == "sqlite"
-            else f"(BINARY g.subject_type = BINARY 'group' AND BINARY g.subject_id = BINARY :{key})"
-        )
-    # SQL fragments are fixed above; principal/group IDs remain bound parameters.
-    return (
-        f"EXISTS (SELECT 1 FROM {source} WHERE ({' OR '.join(subjects)}) "  # noqa: S608
-        f"AND ({expiry} IS NULL OR {expiry} > :access_now))",
-        parameters,
-    )
 
 
 def atomic_memory_vector_sql(
@@ -459,15 +384,6 @@ def atomic_memory_vector_sql(
         "UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, invalid_vectors FROM readiness WHERE invalid_vectors > 0 "
         "ORDER BY invalid_vectors DESC, distance, artifact_id"
     )
-
-
-_AtomicMemoryQuery = TypeVar("_AtomicMemoryQuery", bound=AtomicMemorySearchRequest | AtomicMemoryRelatedRequest)
-
-
-def freeze_atomic_memory_query_time(request: _AtomicMemoryQuery, /) -> _AtomicMemoryQuery:
-    if request.filters.now is not None:
-        return request
-    return replace(request, filters=replace(request.filters, now=datetime.now(UTC)))
 
 
 def atomic_memory_channel_hits(rows: Any, /, *, vector: bool = False) -> tuple[AtomicMemoryIndexHit, ...]:
@@ -573,13 +489,18 @@ class RelationalAtomicMemoryIndex:
     def _encode_embedding(self, vector: tuple[float, ...]) -> object:
         return vector
 
+    async def require_current_schema(self, connection: AsyncConnection) -> None:
+        if await _projection_columns(connection, self.table) & _OBSOLETE_PROJECTION_COLUMNS:
+            raise AtomicMemoryIndexError(
+                "current-schema",
+                "Atomic Memory uses an obsolete development projection schema. Stop writers and run "
+                "powercontext server atomic-memory-rebuild-projection --maintenance-confirmed.",
+            )
+
     async def replace(self, connection: AsyncConnection, scope_id: str, projection: AtomicMemoryProjection, /) -> None:
         if projection.artifact_ref.family != "atomic-memory":
             raise AtomicMemoryIndexError("family", "Atomic Memory index only accepts atomic-memory artifacts")
         prepared = projection.prepared
-        security = projection.security
-        if not security.owner_type or not security.owner_id:
-            raise AtomicMemoryIndexError("owner", "Current projection requires a formal artifact owner")
         embedding = None
         fingerprint = None
         input_hash = None
@@ -614,9 +535,6 @@ class RelationalAtomicMemoryIndex:
                 text=prepared.text,
                 searchable_text=prepared.searchable_text,
                 tag_keys=json.dumps(sorted(set(projection.tag_keys)), ensure_ascii=False),
-                owner_type=security.owner_type,
-                owner_id=security.owner_id,
-                read_grants=json.dumps([grant.as_json() for grant in security.read_grants], ensure_ascii=False),
                 embedding=embedding,
                 profile_fingerprint=fingerprint,
                 embedding_input_hash=input_hash,
@@ -637,28 +555,6 @@ class RelationalAtomicMemoryIndex:
             .values(tag_keys=json.dumps(sorted(set(tag_keys)), ensure_ascii=False))
         )
 
-    async def refresh_access(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        artifact_id: str,
-        owner_type: str,
-        owner_id: str,
-        read_grants: tuple[AtomicMemoryReadGrant, ...],
-        /,
-    ) -> None:
-        if not owner_type or not owner_id:
-            raise AtomicMemoryIndexError("owner", "Current projection requires a formal artifact owner")
-        await connection.execute(
-            update(self.table)
-            .where(self.table.c.scope_id == scope_id, self.table.c.artifact_id == artifact_id)
-            .values(
-                owner_type=owner_type,
-                owner_id=owner_id,
-                read_grants=json.dumps([grant.as_json() for grant in read_grants], ensure_ascii=False),
-            )
-        )
-
     async def probe_recoverable(
         self,
         connection: AsyncConnection,
@@ -672,10 +568,9 @@ class RelationalAtomicMemoryIndex:
         Qualification precedes LIMIT. This is an existence signal, not an invented
         pre-admission collection count. Cross-channel admission excludes a row
         already admitted by either channel, even if the delivered pool was capped.
-        The same current row carries its body, vectors and authorization fields.
+        The same current row carries its body, vectors and content filters.
         """
 
-        request = freeze_atomic_memory_query_time(request)
         dialect = "sqlite" if connection.dialect.name == "sqlite" else "mysql"
         eligibility, parameters = atomic_memory_filter_sql(request.filters, dialect)
         parameters["scope_id"] = scope_id
@@ -684,18 +579,18 @@ class RelationalAtomicMemoryIndex:
         if request.mode in {"fts", "hybrid"}:
             terms, required = fts_query_requirements(request.query, floor=request.admission)
             _, lower_required = fts_query_requirements(request.query, floor=floor)
-            coverage: list[str] = []
-            for index, term in enumerate(terms):
-                key = f"probe_term_{index}"
-                parameters[key] = f" {term} "
-                matched = (
-                    f"instr(' ' || searchable_text || ' ', :{key}) > 0"
-                    if dialect == "sqlite"
-                    else f"LOCATE(BINARY :{key}, BINARY CONCAT(' ', searchable_text, ' ')) > 0"
-                )
-                coverage.append(f"CASE WHEN {matched} THEN 1 ELSE 0 END")
-            if coverage:
-                lexical = atomic_memory_coverage_sql(coverage)
+            if terms:
+                if dialect == "sqlite":
+                    lexical, coverage_parameters = sqlite_fts_coverage_sql(terms)
+                    parameters.update(coverage_parameters)
+                else:
+                    coverage: list[str] = []
+                    for index, term in enumerate(terms):
+                        key = f"probe_term_{index}"
+                        parameters[key] = f" {term} "
+                        matched = f"LOCATE(BINARY :{key}, BINARY CONCAT(' ', searchable_text, ' ')) > 0"
+                        coverage.append(f"CASE WHEN {matched} THEN 1 ELSE 0 END")
+                    lexical = " + ".join(coverage)
                 parameters.update(probe_required=required, probe_lower_required=lower_required)
                 current.append(f"(({lexical}) >= :probe_required)")
                 recoverable.append(f"(({lexical}) >= :probe_lower_required)")
@@ -769,8 +664,6 @@ __all__ = [
     "AtomicMemoryIndexHit",
     "AtomicMemoryProjection",
     "AtomicMemoryProjectionPublisher",
-    "AtomicMemoryProjectionSecurity",
-    "AtomicMemoryReadGrant",
     "AtomicMemoryRelatedRequest",
     "AtomicMemorySearchChannels",
     "AtomicMemorySearchRequest",
@@ -782,4 +675,6 @@ __all__ = [
     "atomic_memory_filter_sql",
     "atomic_memory_profile_fingerprint",
     "combine_atomic_memory_channels",
+    "load_atomic_memory_tags",
+    "sqlite_fts_coverage_sql",
 ]

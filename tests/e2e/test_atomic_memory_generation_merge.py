@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryCandidate,
     AtomicMemoryEvidence,
@@ -30,12 +29,15 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
 from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
     ATOMIC_MEMORY_RECONCILIATION_INSTRUCTIONS,
     AtomicMemoryArtifactEvidence,
+    AtomicMemoryReconciliationContent,
     AtomicMemoryReconciliationInput,
     AtomicMemoryReconciliationOutput,
 )
 from powercontext.builtin.inference import GenerationResult, character_token_estimator
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig, open_builtin_contexts
+from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, RuntimeConfig, open_builtin_contexts
+from powercontext.builtin.runtime.composition import open_builtin_runtime
+from powercontext.builtin.scope import ScopeDraft
 from powercontext.sources import SourceRef
 from tests.e2e.dream_support import memory_source_text
 
@@ -84,7 +86,7 @@ class _PolicyReconciler:
                 action="merge" if merge else "create",
                 compared_ids=tuple(item.item_id for item in request.related),
                 target_ids=tuple(item.item_id for item in inputs) if merge else (),
-                content=AtomicMemoryContent(kind=request.proposal.kind, text=request.proposal.text),
+                content=AtomicMemoryReconciliationContent(kind=request.proposal.kind, text=request.proposal.text),
                 evidence_ids=evidence_ids,
                 reason="Combine the two existing rollout rules with the consolidation Source evidence."
                 if merge
@@ -118,7 +120,7 @@ class _RevisionReconciler:
                 action="create" if target is None else "merge" if request.proposal.original_refs else "revise",
                 compared_ids=tuple(item.item_id for item in request.related),
                 target_ids=() if target is None else (target.item_id,),
-                content=AtomicMemoryContent(kind="fact", text=request.proposal.text),
+                content=AtomicMemoryReconciliationContent(kind="fact", text=request.proposal.text),
                 evidence_ids=request.proposal.evidence_ids
                 if target is None
                 else (*request.proposal.evidence_ids, *target.evidence_ids),
@@ -134,11 +136,70 @@ class _SupportedCreateReconciler(_RevisionReconciler):
             output=AtomicMemoryReconciliationOutput(
                 action="create",
                 compared_ids=tuple(item.item_id for item in request.related),
-                content=AtomicMemoryContent(kind="constraint", text=request.proposal.text),
+                content=AtomicMemoryReconciliationContent(kind="constraint", text=request.proposal.text),
                 evidence_ids=tuple(item.evidence_id for item in request.evidence),
                 reason="Keep the independent precheck rule with supporting budget facts without consuming them.",
             )
         )
+
+
+def test_public_flush_derives_merge_creation_from_model_owned_content(tmp_path: Path) -> None:
+    reconciler = _PolicyReconciler()
+    pipeline = AtomicMemoryGenerationPipeline(
+        extractor=_PolicyExtractor(), reconciler=reconciler, estimator=character_token_estimator()
+    )
+    config = BuiltinConfig(
+        database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'public-generation-merge.db'}"),
+        runtime=RuntimeConfig(atomic_memory_related_mode="fts"),
+    )
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config, candidate_pipeline=pipeline) as runtime:
+            assert runtime.scopes is not None and runtime.atomic_memory is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Rollout policy", summary="Source-driven merge", idempotency_key="rollout-policy")
+            )
+            sources = runtime.sources.for_scope(scope.scope_id)
+            processing = runtime.atomic_memory.for_scope(scope.scope_id)
+            memory = runtime.atomic_memory.for_scope(scope.scope_id)
+            originals = []
+            for position, text in enumerate((CANARY, PAUSE), 1):
+                await sources.capture(CaptureSource(source_id=f"rule-{position}", content=text, metadata={}))
+                result = await processing.flush(limit=1)
+                assert result.current_cursor == position and result.processed
+                originals.append(
+                    next(item for item in (await memory.list()).items if item.artifact.content.text == text)
+                )
+
+            receipt = await sources.capture(
+                CaptureSource(source_id="consolidate-rules", content=CONSOLIDATION, metadata={})
+            )
+            result = await processing.flush(limit=1)
+            assert result.previous_cursor == 2
+            assert result.current_cursor == result.high_watermark == 3
+            assert result.processed and not result.remaining_work
+            assert (await processing.cursor()).sequence == 3
+            (merged,) = (await memory.list()).items
+            assert merged.artifact.content.text == POLICY
+            assert merged.artifact.content.creation is not None
+            assert merged.artifact.content.creation.type == "merge"
+            assert set(merged.artifact.content.creation.input_artifact_ids) == {
+                original.ref.artifact_id for original in originals
+            }
+            assert merged.ref.revision == 1
+            assert len(merged.artifact.lineage.artifacts) == len(originals)
+            assert all(original.ref in merged.artifact.lineage.artifacts for original in originals)
+            assert merged.artifact.lineage.sources == (receipt.source_ref,)
+            for original in originals:
+                current = await memory.get(original.ref.artifact_id)
+                assert current.state.state == "merged"
+                assert current.state.merged_into_id == merged.ref.artifact_id
+                assert current.artifact == original.artifact
+            idle = await processing.flush(limit=1)
+            assert idle.previous_cursor == idle.current_cursor == 3
+            assert not idle.processed
+
+    asyncio.run(scenario())
 
 
 def test_repeated_source_evolution_keeps_flush_bounded_and_exact_history_readable(tmp_path: Path) -> None:

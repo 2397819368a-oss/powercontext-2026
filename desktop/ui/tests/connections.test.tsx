@@ -73,12 +73,17 @@ function show(p = profile) {
   );
   return onState;
 }
-const currentCompatibility = qualifications.find(
-  (p) => p.contractSha256 === contractSha256,
-)!;
 const historicalCompatibility = qualifications.find(
   (p) => p.contractSha256 !== contractSha256,
 )!;
+const currentCompatibility = {
+  ...historicalCompatibility,
+  id: "synthetic-current-contract-ui-fixture",
+  serverCommit: "synthetic-ui-fixture",
+  contractSha256,
+  artifactSha256: "synthetic-ui-fixture",
+  evidence: "Synthetic UI fixture; no server qualification evidence.",
+};
 function qualifiedState(p = profile): DesktopState {
   return {
     ...state(p),

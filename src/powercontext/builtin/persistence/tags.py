@@ -24,21 +24,18 @@ import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import rfc8785
 from sqlalchemy import ColumnElement, and_, delete, func, insert, literal, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import Artifact, ArtifactRef
-from powercontext.builtin.artifacts.memory.models import Memory
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
-from powercontext.builtin.persistence.atomic_memory_compatibility import resolve_legacy_memory_target
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACT_TAGS_TABLE
 from powercontext.builtin.records import (
-    BaseOperationNotSupportedError,
     BaseValueNotFoundError,
     CursorExpiredError,
     InvalidCursorError,
@@ -46,9 +43,7 @@ from powercontext.builtin.records import (
 from powercontext.builtin.tags import (
     ArtifactTagSet,
     ArtifactTagTarget,
-    MemoryEntryTagTarget,
     TagFilter,
-    TaggedMemoryCitation,
     TaggedTarget,
     TagPreconditionError,
     TagQuery,
@@ -87,31 +82,6 @@ def tag_predicate(
     return count == len(tag_filter.keys) if tag_filter.match == "all" else count > 0
 
 
-def memory_tag_sql(alias: Literal["f", "m"]) -> str:
-    """A parameterized predicate for native FTS/vector SQL (aliases are internal)."""
-
-    return """
-      AND (SELECT COUNT(*) FROM pc_artifact_tags AS tags
-           WHERE tags.scope_id = m.scope_id
-             AND tags.family = 'memory'
-             AND tags.artifact_id = m.memory_artifact_id
-             AND tags.target_type = 'memory_entry'
-             AND tags.target_id = m.entry_id
-             AND tags.tag_key_hash IN :tag_hashes
-             AND tags.tag_key IN :tag_keys) >= :tag_minimum
-    """.replace("m.", alias + ".")
-
-
-def memory_tag_parameters(tag_filter: TagFilter | None) -> dict[str, Any]:
-    if tag_filter is None:
-        return {}
-    return {
-        "tag_keys": tag_filter.keys,
-        "tag_hashes": _key_hashes(tag_filter),
-        "tag_minimum": len(tag_filter.keys) if tag_filter.match == "all" else 1,
-    }
-
-
 def _key_hashes(tag_filter: TagFilter) -> tuple[bytes, ...]:
     return tuple(sha256(key.encode("utf-8")).digest() for key in tag_filter.keys)
 
@@ -122,7 +92,7 @@ def _identity(scope_id: str, target: TagTarget) -> dict[str, str]:
         "family": target.family,
         "artifact_id": target.artifact_id,
         "target_type": target.type,
-        "target_id": target.entry_id if isinstance(target, MemoryEntryTagTarget) else target.artifact_id,
+        "target_id": target.artifact_id,
     }
 
 
@@ -162,8 +132,8 @@ class RelationalTagService:
     async def get(self, scope_id: str, target: TagTarget) -> ArtifactTagSet:
         async with self._database.transaction() as connection:
             await _begin_read_snapshot(connection)
-            resolved = await self._resolve_target(connection, scope_id, target)
-            current = await self._read(connection, scope_id, resolved)
+            await self._target_reference(connection, scope_id, target)
+            current = await self._read(connection, scope_id, target)
             return tag_set(scope_id, target, current.tags)
 
     async def replace(
@@ -171,33 +141,28 @@ class RelationalTagService:
     ) -> ArtifactTagSet:
         desired = normalize_tags(tags)
         async with self._database.transaction() as connection:
-            resolved = (
-                await self._resolve_target(connection, scope_id, target)
-                if isinstance(target, MemoryEntryTagTarget)
-                else target
-            )
             # Acquire the database write lock before any reads. In particular,
             # SELECT FOR UPDATE alone cannot serialize empty-set writes on SQLite.
             locked = await connection.execute(
                 update(ARTIFACT_HEADS_TABLE)
                 .where(
                     ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
-                    ARTIFACT_HEADS_TABLE.c.family == resolved.family,
-                    ARTIFACT_HEADS_TABLE.c.artifact_id == resolved.artifact_id,
+                    ARTIFACT_HEADS_TABLE.c.family == target.family,
+                    ARTIFACT_HEADS_TABLE.c.artifact_id == target.artifact_id,
                 )
                 .values(revision=ARTIFACT_HEADS_TABLE.c.revision)
             )
             if locked.rowcount != 1:
                 raise BaseValueNotFoundError("artifact", target)
-            await self._target_reference(connection, scope_id, resolved)
-            if resolved.family == "atomic-memory" and self._atomic_write_authorizer is not None:
-                await self._atomic_write_authorizer(connection, scope_id, resolved.artifact_id, execution_context)
-            latest = await self._read(connection, scope_id, resolved, current=True)
+            await self._target_reference(connection, scope_id, target)
+            if target.family == "atomic-memory" and self._atomic_write_authorizer is not None:
+                await self._atomic_write_authorizer(connection, scope_id, target.artifact_id, execution_context)
+            latest = await self._read(connection, scope_id, target, current=True)
             current = tag_set(scope_id, target, latest.tags)
             if not hmac.compare_digest(expected_etag.encode("utf-8"), current.etag.encode("utf-8")):
                 raise TagPreconditionError
             previous = normalize_tags(current.tags)
-            identity = _identity(scope_id, resolved)
+            identity = _identity(scope_id, target)
             removed = previous.keys() - desired.keys()
             if removed:
                 await connection.execute(
@@ -221,22 +186,11 @@ class RelationalTagService:
                         .where(_where(identity), ARTIFACT_TAGS_TABLE.c.tag_key == key)
                         .values(tag=label)
                     )
-            if resolved.family == "atomic-memory" and self._projection_hook is not None:
-                await self._projection_hook(connection, scope_id, resolved.artifact_id, tuple(desired))
+            if target.family == "atomic-memory" and self._projection_hook is not None:
+                await self._projection_hook(connection, scope_id, target.artifact_id, tuple(desired))
             return tag_set(scope_id, target, tags)
 
-    async def query(self, scope_id: str, query: TagQuery, *, caller: str = "runtime") -> TagQueryPage:  # noqa: C901
-        if "memory" in query.families:
-            if "memory_entry" not in query.target_types:
-                raise BaseOperationNotSupportedError("artifact_family", "memory", "collection tag query")
-            query = query.model_copy(
-                update={
-                    "families": tuple(
-                        dict.fromkeys("atomic-memory" if family == "memory" else family for family in query.families)
-                    ),
-                    "target_types": ("artifact",) if "memory_entry" in query.target_types else query.target_types,
-                }
-            )
+    async def query(self, scope_id: str, query: TagQuery, *, caller: str = "runtime") -> TagQueryPage:
         binding = sha256(
             rfc8785.dumps({
                 "scope_id": scope_id,
@@ -275,12 +229,8 @@ class RelationalTagService:
                 rows = (await connection.execute(statement)).all()
                 for row in rows:
                     key = tuple(str(value) for value in row)
-                    family, target_type, artifact_id, target_id = key
-                    target: TagTarget = (
-                        MemoryEntryTagTarget(artifact_id=artifact_id, entry_id=target_id)
-                        if target_type == "memory_entry"
-                        else ArtifactTagTarget(family=cast(Any, family), artifact_id=artifact_id)
-                    )
+                    family, _target_type, artifact_id, _target_id = key
+                    target = ArtifactTagTarget(family=cast(Any, family), artifact_id=artifact_id)
                     head_key = (family, artifact_id)
                     if head_key not in heads:
                         head_row = (
@@ -305,10 +255,7 @@ class RelationalTagService:
                     artifact, lifecycle = heads[head_key]
                     if not query.include_inactive and lifecycle != "active":
                         continue
-                    try:
-                        reference = self._reference(artifact, target, include_inactive=query.include_inactive)
-                    except BaseValueNotFoundError:
-                        continue
+                    reference = artifact.as_ref()
                     labels = await self._read(connection, scope_id, target)
                     items.append(TaggedTarget(**labels.model_dump(), reference=reference))
                     keys.append(key)
@@ -320,21 +267,6 @@ class RelationalTagService:
         cursor = self._encode_cursor(keys[query.limit - 1], binding) if len(items) > query.limit else None
         return TagQueryPage(items=tuple(items[: query.limit]), next_cursor=cursor)
 
-    async def _resolve_target(self, connection: AsyncConnection, scope_id: str, target: TagTarget) -> ArtifactTagTarget:
-        if isinstance(target, MemoryEntryTagTarget):
-            artifact_id = await resolve_legacy_memory_target(
-                connection,
-                self._artifacts,
-                scope_id,
-                target.artifact_id,
-                target.entry_id,
-            )
-            resolved = ArtifactTagTarget(family="atomic-memory", artifact_id=artifact_id)
-            await self._target_reference(connection, scope_id, resolved)
-            return resolved
-        await self._target_reference(connection, scope_id, target)
-        return target
-
     async def _read(
         self, connection: AsyncConnection, scope_id: str, target: TagTarget, *, current=False
     ) -> ArtifactTagSet:
@@ -344,28 +276,12 @@ class RelationalTagService:
         labels = await connection.scalars(statement)
         return tag_set(scope_id, target, tuple(labels))
 
-    async def _target_reference(
-        self, connection: AsyncConnection, scope_id: str, target: TagTarget
-    ) -> ArtifactRef | TaggedMemoryCitation:
+    async def _target_reference(self, connection: AsyncConnection, scope_id: str, target: TagTarget) -> ArtifactRef:
         try:
             artifact = await self._artifacts.latest(connection, scope_id, target.family, target.artifact_id)
         except RepositoryNotFoundError:
             raise BaseValueNotFoundError("artifact", target) from None
-        return self._reference(artifact, target, include_inactive=True)
-
-    @staticmethod
-    def _reference(
-        artifact: Artifact[Any], target: TagTarget, *, include_inactive: bool
-    ) -> ArtifactRef | TaggedMemoryCitation:
-        if isinstance(target, ArtifactTagTarget):
-            return artifact.as_ref()
-        if isinstance(artifact, Memory):
-            for entry in artifact.content.manifest.entries:
-                if entry.entry_id == target.entry_id and (include_inactive or entry.state == "active"):
-                    return TaggedMemoryCitation(
-                        memory_ref=artifact.as_ref(), entry_id=entry.entry_id, entry_version_id=entry.entry_version_id
-                    )
-        raise BaseValueNotFoundError("artifact", target)
+        return artifact.as_ref()
 
     def _encode_cursor(self, after: tuple[str, ...], binding: str) -> str:
         payload = rfc8785.dumps({

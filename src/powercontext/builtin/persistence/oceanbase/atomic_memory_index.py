@@ -35,7 +35,6 @@ from powercontext.builtin.persistence.atomic_memory_index import (
     atomic_memory_profile_fingerprint,
     atomic_memory_vector_sql,
     combine_atomic_memory_channels,
-    freeze_atomic_memory_query_time,
 )
 from powercontext.builtin.persistence.atomic_memory_index_schema import (
     ATOMIC_MEMORY_PROJECTION_FORMAT,
@@ -59,8 +58,8 @@ _HIT_COLUMNS = "artifact_id, revision, state_version, kind, text"
 class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
     """Native same-row retrieval; complete enumeration always uses exact L2.
 
-    Ordinary vector search also uses exact distance, preserving arbitrary ACL,
-    group, expiry and tag filters before LIMIT without relying on ANN filtering.
+    Ordinary vector search also uses exact distance, preserving same-row kind and tag filters
+    before LIMIT without relying on ANN filtering.
     The native index exists for backend-native support and future bounded modes.
     """
 
@@ -78,6 +77,7 @@ class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                 "oceanbase", "OceanBase Atomic Memory requires a MySQL-compatible OceanBase tenant"
             )
         await create_tables(connection, self.tables)
+        await self.require_current_schema(connection)
         try:
             if not await connection.scalar(_INDEX_EXISTS, {"index_name": _FTS_INDEX_NAME}):
                 await connection.exec_driver_sql(
@@ -86,12 +86,6 @@ class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
             await connection.exec_driver_sql(
                 "SELECT artifact_id FROM pc_atomic_memory_current "
                 "WHERE MATCH(searchable_text) AGAINST ('powercontext') > 0 LIMIT 1"
-            )
-            # Probe the exact inline predicates used by query authorization.
-            await connection.exec_driver_sql(
-                "SELECT subject_type FROM JSON_TABLE('[]', '$[*]' COLUMNS("
-                "subject_type VARCHAR(16) PATH '$.subject_type', subject_id VARCHAR(255) PATH '$.subject_id', "
-                "expires_at DOUBLE PATH '$.expires_at' NULL ON EMPTY)) AS g"
             )
             await connection.exec_driver_sql("SELECT JSON_CONTAINS('[]', JSON_QUOTE('powercontext'))")
         except SQLAlchemyError as error:
@@ -165,7 +159,6 @@ class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
     ) -> AtomicMemorySearchChannels:
         if connection.dialect.name != "mysql":
             raise AtomicMemoryIndexError("oceanbase", "OceanBase Atomic Memory requires an OceanBase tenant")
-        request = freeze_atomic_memory_query_time(request)
         eligibility, parameters = atomic_memory_filter_sql(request.filters, "mysql")
         parameters["scope_id"] = scope_id
         limit_sql = "" if limit is None else " LIMIT :result_limit"
