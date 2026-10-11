@@ -637,6 +637,7 @@ def test_decision_observation_is_persisted_only_after_the_memory_commit(tmp_path
                 after = await DecisionObservationRepository().observations(connection, "project")
 
         assert committed is not None
+        assert plan.commit is not None
         assert before == ()
         assert len(after) == 1
         assert after[0].final_action == "memory_write_applied"
