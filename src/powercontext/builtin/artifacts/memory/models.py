@@ -156,57 +156,6 @@ class MemoryEntryVersion(BaseModel):
     artifacts: tuple[ArtifactRef, ...] = ()
 
 
-class MemoryLifecycleProjection(BaseModel):
-    """Rebuildable lifecycle state for one Memory manifest entry.
-
-    Reserved infrastructure for the stage-2 quality policy. The rules are
-    deterministic so the rows can be rebuilt from the authoritative manifest, but
-    no production path consumes them yet: the materialized table has no reader
-    outside the rebuild, and the annotation below is not wired into Context Pack
-    assembly.
-    """
-
-    memory_ref: ArtifactRef
-    entry_id: str
-    entry_version_id: str
-    validity: MemoryLifecycleValidity
-    validity_reason: str | None = None
-    successor_entry_id: str | None = None
-    source_evidence: tuple[MemoryEvidenceSnapshot, ...] = ()
-    rule_version: str = "memory-lifecycle-v1"
-    quality_policy: Literal["neutral"] = "neutral"
-
-    @property
-    def context_annotation(self) -> MemoryContextAnnotation:
-        """Return the internal annotation reserved for Context Pack assembly."""
-
-        return MemoryContextAnnotation(
-            validity=self.validity,
-            validity_reason=self.validity_reason,
-            successor_entry_id=self.successor_entry_id,
-            source_evidence=self.source_evidence,
-            source_count=len(self.source_evidence),
-            time_state="unknown",
-            quality_policy=self.quality_policy,
-        )
-
-
-class MemoryContextAnnotation(BaseModel):
-    """Internal lifecycle context reserved for later Context Pack rendering.
-
-    Nothing renders it yet, and it is deliberately absent from the public transport
-    models.
-    """
-
-    validity: MemoryLifecycleValidity
-    validity_reason: str | None = None
-    successor_entry_id: str | None = None
-    source_evidence: tuple[MemoryEvidenceSnapshot, ...] = ()
-    source_count: int = Field(ge=0, default=0)
-    time_state: MemoryTimeState = "unknown"
-    quality_policy: Literal["neutral"] = "neutral"
-
-
 class MemoryRevisionChanges(BaseModel):
     """The compact changes stored by one exact Memory Revision."""
 

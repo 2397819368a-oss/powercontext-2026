@@ -239,7 +239,6 @@ from powercontext.limits import MAX_SOURCE_OBSERVATION_BYTES
 from powercontext.sources import (
     TEXT_EVIDENCE_PROJECTION_KEY,
     ConnectorBinding,
-    MemoryEvidenceDeclaration,
     Source,
     SourceCatalog,
     SourceDefinitionManifest,
