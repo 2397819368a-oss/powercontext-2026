@@ -159,6 +159,17 @@ function writeFailureConfirmation(error) {
 //#endregion
 //#region src/operations.generated.ts
 const OPERATIONS$1 = {
+	query_atomic_memory_directory: {
+		method: "POST",
+		path: "/v1/atomic-memory/directory/query",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
 	list_atomic_memories: {
 		method: "POST",
 		path: "/v1/atomic-memory/list",

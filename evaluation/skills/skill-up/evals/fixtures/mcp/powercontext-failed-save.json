@@ -172,6 +172,9 @@
     "publish_artifact": {
       "error": "unexpected"
     },
+    "query_atomic_memory_directory": {
+      "error": "unexpected"
+    },
     "query_code": {
       "error": "unexpected"
     },

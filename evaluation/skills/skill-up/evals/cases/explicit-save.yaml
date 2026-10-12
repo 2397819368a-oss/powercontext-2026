@@ -62,6 +62,7 @@ judge:
     - tool_not_called_in_turn: {turn: 1, name: mcp__powercontext__list_memory_entries}
     - tool_not_called_in_turn: {turn: 1, name: mcp__powercontext__list_scopes}
     - tool_not_called_in_turn: {turn: 1, name: mcp__powercontext__publish_artifact}
+    - tool_not_called_in_turn: {turn: 1, name: mcp__powercontext__query_atomic_memory_directory}
     - tool_not_called_in_turn: {turn: 1, name: mcp__powercontext__query_code}
     - tool_not_called_in_turn: {turn: 1, name: mcp__powercontext__record_task_outcome}
     - tool_not_called_in_turn: {turn: 1, name: mcp__powercontext__reject_artifact_candidate}

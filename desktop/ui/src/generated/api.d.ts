@@ -16,6 +16,26 @@
 
 // Generated from openapi/powercontext.yaml. Do not edit.
 export interface paths {
+    "/v1/atomic-memory/directory/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Query compact current Atomic Memory references
+         * @description Returns current metadata and exact revisions without loading Memory text or history. Any directory or tag change invalidates continuation; restart from the first page on invalid_cursor or cursor_expired. Requires verified directory migration and writer composition, and a supported local authorization configuration. Production enablement is unavailable until the unified migration bundle manages the complete target. Unavailable codes include artifact_owner_pending, atomic_memory_directory_authorization_unavailable and atomic_memory_directory_unavailable; do not treat failure as an empty page.
+         */
+        post: operations["query_atomic_memory_directory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/atomic-memory/list": {
         parameters: {
             query?: never;
@@ -4779,6 +4799,35 @@ export interface components {
             items: components["schemas"]["AccessAuditEvent"][];
             next_cursor: string | null;
         };
+        QueryAtomicMemoryDirectoryRequest: {
+            scope_id: string;
+            /**
+             * @default [
+             *       "active"
+             *     ]
+             */
+            states: components["schemas"]["AtomicMemoryState"][];
+            kind?: string | null;
+            /** @default [] */
+            tags: string[];
+            /** @default all */
+            tag_match: components["schemas"]["TagMatch"];
+            /** @default 50 */
+            limit: number;
+            cursor?: string | null;
+        };
+        AtomicMemoryDirectoryItem: {
+            artifact: components["schemas"]["ArtifactReference"];
+            kind: string;
+            state: components["schemas"]["AtomicMemoryState"];
+            state_version: number;
+            merged_into_id: string | null;
+        };
+        QueryAtomicMemoryDirectoryResponse: {
+            scope_id: string;
+            items: components["schemas"]["AtomicMemoryDirectoryItem"][];
+            next_cursor: string | null;
+        };
     };
     responses: {
         /** @description The request query or pagination cursor is invalid. */
@@ -4919,6 +4968,63 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    query_atomic_memory_directory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryAtomicMemoryDirectoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Compact current directory page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryAtomicMemoryDirectoryResponse"];
+                };
+            };
+            /** @description The cursor is invalid or its query, identity, policy or directory generation changed. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The cursor expired; restart from the first page. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A compact item exceeds the response budget; no partial page is returned. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
     list_atomic_memories: {
         parameters: {
             query?: never;

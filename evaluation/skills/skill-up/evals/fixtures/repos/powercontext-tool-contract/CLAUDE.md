@@ -210,6 +210,11 @@ not replace those schemas or enforce their constraints. It contains no scenario 
 - Required: `idempotency_key: string`, `source: ArtifactAddress`, `target_scope_id: string`.
 - Optional: (none).
 
+## mcp__powercontext__query_atomic_memory_directory
+
+- Required: `scope_id: string`.
+- Optional: `cursor: string | null`, `kind: string | null`, `limit: integer = 50`, `states: array<"active" | "forgotten" | "merged" | "retired"> = ["active"]`, `tag_match: "all" | "any" = "all"`, `tags: array<string> = []`.
+
 ## mcp__powercontext__query_code
 
 - Required: `operation: CodeStatusOperation | CodeChangesOperation | CodeMapOperation | CodeSearchOperation | CodeRelationOperation | CodeTestsOperation | CodeReadOperation`, `scope_id: string`.
