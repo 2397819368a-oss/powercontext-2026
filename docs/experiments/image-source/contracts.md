@@ -7,7 +7,7 @@ description: 阶段一固定的数据类型、幂等身份、任务状态、权�
 
 本契约固定实验格式 `1`，沿用「原图资产与原图 Source → 持久任务 → 解析 Source → 文字证据」链路。显式接收、视觉 worker、不可变解析、重试与文字消费见 [解析与记忆说明](phase34-usage.md)；固定 CLI 自动捕获、可选配置与精确原图查看见 [捕获与查看说明](phase56-usage.md)。
 
-HTTP schema 的唯一来源是 [openapi/powercontext.yaml](../../../openapi/powercontext.yaml)。五个操作均在标准 paths，implemented_operations 列出完整实现，active: true 表示实验链路已实现，不等于默认开启。planned_paths 为空，不提前加入 MCP 白名单。
+HTTP schema 的唯一来源是 [openapi/powercontext.yaml](../../../openapi/powercontext.yaml)。七个操作均在标准 paths，implemented_operations 列出完整实现，active: true 表示实验链路已实现，不等于默认开启。planned_paths 为空，不提前加入 MCP 白名单。
 
 ## 类型与来源
 
@@ -57,9 +57,9 @@ origin 可选增加 `message_id`、`representation` 和 `client_variant`。`orig
 
 一次任务最多产生一个有效解析 Source。晚到响应必须验证 claim，不能靠更换 Source ID 保存第二份结果。时间戳、用量和错误详情保存在受管理任务／尝试记录中，不参与不可变解析 payload；重放不使用当前时间重建 Source。
 
-## 五个最小操作
+## 七个操作
 
-所有操作 POST、application/json、current Scope 模式；授权沿用既有身份与 Access 规则，scope_id 在 body 中。五个操作已有 HTTP、Client 和 CLI 调用入口；重试和重新解析同时要求 scope.read 和 scope.contribute。
+所有操作 POST、application/json、current Scope 模式；授权沿用既有身份与 Access 规则，scope_id 在 body 中。七个操作已有 HTTP、Client 和 CLI 调用入口；重试和重新解析同时要求 scope.read 和 scope.contribute。
 
 | 路径与 operationId | 输入 | 返回与权限 |
 | --- | --- | --- |
@@ -68,6 +68,8 @@ origin 可选增加 `message_id`、`representation` 和 `client_variant`。`orig
 | `/v1/experimental/images/task/get`；experimental_get_image_task | scope_id、task_id 或 analysis_source_id，恰好一个 | 200：当前任务、历史来源与尝试；scope.read |
 | `/v1/experimental/images/task/retry`；experimental_retry_image_task | scope_id、旧 task_id、retry_key | 202：新的 pending 任务；只允许 failed；scope.read 与 scope.contribute |
 | `/v1/experimental/images/reparse`；experimental_reparse_image | scope_id、原图 SourceTypeReference、reparse_key、可选 expected_profile_digest | 202：以当前配置固定的新 pending 任务；scope.read 与 scope.contribute |
+| `/v1/experimental/images/tasks/list`；experimental_list_image_tasks | scope_id、可选 cursor、limit（1–100，默认 12） | 200：按接收时间排序的任务、资产与来源及下一页游标；scope.read |
+| `/v1/experimental/images/status`；experimental_get_image_status | scope_id | 200：图片开关、存储与 worker、本地模型配置、积压及错误码；scope.read；不调用模型 |
 
 bytes_base64 仅接受原始 Base64 编码，不接受 data URI、文件路径或远程 URL。Server 严格解码并检查实际格式、尺寸和预算；不依据文件后缀或声明 MIME 判断安全接收。PNG 动画、JPEG 多帧及其他容器不属于首版静态单图支持范围。
 
@@ -217,7 +219,7 @@ MiniCPM-V-4.7-1B、MiniCPM-V-4.7-35B-A3B 保留为候选显示名称，公开配
 
 只支持独立 SQLite。实验数据库单独记录格式版本 1，不把它与现有 DB schema 版本混用。未知实验格式只禁用图片能力，不静默覆盖、改身份或重写历史 Source；正常文字功能继续。已知阶段二布局通过显式 SQLite 写事务增加任务字段与尝试／操作表，保留所有来源及回执身份，旧任务最多 1024 项；不扫描全库 Source。中途失败回滚后可重启继续迁移。混合或未知布局明确拒绝。
 
-备份包含一致的 SQLite 快照和其资产清单；先暂停图片写入或建立受保护快照，再逐项复制、校验摘要。分别复制运行中的 DB 和资产目录不能宣称一致备份。自动清理仅处理可证明无引用且过宽限的孤立文件；首版五个操作不提供证据删除，手工删除损坏材料不得破坏身份或返回正常成功。
+备份包含一致的 SQLite 快照和其资产清单；先暂停图片写入或建立受保护快照，再逐项复制、校验摘要。分别复制运行中的 DB 和资产目录不能宣称一致备份。自动清理仅处理可证明无引用且过宽限的孤立文件；七个操作不提供证据删除，手工删除损坏材料不得破坏身份或返回正常成功。
 
 ## 阶段一证据与后续验收
 

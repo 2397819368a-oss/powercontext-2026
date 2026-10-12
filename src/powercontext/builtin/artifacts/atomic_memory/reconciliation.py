@@ -43,7 +43,13 @@ combine that published evidence with new Sources. Cite the evidence that support
 their effective/event dates and conditions. Artifact publication time does not date facts.
 Citing Artifact evidence does not by itself consume that published identity.
 Choose create to retain an independent proposal without consuming related items; it continues to later batches.
+Every create, revise or merge must return non-null content containing the full final kind and text, even when
+unchanged from the proposal. Only noop may omit content; action and reason never substitute for the final facts.
+content contains only kind and text. evidence_ids, compared_ids, target_ids, action and reason are top-level
+output fields, never fields inside content. Do not copy evidence_ids or original_refs into content.
 Choose revise to absorb the proposal into one related identity, returning full final kind/text and evidence_ids.
+Revise requires exactly one distinct published identity across proposal.original_refs and the selected target's
+original_refs. When both are empty, use merge to combine unpublished candidates; never revise an unpublished pair.
 Choose merge to combine the proposal and one or more related items, returning full final kind/text and evidence_ids.
 Multiple existing original_refs require merge; multiple unpublished candidates can merge without creating history.
 Choose noop with one target_id when that item already expresses the proposal, without changing the target content.
@@ -123,9 +129,19 @@ class AtomicMemoryReconciliationOutput(BaseModel):
         default=(),
         description="Selected related[].item_id values only, excluding proposal.item_id. Empty when related is empty.",
     )
-    content: AtomicMemoryReconciliationContent | None = None
+    content: AtomicMemoryReconciliationContent | None = Field(
+        default=None,
+        description="Full final kind/text for create, revise and merge, including unchanged proposals. Null only for noop.",
+    )
     evidence_ids: tuple[str, ...] = ()
     reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_write_content(self) -> AtomicMemoryReconciliationOutput:
+        # Reject incomplete writes inside structured generation so its bounded retry can repair them.
+        if self.action != "noop" and self.content is None:
+            raise ValueError("create, revise and merge require full final content; null is allowed only for noop")  # noqa: TRY003
+        return self
 
 
 @dataclass(frozen=True)

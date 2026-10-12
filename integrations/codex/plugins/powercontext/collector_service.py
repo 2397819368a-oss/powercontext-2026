@@ -265,11 +265,15 @@ def run() -> None:
                 finally:
                     if child.poll() is None:
                         child.terminate()
-                        child.wait(timeout=5)
+                        try:
+                            child.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            child.kill()
+                            child.wait(timeout=5)
                 delay = 1 if time() - started > 30 else min(30, delay * 2)
                 sleep(delay)
-    except OSError:
-        return  # A current-user supervisor already owns this client.
+    except (OSError, ValueError):
+        return  # A duplicate owner or invalid consent/configuration must stop collection.
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ description: 图片采集、原图保存、后台视觉解析与文字证据接�
 
 本实验为 PowerContext 增加默认关闭的图片证据摄取能力。图片进入指定 Scope 后，先保存原图，再由后台视觉模型解析，保存带有原图引用的解析 Source，并通过文字证据视图参与现有记忆与交接流程。
 
-实验只在独立 worktree 和本地分支推进，当前不向上游推送、不创建 PR、不发布包。功能建设以本指南为执行依据；每次 AI Coding 都必须更新 [实施过程记录](implementation-log.md)，保留实际改动、验证证据、限制和下一步。
+实验在独立 worktree 和分支推进，对应上游 [#1932](https://github.com/oceanbase/powercontext/issues/1932)。用户已授权提交草稿 PR，供维护者讨论实现范围；完整真实验收和最终复审尚未完成，不视为可以合并或发布。当前状态以 [整合审查报告](integration-review.md) 为准。功能建设以本指南为执行依据；每次 AI Coding 都必须更新 [实施过程记录](implementation-log.md)，保留实际改动、验证证据、限制和下一步。
 
 阶段零的资料与宿主探测见 [可行性结论](feasibility.md) 和 [Codex 附件证据](codex-capture-evidence.md)。数据、操作和预算以 [固定契约](contracts.md) 为准，必要接入点见 [接入分析](contract-integration-analysis.md)。显式上传、后台解析、重试与文字记忆链路见 [解析与记忆说明](phase34-usage.md)；可选配置引导见 [捕获与查看说明](phase56-usage.md)。Codex Desktop 和 CLI 的共享采集器、真实 MiniCPM-V 35B、普通模型 Memory 与后端检索已联调；桌面界面拖图、粘贴组合及全新桌面会话自动召回仍需按 [桌面验收指南](desktop-testing.md) 验证。交互 CLI TUI 与其他未知版本未开放。
 
@@ -31,10 +31,11 @@ description: 图片采集、原图保存、后台视觉解析与文字证据接�
 | Worktree | D:/code/git-project/powermem/powermem-image-source-experiment |
 | 本地分支 | codex/experiment-image-source |
 | 起始提交 | 6b2f6e8a4c1aac59fca75662aca26d78748bfa29 |
+| 当前主干基线 | 95bfbc9e0b59f58aee119c750c69a448b7666d0c（Atomic Memory） |
 | 实验文档 | docs/experiments/image-source/ |
 | 运行环境 | 首版只支持独立文件 SQLite 实验部署；WAL／DELETE journal、FULL 及以上 synchronous |
 | 私有运行数据 | worktree 内已被忽略的 .powercontext/image-source-experiment/ |
-| 上游同步 | 用户另行要求前，只做本地开发和本地验证 |
+| 上游同步 | 已授权草稿 PR；合并、发布和 managed-local 扩展另行推进 |
 
 所有实现、测试和环境命令在实验 worktree 中执行。使用独立数据库、资产目录、环境文件和服务端口，不使用主 checkout 的环境文件、已有数据库或已运行服务。Git worktree 共享仓库对象和部分 Git 配置，禁止通过修改共享配置实现实验隔离。
 

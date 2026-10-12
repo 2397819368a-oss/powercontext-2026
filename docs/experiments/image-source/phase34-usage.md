@@ -11,14 +11,14 @@ description: 阶段三、四的真实模型验证、后台解析、恢复重试�
 
 ## 配置与启动
 
-用户已填写的私有连接保存在忽略文件 `.powercontext/image-source-experiment/minicpm.env`，对应 MiniCPM-V-4.7-35B-A3B、https://api.modelbest.cn/v1 和独立存储、18171 端口。API Key 仅由本地配置解析器加载，不写入 Source、任务快照或公开日志。本次验证使用单独的 phase34 数据库和自制测试图，环境文件中的图片开关仍保持 false。
+日常运行只使用 worktree 根目录的 `.env`。普通配置向导提供可选图片步骤；本机配置了独立 MiniCPM-V-4.7-35B-A3B Vision、DeepSeek 普通生成和 BGE-M3 embedding，实验服务端口为 18171。API Key 仅由本地配置解析器加载，不写入 Source、任务快照或公开日志。新部署默认关闭图片功能。
 
 需要在该实验环境持续使用时，将 POWERCONTEXT_SERVER_IMAGES_ENABLED 改为 true，然后重启服务：
 
 ```powershell
 cd D:/code/git-project/powermem/powermem-image-source-experiment
-uv sync --locked --extra images --extra server --extra cli
-uv run --locked powercontext server run --env-file .powercontext/image-source-experiment/minicpm.env
+uv sync --locked --extra server --extra cli
+uv run --locked --no-sync powercontext server run --env-file .env
 ```
 
 不要复用主 checkout 的数据库、配置或服务。Vision 配置与普通 generation 角色分开：只配置 Vision 可以保存图片解读；自动生成记忆还需要既有的普通生成配置和处理机制。文字检索、历史解读和原图回读不要求视觉模型在线。配置文件修改在服务重启后生效。
@@ -34,7 +34,7 @@ uv run --locked powercontext --server-url http://127.0.0.1:18171 image download 
 
 upload 的 202 表示原图、来源和任务已经保存。task 查询可看到 pending、running、retry_wait、succeeded 或 failed，以及有界错误码和逐次尝试。succeeded 才有 analysis_payload；readability 为 unreadable 的成功结果只保留审计，不进入文字生成。
 
-任务查询同时返回精确 original_payload、analysis_payload 和 attempts。从 Memory 等 Artifact 的 source_refs 取得解析 source_id 后，可直接使用 image source，或以下 SDK 调用找到对应历史任务、解读和原图资产：
+任务查询同时返回精确 original_payload、analysis_payload 和 attempts。Memory 是独立的 atomic-memory Artifact；从精确 Artifact revision 的 sources 中取得解析 source_id 后，可直接使用 image source，或以下 SDK 调用找到对应历史任务、解读和原图资产：
 
 ```python
 from powercontext.http import ExperimentalGetImageTaskRequest
@@ -47,7 +47,7 @@ task = await client.get_image_task(
 )
 ```
 
-task_id 与 analysis_source_id 必须恰好指定一个。实验引用中的 source_type 对应既有 Artifact 引用中的 name；source_id 保持相同，不改造既有引用类型。所有读取按 Scope 授权，分享一个 Artifact 不授予它所在 Scope 的原图访问权，Scope 管理权限也不自动等于内容读取权限。
+task_id 与 analysis_source_id 必须恰好指定一个。Source 引用统一使用 source_type/source_id；Source payload 的 name 是类型声明。所有读取按 Scope 授权，分享一个 Artifact 不授予它所在 Scope 的原图访问权，Scope 管理权限也不自动等于内容读取权限。
 
 ## 自动重试与重新解析
 
@@ -82,7 +82,7 @@ attempt_count 是已领取的尝试数，含未进入网络的前置失败。每
 
 原图始终不进入文字生成，自动消费者过滤它并推进窗口。Readable／partial 解析提供固定文字投影，说明它是机器解读，包含 OCR、可见描述、实体关系及不确定项；投影不含图片字节、密钥、服务地址或本地路径，读取不再识图。部分可读不代表根因或草图决策已经得到确认。
 
-解析以完成时的新 Source sequence 通知下游，因此原图已经被过滤过，也不会漏掉迟到的解读。Memory 与 Handoff 使用共同文字投影；Topic Memory 的原生分支读取同一视图。Experience、Skill、Profile、Dream、Review 沿用共同生成准入与证据边界。
+解析以完成时的新 Source sequence 通知下游，因此原图已经被过滤过，也不会漏掉迟到的解读。Atomic Memory 的 Source-only 抽取输入使用固定图片文字证据，随后按现有协调、合并和发布机制生成独立 Artifact。Handoff 与 Topic Memory 使用同一文字视图。Experience、Skill、Profile、Dream、Review 沿用共同生成准入与证据边界。
 
 EvidenceResolver 增加解析到原图的边，原图是 lineage_only。解析是可用文字证据的 root；服务通过原图记录中的「Scope + 原始字节摘要」决定独立证据组，同图重复上传、重试和重新解析保持各条记录，但不增加独立佐证数量。读取上游逐节点执行授权，不信任模型输出或任意 metadata 的归组声明。
 

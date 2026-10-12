@@ -1,52 +1,58 @@
 ---
 title: 图片功能整合审查与验收结论
-description: 标准使用流程的实现范围、审查修复、真实测试结果及验证限制。
+description: 草稿 PR 的实现范围、Atomic Memory 适配、真实验收证据及合并前待完成事项。
 ---
 
 # 图片功能整合审查与验收结论
 
-审查基于 master 6b7195167d0bba68ba4c46c843767af43ec42772 上的实验 worktree，覆盖配置向导、模型连接、客户端生命周期、Scope、HTTP／SDK／CLI、Dashboard、历史材料兼容及现有处理流程。没有提交、推送或修改主 checkout 的运行配置。
+本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master 95bfbc9e0b59f58aee119c750c69a448b7666d0c。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
 
-## 实现结果
+## 当前实现
 
-普通配置向导与 .env 示例提供默认关闭的图片能力，常规 Server 安装包含轻量解码依赖。可以显式复用支持多模态的 OpenAI Chat generation 或独立配置 Vision。标准 setup codex 保存项目授权并管理客户端后台进程，doctor codex 提供诊断。Dashboard 新增按 Scope 分页的图片材料及缩略图；Memory 原始材料链接指向准确历史解析和原图。
+图片默认关闭。普通配置向导与单份 .env 提供可选图片配置；可以明确复用支持多模态的 OpenAI Chat generation 连接，也可以独立配置 Vision endpoint。常规 server 安装包含轻量解码依赖。模型自动下载和托管未实现，连接已有本地 endpoint 与管理本地模型是不同能力。
 
-没有新增图片专用记忆确认机制；是否提取 Memory／Topic 仍由已有生成和处理配置决定。原图不是直接输入普通文字生成器的文本。功能关闭不改写历史 Source。宿主版本、文件格式、后端和存储预算保持明确边界。
+授权附件或显式 PNG/JPEG 上传先保存资产及原图 Source，再执行可恢复的视觉解析任务。解析成为不可变 Source，通过固定文字证据投影进入现有 Artifact 流程。重试、重新解析和历史回读保持精确身份，读取不重新识图。原图不会以 Base64 文字输入普通生成器。
 
-## 审查方式与修复
+标准 setup codex 管理项目授权和客户端采集器，doctor codex 检查 Scope、连接及生命周期。Dashboard 提供图片列表、缩略图、任务状态、OCR 和原图；Atomic Memory revision 的 sources 可链接精确历史解析。首次插件启用和 Hook 信任仍由宿主要求。没有新增图片专用记忆确认机制，提取、协调、合并和既有写策略保持生效。首版限定文件 SQLite、静态 PNG/JPEG 和已验证的宿主表示。
 
-实际运行 Open Code Review 外部模型审查返回 partial：58 个选定条目中 53 个没有完成，受到接口错误及审查预算限制影响。它返回五条意见，不能称为外部全量通过。随后使用同一插件的 delegate preview／rule 委托审查，按 REVIEW.md 补查本轮整合增量，并核对保留的原实验代码与既有测试。完整清单、规则、输出及处置保存在忽略的 integration-review 文件中。
+## 修复与审查状态
 
-| 问题 | 处置 |
+Rebase 解决了 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access 与 OpenAPI 冲突。已有 HTTP 路径与 schema 保持原样，七个图片操作及类型重新生成 Python/JS 契约。
+
+- 补齐 Interrupt Hook 集成清单。
+- 按授权时间恢复停机期间的新会话，保留已经登记的读取游标。
+- 观察记录达到预算后继续投递已暂存 outbox，保持授权前隐私边界。
+- watcher 停止超时后终止并回收，避免监督进程因此退出；无效配置安全关闭采集。
+- 明确 Memory 协调动作的最终正文与身份要求，结构化生成拒绝空写并使用原有有限重试补全，不放宽来源和身份校验。
+
+实际 Open Code Review 外部审查超时，24 个条目完成、9 个失败，其余未完成。返回的停止超时和异常配置问题已修复。delegate 文件筛选、规则及补查清单已建立，完整补审和修复后复审仍待完成；不能称为外部全量通过。
+
+## 已验证内容及限制
+
+| 验证 | 实际结果 |
 | --- | --- |
-| 模型复用保留独立 Vision 部署标识 | 修复：复用连接派生 generation 标识，任务配置仍严格匹配 |
-| 损坏的 JSON／项目采集配置导致 doctor 异常 | 修复：校验对象、版本和 profile，给出失败诊断 |
-| SQLite 暂时 IO／容量／打开错误后后台永久停止 | 修复：已知可恢复错误退避并重新取得租约；未知不变量停机并拒绝新接收，历史材料可读 |
-| 非 SQLite 检查重复 | 移除重复分支 |
-| 预留资产扣除预算 | 未按建议立即删除：顺序冲突、队列满和无效 Scope 已在预留前拒绝；崩溃／并发预留按现有 24 小时孤儿宽限及启动时清理契约处理，立即删除可能破坏另一摄取 |
-| 禁用的旧插件 cache 造成 endpoint 歧义 | 修复：诊断尊重原生配置中明确禁用的插件 |
-| 省略资产配置导致历史路径改变 | 修复：配置保持“未指定”，已有库采用记录的绝对目录；显式改目录拒绝 |
-| image list／status 默认输出为空及返回类型缺失 | 修复：补齐 CLI 响应类型与默认展示，增加命令回归 |
-| 安装时 Scope 未充分落入持久化绑定 | 修复：setup 的选定 Scope 包括默认选择落实为服务 workspace 绑定；运行采集仍读取当前会话绑定 |
-| 授权时未检查图片服务 | 修复：服务未就绪时不给当前项目新增授权 |
-| 更新插件后旧后台进程继续使用旧代码 | 修复：Windows setup 核对自身注册的进程参数与身份，停止原进程和后代后重启；实际验证已替换 |
-| 复用未覆盖 generation 的环境鉴权 | 修复：按既有 OpenAI Chat 规则解析环境 key；显式 Authorization 优先，独立 Vision 不借用 |
+| 受影响图片、Codex、契约、Dashboard、处理流程测试 | 292 项通过；与其他集合有重叠，不相加宣称独立总数 |
+| provider 与配置向导 | 51 项通过 |
+| watcher、生命周期与诊断回归 | 29 项通过；停止超时使用受控子进程行为模型 |
+| Atomic Memory 协调与生成回归 | 14 项通过，包括空正文后的有限重试 |
+| 真实 Codex CLI 0.141.0 exec | PNG/JPEG、多图、恢复、召回测试通过；模型 provider 受控 |
+| 真实 Desktop 文件选择器上传 | 新 Scope 中自动形成图片任务，来源为 desktop；未手工创建 Source 或 Memory |
+| 真实 MiniCPM-V-4.7-35B-A3B | 复杂图解析成功，原图回读摘要与 1,495,423 字节一致 |
+| 实际 Dashboard | 可查看图片列表、缩略图、任务、OCR 与原图；新 Atomic Memory 到原图的完整桌面链路待验收 |
+| 官方 Atomic Memory 迁移 | 31 条旧 entry 导入后 ready；原有 70 条 Source 的身份、payload、journal_position 和五个资产摘要保持不变，integrity_check 为 ok |
+| Ruff、Linux 目标 ty、契约、锁文件、wheel | 通过；提交前文档及最后回归另见实施记录 |
+| 更广兼容测试 | 231 通过、3 跳过、2 个 CLI 失败；两个失败在同版本 upstream 基线上复现 |
 
-关键测试保护真实可观察结果：模型凭据选择与快照拒绝、文件 SQLite 兼容、分页隔离、禁用后回读、项目授权、Scope 切换、暂存目标、故障恢复、诊断和 CLI 展示。数据库故障用注入模拟；不宣称测试了物理磁盘故障。
+当前真实模型可以抽取候选，但新主干的完整后台协调和发布尚未验收通过。Flash/Pro 曾返回无效输出；空正文问题的说明及结构化重试已修复，仍需验证真实后台产物与新会话实际引用。旧 Memory 机制的成功实验记录不能代替当前 Atomic Memory 验收。
 
-## 实际验收
+Windows 全库 ty 仍有既有 POSIX 原生扫描相关错误，Linux 目标检查通过；没有宣称 Windows 全库全部通过。完整 Python 版本矩阵与文档网站构建尚未完成。
 
-- 常规 server／cli 依赖同步和根 .env 启动成功，实际插件安装完成，doctor codex 复查全部 OK。
-- Windows 用户启动项已注册。实际采集子进程终止后自动恢复，单一监督进程保留；macOS／Linux 的原生生命周期未在本机验证。
-- 真实 Codex CLI 0.141.0 exec 测试通过：单图、PNG＋JPEG 两图、服务重启后原图／引用回读及新会话召回。该测试的 Agent、Vision 和普通生成器受控，不能替代远端模型质量测试。
-- 桌面附带 0.162.0-alpha.17.2 可执行文件的独立用户 Hook 测试本轮未取得回执；没有把该失败计为通过，也没有放宽版本门禁。它不等于验证了原生插件加载路径；新的桌面界面拖图和自动召回仍需人工验收。
-- 复杂合成图通过正式 HTTP 显式上传，真实 MiniCPM-V 35B 解析成功，保留原图与下载字节一致。此步骤不是新 GUI 上传。
-- 后台真实 DeepSeek 自动生成八条 Memory，未手写或注入候选；真实 BGE-M3 检索配合 FTS／vector／hybrid 均命中，context prepare 返回 ready。当前规则、废弃规则和未确认假设分别保留。
-- 实际浏览器看到缩略图、解析页面、Memory；点击 Memory 原始材料回到同一图片和精确分析 Source。
-- 原有 48 条 Source 的身份、payload 和 journal_position 完全保留，四个历史资产摘要一致，SQLite integrity_check 为 ok。
+## 合并前待完成
 
-具体测试命令与计数见实施记录。Ruff、生成契约校验、受影响文件类型检查和 Linux 目标全库类型检查通过。Windows 全库 ty 的原生代码扫描平台属性错误在主 checkout 也存在，未扩大图片功能去修改这些模块；因此不把原生 Windows 全库检查报告为全部通过。
+- 当前 Atomic Memory 的真实后台发布、精确来源以及新桌面聊天的显式检索、自动召回和实际答案。
+- 数据库与图片资产配对备份的实际恢复，核查历史身份、字节、引用及索引。
+- 拖入、粘贴、JPEG、多图、中断、禁用/重开，以及最终完整 Open Code Review 与修复后复审。
+- 完整支持版本、文档/CI 检查，以及 macOS/Linux 生命周期和长期资源/质量测试。
+- 依据维护者意见收敛公开命名、迁移和 PR 范围；managed-local 下载与运行另行实现。
 
-## 发布前仍需验收
-
-按 [桌面指南](desktop-testing.md) 重启 Codex，信任更新 Hooks，分别验证拖入、粘贴、JPEG、多图、中断、关闭／重开及全新聊天的实际答案引用。补做长期运行、macOS／Linux、CLI 新内核原生插件路径、更多实际工作图片和完整数据库／资产配对恢复。用户确认后再规划主分支合并与发布，目前没有上游提交。
+操作见 [桌面指南](desktop-testing.md)，素材与预期答案见 [复杂测试案例](complex-test-case.md)。私有连接、真实附件、数据库、探测脚本和完整日志位于被忽略的本地目录，不进入 PR。

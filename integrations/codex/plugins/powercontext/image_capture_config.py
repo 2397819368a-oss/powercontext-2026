@@ -84,7 +84,11 @@ def plugin_enabled() -> bool:
     if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
         return False
     value = tomllib.loads(path.read_text(encoding="utf-8"))
-    return value.get("plugins", {}).get("powercontext@" + root.parents[1].name, {}).get("enabled", True) is True
+    plugins = value.get("plugins", {})
+    if not isinstance(plugins, dict):
+        return False
+    plugin = plugins.get("powercontext@" + root.parents[1].name, {})
+    return isinstance(plugin, dict) and plugin.get("enabled", True) is True
 
 
 def write_profile(cwd: str | Path, *, server_url: str, scope_id: str, enabled: bool) -> None:

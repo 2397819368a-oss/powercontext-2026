@@ -2,6 +2,8 @@
 """Managed client consent and recovery; native OS execution is tested separately."""
 
 import importlib
+import subprocess
+import sys
 from time import time
 
 import pytest
@@ -104,6 +106,64 @@ def test_manager_will_not_replace_foreign_registration(image_capture_module, mon
     with pytest.raises(ValueError, match="image_collector_registration_foreign"):
         service.install()
     assert path.read_bytes() == b"another owner's service"
+
+
+def test_invalid_native_plugin_table_disables_capture(image_capture_module, monkeypatch, tmp_path):
+    config = importlib.import_module("image_capture_config")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        config, "__file__", str(tmp_path / "plugins/cache/local/powercontext/1.1.0/image_capture_config.py")
+    )
+    (tmp_path / "config.toml").write_text('plugins = ["invalid"]', encoding="utf-8")
+    assert config.plugin_enabled() is False
+
+
+def test_supervisor_recovers_when_watcher_ignores_graceful_stop(image_capture_module, monkeypatch, tmp_path):
+    """A stalled watcher must not take down the Windows Startup supervisor."""
+    manager = importlib.import_module("collector_service")
+    watcher = importlib.import_module("image_desktop_watch")
+    children = []
+    clock = {"now": 1000.0}
+
+    class Child:
+        def __init__(self, stubborn):
+            self.stubborn = stubborn
+            self.running = True
+
+        def poll(self):
+            return None if self.running else 0
+
+        def terminate(self):
+            if not self.stubborn:
+                self.running = False
+
+        def wait(self, timeout):
+            if self.running:
+                raise subprocess.TimeoutExpired("watcher", timeout)
+            return 0
+
+        def kill(self):
+            self.running = False
+
+    def start(*args, **kwargs):
+        child = Child(stubborn=not children)
+        children.append(child)
+        return child
+
+    def advance(seconds):
+        clock["now"] += max(100, seconds)
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_SQLITE_HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["collector_service.py", "run", str(tmp_path), str(tmp_path)])
+    monkeypatch.setattr(manager, "any_enabled", lambda: len(children) < 2)
+    monkeypatch.setattr(manager, "plugin_enabled", lambda: True)
+    monkeypatch.setattr(manager.subprocess, "Popen", start)
+    monkeypatch.setattr(manager, "time", lambda: clock["now"])
+    monkeypatch.setattr(manager, "sleep", advance)
+    monkeypatch.setattr(watcher, "watch_status", lambda *args: {"updated_at": 0})
+    manager.run()
+    assert len(children) == 2 and all(not child.running for child in children)
 
 
 def test_image_consent_does_not_override_ordinary_scope_settings(image_capture_module, monkeypatch, tmp_path):
