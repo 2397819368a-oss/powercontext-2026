@@ -718,3 +718,7 @@ Server 保持运行于 127.0.0.1:18171，仅绑定 loopback，实验访问控制
 用户明确要求先向上游提交对应 issue 的草稿 PR，本轮目标改为保存当前修复和准确状态、推送实验分支并创建 Draft。此前禁止上游推送的范围已被这次明确授权解除；不进行合并、发布或标记 ready。
 
 核实 #1932 为 open 且没有维护者评论。草稿包含当前图片 Source 与 Codex 采集实现、主干适配和已验证修复；managed-local 未实现，真实 Atomic Memory 发布/新会话召回、配对恢复、最终复审和完整检查均列为待完成。公开报告更新为当前 Atomic Memory 基线，避免旧实验成功结果被误读为本轮完整验收。提交前检查格式、受影响回归、契约、锁文件和新增文件中的密钥风险；配置、数据库、私有图片和本地探测材料继续被忽略。
+
+提交前最后联合回归 43 项通过；Linux 目标 ty、生成 API/JS 校验、锁文件和非类型 prek 检查通过。原生 Windows ty 仍为 32 个既有 POSIX 诊断，因此本次提交仅跳过该 hook，已独立执行 Linux 目标类型检查；未修改仓库检查配置。新增文本的高置信密钥模式扫描没有匹配。
+
+实际推送 origin 的 codex/experiment-image-source，并通过 gh pr create --draft 创建上游 [草稿 PR #1956](https://github.com/oceanbase/powercontext/pull/1956)，目标为 master、关联 #1932。回读确认 OPEN、isDraft=true，已附加到当前聊天。当前修复已提交，私有配置和运行材料未上传。下一步继续当前 Atomic Memory/新会话召回、配对恢复和最终完整复审，接受维护者对范围和 RFC 的反馈后再转为正式评审。
