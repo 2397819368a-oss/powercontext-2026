@@ -20,10 +20,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
+from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.evidence.models import ResolvedEvidence
 from powercontext.builtin.review.models import CandidateAudit, CandidateStatus
-from powercontext.builtin.tags import ArtifactTagSet, ArtifactTagTarget, TagTarget, normalize_tags
+from powercontext.builtin.tags import ArtifactTagSet, TagTarget, normalize_tags
 from powercontext.sources import SourceRef
 
 
@@ -34,21 +34,11 @@ class CatalogValue(BaseModel):
 class TagDreamTarget(CatalogValue):
     target: TagTarget
     expected_etag: str = Field(min_length=1, max_length=256)
-    basis_ref: ArtifactRef | None = None
-    basis_citation: MemoryCitation | None = None
+    basis_ref: ArtifactRef
 
     @model_validator(mode="after")
     def validate_basis(self):
-        if isinstance(self.target, ArtifactTagTarget):
-            if self.basis_ref is None or self.basis_citation is not None:
-                raise ValueError("Artifact tags require an exact Artifact basis")  # noqa: TRY003
-            ref = self.basis_ref
-        else:
-            if self.basis_citation is None or self.basis_ref is not None:
-                raise ValueError("Memory entry tags require an exact entry basis")  # noqa: TRY003
-            if self.basis_citation.entry_id != self.target.entry_id:
-                raise ValueError("Tag target and entry basis must match")  # noqa: TRY003
-            ref = self.basis_citation.memory_ref
+        ref = self.basis_ref
         if (ref.family, ref.artifact_id) != (self.target.family, self.target.artifact_id):
             raise ValueError("Tag target and content basis must match")  # noqa: TRY003
         return self
@@ -83,7 +73,7 @@ class CatalogChangeCandidate(CatalogValue):
     proposal: CatalogChangeProposal
     sources: tuple[SourceRef, ...] = Field(default=(), max_length=32)
     artifacts: tuple[ArtifactRef, ...] = Field(default=(), max_length=32)
-    memory_citations: tuple[MemoryCitation, ...] = Field(default=(), max_length=32)
+
     reason: str = Field(min_length=1, max_length=2000)
     dream_run_id: str | None = None
     audit: CandidateAudit | None = None
@@ -92,7 +82,7 @@ class CatalogChangeCandidate(CatalogValue):
 
     @model_validator(mode="after")
     def valid_state(self):
-        if not 1 <= len(self.sources) + len(self.artifacts) + len(self.memory_citations) <= 32:
+        if not 1 <= len(self.sources) + len(self.artifacts) <= 32:
             raise ValueError("Catalog candidates require 1 to 32 evidence references")  # noqa: TRY003
         if (self.status == "approved") != (self.result is not None):
             raise ValueError("Only an approved Catalog candidate has a tag result")  # noqa: TRY003

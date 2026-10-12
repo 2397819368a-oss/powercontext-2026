@@ -64,8 +64,26 @@ def validate_dream_tasks(connection: Connection) -> None:
         try:
             payload = json.loads(row["payload"])
             run, request = payload["run"], payload["request"]
+            historical = request is None
+            checked_payload = payload
+            if historical:
+                history = run["historical_data"]
+                if (
+                    history["format"] != "powercontext.dream-history.v1"
+                    or set(history) != {"format", "request", "input_manifest", "request_digest"}
+                    or row["status"] not in {"succeeded", "failed"}
+                    or run.get("input_manifest") is not None
+                    or not isinstance(history["request_digest"], str)
+                ):
+                    raise DreamUpgradeError("unsupported_task_format")
+                request = history["request"]
+                checked_payload = {
+                    **payload,
+                    "request": request,
+                    "run": {**run, "input_manifest": history["input_manifest"]},
+                }
             valid = (
-                validator.is_valid(payload)
+                validator.is_valid(checked_payload)
                 and row["operation"] in {"refine_experience", "derive_skill"}
                 and row["status"] in {"queued", "running", "succeeded", "failed"}
                 and run["operation"] == request["operation"] == row["operation"]
@@ -79,6 +97,7 @@ def validate_dream_tasks(connection: Connection) -> None:
                 and hashlib.sha256(payload["principal_id"].encode()).hexdigest() == row["principal_key"]
                 and request["idempotency_key"] == row["idempotency_key"]
                 and _valid_selection(request)
+                and (historical or not request.get("memory_citations"))
             )
         except (ValueError, TypeError, KeyError):
             raise DreamUpgradeError("unsupported_task_format") from None
@@ -115,15 +134,23 @@ def _valid_selection(request: dict[str, Any]) -> bool:
         key == key.strip()
         and 1 <= selected <= 20
         and selected + len(sources) <= 32
-        and all(ref["family"] == "experience" for ref in artifacts)
+        and all(ref["family"] in {"experience", "atomic-memory"} for ref in artifacts)
         and all(
             ref["memory_ref"]["family"] == "memory"
             and 1 <= len(ref["entry_id"]) <= 128
             and 1 <= len(ref["entry_version_id"]) <= 128
             for ref in citations
         )
-        and (target is None or target in artifacts)
-        and (request["operation"] != "derive_skill" or (not citations and target is None and bool(artifacts)))
+        and (target is None or (target in artifacts and target["family"] == "experience"))
+        and (
+            request["operation"] != "derive_skill"
+            or (
+                not citations
+                and target is None
+                and bool(artifacts)
+                and all(ref["family"] == "experience" for ref in artifacts)
+            )
+        )
     )
 
 

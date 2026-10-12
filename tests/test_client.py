@@ -49,6 +49,7 @@ from powercontext.http import (
     ListArtifactsRequest,
     ListSourcesRequest,
     PrepareContextRequest,
+    QueryArtifactTagsRequest,
     ReplaceAccessBindingRequest,
     ReplaceArtifactRequest,
     ReplaceMemoryArtifactContent,
@@ -62,6 +63,87 @@ from powercontext.http import (
     SearchTopicMemoryRequest,
     UpdateScopeRequest,
 )
+
+
+def test_client_reads_server_info_and_ignores_future_optional_fields() -> None:
+    async def scenario() -> None:
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/v1/server-info"
+            return httpx.Response(
+                200,
+                json={
+                    "schema_version": {"major": 1, "minor": 0},
+                    "product": "powercontext",
+                    "server_id": "server-a",
+                    "package_version": "1.2.3",
+                    "api_contract_version": {"major": 1, "minor": 2},
+                    "feature_contracts": {
+                        "access.principal": {
+                            "version": {"major": 1, "minor": 0},
+                            "operations": ["get_access_principal"],
+                        }
+                    },
+                    "future_optional_field": True,
+                },
+                request=request,
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+            info = await PowerContextClient("https://memory.example", http_client=http_client).get_server_info()
+
+        assert info.server_id == "server-a"
+        assert info.api_contract_version.minor == 2
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {"families": ["memory"]},
+        {"families": ["atomic-memory", "memory"]},
+        {"target_types": ["memory_entry"]},
+        {"target_types": ["artifact", "memory_entry"]},
+    ],
+)
+def test_client_rejects_legacy_memory_tag_queries_before_http(selection) -> None:
+    async def scenario() -> None:
+        sent: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200, json={"items": [], "next_cursor": None})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as transport:
+            client = PowerContextClient("https://memory.example", http_client=transport)
+            request = QueryArtifactTagsRequest.model_validate({"tags": ["release"], **selection})
+            with pytest.raises(ValueError, match="legacy Memory tag queries are unsupported"):
+                await client.query_artifact_tags("scope", request)
+        assert sent == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("families", [None, ["atomic-memory"], ["atomic-memory", "experience"]])
+def test_client_preserves_supported_artifact_tag_queries(families) -> None:
+    async def scenario() -> None:
+        sent: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200, json={"items": [], "next_cursor": None})
+
+        payload = {"tags": ["release"], "target_types": ["artifact"]}
+        if families is not None:
+            payload["families"] = families
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as transport:
+            client = PowerContextClient("https://memory.example", http_client=transport)
+            result = await client.query_artifact_tags("scope", QueryArtifactTagsRequest.model_validate(payload))
+        assert result.items == []
+        assert len(sent) == 1
+        assert json.loads(sent[0].content) == payload
+
+    asyncio.run(scenario())
 
 
 def test_artifact_search_client_preserves_path_identity_unset_fields_and_complete_results() -> None:

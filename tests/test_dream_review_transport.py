@@ -320,11 +320,11 @@ def test_profile_dream_generation_label_renders_in_both_locales():
 def test_enforced_dream_writes_use_scope_config_and_entry_permissions(tmp_path):
     import pytest
 
-    from powercontext.artifacts import ArtifactRef, MemoryCitation
+    from powercontext.artifacts import ArtifactRef
     from powercontext.builtin.catalog_changes.models import TagDreamTarget
     from powercontext.builtin.dream.models import DreamError
     from powercontext.builtin.tags import ArtifactTagTarget
-    from powercontext.server.authz import AccessRole, MemoryEntrySelector, PrincipalRef, ResourceRef
+    from powercontext.server.authz import AccessRole, PrincipalRef, ResourceRef
     from powercontext.server.authz.composition import open_builtin_access_control
     from powercontext.server.authz.service import AccessAuditContext, CreateBinding
     from powercontext.server.context import bind_principal, reset_principal
@@ -362,21 +362,17 @@ def test_enforced_dream_writes_use_scope_config_and_entry_permissions(tmp_path):
                     await adapter.authorize(scope, principal_identity(reviewer), "write", ref)
                 with pytest.raises(DreamError, match="access_revoked"):
                     await adapter.authorize(scope, principal_identity(reviewer), "write_tags", ref)
-            memory = ArtifactRef(family="memory", artifact_id="memory", revision=1)
-            owned = MemoryCitation(memory_ref=memory, entry_id="owned", entry_version_id="version-1")
-            foreign = MemoryCitation(memory_ref=memory, entry_id="foreign", entry_version_id="version-2")
+            memory = ArtifactRef(family="atomic-memory", artifact_id="unowned", revision=1)
+            owned = ArtifactRef(family="atomic-memory", artifact_id="owned", revision=1)
+            foreign = ArtifactRef(family="atomic-memory", artifact_id="foreign", revision=1)
             await access.establish_artifact_owner(
-                ResourceRef.artifact(
-                    scope, family="memory", artifact_id="memory", selector=MemoryEntrySelector(entry_id="owned")
-                ),
+                ResourceRef.artifact(scope, family="atomic-memory", artifact_id="owned"),
                 reviewer,
                 idempotency_key="entry-owner",
                 context=context,
             )
             await access.establish_artifact_owner(
-                ResourceRef.artifact(
-                    scope, family="memory", artifact_id="memory", selector=MemoryEntrySelector(entry_id="foreign")
-                ),
+                ResourceRef.artifact(scope, family="atomic-memory", artifact_id="foreign"),
                 admin,
                 idempotency_key="foreign-owner",
                 context=context,
@@ -424,39 +420,25 @@ def test_review_dashboard_without_explicit_scope_and_invalid_filter(dashboard):
 def test_memory_inbox_diff_shows_exact_entry_text(tmp_path):
     from html import unescape
 
-    from powercontext.builtin.artifacts.memory.models import MemoryDreamCandidateProposal, MemoryDreamEntryChange
+    from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
     from powercontext.builtin.runtime import BuiltinConfig
     from powercontext.server.dashboard.routes import router
-    from tests.e2e.dream_support import open_dream_runtime
+    from tests.e2e.dream_support import atomic_memory_pipeline, open_dream_runtime
     from tests.e2e.test_artifact_dreaming import Generator, MemoryPipeline
     from tests.e2e.test_artifact_dreaming import seed as seed_memory
 
     async def scenario():
         async with open_dream_runtime(
             BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path}/inbox.db")),
-            candidate_pipeline=MemoryPipeline(),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
             dream_generator=Generator(),
         ) as runtime:
             scope, source, citation = await seed_memory(runtime)
             candidate = await runtime._review(scope).propose_memory_dream(
-                MemoryDreamCandidateProposal(
-                    base=citation.memory_ref,
-                    dream_run_id="diff-test",
-                    changes=(
-                        MemoryDreamEntryChange(
-                            entry_id=citation.entry_id,
-                            entry_version_id=citation.entry_version_id,
-                            kind="task_record",
-                            text="The new evidence corrected the replay result.",
-                            reason="A later exact observation",
-                            sources=(source,),
-                        ),
-                    ),
-                ),
+                AtomicMemoryContent(kind="task_record", text="The new evidence corrected the replay result."),
                 sources=(source,),
-                artifacts=(citation.memory_ref,),
-                memory_citations=(citation,),
-                target=citation.memory_ref,
+                artifacts=(citation,),
+                target=citation,
                 reason="Correct the selected entry",
                 candidate_id="memory-diff-candidate",
             )
@@ -470,8 +452,8 @@ def test_memory_inbox_diff_shows_exact_entry_text(tmp_path):
                 )
                 assert response.status_code == 200, response.text
                 rendered = unescape(response.text)
-                assert '-    "text": "The replay test passed without duplicate writes."' in rendered
-                assert '+    "text": "The new evidence corrected the replay result."' in rendered
+                assert '-  "text": "The replay test passed without duplicate writes."' in rendered
+                assert '+  "text": "The new evidence corrected the replay result."' in rendered
                 assert "UNSELECTED_SIBLING_SENTINEL" not in rendered
 
     asyncio.run(scenario())
@@ -509,10 +491,10 @@ def test_legacy_prompt_publication_preserves_business_json_that_resembles_protoc
             }
             created = await http.post(
                 f"/v1/scopes/{scope}/artifacts",
-                json={"family": "prompt", "prompt_key": "memory.extract", "content": content},
+                json={"family": "prompt", "prompt_key": "atomic_memory.extract", "content": content},
             )
             assert created.status_code == 201
-            path = f"/v1/scopes/{scope}/artifacts/prompt/memory.extract"
+            path = f"/v1/scopes/{scope}/artifacts/prompt/atomic_memory.extract"
             current = await http.get(path)
             evidence = {
                 "run_id": "business-operation",
@@ -528,8 +510,15 @@ def test_legacy_prompt_publication_preserves_business_json_that_resembles_protoc
                 demonstrations=[
                     {
                         "input": {
-                            "evidence": [{"evidence_id": "source-1", "evidence_type": "source", "content": evidence}],
-                            "current_entries": [],
+                            "evidence": [
+                                {
+                                    "evidence_id": "source-1",
+                                    "source_ref": {"source_type": "content", "source_id": "source-1"},
+                                    "journal_position": 1,
+                                    "content": evidence,
+                                    "source_metadata": {},
+                                }
+                            ],
                         },
                         "expected_output": {"candidates": []},
                     }

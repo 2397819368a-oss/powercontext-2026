@@ -139,7 +139,7 @@ def test_target_evidence_requires_independent_support(database, operation, selec
 @pytest.mark.parametrize("independent_source", [False, True])
 def test_memory_entry_tag_target_is_not_its_own_support(database, independent_source):
     from powercontext.builtin.evidence.resolver import evidence_id
-    from powercontext.builtin.tags import MemoryEntryTagTarget
+    from tests.e2e.dream_support import atomic_memory_pipeline
     from tests.e2e.test_artifact_dreaming import MemoryPipeline, seed
 
     class Generator:
@@ -166,12 +166,12 @@ def test_memory_entry_tag_target_is_not_its_own_support(database, independent_so
         generator = Generator()
         async with open_dream_runtime(
             BuiltinConfig(database=database),
-            candidate_pipeline=MemoryPipeline(),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
             dream_generator=generator,
         ) as runtime:
             scope, ancestor, basis = await seed(runtime)
             records = runtime.records.for_scope(scope)
-            target = MemoryEntryTagTarget(artifact_id=basis.memory_ref.artifact_id, entry_id=basis.entry_id)
+            target = ArtifactTagTarget(family="atomic-memory", artifact_id=basis.artifact_id)
             before = await records.get_tags(target)
             sources = ()
             if independent_source:
@@ -187,9 +187,9 @@ def test_memory_entry_tag_target_is_not_its_own_support(database, independent_so
             run = await runtime.dream.for_scope(scope).create(
                 CreateDreamRunRequest(
                     operation="revise_tags",
-                    memory_citations=(basis,),
+                    artifacts=(basis,),
                     sources=sources,
-                    tag_target=TagDreamTarget(target=target, expected_etag=before.etag, basis_citation=basis),
+                    tag_target=TagDreamTarget(target=target, expected_etag=before.etag, basis_ref=basis),
                     idempotency_key="memory-entry-tags",
                 )
             )
@@ -203,7 +203,7 @@ def test_memory_entry_tag_target_is_not_its_own_support(database, independent_so
                 review = runtime.review.for_scope(scope)
                 candidate = await review.get(GetCandidateRequest(candidate_id=run.candidate.candidate_id))
                 assert candidate.sources == sources and ancestor not in candidate.sources
-                assert candidate.memory_citations == (basis,)
+                assert basis in candidate.artifacts
                 approved = await review.approve(
                     ApproveCandidateRequest(
                         candidate_id=candidate.candidate_id,
@@ -214,7 +214,19 @@ def test_memory_entry_tag_target_is_not_its_own_support(database, independent_so
                 assert (await records.get_tags(target)).tags == ("verified",)
             assert run.input_manifest is not None
             node = next(node for node in run.input_manifest.nodes if node.evidence_id == evidence_id(basis))
-            assert node.role == "target" and node.memory_citations == (basis,)
+            assert node.role == "target" and node.artifact == basis
             assert all(node.source != ancestor for node in run.input_manifest.nodes)
 
     asyncio.run(scenario())
+
+
+def test_atomic_memory_can_support_experience_but_cannot_be_its_revision_target():
+    from pydantic import ValidationError
+
+    memory = ArtifactRef(family="atomic-memory", artifact_id="memory", revision=1)
+    request = CreateDreamRunRequest(operation="refine_experience", artifacts=(memory,), idempotency_key="support")
+    assert request.artifacts == (memory,)
+    with pytest.raises(ValidationError, match="invalid_target"):
+        CreateDreamRunRequest(
+            operation="refine_experience", target=memory, artifacts=(memory,), idempotency_key="wrong-target"
+        )

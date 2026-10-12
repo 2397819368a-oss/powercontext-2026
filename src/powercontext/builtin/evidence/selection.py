@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
+from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.evidence.models import EvidenceManifest, EvidenceResolutionError, unique_references
 from powercontext.builtin.evidence.resolver import evidence_id
 from powercontext.sources import SourceRef
@@ -27,7 +27,6 @@ from powercontext.sources import SourceRef
 class SelectedEvidence(BaseModel):
     sources: tuple[SourceRef, ...]
     artifacts: tuple[ArtifactRef, ...]
-    memory_citations: tuple[MemoryCitation, ...]
 
 
 def select_evidence(
@@ -35,7 +34,7 @@ def select_evidence(
     used: tuple[str, ...],
     *,
     skill: bool,
-    target: ArtifactRef | MemoryCitation | None,
+    target: ArtifactRef | None,
     catalog: bool = False,
 ) -> SelectedEvidence:
     nodes = {node.evidence_id: node for node in manifest.nodes}
@@ -47,7 +46,7 @@ def select_evidence(
     chosen = {node_id for node_id in used if nodes[node_id].role != "target"}
     if not chosen:
         raise EvidenceResolutionError("needs_evidence")
-    origins = (*manifest.artifacts, *manifest.memory_citations)
+    origins = manifest.artifacts
     # A model that cites a root must retain the exact selected entry/Artifact path.
     for origin in origins:
         origin_id = evidence_id(origin)
@@ -59,29 +58,24 @@ def select_evidence(
         for key, node in nodes.items()
         if key in dependencies and node.role == "root" and node.source is not None
     )
-    artifact_kinds = {"experience", "skill", "profile", "topic_memory", "handoff"} if catalog else {"experience"}
+    artifact_kinds = (
+        {"experience", "memory", "skill", "profile", "topic_memory", "handoff"} if catalog else {"experience", "memory"}
+    )
     artifacts = tuple(
         node.artifact
         for key, node in nodes.items()
         if key in chosen and node.kind in artifact_kinds and node.artifact is not None
     )
-    citations = (
-        ()
-        if skill
-        else tuple(citation for key, node in nodes.items() if key in chosen for citation in node.memory_citations)
-    )
     if isinstance(target, ArtifactRef):
         artifacts = unique_references((*artifacts, target))
-    target_citations = (target,) if isinstance(target, MemoryCitation) else ()
-    citations = unique_references((*citations, *target_citations))
     memory_derived = any(nodes[key].kind == "memory" for key in dependencies)
     if memory_derived and not sources:
         raise EvidenceResolutionError("needs_evidence")
     if skill and not artifacts:
         raise EvidenceResolutionError("invalid_generation_output")
-    if len(sources) + len(artifacts) + len(citations) > 32:
+    if len(sources) + len(artifacts) > 32:
         raise EvidenceResolutionError("evidence_limit_exceeded")
-    return SelectedEvidence(sources=sources, artifacts=artifacts, memory_citations=citations)
+    return SelectedEvidence(sources=sources, artifacts=artifacts)
 
 
 def _reachable(start: str, manifest: EvidenceManifest) -> set[str]:

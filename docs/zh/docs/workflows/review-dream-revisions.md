@@ -25,7 +25,7 @@ Dream 提供的变更资源本身不启用生产升级。[PR #1772](https://gith
 
 ## Prompt 配置
 
-先读取已注册、支持 custom 模式的 Prompt key（如 `memory.extract`）的当前 ArtifactRef，再选取包含已观察错误及可信预期结果的精确 Source。通过原有 Dream 接口提交：
+先读取已注册、支持 custom 模式的 Prompt key（如 `atomic_memory.extract`）的当前 ArtifactRef，再选取包含已观察错误及可信预期结果的精确 Source。通过原有 Dream 接口提交：
 
 ```python
 from powercontext.client import PowerContextClient
@@ -66,7 +66,7 @@ powercontext candidate approve --scope-id "$SCOPE_ID" "$CANDIDATE_ID" --expected
 
 ## 标签变更
 
-通过 `get_artifact_tags` 或 `get_memory_entry_tags` 读取标签全集与 ETag，同时读取当前正文的精确 ArtifactRef 或 MemoryCitation。仍在同一个 Dream 入口提交 `revise_tags`，以独立 `tag_target` 表达标签和正文双基准：
+通过 `get_artifact_tags` 读取标签全集与 ETag，同时读取当前正文的精确 ArtifactRef；Atomic Memory 也使用同一套引用。仍在同一个 Dream 入口提交 `revise_tags`，以独立 `tag_target` 表达标签和正文双基准：
 
 ```python
 from powercontext.http import TagDreamTarget, ArtifactTagTarget
@@ -84,7 +84,7 @@ async def propose_tags(client, scope_id, current, tags_etag, evidence_source_id)
     ))
 ```
 
-Memory 条目使用 `MemoryEntryTagTarget` 与 `basis_citation`，并在 `memory_citations` 中提供该精确引用。成功生成后 `candidate.kind="tag"`，通过 `get_candidate(GetCandidateRequest(...))` 检查，通过 `approve_candidate(ApproveCandidateRequest(...))` 决定。统一的 `/v1/candidates/list|get|history|revise|approve|reject` 接口保留标签生命周期，批准时同时校验 ETag 和正文版本，原子替换标签并记录决定，不创建 Artifact Revision。
+Atomic Memory 与其他制品统一使用 `ArtifactTagTarget(family="atomic-memory", ...)` 和精确的 `basis_ref`。目标只作为比较上下文，不能作为自身 Tag 改动的依据；必须提供独立证据。成功生成后 `candidate.kind="tag"`，通过 `get_candidate(GetCandidateRequest(...))` 检查，通过 `approve_candidate(ApproveCandidateRequest(...))` 决定。统一的 `/v1/candidates/list|get|history|revise|approve|reject` 接口保留标签生命周期，批准时同时校验 ETag 和正文版本，原子替换标签并记录决定，不创建 Artifact Revision。
 
 ```sh
 powercontext candidate list --candidate-kind tag --scope-id "$SCOPE_ID"
@@ -97,3 +97,7 @@ powercontext candidate approve --scope-id "$SCOPE_ID" "$CANDIDATE_ID" --expected
 标签候选保留选中的支持制品引用，并在批准时重新检查其访问权限。修订提交完整 proposal；不能修改原始 target、expected_etag、正文基准和 before_tags 来绕过冲突。省略证据集合会保留已有证据，显式数组会替换它。
 
 统一收件箱支持制品与标签候选筛选，两类候选共用稳定排序和分页游标，显示完整提案、证据、差异和决定历史。候选版本过期、目标变化、证据撤销或 ETag 变化时，候选保持 pending 并返回冲突；重新检查当前状态后再决定。`no_change` 和 `needs_evidence` 不创建候选。模型提案与人工批准均不等于后续任务质量已经提升。
+
+## 修订一条 Atomic Memory
+
+使用 `revise_memory`，在 `target` 和 `artifacts` 中提供同一个精确的 `ArtifactRef(family="atomic-memory", ...)`，并选择独立的 Source 或 Artifact 作为依据。候选正文包含 `kind` 和 `text`。生成阶段只创建待审核 Candidate；批准时重新校验目标版本、活动状态、证据与当前权限，在同一事务内发布新版本、更新索引并记录审核决定。目标已变化或被遗忘时，候选保持待审核。其他 Memory 与既有自动提取流程保持独立。

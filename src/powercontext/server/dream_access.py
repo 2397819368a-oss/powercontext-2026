@@ -21,15 +21,14 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
-from powercontext.builtin.artifacts.memory.models import MemoryDreamCandidateProposal
+from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.catalog_changes.models import TagDreamTarget
 from powercontext.builtin.dream.models import DreamError, DreamRecord
 from powercontext.builtin.dream.service import DreamPermission
 from powercontext.builtin.evidence.resolver import EvidenceReference
 from powercontext.builtin.review.models import Candidate
 from powercontext.server.authz.errors import AccessControlError, AccessDeniedError, AccessIdentityRequiredError
-from powercontext.server.authz.models import AccessAction, MemoryEntrySelector, PrincipalRef, ResourceRef
+from powercontext.server.authz.models import AccessAction, PrincipalRef, ResourceRef
 from powercontext.server.authz.service import AccessAuditContext, AccessControlService
 from powercontext.server.context import current_principal, current_request_id
 
@@ -55,18 +54,9 @@ def _principal(identity: str) -> PrincipalRef:
 
 
 def _resource(scope_id: str, ref: EvidenceReference | None) -> ResourceRef:
-    if isinstance(ref, MemoryCitation):
-        return ResourceRef.artifact(
-            scope_id,
-            family="memory",
-            artifact_id=ref.memory_ref.artifact_id,
-            selector=MemoryEntrySelector(entry_id=ref.entry_id),
-        )
-    if isinstance(ref, ArtifactRef) and ref.family not in {"memory", "topic-memory"}:
+    if isinstance(ref, ArtifactRef) and ref.family != "topic-memory":
         return ResourceRef.artifact(scope_id, family=ref.family, artifact_id=ref.artifact_id)
-    # Sources belong to the Scope. A bare Memory revision is unresolved metadata,
-    # never authority to expand all of its entries. Topic Memory reads are also
-    # Scope-owned; Topics have no Artifact sharing profile or owner.
+    # Sources and Topic Memory reads belong to the Scope.
     return ResourceRef.scope(scope_id)
 
 
@@ -99,10 +89,6 @@ class DreamAccess:
         elif permission in {"write", "write_tags"}:
             if isinstance(ref, ArtifactRef) and ref.family in {"prompt", "topic-memory"}:
                 action, resource = AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)
-            elif isinstance(ref, ArtifactRef) and ref.family == "memory":
-                # Memory content edits authorize each selected entry separately. Whole-Artifact tags are Scope-owned.
-                action = AccessAction.SCOPE_ADMIN if permission == "write_tags" else AccessAction.SCOPE_READ
-                resource = ResourceRef.scope(scope_id)
             else:
                 action = AccessAction.ARTIFACT_WRITE
         else:
@@ -157,7 +143,7 @@ class DreamAccess:
                 record.run.scope_id,
                 record.principal_id,
                 "read",
-                record.run.tag_target.basis_ref or record.run.tag_target.basis_citation,
+                record.run.tag_target.basis_ref,
             )
             return
         owner = await bound.access.candidate_owner(record.run.scope_id, candidate_id)
@@ -177,9 +163,7 @@ class DreamAccess:
             ),
         )
         if action != "reject":
-            await self.authorize(
-                scope_id, principal_identity(principal), "write_tags", target.basis_ref or target.basis_citation
-            )
+            await self.authorize(scope_id, principal_identity(principal), "write_tags", target.basis_ref)
 
     async def review_action(self, scope_id: str, action: str, candidate: Candidate[Any]) -> None:
         principal = current_principal()
@@ -197,13 +181,5 @@ class DreamAccess:
             owner = await self.access.candidate_owner(scope_id, candidate.candidate_id)
             if owner is None or owner.proposed_owner != principal:
                 raise AccessDeniedError
-        if isinstance(candidate.proposal, MemoryDreamCandidateProposal):
-            for change in candidate.proposal.changes:
-                citation = MemoryCitation(
-                    memory_ref=candidate.proposal.base,
-                    entry_id=change.entry_id,
-                    entry_version_id=change.entry_version_id,
-                )
-                await self.authorize(scope_id, principal_identity(principal), "write", citation)
-        elif candidate.target is not None:
+        if candidate.target is not None:
             await self.authorize(scope_id, principal_identity(principal), "write", candidate.target)

@@ -39,9 +39,10 @@ Attribute every person's facts correctly in multi-person scopes; never merge spe
 Do not invent sensitive attributes or infer lasting preferences from temporary instructions.
 Retain supported information and do not infer what an isolated agreement refers to.
 Distinguish temporary plans from durable facts. Use correct as the intent for a supported replacement.
-For revise_memory, revise only selected active Memory entry versions in the one exact target Memory.
-For each change, preserve the entry ID, cite selected exact Source references, and explain the correction.
-Do not add, merge, deactivate, restore, or rename entries; use correct as the intent.
+For revise_memory, revise the kind and text of the one exact active Atomic Memory target.
+Propose AtomicMemoryContent without creation metadata; the target ArtifactRef fixes the baseline revision.
+Preserve the target identity and cite independently selected evidence to explain the correction.
+Do not create, forget, merge, restore or modify other Memory Artifacts; use correct as the intent.
 For revise_topic_memory, compare the exact current Topic with verified new evidence and propose
 complete title, summary, and detail content. Preserve confirmed results, hypotheses, ruled-out
 causes, open questions, and next steps as distinct claims. Use correct as the intent.

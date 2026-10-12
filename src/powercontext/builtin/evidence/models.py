@@ -21,7 +21,7 @@ from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
+from powercontext.artifacts import ArtifactRef
 from powercontext.errors import PowerContextError
 from powercontext.sources import SourceRef
 
@@ -67,10 +67,9 @@ class EvidenceNode(BaseModel):
     digest: str
     source: SourceRef | None = None
     artifact: ArtifactRef | None = None
-    memory_citations: tuple[MemoryCitation, ...] = ()
+
     role: Literal["root", "derived", "target", "lineage_only", "unresolved"]
     historical: bool = False
-    current_entry_version_id: str | None = None
 
 
 class EvidenceEdge(BaseModel):
@@ -93,7 +92,6 @@ class EvidenceManifest(BaseModel):
 
     transform_version: str = EVIDENCE_TRANSFORM_VERSION
     artifacts: tuple[ArtifactRef, ...] = ()
-    memory_citations: tuple[MemoryCitation, ...] = ()
     sources: tuple[SourceRef, ...] = ()
     nodes: tuple[EvidenceNode, ...] = ()
     edges: tuple[EvidenceEdge, ...] = ()
@@ -130,7 +128,7 @@ def content_digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
-def reference_key(value: ArtifactRef | MemoryCitation | SourceRef) -> str:
+def reference_key(value: ArtifactRef | SourceRef) -> str:
     return value.model_dump_json()
 
 

@@ -25,7 +25,7 @@ Production upgrade is not enabled by the Dream contribution alone. [PR #1772](ht
 
 ## Prompt configuration
 
-Read the current Prompt Artifact revision for a registered custom-capable key, such as `memory.extract`, and choose an exact Source describing an observed error and its expected output. The same `/v1/scopes/{scope_id}/dream` route handles the request:
+Read the current Prompt Artifact revision for a registered custom-capable key, such as `atomic_memory.extract`, and choose an exact Source describing an observed error and its expected output. The same `/v1/scopes/{scope_id}/dream` route handles the request:
 
 ```python
 from powercontext.client import PowerContextClient
@@ -67,7 +67,7 @@ powercontext candidate approve --scope-id "$SCOPE_ID" "$CANDIDATE_ID" --expected
 
 ## Tag metadata
 
-Read the current target Tag set and its ETag with `get_artifact_tags` or `get_memory_entry_tags`, and read the exact Artifact revision or Memory citation that provides the content baseline. Submit `revise_tags` on the same Dream route. Its `tag_target` is separate from the Artifact `target`:
+Read the current target Tag set and its ETag with `get_artifact_tags`, and read the exact Artifact revision that provides the content baseline. Submit `revise_tags` on the same Dream route. Its `tag_target` is separate from the Artifact `target`:
 
 ```python
 from powercontext.http import TagDreamTarget, ArtifactTagTarget
@@ -85,7 +85,7 @@ async def propose_tags(client, scope_id, current, tags_etag, evidence_source_id)
     ))
 ```
 
-For an entry target use `MemoryEntryTagTarget` and `basis_citation`, and include that citation in `memory_citations`. The resulting run has `candidate.kind="tag"`. Inspect it using `get_candidate(GetCandidateRequest(...))`; approval uses `approve_candidate(ApproveCandidateRequest(...))`. The unified `/v1/candidates/list|get|history|revise|approve|reject` interfaces preserve Tag's distinct lifecycle. Approval checks both the Tag ETag and content baseline atomically. The result contains the complete tags and new ETag, with no Artifact revision.
+Atomic Memory uses `ArtifactTagTarget(family="atomic-memory", ...)` and the exact `basis_ref`, just like other Artifacts. Its target is comparison context and cannot support its own Tag change; supply independent evidence. The resulting run has `candidate.kind="tag"`. Inspect it using `get_candidate(GetCandidateRequest(...))`; approval uses `approve_candidate(ApproveCandidateRequest(...))`. The unified `/v1/candidates/list|get|history|revise|approve|reject` interfaces preserve Tag's distinct lifecycle. Approval checks both the Tag ETag and content baseline atomically. The result contains the complete tags and new ETag, with no Artifact revision.
 
 ```sh
 powercontext candidate list --candidate-kind tag --scope-id "$SCOPE_ID"
@@ -98,3 +98,7 @@ powercontext candidate approve --scope-id "$SCOPE_ID" "$CANDIDATE_ID" --expected
 Tag candidates preserve the selected supporting Artifact references and recheck their access at approval. A revision submits the complete proposal; only after_tags may change. The target, ETag, content baseline, and before_tags remain immutable. Omitting sources or artifacts retains the existing evidence; explicitly supplying either replaces that evidence list.
 
 The unified Dashboard lists Artifact and Tag candidates through one cursor and supports filtering by candidate_kind. A stale version, changed target, revoked evidence, or changed Tag ETag leaves the candidate pending with a conflict. Inspect current state before submitting another decision. `no_change` and `needs_evidence` create no candidate. Neither a model proposal nor approval proves improvement on later tasks.
+
+## Revise one Atomic Memory
+
+Submit `revise_memory` with the same exact `ArtifactRef(family="atomic-memory", ...)` in `target` and `artifacts`, plus independently selected Sources or Artifacts. The proposal contains `kind` and `text`. Generation only creates a pending Candidate. Approval rechecks the target revision, active state, evidence and current permissions, then publishes the new revision, updates the index and records the decision in one transaction. A changed or forgotten target leaves the Candidate pending. Other Memories and automatic extraction remain independent.

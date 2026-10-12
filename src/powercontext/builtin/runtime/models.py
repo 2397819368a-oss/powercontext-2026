@@ -23,17 +23,14 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts.models import _reject_legacy_memory_citations
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.handoff.models import HandoffContent
 from powercontext.builtin.artifacts.memory.models import (
-    MemoryCitation,
-    MemoryDreamCandidateProposal,
     MemoryEntryInput,
-    MemoryEntryState,
-    MemoryEntryVersion,
     MemoryHit,
     MemoryRerankTrace,
-    MemoryRevisionChanges,
     MemorySearchMode,
     MemoryUsedSearchMode,
 )
@@ -65,7 +62,7 @@ ReviewedProposal: TypeAlias = (
     ExperienceContent
     | SkillContent
     | ProfileCandidateProposal
-    | MemoryDreamCandidateProposal
+    | AtomicMemoryContent
     | TopicMemoryContent
     | HandoffContent
     | PromptContent
@@ -179,8 +176,8 @@ class RuntimeCapabilities(BaseModel):
 class MemoryFlushResult(BaseModel):
     """Result of processing one scoped Source window.
 
-    ``held_count`` and ``hold_codes`` expose a gate refusal to the caller: a held window
-    advances its cursor but writes no Memory, and the structured code says why.
+    ``held_count`` and ``hold_codes`` are retained compatibility fields. Atomic Memory
+    processing leaves them at zero and advances the cursor only with its domain commit.
     """
 
     previous_cursor: int
@@ -188,6 +185,7 @@ class MemoryFlushResult(BaseModel):
     current_cursor: int
     source_count: int
     memory_ref: ArtifactRef | None
+    remaining_work: bool = False
     held_count: int = 0
     hold_codes: tuple[str, ...] = ()
 
@@ -331,69 +329,22 @@ class PreparedContext(_PreparedContextModel):
         return self
 
 
-class MemoryEntryRecord(BaseModel):
-    """An exact entry version together with its state in one Revision."""
-
-    memory_ref: ArtifactRef
-    state: MemoryEntryState
-    entry: MemoryEntryVersion
-
-    @property
-    def citation(self) -> MemoryCitation:
-        return MemoryCitation(
-            memory_ref=self.memory_ref,
-            entry_id=self.entry.entry_id,
-            entry_version_id=self.entry.entry_version_id,
-        )
-
-
-class MemoryEntriesPage(BaseModel):
-    """Selected current-head entries for one scope, or an absent Memory."""
-
-    memory_ref: ArtifactRef | None
-    entries: tuple[MemoryEntryRecord, ...] = ()
-
-
-class GetMemoryEntryRequest(BaseModel):
-    citation: MemoryCitation
-
-
-class ReviseMemoryEntryRequest(BaseModel):
-    citation: MemoryCitation
-    kind: str
-    text: str
-    reason: str | None = None
-
-
-class RetireMemoryEntryRequest(BaseModel):
-    citation: MemoryCitation
-    reason: str | None = None
-
-
-class MemoryMutationResult(BaseModel):
-    previous_revision: int | None
-    memory_ref: ArtifactRef
-    entry: MemoryEntryRecord | None = None
-
-
-class MemoryChangesPage(BaseModel):
-    memory_ref: ArtifactRef | None
-    revisions: tuple[MemoryRevisionChanges, ...] = ()
-
-
 class ProposeExperienceRequest(BaseModel):
     """Submit a complete Experience proposal with exact evidence."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     proposal: ExperienceContent
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
-    memory_citations: tuple[MemoryCitation, ...] = ()
     target: ArtifactRef | None = None
     reason: str | None = None
 
 
 class GenerateExperienceRequest(BaseModel):
     """Generate a reviewed Experience Candidate from exact evidence."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     sources: tuple[SourceRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
     artifacts: tuple[ArtifactRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
@@ -416,6 +367,8 @@ class GetExperienceRequest(BaseModel):
 class ProposeSkillRequest(BaseModel):
     """Submit a complete managed Skill proposal with exact evidence."""
 
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
+
     proposal: SkillContent
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
@@ -425,6 +378,8 @@ class ProposeSkillRequest(BaseModel):
 
 class GenerateSkillRequest(BaseModel):
     """Generate a reviewed managed Skill Candidate from an explicit lineage shape."""
+
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
     origin: SkillGenerationOrigin
     sources: tuple[SourceRef, ...] = Field(default=(), max_length=MAX_CANDIDATE_EVIDENCE)
@@ -474,7 +429,9 @@ class ListCandidatesRequest(BaseModel):
 
     candidate_kind: Literal["artifact", "tag"] | None = None
     status: CandidateStatus = CandidateStatus.PENDING
-    family: Literal["experience", "skill", "profile", "memory", "topic-memory", "handoff", "prompt"] | None = None
+    family: Literal["experience", "skill", "profile", "atomic-memory", "topic-memory", "handoff", "prompt"] | None = (
+        None
+    )
     cursor: str | None = None
     limit: Annotated[int, Field(ge=1, le=MAX_CANDIDATE_PAGE_SIZE)] = DEFAULT_CANDIDATE_PAGE_SIZE
 
@@ -493,19 +450,21 @@ class RejectCandidateRequest(ApproveCandidateRequest):
 
 
 class ReviseCandidateRequest(ApproveCandidateRequest):
+    _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
+
     proposal: (
         CatalogChangeProposal
         | ExperienceContent
         | SkillContent
         | ProfileWriteContent
-        | MemoryDreamCandidateProposal
+        | AtomicMemoryContent
         | TopicMemoryContent
         | HandoffContent
         | PromptContent
     )
     sources: tuple[SourceRef, ...] | None = None
     artifacts: tuple[ArtifactRef, ...] | None = None
-    memory_citations: tuple[MemoryCitation, ...] | None = None
+
     target: ArtifactRef | None = None
     reason: str | None = None
 

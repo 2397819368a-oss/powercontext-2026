@@ -21,6 +21,7 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import (
     Experience,
     ExperienceContent,
@@ -29,7 +30,6 @@ from powercontext.builtin.artifacts.experience import (
     FailureSignature,
     FailureVerification,
 )
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.artifacts.skill import Skill, SkillContent, SkillPackageSnapshot, SkillSearchHit
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
@@ -55,7 +55,6 @@ from powercontext.builtin.runtime import (
     ProposeExperienceRequest,
     ProposeSkillRequest,
     RejectCandidateRequest,
-    RememberMemoryRequest,
     ReviseCandidateRequest,
     open_builtin_runtime,
 )
@@ -84,6 +83,9 @@ class _InjectedExperienceProjectionError(RuntimeError):
 class _FailingExperienceIndex:
     async def initialize(self, _connection: AsyncConnection, /) -> None:
         pass
+
+    async def remove(self, _connection: AsyncConnection, _scope_id: str, _artifact_id: str, /) -> None:
+        raise _InjectedExperienceProjectionError
 
     async def replace(
         self,
@@ -283,12 +285,15 @@ def test_memory_write_remains_direct_and_does_not_create_a_candidate() -> None:
     async def scenario() -> None:
         async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
             scope_id = await _create_scope(runtime)
-            remembered = await runtime.memory.for_scope(scope_id).remember(
-                RememberMemoryRequest(entries=(MemoryEntryInput(kind="decision", text="Keep Memory direct."),))
-            )
+            assert runtime.atomic_memory is not None
+            remembered = await runtime.atomic_memory.for_scope(scope_id).create((
+                AtomicMemoryContent(kind="decision", text="Keep Memory direct."),
+            ))
             inbox = await runtime.review.for_scope(scope_id).list(ListCandidatesRequest())
 
-            assert remembered.memory_ref.family == "memory"
+            assert remembered.changed is True
+            assert len(remembered.records) == 1
+            assert remembered.records[0].ref.family == "atomic-memory"
             assert inbox.candidates == ()
 
     asyncio.run(scenario())
@@ -366,13 +371,15 @@ def test_approval_rechecks_sources_saved_by_an_older_candidate_path() -> None:
                     )
                 )
             contexts = RelationalContexts(database=profile.database)
+            async with profile.database.transaction() as connection:
+                await contexts.atomic_memory_index.initialize(connection)
             await contexts.get("project")
             created = await contexts.records.create_artifact(
                 "project",
-                "memory",
-                ArtifactWrite(content={"entries": [{"kind": "fact", "text": "Direct input."}]}),
+                "atomic-memory",
+                ArtifactWrite(content={"kind": "fact", "text": "Direct input."}),
             )
-            async with profile.database.transaction() as connection:
+            async with contexts.database.transaction() as connection:
                 candidate = await contexts.repositories.candidates.create(
                     connection,
                     "project",
@@ -389,7 +396,7 @@ def test_approval_rechecks_sources_saved_by_an_older_candidate_path() -> None:
                 await contexts.review("project").approve(candidate.candidate_id, candidate.version)
 
             current = await contexts.review("project").get_candidate(candidate.candidate_id)
-            async with profile.database.transaction() as connection:
+            async with contexts.database.transaction() as connection:
                 experiences = await connection.scalar(
                     select(func.count())
                     .select_from(ARTIFACTS_TABLE)

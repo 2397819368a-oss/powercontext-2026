@@ -65,7 +65,6 @@ def check_dream_schema(connection: Connection) -> None:
     _check_candidate_constraints(inspector, names)
 
     for name, required in (
-        ("pc_artifacts", {"memory_citations"}),
         ("pc_dream_runs", {"proposal_fingerprint"}),
         ("pc_artifact_processing_intents", {"consecutive_dream_attempts"}),
     ):

@@ -27,9 +27,9 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.handoff.models import HandoffContent
-from powercontext.builtin.artifacts.memory.models import MemoryDreamCandidateProposal, MemoryDreamWrite
 from powercontext.builtin.artifacts.profile.models import (
     ProfileCandidateProposal,
     ProfileDreamPolicy,
@@ -200,15 +200,14 @@ class DreamService:
                 else None
             )
             await self._check_target(connection, scope_id, principal_id, request.target)
-            await self._authorize_memory_changes(scope_id, principal_id, request)
+
             if request.tag_target is not None:
                 await self._check_tag_target(connection, scope_id, principal_id, request)
-            artifacts, citations, target = _resolve_references(request)
+            artifacts, target = _resolve_references(request)
             await resolver.resolve(
                 connection,
                 sources=request.sources,
                 artifacts=artifacts,
-                memory_citations=citations,
                 target=target,
                 project=False,
                 lock_memory=True,
@@ -325,8 +324,10 @@ class DreamService:
         # Dream never consumes or clears the Family's ordinary Source progress.
         await self.processing.complete(connection, remaining_work=True, dream=True)
 
-    async def _execute(self, record: DreamRecord) -> None:
+    async def _execute(self, record: DreamRecord) -> None:  # noqa: C901 - bounded execution and audit checks
         run = record.run
+        if record.request is None:
+            raise DreamError("dream_request_unavailable")
         if (
             self.generator is None
             or self.generator.config_id != run.model_config_id
@@ -360,6 +361,8 @@ class DreamService:
         )
         async with self._transaction() as connection:
             await self.repository.checkpoint(connection, record)
+        if record.request is None:
+            raise DreamError("dream_request_unavailable")
         generated = await self.generator.generate(
             DreamGenerationInput(
                 operation=run.operation,
@@ -386,6 +389,8 @@ class DreamService:
             generated.usage.output_tokens is not None and generated.usage.output_tokens > run.budget.max_output_tokens
         ):
             raise DreamError("budget_exceeded")
+        if record.request is None:
+            raise DreamError("dream_request_unavailable")
         operation_spec(run.operation).validator(generated.output, record.request)
         plan = _supported_plan(record, generated.output, resolved)
         if isinstance(plan.proposal, TagChangeProposal) and plan.proposal.after_tags == before_tags:
@@ -413,21 +418,22 @@ class DreamService:
 
     async def _resolve(self, record: DreamRecord, connection: AsyncConnection | None = None) -> ResolvedEvidence:
         request = record.request
+        if request is None:
+            raise DreamError("dream_request_unavailable")
         # Tag basis inspection acquires a write lock even during generation.
         # Flush access audit writes after this transaction, including standalone resolution.
         async with self.authorization_context(), self.database.connection(connection) as bound:
             await self._check_target(bound, record.run.scope_id, record.principal_id, request.target)
-            await self._authorize_memory_changes(record.run.scope_id, record.principal_id, request)
+
             if request.tag_target is not None:
                 await self._check_tag_target(bound, record.run.scope_id, record.principal_id, request)
             resolver = self._resolver(record.run.scope_id, record.principal_id)
             resolver.limits = record.run.budget
-            artifacts, citations, target = _resolve_references(request)
+            artifacts, target = _resolve_references(request)
             return await resolver.resolve(
                 bound,
                 sources=request.sources,
                 artifacts=artifacts,
-                memory_citations=citations,
                 target=target,
                 include_memory_text=request.operation != "derive_skill",
                 pinned=record.run.input_manifest,
@@ -452,7 +458,7 @@ class DreamService:
                         "revise_skill": "skill",
                         "refine_experience": "experience",
                         "revise_profile": "profile",
-                        "revise_memory": "memory",
+                        "revise_memory": "atomic-memory",
                         "revise_topic_memory": "topic-memory",
                         "refresh_handoff": "handoff",
                         "revise_prompt": "prompt",
@@ -485,11 +491,13 @@ class DreamService:
         plan: DreamPlan,
         resolved: ResolvedEvidence,
     ) -> DreamCandidateRef:
+        if record.request is None:
+            raise DreamError("dream_request_unavailable")
         selected = select_evidence(
             resolved.manifest,
             plan.evidence_ids,
             skill=record.run.operation == "derive_skill",
-            target=_resolve_references(record.request)[2],
+            target=_resolve_references(record.request)[1],
             catalog=record.run.operation == "revise_tags",
         )
         if isinstance(plan.proposal, TagChangeProposal) and record.request.tag_target is not None:
@@ -505,7 +513,6 @@ class DreamService:
                 reason=plan.reason,
                 sources=selected.sources,
                 artifacts=selected.artifacts,
-                memory_citations=selected.memory_citations,
                 dream_run_id=record.run.run_id,
                 candidate_id=_candidate_id(record),
                 audit=candidate_audit(record, proposal),
@@ -517,7 +524,6 @@ class DreamService:
                 plan.proposal,
                 sources=selected.sources,
                 artifacts=selected.artifacts,
-                memory_citations=selected.memory_citations,
                 target=record.run.target,
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
@@ -529,7 +535,6 @@ class DreamService:
                 plan.proposal,
                 sources=selected.sources,
                 artifacts=selected.artifacts,
-                memory_citations=selected.memory_citations,
                 target=record.run.target,
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
@@ -555,21 +560,15 @@ class DreamService:
                 target=record.run.target,
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
-                memory_citations=selected.memory_citations,
             )
-        elif isinstance(plan.proposal, MemoryDreamWrite) and record.run.operation == "revise_memory":
+        elif isinstance(plan.proposal, AtomicMemoryContent) and record.run.operation == "revise_memory":
             if record.run.target is None:
                 raise DreamError("invalid_generation_output")
-            proposal = MemoryDreamCandidateProposal(
-                base=record.run.target,
-                dream_run_id=record.run.run_id,
-                changes=plan.proposal.changes,
-            )
+            proposal = plan.proposal
             candidate = await review.propose_memory_dream(
                 proposal,
                 sources=selected.sources,
                 artifacts=selected.artifacts,
-                memory_citations=selected.memory_citations,
                 target=record.run.target,
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
@@ -579,7 +578,6 @@ class DreamService:
                 raise DreamError("invalid_generation_output")
             candidate = await review.propose_topic_memory_dream(
                 plan.proposal,
-                memory_citations=selected.memory_citations,
                 sources=selected.sources,
                 artifacts=selected.artifacts,
                 target=record.run.target,
@@ -593,7 +591,6 @@ class DreamService:
                 plan.proposal,
                 sources=selected.sources,
                 artifacts=selected.artifacts,
-                memory_citations=selected.memory_citations,
                 target=record.run.target,
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
@@ -605,7 +602,6 @@ class DreamService:
                 plan.proposal,
                 sources=selected.sources,
                 artifacts=selected.artifacts,
-                memory_citations=selected.memory_citations,
                 target=record.run.target,
                 reason=plan.reason,
                 candidate_id=_candidate_id(record),
@@ -688,13 +684,8 @@ class DreamService:
         target = request.tag_target
         if target is None:
             raise DreamError("invalid_target")
-        await self._authorize(scope_id, principal_id, "write_tags", target.basis_ref or target.basis_citation)
+        await self._authorize(scope_id, principal_id, "write_tags", target.basis_ref)
         await self._catalog(scope_id, connection).inspect_target(target)
-
-    async def _authorize_memory_changes(self, scope_id: str, principal_id: str, request: CreateDreamRunRequest) -> None:
-        if request.operation == "revise_memory":
-            for citation in request.memory_citations:
-                await self._authorize(scope_id, principal_id, "write", citation)
 
     async def _check_target(
         self,
@@ -705,7 +696,7 @@ class DreamService:
     ) -> None:
         if target is None:
             return
-        await self._authorize(scope_id, principal_id, "read" if target.family == "memory" else "write", target)
+        await self._authorize(scope_id, principal_id, "write", target)
         current = await self.artifacts.latest(
             connection,
             scope_id,
@@ -754,11 +745,13 @@ def _candidate_matches_evidence(
     candidate: Candidate[Any] | CatalogChangeCandidate, record: DreamRecord, resolved: ResolvedEvidence
 ) -> bool:
     """A shared root alone cannot authorize stale or differently selected evidence."""
+    if record.request is None:
+        return False
     if isinstance(candidate, CatalogChangeCandidate):
         requested = record.request.tag_target
         if requested is None or any(
             getattr(candidate.proposal, field) != getattr(requested, field)
-            for field in ("target", "expected_etag", "basis_ref", "basis_citation")
+            for field in ("target", "expected_etag", "basis_ref")
         ):
             return False
     elif candidate.target != record.run.target:
@@ -769,35 +762,26 @@ def _candidate_matches_evidence(
             available.add(reference_key(node.source))
         if node.artifact is not None:
             available.add(reference_key(node.artifact))
-        available.update(reference_key(citation) for citation in node.memory_citations)
-    return all(
-        reference_key(reference) in available
-        for reference in (*candidate.sources, *candidate.artifacts, *candidate.memory_citations)
-    )
+    return all(reference_key(reference) in available for reference in (*candidate.sources, *candidate.artifacts))
 
 
 def _resolve_references(request: CreateDreamRunRequest):
     target = request.tag_target
     if target is None:
-        return request.artifacts, request.memory_citations, request.target
-    return (
-        unique_references((*request.artifacts, *((target.basis_ref,) if target.basis_ref is not None else ()))),
-        unique_references((
-            *request.memory_citations,
-            *((target.basis_citation,) if target.basis_citation is not None else ()),
-        )),
-        target.basis_ref or target.basis_citation,
-    )
+        return request.artifacts, request.target
+    return unique_references((*request.artifacts, target.basis_ref)), target.basis_ref
 
 
 def _target_evidence_id(request: CreateDreamRunRequest) -> str | None:
     target = request.target
     if request.tag_target is not None:
-        target = request.tag_target.basis_ref or request.tag_target.basis_citation
+        target = request.tag_target.basis_ref
     return None if target is None else evidence_id(target)
 
 
 def _supported_plan(record: DreamRecord, plan: DreamPlan, resolved: ResolvedEvidence) -> DreamPlan:
+    if record.request is None:
+        raise DreamError("dream_request_unavailable")
     if plan.outcome != "proposed":
         return plan
     try:
@@ -805,7 +789,7 @@ def _supported_plan(record: DreamRecord, plan: DreamPlan, resolved: ResolvedEvid
             resolved.manifest,
             plan.evidence_ids,
             skill=record.run.operation == "derive_skill",
-            target=_resolve_references(record.request)[2],
+            target=_resolve_references(record.request)[1],
             catalog=record.run.operation == "revise_tags",
         )
     except EvidenceResolutionError as error:

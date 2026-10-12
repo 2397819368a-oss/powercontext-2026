@@ -50,11 +50,12 @@ def proposal_fingerprint(record: DreamRecord, evidence: ResolvedEvidence) -> str
     )
     roots = sorted({*roots, *independent})
     request = record.request
+    if request is None:
+        raise ValueError("historical Dream runs cannot propose candidates")  # noqa: TRY003
     return _digest({
         "operation": request.operation,
         "target": None if request.target is None else request.target.model_dump(mode="json"),
         "tag_target": None if request.tag_target is None else request.tag_target.model_dump(mode="json"),
-        "entries": [ref.model_dump(mode="json") for ref in request.memory_citations],
         "roots": roots,
         "policy": validation_policy_digest(record),
     })

@@ -82,6 +82,7 @@
     "processing_manifest": "Require the target deployment manifest; preserve explicit capabilities, ownership mode and historical automatic bindings; add canonical Handoff/Prompt bindings; allow only declared Handoff/Prompt capability additions and reject incompatible targets before writes"
   },
   "framework_requirements": [
+    "Complete and verify master Atomic Memory migration before this transformation; candidate source tables must no longer declare memory_citations",
     "Register a complete historical Server baseline and actual revision dependencies",
     "Freeze and checksum this transformation and schema.json with the release bundle",
     "Bind removal_release and minimum_client_version before production registration",

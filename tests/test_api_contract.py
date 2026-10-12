@@ -156,6 +156,7 @@ from powercontext.http._generated.operations import (
 )
 from powercontext.server.app import create_app
 from powercontext.server.factory import create_server_app
+from powercontext.server.info import server_info
 from powercontext.server.settings import HandoffReportConfig, ServerSettings
 
 
@@ -182,6 +183,47 @@ def test_contract_uses_the_namespaced_request_id_header() -> None:
 
     assert "X-PowerContext-Request-ID" in contract
     assert "X-Request-ID" not in contract
+
+
+def test_server_info_contract_is_observable_and_forward_compatible() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+
+    assert contract["info"]["version"] == "1.2.0"
+    operation = contract["paths"]["/v1/server-info"]["get"]
+    assert operation["operationId"] == "get_server_info"
+    assert operation["x-powercontext-access"] == {
+        "action": "server.observe",
+        "resource": {"type": "server"},
+    }
+    schema = contract["components"]["schemas"]["ServerInfo"]
+    assert schema["required"] == [
+        "schema_version",
+        "product",
+        "server_id",
+        "package_version",
+        "api_contract_version",
+        "feature_contracts",
+    ]
+    assert "additionalProperties" not in schema
+
+
+def test_server_info_feature_contracts_match_openapi_versions_and_membership() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    expected = {
+        name: {
+            "version": version,
+            "operations": [
+                operation["operationId"]
+                for path_item in contract["paths"].values()
+                for operation in path_item.values()
+                if name in operation.get("x-powercontext-feature-contracts", [])
+            ],
+        }
+        for name, version in contract["x-powercontext-feature-contracts"].items()
+    }
+    assert {
+        name: feature.model_dump() for name, feature in server_info("server-a").feature_contracts.items()
+    } == expected
 
 
 def test_contract_declares_server_and_remote_target_bearer_boundaries() -> None:
@@ -694,15 +736,16 @@ def test_source_reference_keeps_name_as_the_source_type() -> None:
     assert set(properties) == {"name", "source_id"}
 
 
-def test_memory_transport_has_one_reference_shape_and_nested_citations() -> None:
+def test_memory_transport_has_no_legacy_citation_shape() -> None:
     contract = yaml.safe_load(CONTRACT_PATH.read_text())
     schemas = contract["components"]["schemas"]
 
-    assert "MemoryReference" not in schemas
-    assert schemas["MemoryCitation"]["properties"]["memory_ref"] == {"$ref": "#/components/schemas/ArtifactReference"}
+    assert not {"MemoryReference", "MemoryCitation", "HandoffMemoryCitation"} & set(schemas)
+    assert "memory_citations" not in CONTRACT_PATH.read_text()
     for name in ("GetMemoryEntryRequest", "ReviseMemoryEntryRequest", "RetireMemoryEntryRequest"):
         properties = schemas[name]["properties"]
-        assert properties["citation"] == {"$ref": "#/components/schemas/MemoryCitation"}
+        # The Server rejects an exact legacy citation as unsupported instead of decoding it.
+        assert properties["citation"]["type"] == "object" and "properties" not in properties["citation"]
         assert "memory_id" not in properties
         assert "expected_revision" not in properties
 
@@ -731,11 +774,8 @@ def test_entry_list_hides_inactive_entries_unless_explicitly_requested() -> None
             GetMemoryEntryRequest,
             {
                 "scope_id": "scope",
-                "citation": {
-                    "memory_ref": {"family": "memory", "artifact_id": "memory-1", "revision": 1},
-                    "entry_id": "记忆",
-                    "entry_version_id": "version-1",
-                },
+                "citation": {"entry_id": "记忆"},
+                "target": {"type": "memory_entry", "family": "memory", "artifact_id": "memory-1", "entry_id": "记忆"},
             },
         ),
     ],
@@ -771,6 +811,10 @@ def test_base_access_contract_includes_revision_history_and_tags() -> None:
         ("/v1/scopes/{scope_id}/artifacts/{family}", "get"): "list_artifacts",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}", "get"): "get_artifact",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}", "put"): "replace_artifact",
+        (
+            "/v1/scopes/{scope_id}/artifacts/atomic-memory/{artifact_id}/state",
+            "get",
+        ): "get_atomic_memory_state",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions", "get"): "list_artifact_revisions",
         (
             "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions/{revision}",
@@ -810,12 +854,14 @@ def test_base_access_create_requests_leave_identity_generation_to_the_server() -
     assert source["properties"]["source_type"]["default"] == "content"
 
     artifact = schemas["CreateArtifactRequest"]
-    assert len(artifact["oneOf"]) == 7
+    assert len(artifact["oneOf"]) == 8
+    assert {"$ref": "#/components/schemas/CreateAtomicMemoryArtifactRequest"} in artifact["oneOf"]
     assert artifact["discriminator"]["propertyName"] == "family"
     prompt_request = schemas["CreatePromptArtifactRequest"]
     assert prompt_request["required"] == ["family", "prompt_key", "content"]
     assert set(prompt_request["properties"]) == {"family", "prompt_key", "content"}
     for name in (
+        "CreateAtomicMemoryArtifactRequest",
         "CreateMemoryArtifactRequest",
         "CreateExperienceArtifactRequest",
         "CreateSkillArtifactRequest",
@@ -987,7 +1033,10 @@ def test_memory_capacity_contract_and_compact_change_are_public():
     assert GET_MEMORY_CAPACITY.path == "/v1/memory/capacity"
     assert GET_MEMORY_CAPACITY.request_type is GetMemoryCapacityRequest
     assert GET_MEMORY_CAPACITY.response_type is MemoryCapacity
-    assert GET_MEMORY_CAPACITY.access == LIST_MEMORY_ENTRIES.access
+    assert GET_MEMORY_CAPACITY.access is not None
+    assert LIST_MEMORY_ENTRIES.access is not None
+    assert GET_MEMORY_CAPACITY.access.resolver == "atomic_memory_domain_access"
+    assert LIST_MEMORY_ENTRIES.access.action == "scope.read"
     assert EntryChangeOperation.COMPACT.value == "compact"
     with pytest.raises(ValidationError):
         GetMemoryCapacityRequest.model_validate({"scope_id": "scope", "budget": {}})

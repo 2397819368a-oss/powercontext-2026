@@ -24,13 +24,12 @@ from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 
-from powercontext.artifacts import MemoryCitation
 from powercontext.builtin.artifacts.experience import ExperienceContent, ExperienceDraft
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.catalog_changes.models import CatalogChangeProposal
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE
+from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.review.errors import (
     ArtifactTargetConflictError,
     CandidateConflictError,
@@ -40,7 +39,7 @@ from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.builtin.sources import ContentCapture
 from powercontext.builtin.sources.content import ContentSourceAdapter
-from powercontext.builtin.tags import ArtifactTagTarget, MemoryEntryTagTarget, TagPreconditionError
+from powercontext.builtin.tags import ArtifactTagTarget, TagPreconditionError
 
 
 @pytest.fixture(params=("sqlite", "oceanbase"))
@@ -152,7 +151,6 @@ def test_catalog_revision_requires_support_beyond_content_basis(database):
                     reason="Remove all supporting evidence",
                     sources=(),
                     artifacts=(artifact.as_ref(),),
-                    memory_citations=(),
                 )
 
     asyncio.run(scenario())
@@ -224,29 +222,26 @@ def test_catalog_memory_entry_basis_ignores_unrelated_head_changes(database):
             source,
             _artifact,
         ):
-            context = await contexts.get(scope)
-            memory_service = context.artifacts.memory
-            memory = await memory_service.remember(
-                memory=None, entries=(MemoryEntryInput(kind="fact", text="Delivery was incorrect"),), mode="append"
+            memory_service = contexts.atomic_memory.for_scope(scope)
+            created = await contexts.records.create_artifact(
+                scope, "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Delivery was incorrect"})
             )
-            entry = memory.content.manifest.entries[0]
-            target = MemoryEntryTagTarget(artifact_id=memory.artifact_id, entry_id=entry.entry_id)
+            memory = await memory_service.get(created.artifact_id)
+            target = ArtifactTagTarget(family="atomic-memory", artifact_id=memory.ref.artifact_id)
             tags = await contexts.records.get_tags(scope, target)
             candidate = await contexts.catalog_changes(scope).propose(
                 CatalogChangeProposal(
                     target=target,
                     expected_etag=tags.etag,
-                    basis_citation=MemoryCitation(
-                        memory_ref=memory.as_ref(), entry_id=entry.entry_id, entry_version_id=entry.entry_version_id
-                    ),
+                    basis_ref=memory.ref,
                     before_tags=(),
                     after_tags=("verified",),
                 ),
                 sources=(source,),
                 reason="Verified result",
             )
-            await memory_service.remember(
-                memory=memory, entries=(MemoryEntryInput(kind="fact", text="Unrelated entry"),), mode="append"
+            await contexts.records.create_artifact(
+                scope, "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Unrelated entry"})
             )
             approved = await contexts.catalog_changes(scope).approve(candidate.candidate_id, 1)
             assert approved.result.tags == ("verified",)
@@ -362,39 +357,42 @@ def test_catalog_memory_entry_changes_invalidate_pending_candidate(database, cha
             source,
             _artifact,
         ):
-            memory_service = (await contexts.get(scope)).artifacts.memory
-            memory = await memory_service.remember(
-                memory=None, entries=(MemoryEntryInput(kind="fact", text="Delivery was incorrect"),), mode="append"
+            memory_service = contexts.atomic_memory.for_scope(scope)
+            created = await contexts.records.create_artifact(
+                scope, "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Delivery was incorrect"})
             )
-            entry = memory.content.manifest.entries[0]
-            citation = MemoryCitation(
-                memory_ref=memory.as_ref(), entry_id=entry.entry_id, entry_version_id=entry.entry_version_id
-            )
-            target = MemoryEntryTagTarget(artifact_id=memory.artifact_id, entry_id=entry.entry_id)
+            memory = await memory_service.get(created.artifact_id)
+            citation = memory.ref
+            target = ArtifactTagTarget(family="atomic-memory", artifact_id=memory.ref.artifact_id)
             tags = await contexts.records.get_tags(scope, target)
             candidate = await contexts.catalog_changes(scope).propose(
                 CatalogChangeProposal(
                     target=target,
                     expected_etag=tags.etag,
-                    basis_citation=citation,
+                    basis_ref=citation,
                     before_tags=(),
                     after_tags=("verified",),
                 ),
                 sources=(source,),
                 reason="Verified result",
             )
-            version = await memory_service.validate_citation(citation)
             if change == "revise":
-                await memory_service.remember(
-                    memory=memory,
-                    entries=(MemoryEntryInput(entry=version, kind="fact", text="Delivery was correct"),),
-                    mode="append",
+                await contexts.records.replace_artifact(
+                    scope,
+                    "atomic-memory",
+                    memory.ref.artifact_id,
+                    '"revision:1"',
+                    ArtifactWrite(content={"kind": "fact", "text": "Delivery was correct"}),
                 )
             else:
-                await memory_service.forget(memory, entries=(version,))
+                await memory_service.forget(
+                    memory.ref.artifact_id,
+                    expected_revision=memory.ref.revision,
+                    expected_state_version=memory.state.state_version,
+                )
             from powercontext.builtin.evidence.models import EvidenceResolutionError
 
-            with pytest.raises((ArtifactTargetConflictError, EvidenceResolutionError)):
+            with pytest.raises((ArtifactTargetConflictError, EvidenceResolutionError, InvalidCandidateError)):
                 await contexts.catalog_changes(scope).approve(candidate.candidate_id, 1)
             assert (await contexts.catalog_changes(scope).get(candidate.candidate_id)).status == "pending"
             assert (await contexts.records.get_tags(scope, target)).tags == ()
@@ -760,15 +758,12 @@ def test_tag_dreams_for_different_families_share_their_existing_workers(database
 def test_catalog_correction_can_replace_labels_based_on_retired_target_history(database):
     async def scenario():
         async with seed(database) as (contexts, scope, source, _artifact):
-            memory_service = (await contexts.get(scope)).artifacts.memory
-            memory = await memory_service.remember(
-                memory=None, entries=(MemoryEntryInput(kind="fact", text="Old guess"),), mode="append"
+            memory_service = contexts.atomic_memory.for_scope(scope)
+            created = await contexts.records.create_artifact(
+                scope, "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Old guess"})
             )
-            entry = memory.content.manifest.entries[0]
-            citation = MemoryCitation(
-                memory_ref=memory.as_ref(), entry_id=entry.entry_id, entry_version_id=entry.entry_version_id
-            )
-            version = await memory_service.validate_citation(citation)
+            memory = await memory_service.get(created.artifact_id)
+            citation = memory.ref
             async with contexts.database.transaction() as connection:
                 artifact = await contexts.repositories.artifacts.create(
                     connection,
@@ -778,10 +773,14 @@ def test_catalog_correction_can_replace_labels_based_on_retired_target_history(d
                         content=ExperienceContent(
                             situation="Old guess", action="Verify", outcome="Unclear", lesson="Needs correction"
                         ),
-                        memory_citations=(citation,),
+                        artifacts=(citation,),
                     ),
                 )
-            await memory_service.forget(memory, entries=(version,))
+            await memory_service.forget(
+                memory.ref.artifact_id,
+                expected_revision=memory.ref.revision,
+                expected_state_version=memory.state.state_version,
+            )
             candidate = await contexts.catalog_changes(scope).propose(
                 await proposal(contexts, scope, artifact),
                 sources=(source,),

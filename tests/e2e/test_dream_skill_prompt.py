@@ -70,7 +70,7 @@ class PromptGenerator:
 
     async def generate(self, value):
         assert value.operation == "revise_prompt"
-        assert value.prompt_definition["key"] == "memory.extract"
+        assert value.prompt_definition["key"] == "atomic_memory.extract"
         target = next(item for item in value.evidence.evidence if item.kind == "prompt")
         assert "Always treat trips as moves." in target.text
         proposal = PromptContent(
@@ -111,7 +111,7 @@ def test_prompt_dream_review_publication_and_monotonic_rollback(database: Databa
                 demonstrations=(),
             )
             created = await records.create_artifact(
-                "prompt", ArtifactWrite(prompt_key="memory.extract", content=original.model_dump(mode="json"))
+                "prompt", ArtifactWrite(prompt_key="atomic_memory.extract", content=original.model_dump(mode="json"))
             )
             target = ArtifactRef(family="prompt", artifact_id=created.artifact_id, revision=created.revision)
             source = await runtime.sources.for_scope(scope.scope_id).capture(
@@ -131,7 +131,7 @@ def test_prompt_dream_review_publication_and_monotonic_rollback(database: Databa
             run = await runtime.dream.for_scope(scope.scope_id).create(request)
             await process_pending(runtime)
             run = await runtime.dream.for_scope(scope.scope_id).get(GetDreamRunRequest(run_id=run.run_id))
-            before = await records.get_artifact("prompt", "memory.extract")
+            before = await records.get_artifact("prompt", "atomic_memory.extract")
             assert before.revision == 1
             if case == "schema":
                 assert run.status == "failed" and run.candidate is None
@@ -154,7 +154,10 @@ def test_prompt_dream_review_publication_and_monotonic_rollback(database: Databa
                 )
             if case == "conflict":
                 await records.replace_artifact(
-                    "prompt", "memory.extract", '"revision:1"', ArtifactWrite(content=original.model_dump(mode="json"))
+                    "prompt",
+                    "atomic_memory.extract",
+                    '"revision:1"',
+                    ArtifactWrite(content=original.model_dump(mode="json")),
                 )
                 with pytest.raises(ArtifactTargetConflictError):
                     await review.approve(
@@ -180,7 +183,7 @@ def test_prompt_dream_review_publication_and_monotonic_rollback(database: Databa
                 )
                 assert candidate.version == 2
             prompts = runtime._provider.prompts
-            async with prompts.bind(scope.scope_id, "memory.extract") as frozen:
+            async with prompts.bind(scope.scope_id, "atomic_memory.extract") as frozen:
                 approved = await review.approve(
                     ApproveCandidateRequest(candidate_id=candidate.candidate_id, expected_version=candidate.version)
                 )
@@ -197,16 +200,21 @@ def test_prompt_dream_review_publication_and_monotonic_rollback(database: Databa
                             candidate_id=candidate.candidate_id, expected_version=candidate.version + 1
                         )
                     )
-                assert current_prompt("memory.extract") == frozen
+                assert current_prompt("atomic_memory.extract") == frozen
                 assert frozen.artifact == target
-            fresh = await prompts.resolve(scope.scope_id, "memory.extract")
+            fresh = await prompts.resolve(scope.scope_id, "atomic_memory.extract")
             assert fresh.artifact.revision == 2
             assert "temporary trip" in fresh.instructions
             rolled = await records.replace_artifact(
-                "prompt", "memory.extract", '"revision:2"', ArtifactWrite(content=original.model_dump(mode="json"))
+                "prompt",
+                "atomic_memory.extract",
+                '"revision:2"',
+                ArtifactWrite(content=original.model_dump(mode="json")),
             )
             assert rolled.revision == 3
-            assert (await prompts.resolve(scope.scope_id, "memory.extract")).instructions == original.instructions
+            assert (
+                await prompts.resolve(scope.scope_id, "atomic_memory.extract")
+            ).instructions == original.instructions
 
     asyncio.run(scenario())
 
@@ -321,7 +329,6 @@ def test_handoff_omission_references_must_belong_to_selected_evidence(database: 
                     target=target.as_ref(),
                     reason="Refresh status",
                     candidate_id="cand_dream_omission",
-                    memory_citations=(),
                 )
 
     asyncio.run(scenario())

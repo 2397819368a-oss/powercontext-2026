@@ -304,14 +304,34 @@ def seed_run(path, scope, candidate, *, operation="refine_experience", status="q
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_historical_tasks_remain_readable_with_identity_and_candidate_refs(tmp_path, status):
+@pytest.mark.parametrize("archived", [False, True])
+def test_historical_tasks_remain_readable_with_identity_and_candidate_refs(tmp_path, status, archived):
     async def scenario():
         from powercontext.builtin.persistence.dream import DreamRepository
 
         path = tmp_path / "tasks.db"
         scope, candidates = await populate(path)
         seed_run(path, scope, candidates[1], status=status)
+        from powercontext.builtin.dream.models import CreateDreamRunRequest
+
         with sqlite3.connect(path) as connection:
+            original = json.loads(connection.execute("SELECT payload FROM pc_dream_runs").fetchone()[0])
+            request = CreateDreamRunRequest.model_validate(original["request"])
+            if archived:
+                payload = json.loads(connection.execute("SELECT payload FROM pc_dream_runs").fetchone()[0])
+                request = CreateDreamRunRequest.model_validate(payload["request"])
+                payload["run"]["historical_data"] = {
+                    "format": "powercontext.dream-history.v1",
+                    "request": payload["request"],
+                    "input_manifest": payload["run"].get("input_manifest"),
+                    "request_digest": request.digest(),
+                }
+                payload["request"] = None
+                payload["run"]["input_manifest"] = None
+                connection.execute(
+                    "UPDATE pc_dream_runs SET payload=?, request_digest=?",
+                    (json.dumps(payload).encode(), request.digest()),
+                )
             before = connection.execute(
                 "SELECT payload, principal_key, idempotency_key, request_generation FROM pc_dream_runs"
             ).fetchall()
@@ -331,7 +351,13 @@ def test_historical_tasks_remain_readable_with_identity_and_candidate_refs(tmp_p
             assert record.run.status == status
             assert record.run.prompt_version == "powercontext.dream.v1"
             assert record.principal_id == "owner" and record.request_generation == 1
-            assert await DreamRepository().find_request(connection, scope, "owner", record.request) == record
+            if archived:
+                assert record.request is None
+                assert record.run.historical_data is not None
+            else:
+                assert record.request is not None
+                request = record.request
+            assert await DreamRepository().find_request(connection, scope, "owner", request) == record
             if status == "succeeded":
                 assert record.run.candidate is not None
                 assert record.run.candidate.candidate_id == candidates[1].candidate_id
@@ -405,7 +431,7 @@ def test_pending_legacy_run_requires_drain_before_domain_transformation(tmp_path
 
     from powercontext.builtin.persistence.migration_resources.dream_expansion.upgrade import validate_dream_tasks
     from powercontext.builtin.runtime import CreateDreamRunRequest
-    from tests.e2e.dream_support import open_dream_runtime
+    from tests.e2e.dream_support import atomic_memory_pipeline, open_dream_runtime
     from tests.e2e.test_artifact_dreaming import Generator, MemoryPipeline, config
     from tests.e2e.test_artifact_dreaming import seed as seed_dream
 
@@ -413,11 +439,11 @@ def test_pending_legacy_run_requires_drain_before_domain_transformation(tmp_path
         path = tmp_path / "drain.db"
         settings = config(SQLiteConfig(url=f"sqlite+aiosqlite:///{path}"))
         async with open_dream_runtime(
-            settings, candidate_pipeline=MemoryPipeline(), dream_generator=Generator()
+            settings, candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()), dream_generator=Generator()
         ) as runtime:
             scope, _, citation = await seed_dream(runtime)
             request = CreateDreamRunRequest(
-                operation="refine_experience", memory_citations=(citation,), idempotency_key="pending-before-upgrade"
+                operation="refine_experience", artifacts=(citation,), idempotency_key="pending-before-upgrade"
             )
             await runtime.dream.for_scope(scope).create(request)
         legacy_schema(path)

@@ -115,9 +115,7 @@ async def _decide_dream_profile(service, connection, candidate, policy, *, reaso
     await service._validate_candidate_audit(connection, candidate)
     if policy is None or proposal.policy_digest != ProfileDreamPolicy.from_policy(policy).digest:
         raise BaseValueConflictError("profile_policy", (service._scope_id,))
-    await service._validate_evidence(
-        connection, candidate.sources, candidate.artifacts, candidate.memory_citations, target=candidate.target
-    )
+    await service._validate_evidence(connection, candidate.sources, candidate.artifacts, target=candidate.target)
     current = await service._artifacts.latest(connection, service._scope_id, "profile", PROFILE_ARTIFACT_ID)
     if current.as_ref() != candidate.target:
         raise BaseValueConflictError("profile_head", (service._scope_id,))
@@ -134,7 +132,6 @@ async def _decide_dream_profile(service, connection, candidate, policy, *, reaso
         ),
         sources=candidate.sources,
         artifacts=candidate.artifacts,
-        memory_citations=candidate.memory_citations,
     )
     artifact = await service._artifacts.revise(connection, service._scope_id, current, draft)
     return await service._candidates.mark_approved(

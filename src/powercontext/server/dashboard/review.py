@@ -84,7 +84,6 @@ async def _detail(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> None
             "reason": candidate["reason"],
             "source_refs": candidate["source_refs"],
             "artifact_refs": candidate["artifact_refs"],
-            "memory_citations": candidate["memory_citations"],
         }
     else:
         target = candidate.get("target")
@@ -93,7 +92,6 @@ async def _detail(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> None
             "proposal": proposal,
             "source_refs": candidate["source_refs"],
             "artifact_refs": candidate["artifact_refs"],
-            "memory_citations": candidate["memory_citations"],
             "target": target,
             "reason": candidate["reason"],
         }
@@ -129,8 +127,6 @@ async def _detail(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> None
             artifact,
             f"/v1/scopes/{segment(scope)}/artifacts/{segment(artifact['family'])}/{segment(artifact['artifact_id'])}/revisions/{artifact['revision']}",
         )
-    for citation in candidate.get("memory_citations", []):
-        await _evidence(api, detail, citation, "/v1/memory/entries/get", {"scope_id": scope, "citation": citation})
 
 
 async def _artifact_comparison(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> tuple[Any, Any]:
@@ -138,7 +134,7 @@ async def _artifact_comparison(api: DashboardAPI, scope: str, detail: dict[str, 
     proposal = candidate["proposal"]
     baseline: Any = None
     target = candidate.get("target")
-    if target and candidate["family"] != "memory":
+    if target:
         try:
             baseline = (
                 await api.artifact_revision(scope, target["family"], target["artifact_id"], target["revision"])
@@ -146,24 +142,7 @@ async def _artifact_comparison(api: DashboardAPI, scope: str, detail: dict[str, 
         except ReadError as error:
             detail["baseline_error"] = error
     proposed = proposal
-    if candidate["family"] == "memory":
-        try:
-            baseline = []
-            proposed = []
-            for change in proposal["changes"]:
-                citation = {
-                    "memory_ref": proposal["base"],
-                    "entry_id": change["entry_id"],
-                    "entry_version_id": change["entry_version_id"],
-                }
-                entry = await api.read("/v1/memory/entries/get", {"scope_id": scope, "citation": citation})
-                baseline.append({"entry_id": change["entry_id"], "kind": entry["kind"], "text": entry["text"]})
-                proposed.append({"entry_id": change["entry_id"], "kind": change["kind"], "text": change["text"]})
-        except ReadError as error:
-            detail["baseline_error"] = error
-    elif candidate["family"] == "profile":
-        baseline = None if baseline is None else baseline["content"]
-        proposed = proposal["content"]
+
     return baseline, proposed
 
 

@@ -20,7 +20,7 @@ CREATE TABLE pc_artifact_candidate_versions (
 	proposal BLOB NOT NULL,
 	source_refs BLOB NOT NULL,
 	artifact_refs BLOB NOT NULL,
-	memory_citations BLOB,
+
 	target_family VARCHAR(128),
 	target_artifact_id VARCHAR(128),
 	target_revision INTEGER,

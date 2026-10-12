@@ -121,7 +121,6 @@ class CatalogCandidateRepository:
         return candidate
 
     async def _version(self, connection: AsyncConnection, scope_id: str, candidate: CatalogChangeCandidate) -> None:
-        from powercontext.builtin.persistence.citation_codec import dump_memory_citations
 
         await connection.execute(
             insert(CANDIDATE_VERSIONS_TABLE).values(
@@ -132,7 +131,6 @@ class CatalogCandidateRepository:
                 proposal=candidate.model_dump_json().encode(),
                 source_refs=json.dumps([ref.model_dump(mode="json") for ref in candidate.sources]).encode(),
                 artifact_refs=json.dumps([ref.model_dump(mode="json") for ref in candidate.artifacts]).encode(),
-                memory_citations=dump_memory_citations(candidate.memory_citations),
                 reason=candidate.reason,
             )
         )

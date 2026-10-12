@@ -25,15 +25,15 @@ from powercontext.builtin.runtime import (
     GetDreamRunRequest,
     ProposeExperienceRequest,
     RejectCandidateRequest,
-    RetireMemoryEntryRequest,
     ReviseCandidateRequest,
 )
-from tests.e2e.dream_support import open_dream_runtime, process_pending
+from tests.e2e.dream_support import atomic_memory_pipeline, open_dream_runtime, process_pending
 from tests.e2e.test_artifact_dreaming import (
     Generator,
     MemoryPipeline,
     config,
     experience,
+    forget_memory,
     seed,
 )
 from tests.e2e.test_artifact_dreaming import (
@@ -46,13 +46,13 @@ def test_dream_suppresses_unchanged_proposals_but_preserves_edited_candidate(dat
     async def scenario():
         generator = Generator()
         async with open_dream_runtime(
-            config(database), candidate_pipeline=MemoryPipeline(), dream_generator=generator
+            config(database), candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()), dream_generator=generator
         ) as runtime:
             scope, _, citation = await seed(runtime)
             dream = runtime.dream.for_scope(scope)
             review = runtime.review.for_scope(scope)
             request = CreateDreamRunRequest(
-                operation="refine_experience", memory_citations=(citation,), idempotency_key="first"
+                operation="refine_experience", artifacts=(citation,), idempotency_key="first"
             )
             first = await dream.create(request)
             await process_pending(runtime)
@@ -78,7 +78,6 @@ def test_dream_suppresses_unchanged_proposals_but_preserves_edited_candidate(dat
                         ),
                         sources=candidate.sources,
                         artifacts=candidate.artifacts,
-                        memory_citations=candidate.memory_citations,
                         target=candidate.target,
                         reason="Review narrows the applicability.",
                     )
@@ -110,13 +109,13 @@ def test_dream_fingerprint_never_reuses_another_principals_candidate(database):
     async def scenario():
         async with open_dream_runtime(
             config(database),
-            candidate_pipeline=MemoryPipeline(),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
             dream_generator=Generator(),
             dream_authorizer=authorize,
         ) as runtime:
             scope, _, citation = await seed(runtime)
             request = CreateDreamRunRequest(
-                operation="refine_experience", memory_citations=(citation,), idempotency_key="same-key"
+                operation="refine_experience", artifacts=(citation,), idempotency_key="same-key"
             )
             runs = []
             for principal in ("alice", "bob"):
@@ -135,13 +134,13 @@ def test_dream_fingerprint_never_reuses_another_principals_candidate(database):
 def test_shared_root_does_not_reuse_candidate_with_unselected_retired_lineage(database):
     async def scenario():
         async with open_dream_runtime(
-            config(database), candidate_pipeline=MemoryPipeline(), dream_generator=Generator()
+            config(database), candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()), dream_generator=Generator()
         ) as runtime:
             scope, source, citation = await seed(runtime)
             review = runtime.review.for_scope(scope)
             experiences = runtime.experience.for_scope(scope)
             first_evidence = await experiences.propose(
-                ProposeExperienceRequest(proposal=experience(), memory_citations=(citation,))
+                ProposeExperienceRequest(proposal=experience(), artifacts=(citation,))
             )
             first_evidence = await review.approve(
                 ApproveCandidateRequest(
@@ -174,7 +173,7 @@ def test_shared_root_does_not_reuse_candidate_with_unselected_retired_lineage(da
             await process_pending(runtime)
             first = await dream.get(GetDreamRunRequest(run_id=first.run_id))
             assert first.candidate is not None
-            await runtime.memory.for_scope(scope).retire(RetireMemoryEntryRequest(citation=citation))
+            await forget_memory(runtime, scope, citation)
             second = await dream.create(
                 CreateDreamRunRequest(
                     operation="refine_experience",

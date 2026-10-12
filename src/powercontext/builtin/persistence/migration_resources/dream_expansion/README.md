@@ -5,6 +5,10 @@ This directory is the Dream-owned input to RFC #1771 and PR #1772. It is not a s
 `schema.json` freezes the Candidate SQL and historical DreamRecord format, with source commit provenance. It is a component
 snapshot, not proof that a complete Server database belongs to a supported historical release.
 
+Atomic Memory migration must finish before this transformation. Candidate references use exact Atomic Memory
+ArtifactRefs, and the source Candidate tables no longer contain `memory_citations`. Terminal Dream records archived by
+that migration retain their nullable executable request and `powercontext.dream-history.v1` payload unchanged.
+
 The framework must register this contribution against a complete, accepted baseline and its actual revision head. Do not
 append it to #1772's four-table acceptance chain and claim complete Server readiness. Release and minimum Client versions
 must be bound before registration. No generic migration table is added; revision tracking belongs to the shared

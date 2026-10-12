@@ -19,12 +19,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
+from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.handoff.models import HandoffContent
-from powercontext.builtin.artifacts.memory.models import MemoryDreamWrite
 from powercontext.builtin.artifacts.profile.models import ProfileDreamPolicy, ProfileWriteContent
 from powercontext.builtin.artifacts.prompt.models import PROMPT_KEYS, PromptContent
 from powercontext.builtin.artifacts.skill import SkillContent
@@ -54,7 +54,7 @@ DreamOperation = Literal[
 DreamStatus = Literal["queued", "running", "succeeded", "failed"]
 DreamOutcome = Literal["proposed", "no_change", "needs_evidence"]
 DreamIntent = Literal["create", "corroborate", "refine", "correct", "derive"]
-DREAM_PROMPT_VERSION = "powercontext.dream.v1.3"
+DREAM_PROMPT_VERSION = "powercontext.dream.v1.4"
 
 
 class DreamError(PowerContextError, ValueError):
@@ -68,7 +68,6 @@ class CreateDreamRunRequest(BaseModel):
 
     operation: DreamOperation
     artifacts: tuple[ArtifactRef, ...] = ()
-    memory_citations: tuple[MemoryCitation, ...] = ()
     sources: tuple[SourceRef, ...] = ()
     target: ArtifactRef | None = None
     tag_target: TagDreamTarget | None = None
@@ -81,7 +80,7 @@ class CreateDreamRunRequest(BaseModel):
             raise DreamError("invalid_idempotency_key")
         return value
 
-    @field_validator("artifacts", "memory_citations", "sources")
+    @field_validator("artifacts", "sources")
     @classmethod
     def normalize_references(cls, value):
         return tuple(sorted(unique_references(value), key=reference_key))
@@ -91,13 +90,13 @@ class CreateDreamRunRequest(BaseModel):
         if self.operation == "revise_tags":
             if self.target is not None or self.tag_target is None:
                 raise DreamError("invalid_target")
-            if not 1 <= len(self.sources) + len(self.artifacts) + len(self.memory_citations) <= 32:
+            if not 1 <= len(self.sources) + len(self.artifacts) <= 32:
                 raise DreamError("evidence_limit_exceeded")
             return self
         if self.tag_target is not None:
             raise DreamError("invalid_target")
-        selected = len(self.artifacts) + len(self.memory_citations)
-        selected_limit = 21 if self.operation == "revise_memory" else 20
+        selected = len(self.artifacts)
+        selected_limit = 20
         if not 1 <= selected <= selected_limit or selected + len(self.sources) > 32:
             raise DreamError("evidence_limit_exceeded")
         allowed_families = {
@@ -105,31 +104,28 @@ class CreateDreamRunRequest(BaseModel):
             "derive_skill": {"experience"},
             "revise_skill": {"experience", "skill"},
             "revise_profile": {"experience", "profile"},
-            "revise_memory": {"experience", "memory"},
+            "revise_memory": {"experience", "atomic-memory"},
             "revise_topic_memory": {"experience", "topic-memory"},
             "refresh_handoff": {"experience", "handoff"},
             "revise_prompt": {"experience", "prompt"},
         }[self.operation]
+        if self.operation != "derive_skill":
+            allowed_families.add("atomic-memory")
         if any(ref.family not in allowed_families for ref in self.artifacts):
             raise DreamError("invalid_artifact_family")
-        if any(
-            ref.memory_ref.family != "memory"
-            or not 1 <= len(ref.entry_id) <= 128
-            or not 1 <= len(ref.entry_version_id) <= 128
-            for ref in self.memory_citations
-        ):
-            raise DreamError("invalid_memory_citation")
         if self.target is not None and self.target not in self.artifacts:
             raise DreamError("invalid_target")
+        if self.operation == "refine_experience" and self.target is not None and self.target.family != "experience":
+            raise DreamError("invalid_target")
         if self.operation == "derive_skill" and (
-            self.memory_citations or self.target is not None or not self.artifacts
+            self.target is not None or not self.artifacts or any(ref.family != "experience" for ref in self.artifacts)
         ):
             raise DreamError("invalid_dream_operation")
         if self.operation == "revise_skill" and (
             self.target is None
             or self.target.family != "skill"
             or any(ref.family == "skill" and ref != self.target for ref in self.artifacts)
-            or not (self.sources or self.memory_citations or any(ref != self.target for ref in self.artifacts))
+            or not (self.sources or any(ref != self.target for ref in self.artifacts))
         ):
             raise DreamError("invalid_dream_operation")
         if self.operation == "revise_profile" and (
@@ -138,13 +134,7 @@ class CreateDreamRunRequest(BaseModel):
             or any(ref.family == "profile" and ref != self.target for ref in self.artifacts)
         ):
             raise DreamError("invalid_dream_operation")
-        if self.operation == "revise_memory" and (
-            self.target is None
-            or self.target.family != "memory"
-            or not self.memory_citations
-            or any(citation.memory_ref != self.target for citation in self.memory_citations)
-            or any(ref.family == "memory" and ref != self.target for ref in self.artifacts)
-        ):
+        if self.operation == "revise_memory" and (self.target is None or self.target.family != "atomic-memory"):
             raise DreamError("invalid_dream_operation")
         if self.operation == "revise_topic_memory" and (
             self.target is None
@@ -213,6 +203,7 @@ class DreamRun(BaseModel):
     prompt_version: str = DREAM_PROMPT_VERSION
     model_config_id: str | None = None
     reused: bool = False
+    historical_data: dict[str, JsonValue] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @property
     def terminal(self) -> bool:
@@ -236,10 +227,14 @@ class GetDreamRunRequest(BaseModel):
 
 
 class DreamRecord(BaseModel):
-    """Private execution state; a principal identity is never a credential."""
+    """Private execution state; a principal identity is never a credential.
+
+    A terminal run migrated from the legacy Memory format has no executable
+    request; its original request is kept only in ``run.historical_data``.
+    """
 
     run: DreamRun
-    request: CreateDreamRunRequest
+    request: CreateDreamRunRequest | None
     principal_id: str
     generation: int = 0
     request_generation: int = 0
@@ -258,7 +253,7 @@ class DreamPlan(BaseModel):
         ExperienceContent
         | SkillContent
         | ProfileWriteContent
-        | MemoryDreamWrite
+        | AtomicMemoryContent
         | TopicMemoryContent
         | HandoffContent
         | PromptContent
@@ -296,11 +291,10 @@ class DreamPlan(BaseModel):
                 and self.intent == "correct"
             )
         elif request.operation == "revise_memory":
-            selected = {(citation.entry_id, citation.entry_version_id) for citation in request.memory_citations}
             valid = (
-                isinstance(self.proposal, MemoryDreamWrite)
+                isinstance(self.proposal, AtomicMemoryContent)
                 and self.intent == "correct"
-                and all((change.entry_id, change.entry_version_id) in selected for change in self.proposal.changes)
+                and self.proposal.creation is None
             )
         elif request.operation == "revise_topic_memory":
             valid = isinstance(self.proposal, TopicMemoryContent) and self.intent == "correct"

@@ -23,8 +23,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
-from powercontext.builtin.artifacts.memory.models import Memory
+from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.catalog_changes.models import (
     CatalogCandidateEvidence,
     CatalogCandidatePage,
@@ -86,7 +85,7 @@ class CatalogChangeService:
             yield connection
 
     async def _authorize_target(self, target: TagDreamTarget) -> None:
-        reference = target.basis_ref if target.basis_ref is not None else target.basis_citation
+        reference = target.basis_ref
         if reference is None:
             raise InvalidCandidateError("basis", "missing content basis")
         if self._evidence.authorize is not None:
@@ -109,23 +108,8 @@ class CatalogChangeService:
         )
         if lifecycle != "active":
             raise InvalidCandidateError("target", "target_inactive")
-        if target.basis_ref is not None:
-            if artifact.as_ref() != target.basis_ref:
-                raise ArtifactTargetConflictError(target.basis_ref, artifact.as_ref())
-        else:
-            citation = target.basis_citation
-            if citation is None:
-                raise InvalidCandidateError("basis", "missing entry basis")
-            if not isinstance(artifact, Memory):
-                raise InvalidCandidateError("target", "expected a Memory entry")
-            # Validate the old exact manifest and entry version as well as today's
-            # entry. Unrelated changes elsewhere in this Memory do not invalidate it.
-            await self._evidence.memory_reader(connection, citation)
-            entry = next(
-                (entry for entry in artifact.content.manifest.entries if entry.entry_id == citation.entry_id), None
-            )
-            if entry is None or entry.state != "active" or entry.entry_version_id != citation.entry_version_id:
-                raise ArtifactTargetConflictError(citation.memory_ref, artifact.as_ref())
+        if artifact.as_ref() != target.basis_ref:
+            raise ArtifactTargetConflictError(target.basis_ref, artifact.as_ref())
 
     async def _lock_target(self, connection: AsyncConnection, target: TagDreamTarget) -> None:
         # Profile's automatic and review writers serialize on Policy first.
@@ -138,19 +122,13 @@ class CatalogChangeService:
 
     async def _evidence_and_lock(self, connection: AsyncConnection, candidate: CatalogChangeCandidate) -> None:
         await self._lock_target(connection, candidate.proposal)
-        citations = candidate.memory_citations
-        basis = candidate.proposal.basis_citation
-        if basis is not None and basis not in citations:
-            citations = (*citations, basis)
         supporting_artifacts = tuple(ref for ref in candidate.artifacts if ref != candidate.proposal.basis_ref)
-        supporting_citations = tuple(citation for citation in citations if citation != basis)
-        if not candidate.sources and not supporting_artifacts and not supporting_citations:
+        if not candidate.sources and not supporting_artifacts:
             raise InvalidCandidateError("evidence", "Tag changes require evidence beyond the content basis")
         await self._evidence.validate(
             connection,
             sources=candidate.sources,
             artifacts=supporting_artifacts,
-            memory_citations=supporting_citations,
         )
         await self._basis(connection, candidate.proposal)
 
@@ -171,7 +149,6 @@ class CatalogChangeService:
         reason: str,
         sources: tuple[SourceRef, ...] = (),
         artifacts: tuple[ArtifactRef, ...] = (),
-        memory_citations: tuple[MemoryCitation, ...] = (),
         dream_run_id: str | None = None,
         candidate_id: str | None = None,
         audit: CandidateAudit | None = None,
@@ -182,7 +159,6 @@ class CatalogChangeService:
             proposal=proposal,
             sources=sources,
             artifacts=artifacts,
-            memory_citations=memory_citations,
             reason=reason,
             dream_run_id=dream_run_id,
             origin="dream" if dream_run_id else "manual",
@@ -239,7 +215,6 @@ class CatalogChangeService:
         proposal: CatalogChangeProposal | None = None,
         sources: tuple[SourceRef, ...] | None = None,
         artifacts: tuple[ArtifactRef, ...] | None = None,
-        memory_citations: tuple[MemoryCitation, ...] | None = None,
     ) -> CatalogChangeCandidate:
         async with self._connection() as connection:
             preview = await self._repository.get(connection, self._scope_id, candidate_id)
@@ -255,7 +230,6 @@ class CatalogChangeService:
                 "proposal": proposal,
                 "sources": preview.sources if sources is None else sources,
                 "artifacts": preview.artifacts if artifacts is None else artifacts,
-                "memory_citations": preview.memory_citations if memory_citations is None else memory_citations,
                 "reason": reason,
             })
             if revised.audit is not None:
@@ -376,7 +350,6 @@ class CatalogChangeService:
                     connection,
                     sources=candidate.sources,
                     artifacts=candidate.artifacts,
-                    memory_citations=candidate.memory_citations,
                 )
             except EvidenceResolutionError as error:
                 return CatalogCandidateEvidence(

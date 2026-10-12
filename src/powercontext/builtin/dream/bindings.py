@@ -20,9 +20,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import EXPERIENCE_INCUBATION_CURSOR_NAME, ExperienceContent
 from powercontext.builtin.artifacts.handoff.models import HandoffContent
-from powercontext.builtin.artifacts.memory.models import MemoryDreamWrite
 from powercontext.builtin.artifacts.profile.models import PROFILE_SOURCE_WINDOW_BINDING, ProfileWriteContent
 from powercontext.builtin.artifacts.prompt.models import PromptContent
 from powercontext.builtin.artifacts.skill import SkillContent
@@ -62,7 +62,7 @@ class DreamOperationSpec:
 
     @property
     def processing_family(self) -> str | None:
-        return self.family
+        return "memory" if self.family == "atomic-memory" else self.family
 
 
 DREAM_OPERATIONS = (
@@ -71,7 +71,7 @@ DREAM_OPERATIONS = (
         "experience",
         EXPERIENCE_INCUBATION_CURSOR_NAME,
         "optional_artifact",
-        ("experience", "memory", "source"),
+        ("experience", "atomic-memory", "source"),
         ExperienceContent,
         "approve",
         "experience.revise",
@@ -91,7 +91,7 @@ DREAM_OPERATIONS = (
         "skill",
         SKILL_DREAM_BINDING,
         "artifact",
-        ("skill", "experience", "memory", "source"),
+        ("skill", "experience", "atomic-memory", "source"),
         SkillContent,
         "approve",
         "skill.revise",
@@ -101,27 +101,27 @@ DREAM_OPERATIONS = (
         "profile",
         PROFILE_SOURCE_WINDOW_BINDING,
         "artifact",
-        ("profile", "experience", "memory", "source"),
+        ("profile", "experience", "atomic-memory", "source"),
         ProfileWriteContent,
         "decide_profile",
         "profile.revise",
     ),
     DreamOperationSpec(
         "revise_memory",
-        "memory",
+        "atomic-memory",
         SOURCE_WINDOW_TRIGGER_NAME,
-        "memory_entries",
-        ("memory", "experience", "source"),
-        MemoryDreamWrite,
+        "artifact",
+        ("atomic-memory", "experience", "source"),
+        AtomicMemoryContent,
         "_approve_memory_dream",
-        "memory.apply",
+        "atomic_memory.commit",
     ),
     DreamOperationSpec(
         "revise_topic_memory",
         "topic-memory",
         TOPIC_MEMORY_SOURCE_WINDOW_BINDING,
         "artifact",
-        ("topic-memory", "experience", "memory", "source"),
+        ("topic-memory", "experience", "atomic-memory", "source"),
         TopicMemoryContent,
         "_approve_topic_memory_dream",
         "topic_memory.publish_revision",
@@ -131,7 +131,7 @@ DREAM_OPERATIONS = (
         "handoff",
         HANDOFF_DREAM_BINDING,
         "artifact",
-        ("handoff", "experience", "memory", "source"),
+        ("handoff", "experience", "atomic-memory", "source"),
         HandoffContent,
         "_approve_handoff_dream",
         "handoff.commit_reviewed",
@@ -141,7 +141,7 @@ DREAM_OPERATIONS = (
         "prompt",
         PROMPT_DREAM_BINDING,
         "prompt_key",
-        ("prompt", "experience", "memory", "source"),
+        ("prompt", "experience", "atomic-memory", "source"),
         PromptContent,
         "_approve_prompt_dream",
         "prompt.commit_reviewed",
@@ -153,7 +153,7 @@ DREAM_OPERATIONS = (
         None,
         None,
         "tag_target",
-        ("artifact", "memory", "source"),
+        ("artifact", "atomic-memory", "source"),
         TagChangeProposal,
         "catalog.approve",
         "catalog.replace_tags",

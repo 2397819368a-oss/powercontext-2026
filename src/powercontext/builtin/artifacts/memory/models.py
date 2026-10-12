@@ -17,12 +17,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Literal, TypeAlias
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
 
 from powercontext.artifacts import Artifact, ArtifactRef
-from powercontext.artifacts import MemoryCitation as MemoryCitation
 from powercontext.builtin.artifacts.search import AdmissionCounts
 from powercontext.builtin.inference.models import InferenceUsage
 from powercontext.sources import Source, SourceRef
@@ -49,7 +48,7 @@ class EmbeddingProfile(BaseModel):
 class MemoryQueryEmbedding:
     """One already-computed query vector together with the profile it was computed under.
 
-    Carried back out of :meth:`MemoryService.search` so a later recall round can reuse the
+    Carried back out of a Memory search so a later recall round can reuse the
     round-0 vector instead of paying for a second embedding call. The profile is part of the
     value because a vector is only meaningful against the profile that produced it: reusing a
     vector across profiles would silently compare incompatible spaces, so a mismatch is
@@ -70,22 +69,6 @@ class MemoryCapabilities(BaseModel):
     embedding_profile: EmbeddingProfile | None = None
 
 
-class MemoryManifestEntry(BaseModel):
-    """One logical entry pointer and state in an immutable Revision."""
-
-    entry_id: str
-    entry_version_id: str
-    entry_content_hash: str
-    state: MemoryEntryState
-
-
-class MemoryManifest(BaseModel):
-    """The authoritative directory for one Memory Revision."""
-
-    entries: tuple[MemoryManifestEntry, ...] = ()
-    format: Literal["flat-v1"] = "flat-v1"
-
-
 class MemoryChange(BaseModel):
     """A compact entry change recorded by one Memory Revision."""
 
@@ -94,23 +77,6 @@ class MemoryChange(BaseModel):
     from_entry_version_id: str | None
     to_entry_version_id: str | None
     reason: str | None = None
-
-
-class MemoryContent(BaseModel):
-    """The complete canonical content of one Memory Artifact Revision."""
-
-    manifest: MemoryManifest
-    changes: tuple[MemoryChange, ...] = ()
-    schema_version: Literal["powercontext.memory.v1"] = Field(
-        default="powercontext.memory.v1",
-        alias="schema",
-    )
-
-
-class Memory(Artifact[MemoryContent]):
-    """An immutable snapshot in a Memory lifecycle."""
-
-    family: ClassVar[str] = "memory"
 
 
 class MemoryCapacityBudget(BaseModel):
@@ -148,18 +114,6 @@ class MemoryCompactionPolicy(BaseModel):
     )
 
 
-class MemoryCompactionResult(BaseModel):
-    """A compaction preview or committed Revision, retaining all historical bodies."""
-
-    memory: Memory
-    entry_ids: tuple[str, ...] = ()
-    reclaimed_bytes: int = Field(
-        default=0,
-        description="Signed decrease in complete canonical content bytes, including compaction audit records.",
-    )
-    dry_run: bool
-
-
 class MemoryEntryInput(BaseModel):
     """An untrusted proposed entry addition or content revision."""
 
@@ -185,40 +139,6 @@ class MemoryEntryVersion(BaseModel):
     created_in_revision: int
     sources: tuple[SourceRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
-
-
-class MemoryDreamEntryChange(BaseModel):
-    """One current logical entry replacement supported by exact Sources."""
-
-    entry_id: str = Field(min_length=1, max_length=128)
-    entry_version_id: str = Field(min_length=1, max_length=128)
-    kind: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    reason: str = Field(min_length=1, max_length=2000)
-    sources: tuple[SourceRef, ...] = Field(min_length=1, max_length=32)
-
-
-class MemoryDreamWrite(BaseModel):
-    """Model-proposed changes; target identity and run provenance stay server-owned."""
-
-    changes: tuple[MemoryDreamEntryChange, ...] = Field(min_length=1, max_length=20)
-
-    @model_validator(mode="after")
-    def distinct_entries(self):
-        if len({change.entry_id for change in self.changes}) != len(self.changes):
-            raise ValueError("Memory Dream changes must target distinct entries")  # noqa: TRY003
-        return self
-
-
-class MemoryDreamCandidateProposal(MemoryDreamWrite):
-    base: ArtifactRef
-    dream_run_id: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def valid_base(self):
-        if self.base.family != Memory.family:
-            raise ValueError("Memory Dream requires a Memory base")  # noqa: TRY003
-        return self
 
 
 class MemoryRevisionChanges(BaseModel):
