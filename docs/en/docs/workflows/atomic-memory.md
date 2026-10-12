@@ -111,6 +111,52 @@ both accept `kind`, `tags` and `tag_match: "all" | "any"`, with limits of 1–10
 [Artifact tag API](manage-artifact-tags.md) with `{type: "artifact", family: "atomic-memory", artifact_id: "M"}`
 for new targets.
 
+## Compact directory pagination
+
+To browse memory identities and states, call `POST /v1/atomic-memory/directory/query`:
+
+```json
+{"scope_id": "S", "states": ["active"], "kind": "decision", "limit": 50}
+```
+
+The response contains `scope_id`, `items` and `next_cursor`. Each item contains only the exact `artifact` reference,
+`kind`, `state`, `state_version` and `merged_into_id`; it loads no content, sources or history. Results are ordered by
+`artifact.artifact_id` ascending. Read the returned exact revision when content is needed, so a later replacement
+does not change the meaning of this page.
+
+Keep the Scope, principal, filters and limit unchanged and copy `next_cursor` into the next request's `cursor`.
+Creation, replacement, lifecycle changes, merge, restore or effective tag changes invalidate older cursors.
+On `400 invalid_cursor` or `410 cursor_expired`, discard the continuation and restart at page one. This is a current
+directory; it does not guarantee that a traversal completes during continuous writes. The default limit is 50 and
+maximum is 100. `tags` accepts at most 16 labels of at most 64 characters each, with `tag_match: "all" | "any"`.
+Every page rechecks access. Revocation prevents continuation; sharing one Artifact does not grant directory access.
+
+The HTTP SDK and MCP operation is `query_atomic_memory_directory`; the Python scoped method is `query_directory`.
+Unmanaged deployments return `503 atomic_memory_directory_unavailable`. The optional registered target supports
+persistent SQLite, without an embedding extension, and the default business layout created by the current program.
+Stop all writers and use the same deployment environment file:
+
+This target uses the default evidence directory next to the database; a custom `--evidence-dir` is not supported.
+
+```bash
+powercontext server db-migrate plan --target atomic-memory-directory --env-file deployment.env
+powercontext server db-migrate apply --target atomic-memory-directory --env-file deployment.env
+powercontext server db-migrate verify --target atomic-memory-directory --env-file deployment.env
+```
+
+The explicit migration adds directory metadata and backfills only exact current Atomic content. Restart the matching
+program after successful verification; normal startup does not add or backfill directory fields. Other modules retain
+their existing initialization behavior. Completing legacy Memory migration alone does not establish this target's
+readiness: unregistered archive objects, historical layouts and vector configurations are rejected. Inspection and
+verification do not repair data. Interrupted maintenance retains its original recovery point and blocks business restart.
+
+Directory access supports trusted local reads or native Builtin/Casbin Scope-read configurations on the same SQLite
+database. Formal ownership is still checked across the entire Scope and is never guessed during migration. Unsupported access configurations
+return `503 atomic_memory_directory_authorization_unavailable`. An item exceeding the response budget returns
+`413 atomic_memory_directory_item_too_large`, without a partially successful page.
+Restore only under stopped writes, with matching program/configuration and preserved recovery evidence. Rotate the
+existing cursor signing secret before resuming service so cursors from before database restoration are rejected.
+
 ## Merge and restore
 
 `POST /v1/atomic-memory/merges` requires at least two exact active input references and state versions, plus result content:

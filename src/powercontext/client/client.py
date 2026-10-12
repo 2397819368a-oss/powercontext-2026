@@ -934,6 +934,12 @@ class PowerContextClient:
     ) -> atomic_models.SearchAtomicMemoryResponse:
         return await self._request(atomic_operations.SEARCH_ATOMIC_MEMORY, request)
 
+    async def query_atomic_memory_directory(
+        self, request: atomic_models.QueryAtomicMemoryDirectoryRequest
+    ) -> atomic_models.QueryAtomicMemoryDirectoryResponse:
+        """Read compact exact references; restart pagination when the directory changes."""
+        return await self._request(atomic_operations.QUERY_ATOMIC_MEMORY_DIRECTORY, request)
+
     async def merge_atomic_memories(
         self, request: atomic_models.MergeAtomicMemoryRequest
     ) -> atomic_models.AtomicMemoryMutationResponse:

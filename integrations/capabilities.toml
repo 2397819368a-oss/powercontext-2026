@@ -70,6 +70,9 @@ capabilities = ["memory_read"]
 id = "list_atomic_memories"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
+id = "query_atomic_memory_directory"
+non_profile_reason = "Optional compact directory browsing requires the registered persistent SQLite directory migration and qualified Scope access; it is not a mandatory host profile operation."
+[[toolsets.tools]]
 id = "search_atomic_memory"
 capabilities = ["memory_read"]
 [[toolsets.tools]]

@@ -14,6 +14,10 @@
 
 """Atomic Memory state adapter over authoritative shared Artifact heads."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from sqlalchemy import case
 
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError, AtomicMemoryRelationError
@@ -27,12 +31,15 @@ from powercontext.builtin.persistence.artifact_governance import (
 from powercontext.builtin.persistence.errors import StoredPayloadConflictError
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 
+if TYPE_CHECKING:
+    from powercontext.builtin.persistence.atomic_memory_directory import AtomicMemoryDirectoryRepository
+
 
 class AtomicMemoryStateRepository:
     """Translate Atomic vocabulary through the shared governance CAS boundary."""
 
-    def __init__(self) -> None:
-        self.governance = ArtifactGovernanceRepository()
+    def __init__(self, *, atomic_memory_directory: AtomicMemoryDirectoryRepository | None = None) -> None:
+        self.governance = ArtifactGovernanceRepository(atomic_memory_directory=atomic_memory_directory)
 
     async def get(self, connection, scope_id, artifact_id, /, *, for_update=False) -> AtomicMemoryState:
         current = await self.governance.get(connection, scope_id, "atomic-memory", artifact_id, for_update=for_update)

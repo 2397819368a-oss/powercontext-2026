@@ -69,6 +69,7 @@ _CURRENT_OPERATIONS = frozenset({
     "import_external_skill",
     "list_artifact_candidates",
     "list_atomic_memories",
+    "query_atomic_memory_directory",
     "list_external_skills",
     "list_managed_skills",
     "list_memory_entries",

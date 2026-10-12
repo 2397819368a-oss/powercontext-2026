@@ -146,6 +146,13 @@ class SQLiteMigrationRunner:
             raise MigrationError(plan.state, "Inspect and explicitly apply the registered bundle before verification.")
         return MigrationResult(revision=self.bundle.head, changed=False)
 
+    def assert_business_startup_allowed(self) -> None:
+        """Reject an unfinished recorded maintenance window before any initializer writes."""
+
+        evidence = self._evidence()
+        if evidence is not None and evidence["state"] != "complete":
+            raise MigrationError("recovery_required", "Complete explicit maintenance before business startup.")
+
     def apply(
         self,
         *,
@@ -191,7 +198,21 @@ class SQLiteMigrationRunner:
                 connection.commit()
                 self._upgrade(connection)
                 self._begin(connection)
+                for task in self.bundle.data_tasks:
+                    functions = self.bundle.task_functions(task)
+                    try:
+                        for _ in functions["apply_batches"](connection):
+                            connection.commit()
+                            self._begin(connection)
+                    except ValueError as error:
+                        raise MigrationError(
+                            "verification_failed", "A frozen data task rejected the current data."
+                        ) from error
                 self._verify_schema(connection, self.bundle.head)
+                if self.bundle.pending_data_tasks(connection, self.bundle.head):
+                    raise MigrationError(
+                        "verification_failed", "Required data tasks did not satisfy their postconditions."
+                    )
                 connection.commit()
                 evidence["state"] = "complete"
                 evidence["release_checksums"] = self.bundle.checksums
@@ -262,7 +283,7 @@ class SQLiteMigrationRunner:
         finally:
             engine.dispose()
 
-    def _inspect(self, connection: Connection, **options: Any) -> MigrationPlan:
+    def _inspect(self, connection: Connection, **options: Any) -> MigrationPlan:  # noqa: C901
         inventory = sqlite_inventory(connection)
         controls = [row for row in inventory if row[1] in _CONTROL_NAMES or row[2] in _CONTROL_NAMES]
         initialized = bool(controls)
@@ -277,6 +298,17 @@ class SQLiteMigrationRunner:
                 raise MigrationError("incompatible_schema", "Multiple revision heads are unsupported.")
             revision = revisions[0] if revisions else None
             self._verify_schema(connection, revision)
+            minimum = self.bundle.minimum_source_revision
+            if (
+                minimum is not None
+                and revision is not None
+                and self.bundle.revisions.index(revision) < self.bundle.revisions.index(minimum)
+            ):
+                evidence = self._evidence()
+                if evidence is None or evidence["state"] == "complete" or evidence["source_revision"] is not None:
+                    raise MigrationError(
+                        "unsupported_target", "This target does not adopt a historical acceptance database."
+                    )
             if self.bundle.pending(revision) and self._evidence() is None:
                 raise MigrationError(
                     "recovery_required",
@@ -290,9 +322,28 @@ class SQLiteMigrationRunner:
             self._verify_integrity(connection)
         else:
             revision = None
-        return self._plan(revision, fingerprint, initialized=initialized, **options)
+        try:
+            data_tasks = self.bundle.pending_data_tasks(connection, revision)
+        except MigrationError as error:
+            evidence = self._evidence()
+            if error.code == "verification_failed" and evidence and evidence["state"] != "complete":
+                raise MigrationError(
+                    "recovery_required", "Repair rejected data within the original maintenance window."
+                ) from error
+            raise
+        if initialized and data_tasks and self._evidence() is None:
+            raise MigrationError(
+                "recovery_required", "Original evidence is required before resuming pending data tasks."
+            )
+        return self._plan(
+            revision,
+            fingerprint,
+            initialized=initialized,
+            data_tasks=data_tasks,
+            **options,
+        )
 
-    def _plan(
+    def _plan(  # noqa: C901 - one authority for schema/data/evidence plan classification
         self,
         revision: str | None,
         fingerprint: str,
@@ -301,10 +352,13 @@ class SQLiteMigrationRunner:
         backup_policy: BackupPolicy,
         service: dict[str, Any] | None,
         shared_database: bool,
+        data_tasks: tuple[str, ...] | None = None,
     ) -> MigrationPlan:
         pending = self.bundle.pending(revision)
+        if data_tasks is None:
+            data_tasks = tuple(task["name"] for task in self.bundle.data_tasks if task["revision"] in pending)
         adopt = not initialized and revision is not None
-        state = "migration_required" if pending or adopt else "ready"
+        state = "migration_required" if pending or adopt or data_tasks else "ready"
         if not initialized and revision is None:
             state = "uninitialized"
         evidence = self._evidence()
@@ -340,6 +394,7 @@ class SQLiteMigrationRunner:
             "configuration_digest": self.configuration_digest,
             "state": state,
             "revisions": pending,
+            "data_tasks": data_tasks,
             "adopt_baseline": adopt,
             "backup_policy": backup_policy,
             "backup_available": available,
@@ -508,7 +563,12 @@ class SQLiteMigrationRunner:
             self._begin(connection)
             self._verify_schema(connection, current)
             with ALEMBIC_CONTEXT_LOCK:
-                command.upgrade(self.bundle.config(connection), revision)
+                try:
+                    command.upgrade(self.bundle.config(connection), revision)
+                except ValueError as error:
+                    raise MigrationError(
+                        "verification_failed", "A frozen revision rejected its source layout."
+                    ) from error
             self._verify_schema(connection, revision)
             connection.commit()
             current = revision

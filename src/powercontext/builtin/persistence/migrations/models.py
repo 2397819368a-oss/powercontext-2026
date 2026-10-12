@@ -48,6 +48,7 @@ class MigrationPlan(BaseModel):
     configuration_digest: str
     state: Literal["uninitialized", "migration_required", "ready", "recovery_required"]
     revisions: tuple[str, ...]
+    data_tasks: tuple[str, ...] = ()
     adopt_baseline: bool = False
     backup_policy: Literal["auto", "manual", "skip"] = "auto"
     backup_available: bool = True

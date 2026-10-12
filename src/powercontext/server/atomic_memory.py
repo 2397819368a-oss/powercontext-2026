@@ -42,7 +42,10 @@ def _tag_filter(request):
         if request.tag_match is not None:
             raise InvalidBaseAccessRequestError("tag_match", "requires tags")
         return None
-    return TagFilter(tags=tuple(request.tags), match="all" if request.tag_match is None else request.tag_match.value)
+    return TagFilter(
+        tags=tuple(tag.root for tag in request.tags),
+        match="all" if request.tag_match is None else request.tag_match.value,
+    )
 
 
 def _scoped(application, scope_id):
@@ -97,6 +100,21 @@ def add_atomic_memory_routes(  # noqa: C901
         return models.ListAtomicMemoryResponse(
             items=[record_response(item) for item in result.items], next_cursor=result.next_cursor
         )
+
+    async def query_atomic_memory_directory(
+        request: models.QueryAtomicMemoryDirectoryRequest,
+        http_request: Request,
+        application: Annotated[Any, Depends(application_dependency)],
+    ) -> models.QueryAtomicMemoryDirectoryResponse:
+        result = await _scoped(application, request.scope_id).query_directory(
+            states=tuple(state.value for state in request.states),
+            kind=request.kind,
+            tag_filter=None if not request.tags else _tag_filter(request),
+            limit=request.limit,
+            cursor=request.cursor,
+            context=execution_context(http_request, "query_atomic_memory_directory"),
+        )
+        return models.QueryAtomicMemoryDirectoryResponse.model_validate(result.model_dump(mode="json"))
 
     async def search_atomic_memory(
         request: models.SearchAtomicMemoryRequest,
@@ -224,6 +242,7 @@ def add_atomic_memory_routes(  # noqa: C901
     for operation, endpoint in (
         (operations.GET_ATOMIC_MEMORY_STATE, get_atomic_memory_state),
         (operations.LIST_ATOMIC_MEMORIES, list_atomic_memories),
+        (operations.QUERY_ATOMIC_MEMORY_DIRECTORY, query_atomic_memory_directory),
         (operations.SEARCH_ATOMIC_MEMORY, search_atomic_memory),
         (operations.MERGE_ATOMIC_MEMORIES, merge_atomic_memories),
         (operations.CHANGE_ATOMIC_MEMORY_LIFECYCLE, change_atomic_memory_lifecycle),

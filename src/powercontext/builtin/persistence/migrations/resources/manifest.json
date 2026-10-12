@@ -4,11 +4,19 @@
       "schemas/pre_dream.json"
     ],
     "p0002": [],
-    "p0003": []
+    "p0003": [],
+    "p0004": [
+      "schemas/atomic_directory_sqlite_v1.json"
+    ],
+    "p0005": [
+      "schemas/atomic_directory_sqlite_v1.json",
+      "tasks/atomic_directory_v1.py"
+    ]
   },
   "sqlite_baselines": {
     "e1cae089a8a565291a7a1f782cea1f6c6e1a6cdd9eab75ef0c4ca61dfda453cb": "p0001",
-    "fcee685ed307ee6d02fe5e950ed4e80be75f38d19de902ccacf443f21ee8c73d": "p0003"
+    "fcee685ed307ee6d02fe5e950ed4e80be75f38d19de902ccacf443f21ee8c73d": "p0003",
+    "11e8770068a5fe32dfb25681564dbbe586ba0fd0238ed01adf1b09dde8a49f22": "p0004"
   },
   "sqlite_fingerprints": {
     "p0001": [
@@ -20,6 +28,12 @@
     "p0003": [
       "9958fa0413ed3c16442df27dc48057d438e2cf3f7e4312c5a914cccd9d3acaab",
       "fcee685ed307ee6d02fe5e950ed4e80be75f38d19de902ccacf443f21ee8c73d"
+    ],
+    "p0004": [
+      "11e8770068a5fe32dfb25681564dbbe586ba0fd0238ed01adf1b09dde8a49f22"
+    ],
+    "p0005": [
+      "535851738dc14ba0e1d4ebb29a0cfc13e39f31fc70fb0ed7a6a479a808cafdd5"
     ]
   },
   "affected_objects": [
@@ -38,5 +52,85 @@
   },
   "retained_revisions": {
     "pc_retained_p0002_artifact_tags": "p0003"
-  }
+  },
+  "default_revision": "p0003",
+  "targets": {
+    "atomic-memory-directory": {
+      "revision": "p0005",
+      "affected_objects": [
+        "pc_scopes",
+        "pc_artifact_heads",
+        "pc_access_audit",
+        "pc_access_idempotency",
+        "pc_access_owners",
+        "pc_access_relationship_heads",
+        "pc_access_relationships",
+        "pc_agent_skill_targets",
+        "pc_artifact_candidate_heads",
+        "pc_artifact_candidate_versions",
+        "pc_artifact_fts",
+        "pc_artifact_lineage_artifacts",
+        "pc_artifact_lineage_sources",
+        "pc_artifact_processing_auto_wave_targets",
+        "pc_artifact_processing_binding_states",
+        "pc_artifact_processing_intents",
+        "pc_artifact_processing_leases",
+        "pc_artifact_processing_migration_receipts",
+        "pc_artifact_processing_pending",
+        "pc_artifact_processing_schema",
+        "pc_artifact_processing_sequences",
+        "pc_artifact_publications",
+        "pc_artifact_tags",
+        "pc_artifacts",
+        "pc_atomic_memory_current",
+        "pc_atomic_memory_current_fts",
+        "pc_connector_checkpoints",
+        "pc_decision_observations",
+        "pc_dream_runs",
+        "pc_external_skill_registrations",
+        "pc_memory_entry_heads",
+        "pc_memory_entry_versions",
+        "pc_memory_source_windows",
+        "pc_model_usage_daily",
+        "pc_profile_policies",
+        "pc_recall_effort_daily",
+        "pc_recall_token_daily",
+        "pc_receipt_migration_review",
+        "pc_recurrence_match",
+        "pc_recurrence_observation",
+        "pc_scope_bindings",
+        "pc_scope_context_references",
+        "pc_scope_creation_requests",
+        "pc_scope_external_references",
+        "pc_scope_settings",
+        "pc_server_identity",
+        "pc_skill_packages",
+        "pc_skill_publications",
+        "pc_source_cursors",
+        "pc_source_definition_manifests",
+        "pc_source_journal_heads",
+        "pc_sources",
+        "pc_topic_memory_active_chunks",
+        "pc_topic_memory_active_topics",
+        "pc_topic_memory_chunk_fts",
+        "pc_topic_memory_fts_index",
+        "pc_topic_memory_processing_targets",
+        "pc_topic_memory_retrieval_shape",
+        "pc_topic_memory_revision_publications",
+        "pc_topic_memory_topic_fts",
+        "pc_topic_memory_work_budgets"
+      ],
+      "baseline_revisions": [
+        "p0004"
+      ],
+      "minimum_source_revision": "p0004"
+    }
+  },
+  "data_tasks": [
+    {
+      "name": "atomic-memory-directory-v1",
+      "revision": "p0005",
+      "resource": "tasks/atomic_directory_v1.py"
+    }
+  ]
 }

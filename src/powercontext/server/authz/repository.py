@@ -32,7 +32,10 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    and_,
     delete,
+    exists,
+    func,
     insert,
     or_,
     select,
@@ -42,7 +45,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.database import AsyncDatabase
-from powercontext.builtin.persistence.tables import identity_string
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, identity_string
 from powercontext.limits import (
     MAX_ARTIFACT_FAMILY_LENGTH,
     MAX_ARTIFACT_ID_LENGTH,
@@ -611,6 +614,55 @@ class RelationalAccessRepository:
             raise AccessUnavailableError("transactional_relationships_unavailable")
         return RelationalAccessRepository(self._database, connection=connection)
 
+    async def require_scope_content_ready(self, scope_id: str) -> None:
+        """Fail closed for any missing formal owner without returning the Scope catalog.
+
+        Match the collection catalog's exclusions: legacy Memory is outside the
+        runtime, and Topic Memory uses Scope ownership. No lifecycle or page
+        filter may hide an unowned identity elsewhere in the Scope.
+        """
+
+        heads = ARTIFACT_HEADS_TABLE
+        owners = ACCESS_OWNERS_TABLE
+        formal_owner = exists(
+            select(1).where(
+                owners.c.owner_kind == "artifact",
+                owners.c.object_key_hash
+                == func.pc_access_artifact_key_hash(heads.c.scope_id, heads.c.family, heads.c.artifact_id),
+                owners.c.scope_id == heads.c.scope_id,
+                owners.c.family == heads.c.family,
+                owners.c.artifact_id == heads.c.artifact_id,
+                owners.c.selector_type.is_(None),
+                owners.c.selector_entry_id.is_(None),
+            )
+        )
+        async with self._database.connection(self._bound_connection) as connection:
+            if connection.dialect.name != "sqlite" or connection.dialect.driver != "aiosqlite":
+                raise AccessUnavailableError("safe_resource_filtering_unavailable")
+            # Hash the exact canonical ResourceRef through the existing owner
+            # key authority. SQLite has no native SHA-256. This connection-local
+            # function enables primary-key probes and does not write schema/data.
+            await connection.run_sync(
+                lambda sync: sync.connection.run_async(
+                    lambda driver: driver.create_function(
+                        "pc_access_artifact_key_hash",
+                        3,
+                        lambda scope, family, identity: _digest(
+                            ResourceRef.artifact(scope, family=family, artifact_id=identity).key
+                        ),
+                        deterministic=True,
+                    )
+                )
+            )
+            missing = await connection.scalar(
+                select(1)
+                .select_from(heads)
+                .where(heads.c.scope_id == scope_id, heads.c.family.not_in(("memory", "topic-memory")), ~formal_owner)
+                .limit(1)
+            )
+        if missing is not None:
+            raise AccessUnavailableError("artifact_owner_pending")
+
     async def decision_snapshot(
         self,
         subjects: Sequence[AccessSubjectRef],
@@ -618,6 +670,21 @@ class RelationalAccessRepository:
         now: datetime,
         artifact_resources: Sequence[ResourceRef] = (),
         owned_by: PrincipalRef | None = None,
+    ) -> DecisionState:
+        """Preserve the public snapshot SPI, including repository overrides."""
+
+        return await self._decision_snapshot(
+            subjects, now=now, artifact_resources=artifact_resources, owned_by=owned_by
+        )
+
+    async def _decision_snapshot(
+        self,
+        subjects: Sequence[AccessSubjectRef],
+        *,
+        now: datetime,
+        artifact_resources: Sequence[ResourceRef] = (),
+        owned_by: PrincipalRef | None = None,
+        decision_resources: Sequence[ResourceRef] | None = None,
     ) -> DecisionState:
         """Read revision, active bindings and ownership from one snapshot.
 
@@ -642,24 +709,32 @@ class RelationalAccessRepository:
             await self._pin_read_snapshot(connection)
             revision = await self._read_policy_revision(connection)
             if subjects:
-                binding_rows = (
-                    (
-                        await connection.execute(
-                            select(ACCESS_BINDINGS_TABLE).where(
-                                or_(
-                                    *(
-                                        (ACCESS_BINDINGS_TABLE.c.subject_type == subject.type)
-                                        & (ACCESS_BINDINGS_TABLE.c.subject_id == subject.id)
-                                        for subject in subjects
-                                    )
-                                ),
-                                ACCESS_BINDINGS_TABLE.c.state == AccessBindingState.ACTIVE.value,
-                            )
+                statement = select(ACCESS_BINDINGS_TABLE).where(
+                    or_(
+                        *(
+                            (ACCESS_BINDINGS_TABLE.c.subject_type == subject.type)
+                            & (ACCESS_BINDINGS_TABLE.c.subject_id == subject.id)
+                            for subject in subjects
+                        )
+                    ),
+                    ACCESS_BINDINGS_TABLE.c.state == AccessBindingState.ACTIVE.value,
+                )
+                if decision_resources is not None:
+                    # A point check needs only exact resources and their Scope
+                    # parents. Keep Server rows for existing inheritance rules.
+                    resources = {resource.key: resource for resource in decision_resources}
+                    resources.update({
+                        parent.key: parent
+                        for resource in decision_resources
+                        if (parent := resource.parent_scope) is not None
+                    })
+                    statement = statement.where(
+                        or_(
+                            ACCESS_BINDINGS_TABLE.c.resource_type == "server",
+                            *(and_(*_resource_predicates(ACCESS_BINDINGS_TABLE, item)) for item in resources.values()),
                         )
                     )
-                    .mappings()
-                    .all()
-                )
+                binding_rows = (await connection.execute(statement)).mappings().all()
             if artifact_resources:
                 owner_rows = (
                     (

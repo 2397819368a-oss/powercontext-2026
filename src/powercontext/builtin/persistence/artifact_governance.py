@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select, update
@@ -26,6 +27,9 @@ from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError, StoredPayloadConflictError
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 from powercontext.errors import PowerContextError
+
+if TYPE_CHECKING:
+    from powercontext.builtin.persistence.atomic_memory_directory import AtomicMemoryDirectoryRepository
 
 
 class InvalidArtifactLifecycleError(PowerContextError, ValueError):
@@ -67,6 +71,9 @@ class ArtifactGovernance(BaseModel):
 class ArtifactGovernanceRepository:
     """Read and transition governance state without changing the head Revision."""
 
+    def __init__(self, *, atomic_memory_directory: AtomicMemoryDirectoryRepository | None = None) -> None:
+        self.atomic_memory_directory = atomic_memory_directory
+
     async def get(
         self,
         connection: AsyncConnection,
@@ -77,6 +84,8 @@ class ArtifactGovernanceRepository:
         *,
         for_update: bool = False,
     ) -> ArtifactGovernance:
+        if for_update and family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.lock_scope(connection, scope_id)
         statement = select(ARTIFACT_HEADS_TABLE).where(
             ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
             ARTIFACT_HEADS_TABLE.c.family == family,
@@ -116,6 +125,8 @@ class ArtifactGovernanceRepository:
         """Apply a service-validated group transition while retaining unchanged state generations."""
 
         _validate_transition(expected.lifecycle_state, lifecycle_state)
+        if family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.lock_scope(connection, scope_id)
         current = await self.require_summary(connection, scope_id, family, artifact_id, expected)
         if (
             expected.lifecycle_state == lifecycle_state
@@ -147,6 +158,8 @@ class ArtifactGovernanceRepository:
         )
         if result.rowcount != 1:
             raise StoredPayloadConflictError("artifact-governance", (scope_id, family, artifact_id))
+        if family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.record_mutation(connection, scope_id)
         return requested
 
     async def transition(
@@ -160,6 +173,8 @@ class ArtifactGovernanceRepository:
         replacement_artifact_id: str | None,
         /,
     ) -> ArtifactGovernance:
+        if family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.lock_scope(connection, scope_id)
         current = await self.get(connection, scope_id, family, artifact_id)
         if current.merged_into_id is not None:
             raise InvalidArtifactLifecycleError("frozen merge inputs require whole-group restoration")  # noqa: TRY003
@@ -206,6 +221,8 @@ class ArtifactGovernanceRepository:
             raise StoredPayloadConflictError(
                 "artifact-governance", (scope_id, family, artifact_id, expected_generation)
             )
+        if family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.record_mutation(connection, scope_id)
         return requested
 
 

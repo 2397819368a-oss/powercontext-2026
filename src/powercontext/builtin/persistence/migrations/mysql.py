@@ -148,6 +148,8 @@ class MySQLMigrationRunner:
         configuration: Mapping[str, Any] | None = None,
         backup_factory: BackupFactory | None = None,
     ) -> None:
+        if bundle.data_tasks:
+            raise MigrationError("unsupported_target", "This backend has no registered data-task execution adapter.")
         self.connections = connections
         self.bundle = bundle
         self.schema = MySQLSchema(bundle)

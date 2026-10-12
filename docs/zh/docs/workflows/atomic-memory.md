@@ -107,6 +107,47 @@ Atomic Memory 将每条事实、偏好或决策保存为独立的 `atomic-memory
 `tag_match: "all" | "any"`，条数范围为 1–100。标签使用
 [Artifact 标签接口](manage-artifact-tags.md)，新目标为 `{type: "artifact", family: "atomic-memory", artifact_id: "M"}`。
 
+## 紧凑目录分页
+
+只需浏览记忆身份和状态时，调用 `POST /v1/atomic-memory/directory/query`：
+
+```json
+{"scope_id": "S", "states": ["active"], "kind": "decision", "limit": 50}
+```
+
+响应包含 `scope_id`、`items` 和 `next_cursor`。每项只有精确 `artifact` 引用、`kind`、`state`、
+`state_version` 与 `merged_into_id`，不加载正文、来源或历史。按 `artifact.artifact_id` 升序返回；
+需要正文时，用返回引用调用精确 revision 读取接口，避免将后来修订的正文当成本页结果。
+
+保持 Scope、主体、筛选和 limit 相同，将 `next_cursor` 原样放入下一次请求的 `cursor`。
+创建、修订、生命周期、合并、恢复或有效标签变化会使旧 cursor 失效；收到 `400 invalid_cursor`
+或 `410 cursor_expired` 时丢弃续页位置，从第一页重新读取。这是当前目录，不保证持续写入期间完成一次遍历。
+默认每页 50 项，最大 100；`tags` 最多 16 个、每个最多 64 字符，支持 `tag_match: "all" | "any"`。
+每页重新检查权限，撤权后不能继续读取；单条 Artifact 分享不授予目录浏览权。
+
+HTTP SDK 和 MCP 均使用 `query_atomic_memory_directory`；Python scoped 接口为 `query_directory`。
+未纳管目录的部署返回 `503 atomic_memory_directory_unavailable`。首版可选目标支持持久 SQLite、无 embedding
+向量扩展，以及当前程序创建的默认业务结构。停止所有写入者后，使用同一部署环境文件：
+
+这个目标使用数据库旁的默认证据目录，首版不支持自定义 `--evidence-dir`。
+
+```bash
+powercontext server db-migrate plan --target atomic-memory-directory --env-file deployment.env
+powercontext server db-migrate apply --target atomic-memory-directory --env-file deployment.env
+powercontext server db-migrate verify --target atomic-memory-directory --env-file deployment.env
+```
+
+显式迁移增加目录字段，只回填当前 Atomic 精确正文中的类型。验证成功后启动匹配的新程序；普通启动不补目录
+字段、不回填目录。其他模块保留原有初始化行为。旧 Memory 迁移成功不能单独证明这个目标就绪：未登记的归档
+对象、历史结构和向量配置仍会被拒绝。检查和验证不修复数据；中断维护保留原恢复点，并阻止业务重新启动。
+
+目录支持可信本地读取或同一 SQLite 数据库的原生 Builtin/Casbin Scope-read 配置。整个 Scope 的正式 owner
+仍按共享规则检查，迁移不猜测或补造 owner。不支持的权限配置返回
+`503 atomic_memory_directory_authorization_unavailable`。单项超出响应预算返回
+`413 atomic_memory_directory_item_too_large`，不会返回部分成功页。
+恢复数据库时保持停写，使用匹配的程序/配置并保留恢复证据；恢复后先轮换既有 cursor 签名密钥，再恢复服务，
+让数据库恢复前的旧 cursor 全部失效。
+
 ## 合并与恢复
 
 `POST /v1/atomic-memory/merges` 至少需要两个 active 输入的精确引用和状态版本，以及结果正文：

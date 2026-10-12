@@ -25,6 +25,65 @@ security:
   - BearerAuth: []
   - {}
 paths:
+  /v1/atomic-memory/directory/query:
+    post:
+      tags:
+      - atomic-memory
+      summary: Query compact current Atomic Memory references
+      description: >-
+        Returns current metadata and exact revisions without loading Memory text or history.
+        Any directory or tag change invalidates continuation; restart from the first page on
+        invalid_cursor or cursor_expired. Requires verified directory migration and writer
+        composition, and a supported local authorization configuration. Production enablement
+        is unavailable until the unified migration bundle manages the complete target.
+        Unavailable codes include artifact_owner_pending, atomic_memory_directory_authorization_unavailable
+        and atomic_memory_directory_unavailable; do not treat failure as an empty page.
+      operationId: query_atomic_memory_directory
+      x-powercontext-scope-mode: current
+      x-powercontext-access: {action: scope.read, resource: {type: scope, scope-id-from: scope_id}}
+      responses:
+        '200':
+          description: Compact current directory page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryAtomicMemoryDirectoryResponse'
+        '400':
+          description: The cursor is invalid or its query, identity, policy or directory generation changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: The cursor expired; restart from the first page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: A compact item exceeds the response budget; no partial page is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/InvalidRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryAtomicMemoryDirectoryRequest'
   /v1/atomic-memory/list:
     post:
       tags:
@@ -11672,3 +11731,98 @@ components:
           items:
             $ref: "#/components/schemas/AccessAuditEvent"
         next_cursor: {type: string, maxLength: 2048, nullable: true}
+    QueryAtomicMemoryDirectoryRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - scope_id
+      properties:
+        scope_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: .*\S.*
+        states:
+          type: array
+          minItems: 1
+          maxItems: 4
+          uniqueItems: true
+          default: [active]
+          items:
+            $ref: '#/components/schemas/AtomicMemoryState'
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: .*\S.*
+          nullable: true
+        tags:
+          type: array
+          maxItems: 16
+          default: []
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        tag_match:
+          $ref: '#/components/schemas/TagMatch'
+          default: all
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          nullable: true
+    AtomicMemoryDirectoryItem:
+      type: object
+      additionalProperties: false
+      required:
+      - artifact
+      - kind
+      - state
+      - state_version
+      - merged_into_id
+      properties:
+        artifact:
+          $ref: '#/components/schemas/ArtifactReference'
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: .*\S.*
+        state:
+          $ref: '#/components/schemas/AtomicMemoryState'
+        state_version:
+          type: integer
+          minimum: 0
+        merged_into_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          nullable: true
+    QueryAtomicMemoryDirectoryResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - scope_id
+      - items
+      - next_cursor
+      properties:
+        scope_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/AtomicMemoryDirectoryItem'
+        next_cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          nullable: true

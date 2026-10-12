@@ -253,6 +253,7 @@ def test_mcp_projects_curated_tools_at_the_configured_server_path(tmp_path: Path
         "list_artifact_candidates",
         "list_atomic_memories",
         "list_memory_entries",
+        "query_atomic_memory_directory",
         "list_scopes",
         "merge_atomic_memories",
         "change_atomic_memory_lifecycle",

@@ -374,13 +374,14 @@ class SnapshotDecisionRepository(Protocol):
 _SNAPSHOT_RETRY_LIMIT = 3
 
 
-async def read_decision_state(
+async def read_decision_state(  # noqa: C901
     repository: AccessRepository,
     subjects: Sequence[AccessSubjectRef],
     *,
     now: datetime,
     artifact_resources: Sequence[ResourceRef] = (),
     owned_by: PrincipalRef | None = None,
+    decision_resources: Sequence[ResourceRef] | None = None,
 ) -> DecisionState:
     """Read decision inputs from one snapshot when the repository offers one.
 
@@ -399,6 +400,19 @@ async def read_decision_state(
         last_error: AccessUnavailableError | None = None
         for _ in range(_SNAPSHOT_RETRY_LIMIT):
             try:
+                if decision_resources is not None:
+                    from powercontext.server.authz.repository import RelationalAccessRepository
+
+                    # Only the canonical adapter promises point-resource
+                    # selection. External/subclass snapshot contracts are kept.
+                    if type(repository) is RelationalAccessRepository:
+                        return await repository._decision_snapshot(
+                            subjects,
+                            now=now,
+                            artifact_resources=artifact_resources,
+                            owned_by=owned_by,
+                            decision_resources=decision_resources,
+                        )
                 return await snapshot_reader(
                     subjects, now=now, artifact_resources=artifact_resources, owned_by=owned_by
                 )
@@ -505,6 +519,7 @@ class BuiltinAuthorizationProvider:
             artifact_resources=tuple(
                 request.resource for request in requests if request.resource.type is AccessResourceType.ARTIFACT
             ),
+            decision_resources=tuple(request.resource for request in requests),
         )
         revision = contextual_policy_revision(state.policy_revision, requests[0].context.subject_groups)
         bindings = state.bindings
@@ -659,6 +674,54 @@ class AccessControlService:
                     )
                     access._deferred_decisions = self._deferred_decisions
         return await access.require(principal, AccessAction.SCOPE_READ, ResourceRef.scope(scope_id), context=context)
+
+    async def require_scope_directory_read(
+        self, principal, scope_id: str, *, connection, context: AccessAuditContext
+    ) -> str:
+        """Qualify a Scope-wide SQL directory without replacing custom policy or audit.
+
+        A successful Scope read permits all catalog rows, so no per-object
+        authorization scan is necessary. Formal ownership remains a separate,
+        Scope-wide fail-closed precondition in the same database snapshot.
+        Return the policy/identity context digest owned by this authority.
+        """
+
+        decision = await self.require_scope_read(principal, scope_id, connection=connection, context=context)
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
+        provider = self.provider
+        canonical = type(provider) is BuiltinAuthorizationProvider
+        if not canonical and type(provider).__module__ == "powercontext.server.authz.casbin":
+            from powercontext.server.authz.casbin import CasbinAuthorizationProvider
+
+            canonical = type(provider) is CasbinAuthorizationProvider
+        policy_repository = getattr(provider, "_repository", None)
+        relationships = self._relationship_reader()
+        if (
+            not self.provider_capabilities.safe_resource_filtering
+            or not canonical
+            or type(policy_repository) is not RelationalAccessRepository
+            or type(relationships) is not RelationalAccessRepository
+            or decision.policy_revision is None
+        ):
+            raise AccessUnavailableError("safe_resource_filtering_unavailable")
+        # Verify both authorities belong to the caller's database. Different
+        # audit storage remains supported through the original access service.
+        policy_repository.with_connection(connection)
+        await relationships.with_connection(connection).require_scope_content_ready(scope_id)
+        return hashlib.sha256(
+            json.dumps(
+                {
+                    "provider": f"{type(provider).__module__}.{type(provider).__qualname__}",
+                    "deployment": self.deployment_id,
+                    "revision": decision.policy_revision,
+                    "groups": sorted({group.id for group in context.subject_groups}),
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
 
     async def bootstrap_subject_scope(self, connection, principal, scope_id, *, context):
         """Grant only a newly created ordinary Scope, in the Source transaction."""

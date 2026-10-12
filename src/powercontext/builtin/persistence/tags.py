@@ -136,11 +136,14 @@ class RelationalTagService:
             current = await self._read(connection, scope_id, target)
             return tag_set(scope_id, target, current.tags)
 
-    async def replace(
+    async def replace(  # noqa: C901
         self, scope_id: str, target: TagTarget, tags: tuple[str, ...], *, expected_etag: str, execution_context=None
     ) -> ArtifactTagSet:
         desired = normalize_tags(tags)
         async with self._database.transaction() as connection:
+            directory = self._artifacts.atomic_memory_directory if target.family == "atomic-memory" else None
+            if directory is not None:
+                await directory.lock_scope(connection, scope_id)
             # Acquire the database write lock before any reads. In particular,
             # SELECT FOR UPDATE alone cannot serialize empty-set writes on SQLite.
             locked = await connection.execute(
@@ -186,6 +189,8 @@ class RelationalTagService:
                         .where(_where(identity), ARTIFACT_TAGS_TABLE.c.tag_key == key)
                         .values(tag=label)
                     )
+            if directory is not None and previous != desired:
+                await directory.record_mutation(connection, scope_id)
             if target.family == "atomic-memory" and self._projection_hook is not None:
                 await self._projection_hook(connection, scope_id, target.artifact_id, tuple(desired))
             return tag_set(scope_id, target, tags)

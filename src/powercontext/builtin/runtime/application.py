@@ -2514,6 +2514,10 @@ class ScopedAtomicMemoryApplication:
         async with self._runtime._scope_operation(self.scope_id):
             return await self._scoped.list(**kwargs)
 
+    async def query_directory(self, **kwargs):
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._scoped.query_directory(**kwargs)
+
     async def search(self, query: str, *, _trace: bool = True, **kwargs):
         async with self._runtime._scoped_operation(
             self.scope_id,

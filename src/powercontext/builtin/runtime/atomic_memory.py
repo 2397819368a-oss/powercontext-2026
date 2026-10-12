@@ -24,7 +24,7 @@ from time import perf_counter
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
@@ -56,6 +56,12 @@ from powercontext.builtin.inference import (
 )
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository, atomic_memory_state_expression
+from powercontext.builtin.persistence.atomic_memory_directory import (
+    AtomicMemoryDirectoryAuthorizationUnavailableError,
+    AtomicMemoryDirectoryPage,
+    AtomicMemoryDirectoryQuery,
+    AtomicMemoryDirectoryUnavailableError,
+)
 from powercontext.builtin.persistence.atomic_memory_index import (
     AtomicMemoryIndex,
     AtomicMemoryIndexError,
@@ -87,6 +93,32 @@ class AtomicMemoryAccess(ArtifactMergeAccess):
     ) -> AtomicMemoryIndexFilter:
         await self.authorize(connection, scope_id, context, "read")
         return AtomicMemoryIndexFilter(tag_filter=tags)
+
+    async def directory_context(
+        self, connection: AsyncConnection, scope_id: str, context: ArtifactSearchExecutionContext | None
+    ) -> str:
+        from powercontext.server.authz import AccessDeniedError, AccessUnavailableError
+
+        # This additive API requires an explicit host-owned context, including
+        # local calls. Existing full-record operations retain their local policy.
+        if context is None:
+            raise AccessDeniedError
+        if context.access is None:
+            if not context.trusted_local:
+                raise AccessDeniedError
+            return "trusted-local-v1"
+        try:
+            return await context.access.require_scope_directory_read(
+                context.principal, scope_id, connection=connection, context=context.audit
+            )
+        except AccessUnavailableError as error:
+            if error.code in {
+                "safe_resource_filtering_unavailable",
+                "transactional_relationships_unavailable",
+                "relationship_management_unavailable",
+            }:
+                raise AtomicMemoryDirectoryAuthorizationUnavailableError from error
+            raise
 
 
 def deferred_decision_audit(context: ArtifactSearchExecutionContext | None):
@@ -177,7 +209,7 @@ class AtomicMemoryApplication:
         )
         self.service = AtomicMemoryService(
             artifacts=artifacts,
-            states=AtomicMemoryStateRepository(),
+            states=AtomicMemoryStateRepository(atomic_memory_directory=artifacts.atomic_memory_directory),
             security=self.security,
             projections=self.publisher,
             merge_tags=self.merge_tags,
@@ -195,6 +227,53 @@ class ScopedAtomicMemory:
     def __init__(self, application: AtomicMemoryApplication, scope_id: str) -> None:
         self.application = application
         self.scope_id = scope_id
+
+    async def query_directory(
+        self,
+        *,
+        states: tuple[str, ...] = ("active",),
+        kind: str | None = None,
+        tag_filter: TagFilter | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+        context: ArtifactSearchExecutionContext | None = None,
+        connection: AsyncConnection | None = None,
+    ) -> AtomicMemoryDirectoryPage:
+        """Read compact current references after qualifying every page's access.
+
+        Directory maintenance must be composed into Artifact writes only after
+        unified schema/data verification. An uncomposed application fails closed.
+        A supplied connection retains its caller's consistent transaction; the
+        caller also defers decision audit until that transaction closes.
+        """
+
+        query = AtomicMemoryDirectoryQuery.model_validate({
+            "scope_id": self.scope_id,
+            "states": states,
+            "kind": kind,
+            "tag_filter": tag_filter,
+            "limit": limit,
+            "cursor": cursor,
+        })
+        async with (
+            deferred_decision_audit(context),
+            self.application.database.transaction(consistent_snapshot=True)
+            if connection is None
+            else self.application.database.connection(connection) as connection,
+        ):
+            policy_context = await self.application.security.directory_context(connection, self.scope_id, context)
+            directory = self.application.artifacts.atomic_memory_directory
+            if directory is None:
+                raise AtomicMemoryDirectoryUnavailableError
+            return await directory.query(
+                connection,
+                query,
+                subject=self.application.security.subject(context),
+                policy_context=policy_context,
+                # Qualified Scope read and explicit trusted-local both permit
+                # every row. Per-Artifact-only grants are not a supported mode.
+                eligibility=true(),
+            )
 
     async def get(self, artifact_id: str, *, revision: int | None = None, context=None) -> AtomicMemoryRecord:
         # Builtin authority shares the business snapshot. Configured external

@@ -122,7 +122,7 @@ class ArtifactMergeService:
         sources: SourceRepository | None = None,
     ) -> None:
         self.artifacts = artifacts
-        self.states = ArtifactGovernanceRepository()
+        self.states = ArtifactGovernanceRepository(atomic_memory_directory=artifacts.atomic_memory_directory)
         self.adapter = adapter
         self.family = adapter.family
         self.errors = errors or ArtifactMergeErrors()

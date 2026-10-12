@@ -126,6 +126,7 @@ from powercontext.builtin.persistence.artifact_governance import (
 )
 from powercontext.builtin.persistence.artifact_readers import TopicMemoryArtifactListReader
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
+from powercontext.builtin.persistence.atomic_memory_directory import AtomicMemoryDirectoryRepository
 from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndex
 from powercontext.builtin.persistence.candidates import CandidateRepository
 from powercontext.builtin.persistence.connectors import ConnectorCheckpointRepository
@@ -461,6 +462,7 @@ class RelationalContexts:
         database: AsyncDatabase,
         topic_memory_index: TopicMemoryIndex | None = None,
         atomic_memory_index: AtomicMemoryIndex | None = None,
+        atomic_memory_directory: AtomicMemoryDirectoryRepository | None = None,
         atomic_memory_preview_signing_secret: bytes | None = None,
         atomic_memory_preview_signing_key_id: str = "atomic-memory-v1",
         atomic_memory_preview_ttl_seconds: int = 300,
@@ -503,6 +505,7 @@ class RelationalContexts:
         artifact_repository = ArtifactRepository(
             (Handoff, AtomicMemory, Experience, Skill, Profile, Prompt, TopicMemory),
             sources=source_repository,
+            atomic_memory_directory=atomic_memory_directory,
         )
         if atomic_memory_index is None:
             if database.engine.dialect.name == "sqlite":
@@ -546,7 +549,7 @@ class RelationalContexts:
         self.repositories = _Repositories(
             sources=source_repository,
             artifacts=artifact_repository,
-            governance=ArtifactGovernanceRepository(),
+            governance=ArtifactGovernanceRepository(atomic_memory_directory=atomic_memory_directory),
             candidates=CandidateRepository({
                 Experience.family: ExperienceContent,
                 Skill.family: SkillContent,

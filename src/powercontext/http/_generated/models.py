@@ -3185,6 +3185,39 @@ class AccessAuditPage(BaseModel):
     next_cursor: Annotated[StrictStr | None, Field(max_length=2048)]
 
 
+class QueryAtomicMemoryDirectoryRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    states: Annotated[list[AtomicMemoryState], Field(max_length=4, min_length=1)] = [AtomicMemoryState.ACTIVE]
+    kind: Annotated[StrictStr | None, Field(max_length=128, min_length=1, pattern=".*\\S.*")] = None
+    tags: Annotated[list[Tag2], Field(max_length=16, validate_default=True)] = []
+    tag_match: TagMatch = TagMatch.ALL
+    limit: Annotated[StrictInt, Field(ge=1, le=100)] = 50
+    cursor: Annotated[StrictStr | None, Field(max_length=4096, min_length=1)] = None
+
+
+class AtomicMemoryDirectoryItem(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact: ArtifactReference
+    kind: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern=".*\\S.*")]
+    state: AtomicMemoryState
+    state_version: Annotated[StrictInt, Field(ge=0)]
+    merged_into_id: Annotated[StrictStr | None, Field(max_length=128, min_length=1)]
+
+
+class QueryAtomicMemoryDirectoryResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1)]
+    items: Annotated[list[AtomicMemoryDirectoryItem], Field(max_length=100)]
+    next_cursor: Annotated[StrictStr | None, Field(max_length=4096, min_length=1)]
+
+
 class AtomicMemoryWriteContent(BaseModel):
     model_config = ConfigDict(
         extra="forbid",

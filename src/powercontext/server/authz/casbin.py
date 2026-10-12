@@ -93,6 +93,7 @@ class CasbinAuthorizationProvider:
             artifact_resources=tuple(
                 request.resource for request in requests if request.resource.type is AccessResourceType.ARTIFACT
             ),
+            decision_resources=tuple(request.resource for request in requests),
         )
         revision = contextual_policy_revision(state.policy_revision, requests[0].context.subject_groups)
         bindings = state.bindings

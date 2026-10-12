@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -95,12 +96,15 @@ from powercontext.builtin.inference.usage import (
     UsageReportingEmbeddingModel,
     UsageReportingStructuredGenerator,
 )
+from powercontext.builtin.persistence.atomic_memory_directory import AtomicMemoryDirectoryRepository
 from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndexCapabilities
 from powercontext.builtin.persistence.atomic_memory_readiness import (
     assert_atomic_memory_migration_ready,
     ensure_supported_atomic_memory_schema,
 )
+from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
 from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
+from powercontext.builtin.persistence.migrations.deployment import directory_readiness
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.oceanbase.experience_index import OceanBaseExperienceFTSIndex
 from powercontext.builtin.persistence.oceanbase.profile import OceanBaseConfig, OceanBaseProfile
@@ -992,6 +996,14 @@ async def open_builtin_contexts(
     database = config.database
     configured_token_estimator = character_token_estimator() if token_estimator is None else token_estimator
     if isinstance(database, SQLiteConfig):
+        directory_state = None if _topic_memory_worker else await asyncio.to_thread(directory_readiness, database)
+        directory = (
+            None
+            if directory_state is None
+            else AtomicMemoryDirectoryRepository(
+                SignedCursorCodec(secret=cursor_secret), available=directory_state and embedding_model is None
+            )
+        )
         experience_index = SQLiteExperienceFTSIndex()
         topic_indexes: list[TopicMemoryIndex] = [SQLiteTopicMemoryFTSIndex()]
         if embedding_model is not None:
@@ -1027,6 +1039,7 @@ async def open_builtin_contexts(
                 database=profile.database,
                 topic_memory_index=topic_index,
                 atomic_memory_index=atomic_index,
+                atomic_memory_directory=directory,
                 atomic_memory_preview_signing_secret=None
                 if config.runtime.atomic_memory_preview_signing_secret is None
                 else config.runtime.atomic_memory_preview_signing_secret.get_secret_value().encode("utf-8"),

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 from sqlalchemy import insert, select, true, tuple_, update
@@ -55,6 +55,10 @@ from powercontext.errors import (
 from powercontext.limits import MAX_SCOPE_ID_LENGTH
 from powercontext.sources import SourceRef
 
+if TYPE_CHECKING:
+    from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemory
+    from powercontext.builtin.persistence.atomic_memory_directory import AtomicMemoryDirectoryRepository
+
 
 class RepositoryArtifactDraft(BaseModel):
     """A family-validated draft accepted by the shared Artifact repository."""
@@ -76,6 +80,7 @@ class ArtifactRepository:
         /,
         *,
         sources: Any | None = None,
+        atomic_memory_directory: AtomicMemoryDirectoryRepository | None = None,
     ) -> None:
         self._by_family = {artifact_type.family: artifact_type for artifact_type in artifact_types}
         self._content_types: dict[str, type[BaseModel]] = {}
@@ -85,6 +90,8 @@ class ArtifactRepository:
                 raise TypeError(f"{artifact_type.__name__}.content must be a BaseModel")  # noqa: TRY003
             self._content_types[family] = content_type
         self._sources = sources
+        # Compose only after the unified schema/data capability is ready.
+        self.atomic_memory_directory = atomic_memory_directory
 
     @property
     def families(self) -> frozenset[str]:
@@ -112,6 +119,8 @@ class ArtifactRepository:
         artifact_type = self._artifact_type(draft.family)
         self._require_content(draft.family, draft.content)
         ref = ArtifactRef(family=draft.family, artifact_id=artifact_id, revision=1)
+        if ref.family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.lock_scope(connection, scope_id)
         await self._validate_lineage_sources(connection, scope_id, ref, draft.sources)
         conflict = await self._head_conflict(connection, scope_id, ref, draft)
         if conflict is not None:
@@ -141,6 +150,8 @@ class ArtifactRepository:
             if conflict is None:
                 raise
             raise conflict from None
+        if ref.family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.record_publication(connection, scope_id, cast("AtomicMemory", artifact))
         return artifact
 
     async def create_merge_result(
@@ -292,6 +303,8 @@ class ArtifactRepository:
             artifact_id=artifact.artifact_id,
             revision=artifact.revision + 1,
         )
+        if artifact.family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.lock_scope(connection, scope_id)
         await self._validate_lineage_sources(connection, scope_id, target, draft.sources)
 
         locked = await connection.execute(
@@ -355,6 +368,8 @@ class ArtifactRepository:
         )
         if advanced.rowcount != 1:
             raise RevisionConflictError(artifact, revised)
+        if artifact.family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.record_publication(connection, scope_id, cast("AtomicMemory", revised))
         return revised
 
     async def get(
@@ -369,6 +384,8 @@ class ArtifactRepository:
         """Load one exact revision with ordered direct lineage."""
 
         _require_scope(scope_id)
+        if for_update and ref.family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.lock_scope(connection, scope_id)
         statement = select(ARTIFACTS_TABLE).where(
             ARTIFACTS_TABLE.c.scope_id == scope_id,
             ARTIFACTS_TABLE.c.family == ref.family,
@@ -468,6 +485,8 @@ class ArtifactRepository:
         """
 
         _require_scope(scope_id)
+        if self.atomic_memory_directory is not None and any(ref.family == "atomic-memory" for ref in refs):
+            await self.atomic_memory_directory.lock_scope(connection, scope_id)
         for family, artifact_id in sorted({(ref.family, ref.artifact_id) for ref in refs}):
             locked = await connection.execute(
                 update(ARTIFACT_HEADS_TABLE)
@@ -541,6 +560,8 @@ class ArtifactRepository:
         _require_scope(target_scope_id)
         artifact_type = self._artifact_type(source.family)
         ref = ArtifactRef(family=source.family, artifact_id=target_artifact_id, revision=1)
+        if ref.family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.lock_scope(connection, target_scope_id)
         copied = await self._insert_revision(
             connection,
             target_scope_id,
@@ -560,6 +581,10 @@ class ArtifactRepository:
                 revision=ref.revision,
             )
         )
+        if ref.family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.record_publication(
+                connection, target_scope_id, cast("AtomicMemory", copied)
+            )
         return copied
 
     async def _insert_revision(
@@ -865,6 +890,8 @@ class ArtifactRepository:
         *,
         for_update: bool = False,
     ) -> int | None:
+        if for_update and family == "atomic-memory" and self.atomic_memory_directory is not None:
+            await self.atomic_memory_directory.lock_scope(connection, scope_id)
         statement = select(ARTIFACT_HEADS_TABLE.c.revision).where(
             ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
             ARTIFACT_HEADS_TABLE.c.family == family,

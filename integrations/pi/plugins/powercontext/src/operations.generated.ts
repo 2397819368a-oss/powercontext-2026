@@ -17,6 +17,7 @@
 // generated from openapi/powercontext.yaml; do not edit.
 
 export const OPERATIONS = {
+  query_atomic_memory_directory: { method: 'POST', path: '/v1/atomic-memory/directory/query', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
   list_atomic_memories: { method: 'POST', path: '/v1/atomic-memory/list', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
   search_atomic_memory: { method: 'POST', path: '/v1/atomic-memory/search', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
   merge_atomic_memories: { method: 'POST', path: '/v1/atomic-memory/merges', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },

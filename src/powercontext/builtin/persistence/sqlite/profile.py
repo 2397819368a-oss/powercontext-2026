@@ -97,6 +97,10 @@ class SQLiteProfile:
     ) -> AsyncIterator[SQLiteProfile]:
         """Create, initialize and exclusively own one SQLite engine."""
 
+        if config.is_persistent:
+            from powercontext.builtin.persistence.migrations.deployment import assert_directory_maintenance_complete
+
+            await asyncio.to_thread(assert_directory_maintenance_complete, config)
         _create_database_directory(config.url)
         engine_options: dict[str, object] = {"echo": config.echo, "hide_parameters": True}
         if not config.is_persistent:

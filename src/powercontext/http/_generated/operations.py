@@ -133,6 +133,8 @@ from powercontext.http._generated.models import (
     PublishRemoteSkillRequest,
     PutProfilePolicyRequest,
     QueryArtifactTagsRequest,
+    QueryAtomicMemoryDirectoryRequest,
+    QueryAtomicMemoryDirectoryResponse,
     ReadinessResponse,
     ReconcileRemoteSkillsRequest,
     ReconcileRemoteSkillsResponse,
@@ -234,6 +236,33 @@ class AccessRequirement(BaseModel):
     scope_id_field: str | None
     resolver: str
 
+
+QUERY_ATOMIC_MEMORY_DIRECTORY = Operation[QueryAtomicMemoryDirectoryRequest, QueryAtomicMemoryDirectoryResponse](
+    method="POST",
+    path="/v1/atomic-memory/directory/query",
+    operation_id="query_atomic_memory_directory",
+    request_type=QueryAtomicMemoryDirectoryRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=QueryAtomicMemoryDirectoryResponse,
+    success_status=200,
+    summary="Query compact current Atomic Memory references",
+    tags=("atomic-memory",),
+    scope_mode="current",
+    responses={
+        200: {"description": "Compact current directory page."},
+        400: {"description": "The cursor is invalid or its query, identity, policy or directory generation changed."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        410: {"description": "The cursor expired; restart from the first page."},
+        413: {"description": "A compact item exceeds the response budget; no partial page is returned."},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        500: {"$ref": "#/components/responses/InternalError"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
 
 LIST_ATOMIC_MEMORIES = Operation[ListAtomicMemoryRequest, ListAtomicMemoryResponse](
     method="POST",

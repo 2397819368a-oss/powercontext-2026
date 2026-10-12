@@ -153,6 +153,11 @@ from powercontext.builtin.persistence.artifact_governance import (
     ArtifactLifecycleState,
     InvalidArtifactLifecycleError,
 )
+from powercontext.builtin.persistence.atomic_memory_directory import (
+    AtomicMemoryDirectoryAuthorizationUnavailableError,
+    AtomicMemoryDirectoryItemTooLargeError,
+    AtomicMemoryDirectoryUnavailableError,
+)
 from powercontext.builtin.persistence.atomic_memory_identity import legacy_entry_artifact_id
 from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndexError
 from powercontext.builtin.persistence.errors import (
@@ -3208,6 +3213,8 @@ def _atomic_execution_context(request: Request, operation: str) -> ArtifactSearc
     if access is None:
         if getattr(application, "atomic_memory", None) is None:
             raise BaseOperationNotSupportedError("artifact_family", "atomic-memory", "runtime application")
+        if operation == "query_atomic_memory_directory":
+            return ArtifactSearchExecutionContext(trusted_local=True)
         return None
     return ArtifactSearchExecutionContext(
         principal=_require_principal(), access=access, audit=_access_audit_context(operation)
@@ -5266,6 +5273,9 @@ def _map_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
     access_error = _map_access_error(error)
     if access_error is not None:
         return access_error
+    directory_error = _map_atomic_directory_error(error)
+    if directory_error is not None:
+        return directory_error
     if isinstance(error, (DreamError, EvidenceResolutionError)):
         statuses = {
             "idempotency_conflict": 409,
@@ -5453,6 +5463,31 @@ def _map_access_error(error: Exception) -> tuple[int, str, str, dict[str, Any] |
         return status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_access_request", "The Access request is invalid.", None
     if isinstance(error, AccessUnavailableError):
         return status.HTTP_503_SERVICE_UNAVAILABLE, error.code, "Access Control is unavailable.", None
+    return None
+
+
+def _map_atomic_directory_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
+    if isinstance(error, AtomicMemoryDirectoryAuthorizationUnavailableError):
+        return (
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "atomic_memory_directory_authorization_unavailable",
+            "The access configuration does not support safe directory queries.",
+            None,
+        )
+    if isinstance(error, AtomicMemoryDirectoryUnavailableError):
+        return (
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "atomic_memory_directory_unavailable",
+            "The Atomic Memory directory is not ready.",
+            None,
+        )
+    if isinstance(error, AtomicMemoryDirectoryItemTooLargeError):
+        return (
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "atomic_memory_directory_item_too_large",
+            "An Atomic Memory directory item exceeds the response budget.",
+            None,
+        )
     return None
 
 

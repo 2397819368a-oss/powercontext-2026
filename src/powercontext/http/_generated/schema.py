@@ -10,6 +10,94 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
         "version": "1.3.0",
     },
     "paths": {
+        "/v1/atomic-memory/directory/query": {
+            "post": {
+                "tags": ["atomic-memory"],
+                "summary": "Query compact current Atomic Memory references",
+                "description": "Returns current metadata "
+                "and exact revisions "
+                "without loading Memory "
+                "text or history. Any "
+                "directory or tag change "
+                "invalidates "
+                "continuation; restart "
+                "from the first page on "
+                "invalid_cursor or "
+                "cursor_expired. Requires "
+                "verified directory "
+                "migration and writer "
+                "composition, and a "
+                "supported local "
+                "authorization "
+                "configuration. "
+                "Production enablement is "
+                "unavailable until the "
+                "unified migration bundle "
+                "manages the complete "
+                "target. Unavailable "
+                "codes include "
+                "artifact_owner_pending, "
+                "atomic_memory_directory_authorization_unavailable "
+                "and "
+                "atomic_memory_directory_unavailable; "
+                "do not treat failure as "
+                "an empty page.",
+                "operationId": "query_atomic_memory_directory",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/QueryAtomicMemoryDirectoryRequest"}
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Compact current directory page.",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/QueryAtomicMemoryDirectoryResponse"}
+                            }
+                        },
+                    },
+                    "400": {
+                        "description": "The "
+                        "cursor "
+                        "is "
+                        "invalid "
+                        "or "
+                        "its "
+                        "query, "
+                        "identity, "
+                        "policy "
+                        "or "
+                        "directory "
+                        "generation "
+                        "changed.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "410": {
+                        "description": "The cursor expired; restart from the first page.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+                    },
+                    "413": {
+                        "description": "A compact item exceeds the response budget; no partial page is returned.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+                    },
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                },
+                "x-powercontext-scope-mode": "current",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
         "/v1/atomic-memory/list": {
             "post": {
                 "tags": ["atomic-memory"],
@@ -11103,6 +11191,64 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["items", "next_cursor"],
+            },
+            "QueryAtomicMemoryDirectoryRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "states": {
+                        "items": {"$ref": "#/components/schemas/AtomicMemoryState"},
+                        "type": "array",
+                        "maxItems": 4,
+                        "minItems": 1,
+                        "uniqueItems": True,
+                        "default": ["active"],
+                    },
+                    "kind": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                    "tags": {
+                        "items": {"type": "string", "maxLength": 64, "minLength": 1},
+                        "type": "array",
+                        "maxItems": 16,
+                        "default": [],
+                    },
+                    "tag_match": {"$ref": "#/components/schemas/TagMatch", "default": "all"},
+                    "limit": {"type": "integer", "maximum": 100.0, "minimum": 1.0, "default": 50},
+                    "cursor": {"type": "string", "maxLength": 4096, "minLength": 1, "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id"],
+            },
+            "AtomicMemoryDirectoryItem": {
+                "properties": {
+                    "artifact": {"$ref": "#/components/schemas/ArtifactReference"},
+                    "kind": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": ".*\\S.*"},
+                    "state": {"$ref": "#/components/schemas/AtomicMemoryState"},
+                    "state_version": {"type": "integer", "minimum": 0.0},
+                    "merged_into_id": {"type": "string", "maxLength": 128, "minLength": 1, "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["artifact", "kind", "state", "state_version", "merged_into_id"],
+            },
+            "QueryAtomicMemoryDirectoryResponse": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1},
+                    "items": {
+                        "items": {"$ref": "#/components/schemas/AtomicMemoryDirectoryItem"},
+                        "type": "array",
+                        "maxItems": 100,
+                    },
+                    "next_cursor": {"type": "string", "maxLength": 4096, "minLength": 1, "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "items", "next_cursor"],
             },
         },
         "responses": {
