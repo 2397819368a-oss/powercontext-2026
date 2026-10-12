@@ -15,7 +15,7 @@
  */
 
 // Generated from openapi/powercontext.yaml. Do not edit.
-export const contractSha256 = "16eff718a6607ab6ff3d03c2a279ee92c26d8895ac804e7259fc11173ac8e3c8";
+export const contractSha256 = "7aa91ae9af78300e7bdbcc2e8b2135da5749469290a1aee67bc255c3e9a07b0c";
 export const operations = {
   "get_liveness": {
     "method": "GET",

@@ -23,8 +23,10 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from datetime import timedelta
 from functools import partial
+from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, JsonValue, SecretStr
 from typing_extensions import override
@@ -218,10 +220,6 @@ class BuiltinConfigurationError(RuntimeError):
                 "custom inference endpoints require an OpenAI- or Anthropic-compatible model identifier"
             ),
             "inference-profile": "validated inference profile is incomplete",
-            "legacy-memory-write-gate": (
-                "Atomic Memory does not support the legacy Memory write gate; explicitly disable "
-                "memory_write_gate_enabled and remove any injected memory_write_gate before upgrading or starting"
-            ),
             "memory-reranker": "Memory reranking requires a configured generation or rerank model, or injected reranker",
             "scheduled-experience-pipeline": "scheduled Experience incubation requires a candidate pipeline",
             "scheduled-pipeline": "scheduled Source processing requires a candidate pipeline",
@@ -248,11 +246,6 @@ class BuiltinConfigurationError(RuntimeError):
             ),
         }
         super().__init__(messages[issue])
-
-
-def _validate_legacy_memory_write_gate(runtime: RuntimeConfig, injected: MemoryWriteGate | None = None) -> None:
-    if runtime.memory_write_gate_enabled or injected is not None:
-        raise BuiltinConfigurationError("legacy-memory-write-gate")
 
 
 class _DefinitionEvidenceProjector(DefaultMemoryEvidenceProjector):
@@ -320,6 +313,9 @@ class _TracingDecisionModel:
         self._delegate = delegate
         self._tracing = tracing
         self.policy_id = delegate.policy_id
+        self.is_local_only = bool(getattr(delegate, "is_local_only", False))
+        self.provider_id = getattr(delegate, "provider_id", None)
+        self.backend_model_id = getattr(delegate, "backend_model_id", None)
 
     async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
         with self._tracing.stage(
@@ -380,6 +376,8 @@ def _configured_memory_write_gate(
         enabled=True,
         hold_on=runtime.memory_write_gate_hold_on,
         threshold=runtime.memory_write_gate_threshold,
+        mode=runtime.memory_write_gate_mode,
+        privacy_boundary=runtime.memory_write_gate_privacy_boundary,
     )
     if gate is None:
         log_safely(
@@ -462,8 +460,6 @@ async def open_builtin_runtime(
     An explicit ``recall_effort_sink`` replaces that recorder rather than adding
     a second observation. A disabled gate invokes neither recorder nor sink.
     """
-
-    _validate_legacy_memory_write_gate(config.runtime, memory_write_gate)
 
     async with AsyncExitStack() as resources:
         configured_source_registry = source_registry or BUILTIN_SOURCE_REGISTRY
@@ -993,8 +989,6 @@ async def open_builtin_contexts(
 ) -> AsyncIterator[RelationalContexts]:
     """Open the selected database and expose scope-bound PowerContext providers."""
 
-    _validate_legacy_memory_write_gate(config.runtime, memory_write_gate)
-
     database = config.database
     configured_token_estimator = character_token_estimator() if token_estimator is None else token_estimator
     if isinstance(database, SQLiteConfig):
@@ -1051,6 +1045,8 @@ async def open_builtin_contexts(
                 token_estimator=configured_token_estimator,
                 memory_reranker=memory_reranker,
                 decision_model=decision_model,
+                memory_write_gate=memory_write_gate,
+                decision_observation_retention_days=config.runtime.decision_observation_retention_days,
                 memory_rerank_candidate_limit=config.runtime.memory_rerank_candidate_limit,
                 prompt_registry=prompt_registry,
                 prompt_demonstrators=prompt_demonstrators,
@@ -1243,8 +1239,6 @@ async def _generation_pipelines(
     ReadinessProbe | None,
     ReadinessProbe | None,
 ]:
-    _validate_legacy_memory_write_gate(runtime)
-
     if (
         settings.generation_model is None
         and (not runtime.memory_rerank_enabled or settings.rerank_model is None)
@@ -1559,6 +1553,7 @@ async def _generation_decision(
 
     decision_provider_model = generation_provider_model
     decision_model = generation_model
+    decision_model_name = settings.decision_model or settings.generation_model
     inherits_generation = settings.decision_model is None
     decision_headers = (
         _merge_headers(settings.generation_headers, settings.decision_headers)
@@ -1567,7 +1562,6 @@ async def _generation_decision(
     )
     separate_decision_model = settings.decision_model is not None or bool(settings.decision_headers)
     if separate_decision_model:
-        decision_model_name = settings.decision_model or settings.generation_model
         if decision_model_name is None:
             raise BuiltinConfigurationError("decision-model")
         decision_provider_model, decision_model = await _open_pydantic_ai_model(
@@ -1603,7 +1597,16 @@ async def _generation_decision(
         model_settings=decision_request_settings,
         name="decision_evaluate",
     )
-    generated_decision = LLMDecisionModel(UsageReportingStructuredGenerator(decision_generator))
+    generated_decision = LLMDecisionModel(
+        UsageReportingStructuredGenerator(decision_generator),
+        is_local_only=_is_loopback_endpoint(
+            settings.decision_base_url if settings.decision_model is not None else settings.generation_base_url
+        ),
+        provider_id=None if decision_model_name is None else decision_model_name.partition(":")[0],
+        backend_model_id=None
+        if decision_model_name is None
+        else decision_model_name.partition(":")[2] or decision_model_name,
+    )
 
     decision_readiness: ReadinessProbe | None = None
     if separate_decision_model or settings.decision_model_settings:
@@ -1627,8 +1630,6 @@ async def _generation_decision(
 
 async def preflight_builtin_runtime(config: BuiltinConfig) -> None:
     """Validate Runtime composition without opening persistence or making requests."""
-
-    _validate_legacy_memory_write_gate(config.runtime)
 
     async with AsyncExitStack() as resources:
         await _generation_pipelines(
@@ -1733,10 +1734,22 @@ def _unbounded_provider_factory(
             if headers:
                 from openai import AsyncOpenAI
 
+                http_client = _endpoint_http_client(follow_redirects=False) if base_url is not None else None
                 client = AsyncOpenAI(
                     base_url=None if base_url is None else str(base_url),
                     api_key=os.getenv("OPENAI_API_KEY") or "api-key-not-set",
                     default_headers=_resolve_headers(headers),
+                    http_client=http_client,
+                )
+                resources.push_async_callback(client.close)
+                return OpenAIProvider(openai_client=client)
+            if base_url is not None and _is_loopback_endpoint(base_url):
+                from openai import AsyncOpenAI
+
+                client = AsyncOpenAI(
+                    base_url=str(base_url),
+                    api_key=os.getenv("OPENAI_API_KEY") or "api-key-not-set",
+                    http_client=_endpoint_http_client(follow_redirects=False),
                 )
                 resources.push_async_callback(client.close)
                 return OpenAIProvider(openai_client=client)
@@ -1752,6 +1765,7 @@ def _unbounded_provider_factory(
                     base_url=None if base_url is None else str(base_url),
                     api_key=api_key or os.getenv("ANTHROPIC_API_KEY") or "api-key-not-set",
                     default_headers=default_headers,
+                    http_client=_endpoint_http_client(follow_redirects=False) if base_url is not None else None,
                 )
                 resources.push_async_callback(client.close)
                 return AnthropicProvider(anthropic_client=client)
@@ -1762,6 +1776,34 @@ def _unbounded_provider_factory(
         raise BuiltinConfigurationError("inference-endpoint-provider")
 
     return create_provider
+
+
+def _endpoint_http_client(*, follow_redirects: bool):
+    """Create the SDK transport with an explicit redirect policy for custom endpoints."""
+
+    import httpx
+
+    return httpx.AsyncClient(follow_redirects=follow_redirects)
+
+
+def _is_loopback_endpoint(endpoint: AnyHttpUrl | str | None) -> bool:
+    """Allow only explicit local names and addresses for raw decision content."""
+
+    if endpoint is None:
+        return False
+    try:
+        host = urlsplit(str(endpoint)).hostname
+    except ValueError:
+        return False
+    if host is None:
+        return False
+    host = host.lower()
+    if host == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _resolve_headers(headers: Mapping[str, SecretStr]) -> dict[str, str]:
