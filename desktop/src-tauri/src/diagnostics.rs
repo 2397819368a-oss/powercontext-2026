@@ -195,7 +195,8 @@ pub fn project(
 fn supported_cli_version(version: &str) -> bool {
     ((version == "1.0.1" || version.starts_with("1.0.1.dev"))
         || (version == "1.1.1" || version.starts_with("1.1.1.dev"))
-        || (version == "1.2.1" || version.starts_with("1.2.1.dev")))
+        || (version == "1.2.1" || version.starts_with("1.2.1.dev"))
+        || (version == "1.3.1" || version.starts_with("1.3.1.dev")))
         && version.len() <= 128
         && version
             .bytes()
@@ -360,6 +361,8 @@ mod tests {
             "1.1.1.dev1+g6e237568",
             "1.2.1",
             "1.2.1.dev86+g3d3a6290d",
+            "1.3.1",
+            "1.3.1.dev49+g37d99176b",
         ] {
             assert!(supported_cli_version(version), "unqualified {version}");
         }
@@ -373,7 +376,12 @@ mod tests {
             "1.2.2.dev86+g3d3a6290d",
             "1.2.10",
             "1.2.10.dev86+g3d3a6290d",
-            "1.3.1",
+            "1.3.0",
+            "1.3.2.dev1",
+            "1.3.10",
+            "1.3.10.dev1",
+            "1.4.1",
+            "1.3.1rc1",
             "1.2.1rc1",
             "1.2.1.dev86 with spaces",
             "1.2.1.dev86\n",
