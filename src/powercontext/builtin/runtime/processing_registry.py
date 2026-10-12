@@ -81,7 +81,9 @@ def dream_operations(config: BuiltinConfig) -> tuple[DreamOperation, ...]:
         return ()
     families = processing_capabilities(config)
     return tuple(
-        spec.operation for spec in DREAM_OPERATIONS if spec.family in families or (spec.family is None and families)
+        spec.operation
+        for spec in DREAM_OPERATIONS
+        if spec.processing_family in families or (spec.family is None and families)
     )
 
 

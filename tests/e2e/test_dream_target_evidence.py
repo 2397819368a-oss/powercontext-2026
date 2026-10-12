@@ -33,7 +33,7 @@ from powercontext.builtin.runtime import (
     GetDreamRunRequest,
 )
 from powercontext.builtin.scope import ScopeDraft
-from powercontext.builtin.tags import ArtifactTagTarget
+from powercontext.builtin.tags import ArtifactTagTarget, TagFilter
 from tests.e2e.dream_support import open_dream_runtime, process_pending
 from tests.e2e.test_artifact_dreaming import database as database
 
@@ -137,7 +137,7 @@ def test_target_evidence_requires_independent_support(database, operation, selec
 
 
 @pytest.mark.parametrize("independent_source", [False, True])
-def test_memory_entry_tag_target_is_not_its_own_support(database, independent_source):
+def test_atomic_memory_tag_target_is_not_its_own_support(database, independent_source):
     from powercontext.builtin.evidence.resolver import evidence_id
     from tests.e2e.dream_support import atomic_memory_pipeline
     from tests.e2e.test_artifact_dreaming import MemoryPipeline, seed
@@ -173,6 +173,13 @@ def test_memory_entry_tag_target_is_not_its_own_support(database, independent_so
             records = runtime.records.for_scope(scope)
             target = ArtifactTagTarget(family="atomic-memory", artifact_id=basis.artifact_id)
             before = await records.get_tags(target)
+            before = await records.replace_tags(target, ("unverified",), expected_etag=before.etag)
+            memory = runtime.atomic_memory.for_scope(scope)
+            original_filter = TagFilter(tags=("unverified",))
+            revised_filter = TagFilter(tags=("verified",))
+            assert [
+                hit.hit.artifact_ref for hit in (await memory.search("replay", tag_filter=original_filter)).hits
+            ] == [basis]
             sources = ()
             if independent_source:
                 correction = await runtime.sources.for_scope(scope).capture(
@@ -212,6 +219,11 @@ def test_memory_entry_tag_target_is_not_its_own_support(database, independent_so
                 )
                 assert approved.status == "approved"
                 assert (await records.get_tags(target)).tags == ("verified",)
+                assert [item.ref for item in (await memory.list(tag_filter=revised_filter)).items] == [basis]
+                assert [
+                    hit.hit.artifact_ref for hit in (await memory.search("replay", tag_filter=revised_filter)).hits
+                ] == [basis]
+                assert not (await memory.search("replay", tag_filter=original_filter)).hits
             assert run.input_manifest is not None
             node = next(node for node in run.input_manifest.nodes if node.evidence_id == evidence_id(basis))
             assert node.role == "target" and node.artifact == basis

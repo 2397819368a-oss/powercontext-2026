@@ -27,6 +27,7 @@ from powercontext.builtin.persistence.seekdb import SeekDBConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import BuiltinConfig, InferenceConfig, RuntimeConfig
 from powercontext.builtin.runtime.composition import _topic_memory_processing_available
+from powercontext.builtin.runtime.processing_registry import dream_operations
 from powercontext.cli.app import create_cli
 from powercontext.server.cli import app as server_app
 from powercontext.server.factory import BackgroundRoleRequiresBackgroundRunnerError, create_server_app
@@ -249,3 +250,13 @@ def test_unknown_processing_mode_and_unregistered_schedule_fields_rejected():
         RuntimeConfig.model_validate({"artifact_processing_supervisor_mode": "custom"})
     with pytest.raises(ValidationError):
         RuntimeConfig.model_validate({"skill_schedule_seconds": 10})
+
+
+def test_api_declares_memory_dream_without_inference_credentials():
+    config = BuiltinConfig(
+        database=OceanBaseConfig(url=SecretStr(OCEANBASE_URL)),
+        runtime=RuntimeConfig(
+            artifact_processing_role="api", artifact_processing_families=("memory",), dream_enabled=True
+        ),
+    )
+    assert dream_operations(config) == ("revise_memory", "revise_tags")

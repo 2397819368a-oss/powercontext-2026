@@ -119,6 +119,7 @@ class RelationalRecordService:
         cursor_ttl_seconds: int = _DEFAULT_CURSOR_TTL_SECONDS,
         processing_pending: ArtifactProcessingPendingRepository | None = None,
         source_processing_bindings: tuple[str, ...] = (),
+        tags: RelationalTagService | None = None,
         atomic_memory_tag_hook=None,
         atomic_memory_tag_authorizer=None,
         topic_memory_list_reader: ArtifactListReader | None = None,
@@ -138,7 +139,7 @@ class RelationalRecordService:
         self._processing_pending = processing_pending
         self._source_processing_bindings = source_processing_bindings
         self._topic_memory_list_reader = topic_memory_list_reader
-        self._tags = RelationalTagService(
+        self._tags = tags or RelationalTagService(
             database,
             artifacts,
             cursor_secret=self._cursor_secret,

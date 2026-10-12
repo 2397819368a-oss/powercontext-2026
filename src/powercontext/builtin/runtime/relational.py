@@ -166,6 +166,7 @@ from powercontext.builtin.persistence.supervision import (
     ArtifactProcessingLeaseRepository,
 )
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, SOURCE_JOURNAL_HEADS_TABLE
+from powercontext.builtin.persistence.tags import RelationalTagService
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
 from powercontext.builtin.persistence.topic_memory_index import NoTopicMemoryIndex, TopicMemoryIndex
 from powercontext.builtin.persistence.topic_memory_management import TopicMemoryManagementWriter
@@ -661,6 +662,13 @@ class RelationalContexts:
             prompt_service=self.prompts,
         )
         self.subject_sources = SubjectSourceService(database, self.repositories.sources)
+        self.tags = RelationalTagService(
+            database,
+            self.repositories.artifacts,
+            cursor_secret=cursor_secret,
+            projection_hook=atomic_memory_index.refresh_tags,
+            atomic_write_authorizer=self._authorize_atomic_tag_write,
+        )
         self.records = RelationalRecordService(
             database,
             self.repositories.sources,
@@ -670,8 +678,7 @@ class RelationalContexts:
             cursor_secret=cursor_secret,
             processing_pending=self.repositories.processing_pending,
             source_processing_bindings=(TOPIC_MEMORY_SOURCE_WINDOW_BINDING,),
-            atomic_memory_tag_hook=atomic_memory_index.refresh_tags,
-            atomic_memory_tag_authorizer=self._authorize_atomic_tag_write,
+            tags=self.tags,
             topic_memory_list_reader=TopicMemoryArtifactListReader(
                 database=database,
                 artifacts=artifact_repository,
@@ -749,6 +756,7 @@ class RelationalContexts:
             artifacts=self.repositories.artifacts,
             evidence=services.evidence(),
             id_factory=services.id_factory,
+            tags=self.tags,
             connection=connection,
         )
 
