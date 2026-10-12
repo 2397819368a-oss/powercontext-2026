@@ -43,7 +43,9 @@ export const releases: Release[] = [
       en: [
         'Create, read, revise, search, forget, merge, and restore independent Atomic Memory Artifacts with immutable content history and explicit lifecycle state. Existing collection databases require the documented offline Atomic Memory migration before use.',
         'Govern decision-model assessment of Memory write evidence with disabled, shadow, advisory, and enforcing modes. The gate remains opt-in; when enabled, it defaults to shadow and no_external_call, preserving writes without calling a model. Raw content evaluation requires explicit local_only configuration and a loopback backend. Scope-isolated durable observations retain policy versions, references, counts, and outcomes without candidate or evidence text; model failures preserve the write path. Enforcing promotion still requires calibration and evaluation; no public audit dashboard or hosted-redacted transport is included.',
-        'Share merge and restoration across Artifact families, preserving exact input revisions and historical evidence. Search Artifacts by family and expose Memory search modes and channels in the Dashboard.',
+        'Share merge and restoration across Artifact families, preserving exact input revisions and historical evidence. Search Artifacts by family.',
+        'Add an unsigned Windows Desktop preview for connecting to an existing Server, selecting a Scope, saving notes, full-text search, reading exact revisions, and copying content and references. The preview also supports English/Chinese, themes, and connection diagnostics; complete native interaction and formal release qualification remain unfinished.',
+        'Choose automatic, full-text, semantic, or hybrid Memory search in the web Dashboard and inspect the executed mode, matching channels, and retrieval scores. Local Dashboard access can omit authentication; the Dashboard still requires explicit enablement.',
         'Discover Server protocols and capabilities and inspect persistent deployment identity. Expose read-only extraction diagnostics and optional daily RecallEffort metrics; MCP request counts do not establish successful tool execution.',
         'Import Codex sessions, refresh stale setup endpoints safely, bypass proxies for loopback Client transports, and improve DSH Desktop setup, native MCP catalog diagnostics, and handling of recoverable Server rejections.',
         'Extend the Dify integration with 19 HTTP-backed tools and provide Experience and Skill applicability examples. Add compact Handoff continuity hints and improve ZCode lifecycle workflows and runtime diagnostics.',
@@ -55,7 +57,9 @@ export const releases: Release[] = [
       zh: [
         '以独立 Atomic Memory Artifact 创建、读取、修订、搜索、遗忘、合并和恢复单条记忆，保留不可变内容历史与显式生命周期状态。已有集合式 Memory 数据库需先按文档完成离线 Atomic Memory 迁移。',
         '为决策模型判断 Memory 写入证据提供 disabled、shadow、advisory、enforcing 四种策略模式。写入门控需显式启用；启用后默认采用 shadow 与 no_external_call，不调用模型、不阻断写入。评估原始内容需显式配置 local_only 和本地回环模型入口。按 Scope 隔离的持久化观测记录保存策略版本、引用、数量与处理结果，不保存候选或证据正文；模型故障时保留写入流程。进入 enforcing 前仍需校准与评测，本次未提供公开审计界面或托管脱敏调用。',
-        '在各 Artifact 类型间共享合并与恢复流程，保留精确的输入 Revision 和历史证据；支持按类型搜索 Artifact，并在 Dashboard 展示 Memory 搜索模式与通道。',
+        '在各 Artifact 类型间共享合并与恢复流程，保留精确的输入 Revision 和历史证据；支持按类型搜索 Artifact。',
+        '新增未签名的 Windows 桌面预览，连接已有 Server 后可选择 Scope、保存笔记、全文搜索、读取精确历史版本，以及复制正文和引用；支持中英文、主题切换和连接诊断。完整原生交互与正式发行验收尚未完成。',
+        '网页 Dashboard 支持选择自动、全文、语义或混合搜索，查看实际执行模式、命中通道与检索得分；本地访问可不配置认证，Dashboard 仍需显式启用。',
         '发现 Server 协议与能力，查看持久化部署身份；提供只读提取诊断和可选的每日 RecallEffort 指标。MCP 请求计数不代表工具执行成功。',
         '导入 Codex 会话，安全刷新过期的 setup 入口，让 Client 本地回环连接绕过代理，并完善 DSH Desktop 配置、原生 MCP 工具目录诊断及可恢复 Server 拒绝的处理。',
         '为 Dify 集成新增 19 个基于 HTTP 的工具，提供 Experience 与 Skill 适用性选择示例；增加精简 Handoff 续接提示，并完善 ZCode 生命周期工作流与运行诊断。',
