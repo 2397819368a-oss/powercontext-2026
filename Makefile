@@ -19,7 +19,14 @@ notebooks-test: ## Execute provider-free tutorials in fresh kernels; use ARGS fo
 	@uv run --locked --group notebooks python examples/jupyter/run.py $(ARGS)
 
 .PHONY: check
-check: version-check workflow-actions-check integration-manifest-check ## Run code quality tools.
+check: version-check workflow-actions-check integration-manifest-check integration-guidance-check ## Run code quality tools.
+
+.PHONY: integration-guidance integration-guidance-check
+integration-guidance: ## Refresh the managed regions of packaged integration guidance.
+	@uv run python scripts/integration_guidance_skills.py --write
+
+integration-guidance-check: ## Reject stale generated guidance without modifying files or calling models.
+	@uv run python scripts/integration_guidance_skills.py --check-generated
 
 .PHONY: workflow-actions-check
 workflow-actions-check: ## Verify third-party GitHub Actions use immutable commit pins.
@@ -46,10 +53,18 @@ unit-test: ## Run tests that do not cross the Server boundary end to end.
 e2e-test: ## Run CLI to Client SDK to Server end-to-end tests.
 	@uv run python -m pytest tests/e2e
 
+.PHONY: evaluation-unit-test
+evaluation-unit-test: ## Run the evaluation project's unit tests, the work-continuity benchmark included.
+	@uv sync --project evaluation --frozen
+	@uv run --project evaluation pytest -c evaluation/pyproject.toml \
+		evaluation/coding/swebench_pro/tests/unit \
+		evaluation/coding/work_continuity/tests/unit \
+		evaluation/memory/longmemeval_v2/tests -m "not live" -q
+
 .PHONY: code-seekdb-test
 code-seekdb-test: ## Exercise native code indexing against a real embedded seekdb instance.
 	@uv sync --locked --extra seekdb --extra code
-	@uv run --locked --extra seekdb --extra code python -m pytest tests/e2e/test_native_code_seekdb.py
+	@uv run --locked --extra seekdb --extra code python -m pytest tests/e2e/test_mysql_source_roundtrip.py tests/e2e/test_native_code_seekdb.py
 
 .PHONY: real-e2e-test
 real-e2e-test: ## Run opt-in real Codex Experience/Skill tests; REAL_E2E_MODE defaults to all.
@@ -98,7 +113,7 @@ harness-acceptance: ## Evaluate workloads by ID or category against an existing 
 		--output "$${POWERCONTEXT_E2E_OUTPUT:-e2e/bub/results}" $(ARGS)
 
 .PHONY: harness-paired
-harness-paired: ## Compare PowerContext off and on for continuation workloads against an existing Server.
+harness-paired: ## Compare PowerContext off and on for paired workloads against an existing Server.
 	@uv run --project e2e/bub powercontext-e2e paired \
 		--output "$${POWERCONTEXT_E2E_OUTPUT:-e2e/bub/results/paired}" $(ARGS)
 
@@ -184,6 +199,17 @@ pi-test: ## Install and test the Pi package.
 	@pnpm --dir integrations/pi/plugins/powercontext install --frozen-lockfile
 	@pnpm --dir integrations/pi/plugins/powercontext test
 	@pnpm --dir integrations/pi/plugins/powercontext run typecheck
+
+.PHONY: dify-test
+dify-test: ## Check the isolated Dify SDK plugin and real PowerContext HTTP/SQLite tools.
+	@uv sync --locked --project integrations/dify --python 3.12
+	@uv run --project integrations/dify python integrations/dify/generate_requirements.py --check
+	@uv run --project integrations/dify python -X utf8 integrations/dify/generate_contract.py --check
+	@uv run --project integrations/dify ruff check integrations/dify
+	@uv run --project integrations/dify ruff format --check integrations/dify
+	@uv run --project integrations/dify ty check --project integrations/dify --python integrations/dify/.venv
+	@uv run --project integrations/dify python -X utf8 -m pytest integrations/dify/tests
+	@uv run python -X utf8 -m pytest tests/e2e/test_dify_tools_http.py
 
 .PHONY: build
 build: clean-build ## Build wheel file

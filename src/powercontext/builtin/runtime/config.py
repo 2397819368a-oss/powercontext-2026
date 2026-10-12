@@ -47,6 +47,7 @@ from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.seekdb import SeekDBConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime._scope_cache import DEFAULT_SCOPE_CACHE_SIZE
+from powercontext.builtin.runtime.decision_policy import DecisionPolicyMode, DecisionPrivacyBoundary
 
 _HTTP_FIELD_NAME_PATTERN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
 _RECALL_GATE_BASE_MIN_SEMANTIC_SIMILARITY = 0.3
@@ -143,11 +144,14 @@ class RuntimeConfig(BaseModel):
     memory_rerank_candidate_limit: int = Field(default=30, ge=1, le=100)
     decision_assistance_enabled: bool = False
     memory_write_gate_enabled: bool = False
+    memory_write_gate_mode: DecisionPolicyMode = DecisionPolicyMode.SHADOW
+    memory_write_gate_privacy_boundary: DecisionPrivacyBoundary = DecisionPrivacyBoundary.NO_EXTERNAL_CALL
     # Direction only: which verdict means "evidence is insufficient". The strength threshold
     # stays unset until a calibration probe establishes it, so a hold never depends on a made-up
     # number.
     memory_write_gate_hold_on: Literal["yes", "no"] = "yes"
     memory_write_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    decision_observation_retention_days: int | None = Field(default=None, ge=1, le=3650)
     memory_max_active_entries: int = Field(default=5_000, ge=1, le=100_000)
     memory_max_manifest_entries: int = Field(default=10_000, ge=1, le=200_000)
     memory_max_manifest_bytes: int = Field(default=4_194_304, ge=1_024, le=67_108_864)
@@ -159,6 +163,8 @@ class RuntimeConfig(BaseModel):
     def validate_memory_capacity_order(self) -> RuntimeConfig:
         if self.memory_max_active_entries > self.memory_max_manifest_entries:
             raise ValueError("memory_max_active_entries cannot exceed memory_max_manifest_entries")  # noqa: TRY003
+        if self.memory_write_gate_privacy_boundary is DecisionPrivacyBoundary.HOSTED_REDACTED:
+            raise ValueError("memory_write_gate_privacy_boundary does not support hosted_redacted without a sanitizer")  # noqa: TRY003
         return self
 
     recall_gate_enabled: bool = False
@@ -204,6 +210,15 @@ class RuntimeConfig(BaseModel):
     experience_schedule_seconds: float | None = Field(default=None, gt=0)
     dream_enabled: bool = True
     dream_max_pending_per_scope: int = Field(default=32, ge=1, le=1000)
+    atomic_memory_related_mode: Literal["auto", "fts", "vector", "hybrid"] = "auto"
+    atomic_memory_related_max_distance: float = Field(default=1.0, ge=0)
+    atomic_memory_related_fts_fallback: bool = False
+    atomic_memory_comparison_batch_size: int = Field(default=20, ge=1)
+    atomic_memory_input_tokens_limit: int = Field(default=24000, ge=1)
+    atomic_memory_restore_retry_budget: int = Field(default=3, ge=0, le=10)
+    atomic_memory_preview_signing_secret: SecretStr | None = Field(default=None, repr=False, min_length=32)
+    atomic_memory_preview_signing_key_id: str = Field(default="atomic-memory-v1", min_length=1, max_length=128)
+    atomic_memory_preview_ttl_seconds: int = Field(default=300, ge=1, le=3600)
     generation_concurrency: int = Field(default=4, ge=1, le=64)
     dream_budget: DreamBudget = Field(default_factory=DreamBudget)
     topic_memory_schedule_seconds: float | None = Field(default=None, gt=0)

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared deterministic lexical analysis for built-in Artifact projections."""
+"""Shared deterministic lexical and vector admission for built-in Artifact projections."""
 
 from __future__ import annotations
 
@@ -21,6 +21,10 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from itertools import pairwise
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+
+from powercontext.artifacts.search import ChannelScore
 
 _FTS_MIN_QUERY_COVERAGE = 0.25
 _FTS_MIN_MATCHED_TERMS = 2
@@ -103,10 +107,8 @@ class AdmissionFloor:
     module and ``0.3`` mirrored by ``memory/fusion.py`` and ``topic_memory/fusion.py`` — so
     that a ``floor=None`` / ``admission=None`` call reproduces today's behaviour bit for bit.
 
-    This type plays the ``RecallAdmissionPolicy`` role described by RFC 1560: it is the value
-    threaded into each searchable family's search to override its floor. Passing ``None``
-    (the historical default) is therefore equivalent to the RFC's ``RecallAdmissionPolicy()``
-    with both overrides unset, which is exactly what round 0 does.
+    RFC 1560 threads this value into each searchable family's search to override its floor.
+    Round zero passes ``None`` to keep the historical defaults.
     """
 
     lexical_coverage: float = _FTS_MIN_QUERY_COVERAGE
@@ -115,6 +117,73 @@ class AdmissionFloor:
 
 
 DEFAULT_ADMISSION_FLOOR = AdmissionFloor()
+
+
+class EmptyFilters(BaseModel):
+    """An explicitly empty filter object for families without filter fields."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class LexicalSearchAdmission(BaseModel):
+    """Strict lexical admission controls for text-only Artifact searches."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    lexical_coverage: float = Field(default=_FTS_MIN_QUERY_COVERAGE, ge=0, le=1, allow_inf_nan=False)
+    lexical_min_matched_terms: StrictInt = Field(default=_FTS_MIN_MATCHED_TERMS, ge=1)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def reject_explicit_null(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("omit the field instead of sending null")  # noqa: TRY003
+        return value
+
+    def as_floor(self) -> AdmissionFloor:
+        """Adapt the request controls to the existing lexical admission contract."""
+
+        return AdmissionFloor(
+            lexical_coverage=self.lexical_coverage,
+            lexical_min_matched_terms=self.lexical_min_matched_terms,
+        )
+
+
+class InvalidSearchScore(RuntimeError):
+    """The backend returned an unavailable or invalid lexical relevance value."""
+
+
+class UnsupportedScoreMetric(RuntimeError):
+    """The backend did not identify a supported lexical score metric."""
+
+
+def lexical_search_score(raw: object, metric: object, /) -> tuple[float, ChannelScore]:
+    """Normalize an explicit backend metric while preserving its true raw score."""
+
+    if not isinstance(metric, str) or metric not in ("sqlite_bm25", "oceanbase_match"):
+        raise UnsupportedScoreMetric(f"unsupported lexical score metric: {metric!r}")  # noqa: TRY003
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise InvalidSearchScore("lexical raw score must be a finite number")  # noqa: TRY003
+    try:
+        raw_score = float(raw)
+    except OverflowError as error:
+        raise InvalidSearchScore("lexical raw score must be finite") from error  # noqa: TRY003
+    relevance = -raw_score if metric == "sqlite_bm25" else raw_score
+    if not math.isfinite(relevance) or relevance < 0:
+        raise InvalidSearchScore("lexical relevance must be finite and nonnegative")  # noqa: TRY003
+    # This form avoids overflow in 1 + relevance for the largest finite values.
+    normalized = relevance / (1 + relevance) if relevance <= 1 else 1 / (1 + 1 / relevance)
+    return normalized, ChannelScore(
+        raw=raw_score,
+        metric=metric,
+        higher_is_better=metric == "oceanbase_match",
+    )
+
+
+def unit_l2_cosine_similarity(distance: float) -> float:
+    """Convert L2 distance between unit vectors to cosine similarity."""
+
+    return max(-1.0, min(1.0, 1.0 - distance**2 / 2.0))
 
 
 @dataclass(frozen=True)
@@ -294,10 +363,16 @@ __all__ = [
     "DEFAULT_ADMISSION_FLOOR",
     "AdmissionCounts",
     "AdmissionFloor",
+    "EmptyFilters",
+    "InvalidSearchScore",
+    "LexicalSearchAdmission",
+    "UnsupportedScoreMetric",
     "admits_fts_text",
     "analyze_fts_query",
     "analyze_text",
     "analyze_text_with_spans",
     "fts_match_query",
     "fts_query_requirements",
+    "lexical_search_score",
+    "unit_l2_cosine_similarity",
 ]

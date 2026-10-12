@@ -35,6 +35,7 @@ from powercontext.builtin.persistence.experience_index import (
     experience_search_hits,
     rebuild_experience_projections,
     rebuild_skill_projections,
+    remove_experience_projection,
     replace_experience_projection,
     replace_skill_projection,
     skill_search_hits,
@@ -64,7 +65,8 @@ _INSERT_FTS_SQL = text(
 )
 _SEARCH_FTS_SQL = text(
     """
-    SELECT f.artifact_id, f.revision, f.searchable_text, a.content
+    SELECT f.artifact_id, f.revision, f.searchable_text, a.content,
+           bm25(pc_artifact_fts) AS raw_score, 'sqlite_bm25' AS score_metric
     FROM pc_artifact_fts AS f
     JOIN pc_artifacts AS a
       ON a.scope_id = f.scope_id
@@ -148,6 +150,8 @@ class SQLiteExperienceFTSIndex:
         /,
         *,
         admission: AdmissionFloor | None = None,
+        min_score: float | None = None,
+        require_scores: bool = False,
     ) -> ExperienceSearchOutcome:
         match_query = fts_match_query(query)
         if match_query is None:
@@ -163,7 +167,16 @@ class SQLiteExperienceFTSIndex:
                 },
             )
         ).mappings()
-        return experience_search_hits(rows, query, limit, scope_id, admission=admission)
+        return experience_search_hits(
+            rows, query, limit, scope_id, admission=admission, min_score=min_score, require_scores=require_scores
+        )
+
+    async def remove(self, connection: AsyncConnection, scope_id: str, artifact_id: str, /) -> None:
+        await remove_experience_projection(connection, scope_id, artifact_id)
+        await connection.execute(
+            _DELETE_FTS_SQL,
+            {"scope_id": scope_id, "family": Experience.family, "artifact_id": artifact_id},
+        )
 
     async def replace_skill(
         self,
@@ -196,6 +209,10 @@ class SQLiteExperienceFTSIndex:
         query: str,
         limit: int,
         /,
+        *,
+        admission: AdmissionFloor | None = None,
+        min_score: float | None = None,
+        require_scores: bool = False,
     ) -> tuple[SkillSearchHit, ...]:
         match_query = fts_match_query(query)
         if match_query is None:
@@ -211,7 +228,9 @@ class SQLiteExperienceFTSIndex:
                 },
             )
         ).mappings()
-        return skill_search_hits(rows, query, limit)
+        return skill_search_hits(
+            rows, query, limit, admission=admission, min_score=min_score, require_scores=require_scores
+        )
 
     @staticmethod
     async def _insert_row(connection: AsyncConnection, row: Mapping[Any, Any]) -> None:

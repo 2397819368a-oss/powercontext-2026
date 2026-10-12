@@ -16,7 +16,7 @@ PowerContext は、会話をまたいでもコンテキストを作業ととも�
 
 [Web サイト](https://powercontext.oceanbase.io/en/) · [インストール手順](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)
 
-PowerContext 1.2.0 には対話式セットアップが含まれています。
+PowerContext 1.3.0 には対話式セットアップが含まれています。
 以下のコマンドでこのバージョンの PowerContext と、対応する Agent 連携をインストールします。
 
 ## 作業の続きをそのまま引き継ぐ
@@ -27,10 +27,10 @@ PowerContext 1.2.0 には対話式セットアップが含まれています。
 
 ## 利用中の Agent と接続する
 
-Git、uv、Agent CLI を用意して、1.2.0 をインストールします：
+Git、uv、Agent CLI を用意して、1.3.0 をインストールします：
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+uv tool install --force "powercontext[cli,server]==1.3.0"
 mkdir -p powercontext-config
 cd powercontext-config
 powercontext config init --language en --output .env
@@ -50,7 +50,7 @@ Server を起動したまま、別のターミナルで同じ設定ディレク�
 クライアント環境の読み込み、Scope の作成・紐付け、同じバージョンの Agent プラグインのインストールを行います。例：
 
 ```bash
-powercontext setup codex --ref powercontext-v1.2.0
+powercontext setup codex --ref powercontext-v1.3.0
 powercontext doctor codex
 ```
 
@@ -67,13 +67,14 @@ Codex は `official`、他のホストと Python Agent フレームワークは 
 <tr>
 <td align="center" width="120"><a href="docs/en/docs/integrations/codex.md"><img src="assets/codex.png" alt="Codex" width="48" height="48" /><br /><sub><b>Codex</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/integrations/claude-code.md"><img src="assets/claude-code.png" alt="Claude Code" width="48" height="48" /><br /><sub><b>Claude Code</b></sub></a></td>
+<td align="center" width="120"><a href="integrations/minimax/README.md"><img src="assets/minimax-code.png" alt="MiniMax Code" width="48" height="48" /><br /><sub><b>MiniMax Code</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/integrations/dsh.md"><img src="assets/deepseek.png" alt="DeepSeek Harness" width="48" height="48" /><br /><sub><b>DeepSeek Harness</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/integrations/zcode.md"><img src="assets/zcode.png" alt="ZCode" width="48" height="48" /><br /><sub><b>ZCode</b></sub></a></td>
 <td align="center" width="120"><a href="integrations/hermes/README.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/hermes-dark.png"><img src="assets/hermes.png" alt="Hermes Agent" width="48" height="48" /></picture><br /><sub><b>Hermes Agent</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/integrations/pi.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/pi-dark.png"><img src="assets/pi.png" alt="Pi Coding Agent" width="48" height="48" /></picture><br /><sub><b>Pi Coding Agent</b></sub></a></td>
-<td align="center" width="120"><a href="docs/en/docs/integrations/openclaw.md"><img src="assets/openclaw.png" alt="OpenClaw" width="48" height="48" /><br /><sub><b>OpenClaw</b></sub></a></td>
 </tr>
 <tr>
+<td align="center" width="120"><a href="docs/en/docs/integrations/openclaw.md"><img src="assets/openclaw.png" alt="OpenClaw" width="48" height="48" /><br /><sub><b>OpenClaw</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/integrations/opencode.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/opencode-dark.png"><img src="assets/opencode.png" alt="OpenCode" width="48" height="48" /></picture><br /><sub><b>OpenCode</b></sub></a></td>
 <td align="center" width="120"><a href="integrations/workbuddy/README.md"><img src="https://thesvg.org/icons/workbuddy/default.svg?size=120" alt="WorkBuddy" width="48" height="48" /><br /><sub><b>WorkBuddy</b></sub></a></td>
 <td align="center" width="120"><a href="integrations/bub/README.md"><img src="https://github.com/bubbuild.png?size=120" alt="Bub" width="48" height="48" /><br /><sub><b>Bub</b></sub></a></td>
@@ -93,6 +94,14 @@ Python で段階的に試すには、チーム作業の一連の流れも学べ�
 
 比較に用いた評価方法、詳細な結果、適用範囲は[公式ベンチマークページ](https://powercontext.oceanbase.io/en/benchmarks/)を参照してください。
 
+### LoCoMo Plus：Jev 導入による比較
+
+![GPT-4o-mini、Qwen3.7-plus、GPT-4o における PowerContext 単体と PowerContext + Jev の LoCoMo Plus スコア比較](docs/assets/readme-locomo-plus.svg)
+
+*検索後の候補選別に Jev を使用した場合と使用しない場合の LoCoMo Plus スコア。各モデルは Memory 抽出と回答生成の両方に使用し、埋め込みには qwen3.7-text-embedding（1024 次元）を使用。スコア差は順に +8.925、+8.577、+4.198 パーセントポイント。*
+
+この6件のスコアはプロジェクト所有者から提供された値であり、検証用の実行成果物は公開されていません。再現手順は評価ハーネスの説明であり、これらのスコアの公開検証を意味するものではありません。
+
 ## PowerContext を開発する
 
 ```bash
@@ -102,6 +111,7 @@ make test
 ```
 
 開発ワークフロー全体については [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
+コーディング評価、メモリ品質評価、性能ベンチマーク、Skill 回帰テストは [`evaluation/`](evaluation/README.md) にまとめています。
 
 ## さらに詳しく
 

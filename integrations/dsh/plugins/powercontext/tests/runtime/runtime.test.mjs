@@ -19,13 +19,13 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { environment, injected, CANARY } from './fixture.mjs'
-import { installIntoCleanHome } from './setup-fixture.mjs'
+import { installIntoHome } from './setup-fixture.mjs'
 import { registerSkill } from '../../src/skill.ts'
 
 test('documented setup installs the matched plugin, diagnoses the running host and recalls processed Source', { timeout: 240000 }, async () => {
   const env = await environment()
   try {
-    const installation = await installIntoCleanHome(env.home)
+    const installation = await installIntoHome(env.home)
     assert.ok(installation.setup.includes('powercontext-dsh'))
     assert.equal(installation.doctor.checks.plugin.checks.registration, 'present')
     assert.equal(installation.doctor.checks.plugin.checks.running_host_configuration, 'not_observed')
@@ -54,7 +54,7 @@ test('documented setup installs the matched plugin, diagnoses the running host a
     }
     assert.equal(injected(first).length, 0)
     assert.ok(env.calls.some(call => call.path === '/v1/sources/content' && call.status === 202))
-    assert.ok(env.calls.some(call => call.path === '/v1/memory/flush' && call.status === 200))
+    assert.ok(env.calls.some(call => call.path === '/v1/memory/flush' && call.status === 200), JSON.stringify(env.calls))
     const memory = await env.api('/v1/memory/entries/list', { scope_id: env.scopeId })
     assert.ok(JSON.stringify(memory).includes(CANARY))
     const diagnosedAt = env.calls.length

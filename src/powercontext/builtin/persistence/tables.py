@@ -21,6 +21,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Float,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -194,7 +195,6 @@ ARTIFACTS_TABLE = Table(
     Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
     Column("revision", Integer, primary_key=True),
     Column("content", _canonical_payload_type(), nullable=False),
-    Column("memory_citations", _canonical_payload_type(), nullable=True),
 )
 
 ARTIFACT_HEADS_TABLE = Table(
@@ -207,6 +207,7 @@ ARTIFACT_HEADS_TABLE = Table(
     Column("searchable_text", _entry_text_type()),
     Column("lifecycle_state", identity_string(16), nullable=False, server_default="active"),
     Column("replacement_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
+    Column("merged_into_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
     Column("governance_generation", BigInteger, nullable=False, server_default="0"),
     ForeignKeyConstraint(
         ("scope_id", "family", "artifact_id", "revision"),
@@ -230,6 +231,11 @@ ARTIFACT_HEADS_TABLE = Table(
     CheckConstraint(
         "replacement_artifact_id IS NULL OR lifecycle_state = 'deprecated'",
         name="ck_pc_artifact_heads_replacement_deprecated",
+    ),
+    CheckConstraint(
+        "merged_into_id IS NULL OR (lifecycle_state = 'deprecated' AND merged_into_id <> artifact_id "
+        "AND replacement_artifact_id IS NULL)",
+        name="ck_pc_artifact_heads_merge_target",
     ),
 )
 
@@ -271,6 +277,7 @@ ARTIFACT_LINEAGE_ARTIFACTS_TABLE = Table(
     Column("upstream_family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), nullable=False),
     Column("upstream_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), nullable=False),
     Column("upstream_revision", Integer, nullable=False),
+    Column("is_merge_input", Boolean, nullable=False, server_default="0"),
     ForeignKeyConstraint(
         ("scope_id", "family", "artifact_id", "revision"),
         (
@@ -340,7 +347,6 @@ ARTIFACT_CANDIDATE_VERSIONS_TABLE = Table(
     Column("proposal", _canonical_payload_type(), nullable=False),
     Column("source_refs", _canonical_payload_type(), nullable=False),
     Column("artifact_refs", _canonical_payload_type(), nullable=False),
-    Column("memory_citations", _canonical_payload_type(), nullable=True),
     Column("target_family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH)),
     Column("target_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
     Column("target_revision", Integer),
@@ -429,6 +435,15 @@ PROFILE_POLICIES_TABLE = Table(
         name="ck_pc_profile_policies_activation_mode",
     ),
     CheckConstraint("version > 0", name="ck_pc_profile_policies_version_positive"),
+)
+
+MEMORY_SOURCE_WINDOWS_TABLE = Table(
+    "pc_memory_source_windows",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("source_through", BigInteger, nullable=False),
+    Column("window_limit", BigInteger, nullable=False),
+    CheckConstraint("source_through > 0 AND window_limit > 0", name="ck_pc_memory_source_window_positive"),
 )
 
 SOURCE_CURSORS_TABLE = Table(
@@ -895,6 +910,44 @@ RECALL_TOKEN_DAILY_TABLE = Table(
     CheckConstraint("recalled_tokens >= 0", name="ck_pc_recall_token_daily_recalled_nonnegative"),
 )
 
+RECALL_EFFORT_DAILY_TABLE = Table(
+    "pc_recall_effort_daily",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("usage_date", Date, primary_key=True),
+    Column("policy_id", identity_string(128), primary_key=True),
+    Column("assessment", identity_string(64), primary_key=True),
+    *(
+        Column(
+            name,
+            BigInteger,
+            CheckConstraint(f"{name} >= 0", name=f"ck_recall_effort_{name}_nonnegative"),
+            nullable=False,
+        )
+        for name in (
+            "preparations",
+            "rounds",
+            "expanded_preparations",
+            "admission_expansions",
+            "policy_floor_expansions",
+            "candidate_round_samples",
+            "candidates_assessed",
+            "final_candidate_pool",
+            "added_embeddings",
+            "added_generation_calls",
+            "truncated_items",
+            "dropped_items",
+            "dropped_below_min_bytes",
+            "dropped_no_fitting_truncation",
+        )
+    ),
+    CheckConstraint(
+        "dropped_items = dropped_below_min_bytes + dropped_no_fitting_truncation",
+        name="ck_pc_recall_effort_daily_drop_total",
+    ),
+)
+
+
 SHARED_TABLES = (
     SOURCE_JOURNAL_HEADS_TABLE,
     SOURCES_TABLE,
@@ -907,6 +960,7 @@ SHARED_TABLES = (
     ARTIFACT_CANDIDATE_HEADS_TABLE,
     PROFILE_POLICIES_TABLE,
     SOURCE_CURSORS_TABLE,
+    MEMORY_SOURCE_WINDOWS_TABLE,
     ARTIFACT_PROCESSING_LEASES_TABLE,
     ARTIFACT_PROCESSING_BINDING_STATES_TABLE,
     TOPIC_MEMORY_WORK_BUDGETS_TABLE,
@@ -931,6 +985,8 @@ MAX_MEMORY_ENTRY_KIND_LENGTH = 128
 MAX_MEMORY_HASH_LENGTH = 64
 
 
+# Retained, unused legacy entry history. It no longer references public
+# Artifact rows: migrated collections live only in the Memory archive.
 MEMORY_ENTRY_VERSIONS_TABLE = Table(
     "pc_memory_entry_versions",
     SHARED_METADATA,
@@ -960,16 +1016,6 @@ MEMORY_ENTRY_VERSIONS_TABLE = Table(
         "entry_id",
         "entry_version_id",
         name="uq_pc_memory_entry_versions_identity",
-    ),
-    ForeignKeyConstraint(
-        ("scope_id", "family", "memory_artifact_id", "created_in_revision"),
-        (
-            "pc_artifacts.scope_id",
-            "pc_artifacts.family",
-            "pc_artifacts.artifact_id",
-            "pc_artifacts.revision",
-        ),
-        ondelete="RESTRICT",
     ),
     CheckConstraint("version > 0", name="ck_pc_memory_entry_versions_version_positive"),
     CheckConstraint(
@@ -1028,16 +1074,6 @@ MEMORY_ENTRY_HEADS_TABLE = Table(
     Column("entry_version_id", identity_string(MAX_MEMORY_ENTRY_ID_LENGTH), nullable=False),
     Column("entry_content_hash", identity_string(MAX_MEMORY_HASH_LENGTH), nullable=False),
     Column("searchable_text", _entry_text_type(), nullable=False),
-    ForeignKeyConstraint(
-        ("scope_id", "family", "memory_artifact_id", "head_revision"),
-        (
-            "pc_artifacts.scope_id",
-            "pc_artifacts.family",
-            "pc_artifacts.artifact_id",
-            "pc_artifacts.revision",
-        ),
-        ondelete="RESTRICT",
-    ),
     ForeignKeyConstraint(
         ("scope_id", "memory_artifact_id", "entry_id", "entry_version_id"),
         (
@@ -1157,7 +1193,47 @@ ARTIFACT_TAGS_TABLE = Table(
     Index("ix_pc_artifact_tags_key", "scope_id", "tag_key_hash", "family", "target_type", "artifact_id", "target_id"),
 )
 
-STATISTICS_TABLES = (MODEL_USAGE_DAILY_TABLE, RECALL_TOKEN_DAILY_TABLE)
+STATISTICS_TABLES = (MODEL_USAGE_DAILY_TABLE, RECALL_TOKEN_DAILY_TABLE, RECALL_EFFORT_DAILY_TABLE)
+
+DECISION_OBSERVATIONS_TABLE = Table(
+    "pc_decision_observations",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("observation_id", identity_string(128), primary_key=True),
+    Column("operation_id", identity_string(256), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("consumer", identity_string(128), nullable=False),
+    Column("policy_id", identity_string(256), nullable=False),
+    Column("policy_version", identity_string(64), nullable=False),
+    Column("mode", identity_string(16), nullable=False),
+    Column("privacy_boundary", identity_string(32), nullable=False),
+    Column("coverage", identity_string(16), nullable=False),
+    Column("verdict", identity_string(16), nullable=False),
+    Column("assessment_source", identity_string(32), nullable=False),
+    Column("final_action", identity_string(128), nullable=False),
+    Column("used_fallback", Boolean, nullable=False),
+    Column("fallback_reason", identity_string(128)),
+    Column("provider_id", identity_string(128)),
+    Column("backend_model_id", identity_string(256)),
+    Column("model_policy_id", identity_string(256)),
+    Column("requests", BigInteger, nullable=False),
+    Column("input_tokens", BigInteger),
+    Column("output_tokens", BigInteger),
+    Column("latency_ms", Float),
+    Column("payload", _canonical_payload_type(), nullable=False),
+    Index("ix_pc_decision_observations_scope_created", "scope_id", "created_at", "observation_id"),
+    Index("ix_pc_decision_observations_operation", "scope_id", "operation_id", "created_at"),
+    CheckConstraint("requests >= 0", name="ck_pc_decision_observations_requests_nonnegative"),
+    CheckConstraint(
+        "input_tokens IS NULL OR input_tokens >= 0", name="ck_pc_decision_observations_input_tokens_nonnegative"
+    ),
+    CheckConstraint(
+        "output_tokens IS NULL OR output_tokens >= 0", name="ck_pc_decision_observations_output_tokens_nonnegative"
+    ),
+    CheckConstraint("latency_ms IS NULL OR latency_ms >= 0", name="ck_pc_decision_observations_latency_nonnegative"),
+)
+
+DECISION_OBSERVATION_TABLES = (DECISION_OBSERVATIONS_TABLE,)
 
 DREAM_RUNS_TABLE = Table(
     "pc_dream_runs",
@@ -1284,6 +1360,7 @@ BUILTIN_TABLES = (
     + TOPIC_MEMORY_TABLES
     + MEMORY_TABLES
     + STATISTICS_TABLES
+    + DECISION_OBSERVATION_TABLES
     + RECURRENCE_TABLES
     + (ARTIFACT_TAGS_TABLE, DREAM_RUNS_TABLE, RECEIPT_MIGRATION_REVIEW_TABLE)
 )
