@@ -1376,6 +1376,10 @@ def test_clean_migration_retries_after_interrupted_public_column_removal(migrati
         # Restore the historical foreign keys with frozen SQL rows. Current table
         # metadata intentionally no longer attaches these tables to public Artifacts.
         versions = [dict(row) for row in (await connection.execute(select(MEMORY_ENTRY_VERSIONS_TABLE))).mappings()]
+        # OceanBase/SeekDB enforce the evidence-to-version FK while dropping the
+        # legacy parent tables; remove that child table before rebuilding the
+        # historical schema.
+        await connection.execute(text("DROP TABLE pc_memory_entry_evidence"))
         await connection.execute(text("DROP TABLE pc_memory_entry_heads"))
         await connection.execute(text("DROP TABLE pc_memory_entry_versions"))
         metadata = MetaData()
