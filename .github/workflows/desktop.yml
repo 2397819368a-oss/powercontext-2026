@@ -47,6 +47,17 @@ jobs:
           working_directory: desktop
       - name: Install pinned Windows Rust toolchain
         run: rustup toolchain install 1.95.0-x86_64-pc-windows-msvc --profile minimal --component rustfmt --component clippy
+      - name: Cache desktop dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: desktop
+          cache-dependency-glob: desktop/pnpm-lock.yaml
+      - name: Cache Rust dependencies and compilation
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: ${{ hashFiles('desktop/rust-toolchain.toml') }}
+          cache-bin: false
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
       - run: pnpm lint
@@ -65,6 +76,14 @@ jobs:
         uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           version: "0.10.12"
+          enable-cache: true
+          cache-suffix: desktop-${{ github.job }}-py3.12
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            integrations/langchain/pyproject.toml
+            integrations/langgraph/pyproject.toml
+            integrations/opendal/pyproject.toml
       - name: Install locked Server test dependencies
         working-directory: .
         run: uv sync --locked --python 3.12
@@ -144,6 +163,14 @@ jobs:
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           version: "0.10.12"
+          enable-cache: true
+          cache-suffix: desktop-${{ github.job }}-py3.12
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            integrations/langchain/pyproject.toml
+            integrations/langgraph/pyproject.toml
+            integrations/opendal/pyproject.toml
       - name: Prepare isolated Server fixture
         run: |
           uv sync --locked --python 3.12
