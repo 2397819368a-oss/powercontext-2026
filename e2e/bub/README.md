@@ -352,9 +352,10 @@ For each workload and over all of them, the report gives:
 - Per step and arm, over the same scored runs: the agent's execution time as Harbor measured it, and the input
   tokens, the cached input tokens among them, output tokens, and cost that Harbor's agent for that host records.
   Claude Code, OpenCode, and Pi report their own cost; for Codex, Harbor estimates it from its price table and leaves
-  it out for a model the table lacks. A timed-out run is scored, so its time counts. Bub reports no usage at all,
-  because Harbor reads it from the ACP prompt response and `bub-acp-server` leaves it out (bubbuild/bub-contrib#78),
-  so those cells show `n/a`.
+  it out for a model the table lacks. A timed-out run is scored, so its time counts. For Bub, Harbor reads input and
+  output tokens from the usage `bub-acp-server` returns with each ACP prompt response, summed over the turn's model
+  calls as the model provider reported them. Harbor reads no cached input tokens from an ACP agent, and Bub reports
+  no cost, so those Bub cells show `n/a`, as do the tokens of a Bub step that timed out before its prompt response.
 - The Server's usage for the ON arm, as a mean over each scored run's final Scope snapshot: generation and embedding
   requests and tokens, and the Server's own estimate of the tokens of context it returned. The Server has no price
   list, so there is no Server cost. OFF runs have no Scope. A timed-out ON run keeps the snapshots it reached, so
@@ -498,11 +499,12 @@ The agent container sees only the repository files that installation needs: the 
 integration, and none of them in a paired OFF arm. Workload files, answer keys, and benchmark data stay on the host,
 because the agent can search its container. Agent setup uses Bub's supported installation path: `uv tool install`
 installs Bub with the local PowerContext plugin when enabled, then `bub install` adds the ACP server to the same
-environment. Both steps pin Bub to the harness version so installing ACP cannot upgrade the host. Harbor uploads and
-runs its native ACP client. The Terminal-Bench task keeps its original image, setup, verifier, and isolation boundary.
-The harness ignores dataset CPU and memory limits because it evaluates Memory behavior rather than benchmark resource
-compliance. This also keeps the fixed harness usable in nested container runtimes that cannot create additional
-cgroups.
+environment. Both steps pin Bub to the harness version so installing ACP cannot upgrade the host. The ACP step also
+names the pre-release ACP SDK that `bub-acp-server` pins, because uv resolves a pre-release only when a direct
+requirement asks for it. Harbor starts the server with `bub acp` in that environment and runs its native ACP client. The
+Terminal-Bench task keeps its original image, setup, verifier, and isolation boundary. The harness ignores dataset CPU
+and memory limits because it evaluates Memory behavior rather than benchmark resource compliance. This also keeps the
+fixed harness usable in nested container runtimes that cannot create additional cgroups.
 
 Long-horizon acceptance requires observable Memory behavior:
 
