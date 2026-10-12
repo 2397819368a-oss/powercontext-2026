@@ -45,6 +45,12 @@
     "get_artifact": {
       "error": "unexpected"
     },
+    "get_artifact_revision": {
+      "error": "unexpected"
+    },
+    "get_atomic_memory_state": {
+      "error": "unexpected"
+    },
     "get_candidate": {
       "default": {
         "candidate_id": "fixture-candidate-001",
@@ -70,10 +76,7 @@
         "decision_reason": null
       }
     },
-    "get_artifact_revision": {
-      "error": "unexpected"
-    },
-    "get_atomic_memory_state": {
+    "get_candidate_history": {
       "error": "unexpected"
     },
     "get_dream_run": {
@@ -106,6 +109,9 @@
     "import_external_skill": {
       "error": "unexpected"
     },
+    "list_atomic_memories": {
+      "error": "unexpected"
+    },
     "list_candidates": {
       "default": {
         "candidates": [
@@ -135,9 +141,6 @@
         ],
         "next_cursor": null
       }
-    },
-    "list_atomic_memories": {
-      "error": "unexpected"
     },
     "list_dream_runs": {
       "error": "unexpected"
