@@ -16,7 +16,7 @@ PowerContext keeps context with the work across conversations. When you return, 
 
 [Website](https://powercontext.oceanbase.io/) · [Installation walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)
 
-PowerContext 1.2.0 includes the guided setup. The commands below install this version and connect
+PowerContext 1.3.0 includes the guided setup. The commands below install this version and connect
 the matching Agent integration.
 
 ## Pick up where the work left off
@@ -33,10 +33,10 @@ evaluation. See the [configuration reference](docs/en/docs/operate/configuration
 You need Git, [uv](https://docs.astral.sh/uv/getting-started/installation/), and your Agent's CLI.
 Python 3.11+ is required; uv can provision it. macOS and Linux are supported; Windows support is `experimental`.
 
-Install 1.2.0 and open the interactive configuration wizard in a dedicated directory:
+Install 1.3.0 and open the interactive configuration wizard in a dedicated directory:
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+uv tool install --force "powercontext[cli,server]==1.3.0"
 mkdir -p powercontext-config
 cd powercontext-config
 powercontext config init --language en --output .env
@@ -74,7 +74,7 @@ covers Codex and Claude Code, Dashboard login, SSH forwarding, HTTPS prerequisit
 For example, the matching Codex installation is:
 
 ```bash
-powercontext setup codex --ref powercontext-v1.2.0
+powercontext setup codex --ref powercontext-v1.3.0
 powercontext doctor codex
 ```
 

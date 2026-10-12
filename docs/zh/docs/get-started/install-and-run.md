@@ -1,6 +1,6 @@
 ---
 title: 安装和运行
-description: 安装 PowerContext 1.2.0，并运行本地 Server。
+description: 安装 PowerContext 1.3.0，并运行本地 Server。
 ---
 
 # 安装和运行
@@ -22,12 +22,12 @@ Windows 的 CLI、Server 和个人服务支持为试验性；各 Agent Host 仍�
 
 ## 选择版本
 
-本页使用 PowerContext 1.2.0。包与 Agent 集成保持版本一致：
-Python 包版本为 `1.2.0`，对应 Git tag 为 `powercontext-v1.2.0`。
+本页使用 PowerContext 1.3.0。包与 Agent 集成保持版本一致：
+Python 包版本为 `1.3.0`，对应 Git tag 为 `powercontext-v1.3.0`。
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
-powercontext setup codex --ref powercontext-v1.2.0
+uv tool install --force "powercontext[cli,server]==1.3.0"
+powercontext setup codex --ref powercontext-v1.3.0
 ```
 
 宿主支持范围和维护状态见[能力矩阵](../integrations/capabilities.md)。
@@ -39,13 +39,13 @@ powercontext setup codex --ref powercontext-v1.2.0
 [`uv`](https://docs.astral.sh/uv/)，然后从 PyPI 安装 PowerContext：
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+uv tool install --force "powercontext[cli,server]==1.3.0"
 ```
 
 如需从源码安装同一版本：
 
 ```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.2.0"
+uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.3.0"
 ```
 
 Git 安装命令不会留下需要自行管理的仓库工作副本。Git 会沿用本机的凭据配置，包括 credential helper 和 SSH 设置。
@@ -112,7 +112,7 @@ powercontext server run --env-file /path/to/powercontext.env
 后端。安装或替换工具时加入可选的 seekDB extra：
 
 ```bash
-uv tool install --force "powercontext[cli,server,seekdb]==1.2.0"
+uv tool install --force "powercontext[cli,server,seekdb]==1.3.0"
 ```
 
 从 SQLite 切换时，需要从 Server 进程环境中删除 `POWERCONTEXT_SERVER_DATABASE_URL`；seekDB 不接受显式的
@@ -160,14 +160,16 @@ Agent 诊断见[各自的集成文档](../integrations/index.md)；Server 状态
 升级已有部署前，先备份数据库和配置。1.1.0 会在 Server 启动时升级旧标签表约束，以支持 Topic Memory 标签。
 先停止旧 Server 实例，再启动一个升级后的实例，待结构升级完成后再启动其他实例。对于 1.0.0 之前的数据库，
 如果尚未完成[Artifact 处理迁移](../operate/artifact-processing-migration.md)，还需要先执行该迁移。
+升级到 1.3.0 时，已有集合式 Memory 数据库还需完成[Atomic Memory 离线迁移](../operate/atomic-memory-migration.md)。
+先完成所需的 Artifact 处理迁移，再停止所有写入进程，执行 Atomic Memory 迁移并验证 `ready: true` 后启动新服务。
 Server、客户端和 Agent 集成需一起升级。Dashboard 需要显式启用，本地使用可选择静态 Bearer 认证，
 见[部署 Server](../operate/deploy-server.md)；远程明文 HTTP 连接需要客户端明确同意，
 见[连接远程 Server](../operate/connect-remote-server.md)。
 
-升级到 1.2.0：
+升级到 1.3.0：
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+uv tool install --force "powercontext[cli,server]==1.3.0"
 ```
 
 使用其他 Git ref 替换现有工具：
@@ -184,7 +186,7 @@ uv tool install --force "powercontext[cli,server] @ git+https://github.com/ocean
 如果应用需要导入异步 Client SDK，应把它加入该应用自己的环境：
 
 ```bash
-uv add "powercontext[client]==1.2.0"
+uv add "powercontext[client]==1.3.0"
 ```
 
 进程内 Python 组合使用 `builtin`，服务使用 `server`，Python SDK 使用 `client`，基于 Server 的命令行使用
