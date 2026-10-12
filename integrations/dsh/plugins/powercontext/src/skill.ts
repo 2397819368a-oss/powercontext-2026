@@ -34,8 +34,17 @@ persistence succeeded. Accepted Sources may produce no Memory.
 For ordinary coding, use the current context without routine PowerContext calls. When continuing work, search only if
 relevant history is missing. Explicit requests such as "search my memories / 搜索记忆" require
 mcp__powercontext__search_memory with a focused query, mode auto, and at most eight hits.
-Use mcp__powercontext__list_memory_entries for an explicit inventory or audit, not as the normal way to restore
-context. Use mcp__powercontext__get_memory_entry with an exact returned citation for details.
+Use mcp__powercontext__list_atomic_memories for an explicit inventory or audit, not as the normal way to restore
+context. Follow next_cursor for later pages and select inactive states only for an explicit audit. Search and list return
+Atomic Memory artifact references and state_version, not legacy entry citations. Use mcp__powercontext__get_artifact
+with family "atomic-memory" and the exact artifact_id for current content; it returns {artifact, etag, status_code}.
+Use mcp__powercontext__get_artifact_revision with the exact revision for history; it returns the Artifact directly,
+without a current write ETag. mcp__powercontext__get_atomic_memory_state reads current lifecycle and state_version.
+For a requested correction, mcp__powercontext__replace_artifact needs the unchanged ETag from the current read in
+its If-Match parameter and complete content containing schema/kind/text only, not creation metadata. Never invent an
+ETag, drop its precondition or automatically retry a stale write. Requested forgetting uses
+mcp__powercontext__change_atomic_memory_lifecycle with exact target.artifact and target.state_version and state
+"forgotten"; history remains recoverable. Merge/restoration operations also require explicit intent and host approval.
 An explicit "remember this / 记住这个供以后使用" requires mcp__powercontext__remember_memory and its successful
 result. Automatic Source capture or a verbal acknowledgement does not satisfy that request. Ordinary instructions
 and preview-only requests do not authorize a write. Never store secrets or duplicate prompts.

@@ -15,10 +15,12 @@
  */
 
 const SECRET_MARKERS = ['sk-', 'api_key', 'BEGIN PRIVATE']
+const PAYLOAD_WRITES = new Set([
+  'remember_memory', 'capture_content_source', 'revise_memory_entry',
+  'replace_artifact', 'change_atomic_memory_lifecycle',
+])
 const CONTENT_FIELDS = new Map<string, readonly string[]>([
-  ['remember_memory', ['text', 'content']],
-  ['capture_content_source', ['text', 'content']],
-  ['revise_memory_entry', ['text', 'content']],
+  ['merge_atomic_memories', ['content']],
   ['handoff_current_work', ['handoff']],
   ['activate_handoff', ['objective']],
   ['prepare_handoff', ['objective']],
@@ -37,6 +39,7 @@ function containsSecretValue(value: unknown): boolean {
 }
 
 export function hasSecretContent(operation: string, payload: unknown): boolean {
+  if (PAYLOAD_WRITES.has(operation)) return containsSecretValue(payload)
   const fields = CONTENT_FIELDS.get(operation)
   if (!fields || !payload || typeof payload !== 'object') return false
   const content = payload as Record<string, unknown>

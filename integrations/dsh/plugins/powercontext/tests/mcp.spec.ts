@@ -138,8 +138,11 @@ describe('PowerContext MCP bridge', () => {
 
   it.each([
     ['remember_memory', { text: 'api_key=FAKE_REVIEW_MARKER' }],
-    ['revise_memory_entry', { text: 'api_key=FAKE_REVIEW_MARKER' }],
+    ['replace_artifact', { content: { kind: 'decision', text: 'api_key=FAKE_REVIEW_MARKER' } }],
+    ['merge_atomic_memories', { content: { kind: 'decision', text: 'api_key=FAKE_REVIEW_MARKER' } }],
+    ['change_atomic_memory_lifecycle', { target: { artifact: { artifact_id: 'api_key=FAKE_REVIEW_MARKER' } } }],
     ['capture_content_source', { content: 'api_key=FAKE_REVIEW_MARKER' }],
+    ['capture_content_source', { content: 'Safe Source content', metadata: { note: 'api_key=FAKE_METADATA_MARKER' } }],
   ])(
     'rejects secret content in %s before Scope resolution or approval', async (operation, content) => {
       const resolveScope = vi.fn(async () => 'scope-a')
@@ -207,7 +210,7 @@ describe('PowerContext MCP bridge', () => {
     expect(result).toMatchObject({ kind: metadata.readOnly ? 'allow' : 'ask' })
   })
 
-  it.each(['prepare_handoff', 'unknown_future_operation'])('refuses %s outside the native MCP catalog', async (operation) => {
+  it.each(['prepare_handoff', 'revise_memory_entry', 'retire_memory_entry', 'unknown_future_operation'])('refuses %s outside the native MCP catalog', async (operation) => {
     const next = vi.fn(async () => ({ kind: 'allow' as const }))
     const result = await policyHook()({ name: `mcp__powercontext__${operation}`, arguments: {} }, next)
     expect(result).toMatchObject({ kind: 'deny', reason: expect.stringContaining('unavailable') })

@@ -225,7 +225,10 @@ describe('plugin runtime with header.cwd === undefined', () => {
     const search = { scope_id: scopeId, query: TEXT }
     expect(await mcpPolicy(runtime)('search_memory', search)).toEqual({ kind: 'allow' })
     expect(await mcpSearch(server.baseUrl, search)).toMatchObject({ hits: expect.arrayContaining([
-      expect.objectContaining({ text: TEXT }),
+      expect.objectContaining({ memory: expect.objectContaining({
+        text: TEXT, artifact: expect.objectContaining({ family: 'atomic-memory', revision: 1 }),
+        state: 'active', state_version: 0,
+      }) }),
     ]) })
 
     const recalled = await recallWithoutCwd(runtime, 'optional cwd harness working directory')

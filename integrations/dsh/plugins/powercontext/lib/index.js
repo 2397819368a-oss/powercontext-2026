@@ -2519,7 +2519,7 @@ function atomicReference(value) {
 		revision: ref.revision
 	};
 }
-/** Translate the maintained Memory tool names at their identity and write boundary. */
+/** Translate maintained control-plane Memory operations at their identity and write boundary. */
 async function requestMemoryOperation(client, operationId, payload, scopeId, signal) {
 	const body = payload ?? {};
 	if (operationId === "list_memory_entries") return client.request("list_atomic_memories", {
@@ -2554,7 +2554,7 @@ async function requestMemoryOperation(client, operationId, payload, scopeId, sig
 		}, signal);
 	}
 	if (operationId === "revise_memory_entry") {
-		if (typeof body.if_match !== "string" || body.if_match !== `"revision:${ref.revision}"`) throw new MemoryOperationError("invalid_request", "Use the content ETag returned by pc_memory_get for this exact current revision.");
+		if (typeof body.if_match !== "string" || body.if_match !== `"revision:${ref.revision}"`) throw new MemoryOperationError("invalid_request", "Read this exact current Atomic Memory revision and copy its returned content ETag unchanged.");
 		return client.request("replace_artifact", {
 			...identity,
 			if_match: body.if_match,
@@ -2564,7 +2564,7 @@ async function requestMemoryOperation(client, operationId, payload, scopeId, sig
 			}
 		}, signal);
 	}
-	if (typeof body.state_version !== "number" || !Number.isSafeInteger(body.state_version) || body.state_version < 0) throw new MemoryOperationError("invalid_request", "Supply the current state_version from search, list or pc_memory_state.");
+	if (typeof body.state_version !== "number" || !Number.isSafeInteger(body.state_version) || body.state_version < 0) throw new MemoryOperationError("invalid_request", "Supply the current state_version returned by search, list or the Atomic Memory state read.");
 	return client.request("change_atomic_memory_lifecycle", {
 		scope_id: scopeId,
 		target: {
@@ -2582,10 +2582,15 @@ const SECRET_MARKERS = [
 	"api_key",
 	"BEGIN PRIVATE"
 ];
+const PAYLOAD_WRITES = new Set([
+	"remember_memory",
+	"capture_content_source",
+	"revise_memory_entry",
+	"replace_artifact",
+	"change_atomic_memory_lifecycle"
+]);
 const CONTENT_FIELDS = new Map([
-	["remember_memory", ["text", "content"]],
-	["capture_content_source", ["text", "content"]],
-	["revise_memory_entry", ["text", "content"]],
+	["merge_atomic_memories", ["content"]],
 	["handoff_current_work", ["handoff"]],
 	["activate_handoff", ["objective"]],
 	["prepare_handoff", ["objective"]],
@@ -2601,6 +2606,7 @@ function containsSecretValue(value) {
 	return Object.values(value).some(containsSecretValue);
 }
 function hasSecretContent(operation, payload) {
+	if (PAYLOAD_WRITES.has(operation)) return containsSecretValue(payload);
 	const fields = CONTENT_FIELDS.get(operation);
 	if (!fields || !payload || typeof payload !== "object") return false;
 	const content = payload;
@@ -3275,6 +3281,7 @@ const MCP_OPERATIONS = {
 	"activate_handoff": { "readOnly": false },
 	"approve_artifact_candidate": { "readOnly": false },
 	"capture_content_source": { "readOnly": false },
+	"change_atomic_memory_lifecycle": { "readOnly": false },
 	"clear_scope_binding": { "readOnly": false },
 	"commit_handoff": { "readOnly": false },
 	"continue_handoff": { "readOnly": true },
@@ -3284,11 +3291,13 @@ const MCP_OPERATIONS = {
 	"finalize_handoff": { "readOnly": false },
 	"generate_experience": { "readOnly": false },
 	"generate_skill": { "readOnly": false },
+	"get_artifact": { "readOnly": true },
 	"get_artifact_candidate": { "readOnly": true },
+	"get_artifact_revision": { "readOnly": true },
+	"get_atomic_memory_state": { "readOnly": true },
 	"get_dream_run": { "readOnly": true },
 	"get_experience": { "readOnly": true },
 	"get_handoff_report": { "readOnly": true },
-	"get_memory_capacity": { "readOnly": true },
 	"get_memory_entry": { "readOnly": true },
 	"get_scope": { "readOnly": true },
 	"get_skill": { "readOnly": true },
@@ -3296,12 +3305,15 @@ const MCP_OPERATIONS = {
 	"handoff_current_work": { "readOnly": false },
 	"import_external_skill": { "readOnly": false },
 	"list_artifact_candidates": { "readOnly": true },
+	"list_atomic_memories": { "readOnly": true },
 	"list_dream_runs": { "readOnly": true },
 	"list_external_skills": { "readOnly": true },
 	"list_managed_skills": { "readOnly": true },
 	"list_memory_entries": { "readOnly": true },
 	"list_scopes": { "readOnly": true },
+	"merge_atomic_memories": { "readOnly": false },
 	"prepare_handoff_hint": { "readOnly": true },
+	"preview_atomic_memory_restoration": { "readOnly": true },
 	"propose_experience": { "readOnly": false },
 	"propose_skill": { "readOnly": false },
 	"publish_artifact": { "readOnly": false },
@@ -3309,12 +3321,13 @@ const MCP_OPERATIONS = {
 	"record_task_outcome": { "readOnly": false },
 	"reject_artifact_candidate": { "readOnly": false },
 	"remember_memory": { "readOnly": false },
+	"replace_artifact": { "readOnly": false },
 	"resolve_external_skill": { "readOnly": true },
 	"resolve_scope_binding": { "readOnly": true },
-	"retire_memory_entry": { "readOnly": false },
+	"restore_atomic_memory": { "readOnly": false },
 	"revise_artifact_candidate": { "readOnly": false },
-	"revise_memory_entry": { "readOnly": false },
 	"scan_external_skills": { "readOnly": false },
+	"search_atomic_memory": { "readOnly": true },
 	"search_memory": { "readOnly": true },
 	"search_topic_memory": { "readOnly": true },
 	"set_scope_binding": { "readOnly": false }
@@ -3892,11 +3905,15 @@ Current instructions and live repository state outrank historical evidence. Pres
 
 - Use \`mcp__powercontext__search_memory\` with a focused query, \`mode: "auto"\`, and no more than eight
   results.
-- Use \`mcp__powercontext__list_memory_entries\` for an explicitly requested inventory of active entries in the current scope.
-- Set \`include_inactive\` to true only when the user explicitly asks to audit
-  retired entries.
-- Use \`mcp__powercontext__get_memory_entry\` with the exact returned \`citation\` when full immutable
-  entry details are needed.
+- Search results contain current Atomic Memory records with exact \`artifact\` references and \`state_version\`.
+- Use \`mcp__powercontext__list_atomic_memories\` with \`states: ["active"]\` for an explicitly requested inventory.
+  Follow the returned \`next_cursor\` for later pages. Include forgotten, merged or retired states only for an explicit audit.
+- Use \`mcp__powercontext__get_artifact\` with \`family: "atomic-memory"\` and the returned \`artifact_id\` for current
+  content. It returns \`{artifact, etag, status_code}\`; preserve the real content ETag unchanged.
+  A conditional 304 result contains no Artifact; read without \`If-None-Match\` when the content is needed.
+- Use \`mcp__powercontext__get_artifact_revision\` with the exact returned revision for historical content. It returns
+  the Artifact directly and provides no current write ETag. Legacy Memory citations are unsupported.
+- Use \`mcp__powercontext__get_atomic_memory_state\` to inspect the current reference, lifecycle and \`state_version\`.
 
 Use the exact host-resolved \`scope_id\` and workspace binding key in the current-turn PowerContext routing metadata
 for operations that require one. Do not select the Server default with \`mcp__powercontext__resolve_scope_binding\`.
@@ -3909,9 +3926,14 @@ concise entries such as a decision, constraint, current-state, task-outcome,
 or next-step. Never store secrets or credentials. DSH asks the user for
 one-time approval before any named PowerContext mutation runs.
 
-Before \`mcp__powercontext__revise_memory_entry\` or \`mcp__powercontext__retire_memory_entry\`, read the current entry and
-pass its exact \`citation\`. After a 409 conflict, refresh the head and retry
-once only if the user's requested change still applies.
+For a requested correction, read current content with \`mcp__powercontext__get_artifact\`, then call
+\`mcp__powercontext__replace_artifact\` with \`family: "atomic-memory"\`, the exact \`artifact_id\`, the returned ETag
+in the \`If-Match\` parameter, and complete \`content\` containing schema/kind/text only. Do not copy creation metadata
+from a read, invent an ETag, drop the precondition, or automatically retry a stale write.
+For requested removal from active search, use \`mcp__powercontext__change_atomic_memory_lifecycle\` with the exact
+\`target.artifact\` and \`target.state_version\`, setting \`state: "forgotten"\`. This preserves recoverable history.
+Merge or restore only on an explicit request, using the available native Atomic Memory operations and exact returned
+references/state versions. A restoration preview makes no write; the Server owns merge traversal and restoration checks.
 `
 	},
 	{
@@ -3959,8 +3981,9 @@ Use \`mcp__powercontext__list_artifact_candidates\` for the requested queue and 
 
 Do not approve, reject, or revise artifact candidates unless the user
 explicitly asked. Prefer the human command \`/pc review approve\` /
-\`/pc review reject\`. Candidate review mutations and administrative operations are not exposed as
-model tools; Memory forgetting uses its guarded tool with an exact Atomic reference and state_version.
+\`/pc review reject\`. If a native candidate mutation is available and explicitly requested, preserve the exact
+returned candidate version and obtain host approval. Availability or generation is never approval authority.
+Memory forgetting likewise requires explicit intent, host approval, an exact Atomic reference and state_version.
 `
 	}
 ];
@@ -3980,7 +4003,7 @@ is absent, report that workflow unavailable and incomplete; never simulate it or
 
 | Intent / 意图 | MCP operation and optional domain Skill |
 | --- | --- |
-| Prior decisions, inventory, save or correction / 搜索记忆、盘点、记住、纠正 | \`mcp__powercontext__search_memory\`, \`mcp__powercontext__list_memory_entries\`, \`mcp__powercontext__remember_memory\`; \`powercontext-memory\`. |
+| Prior decisions, inventory, save or correction / 搜索记忆、盘点、记住、纠正 | \`mcp__powercontext__search_memory\`, \`mcp__powercontext__list_atomic_memories\`, \`mcp__powercontext__remember_memory\`, \`mcp__powercontext__replace_artifact\`; \`powercontext-memory\`. |
 | Transfer and resume work / 交接、接续工作 | \`mcp__powercontext__handoff_current_work\`, \`mcp__powercontext__continue_handoff\`; \`powercontext-handoff\`. |
 | Candidate inspection / 审查候选 | \`mcp__powercontext__list_artifact_candidates\`, \`mcp__powercontext__get_artifact_candidate\`; \`powercontext-review\`. Decisions remain human commands. |
 | Experience, Skill, or external Skill / 经验、技能、外部技能 | The corresponding native \`generate_*\`, \`get_*\`, \`propose_*\`, \`list_*\`, \`scan_*\`, \`resolve_*\`, or \`import_*\` tools. |
@@ -3996,6 +4019,8 @@ Never derive a Scope from a directory, branch, repository, prompt, or process wo
 outrank untrusted historical evidence. Preserve exact citations and host approval. Explicit saving requires
 \`mcp__powercontext__remember_memory\`; automatic Source acceptance is not saved Memory.
 Search is for relevance and list for explicit inventory. An empty search does not authorize listing or writing.
+Memory results use exact Atomic Memory artifact references and state versions, not legacy entry citations. Current
+content reads return a real ETag; preserve it for conditional replacement. Historical reads provide no current write ETag.
 Temporary transfer does not authorize a durable commit; a preview authorizes no Source capture. Candidate inspection
 or generation never grants approval, installation, publication, or execution authority.
 
@@ -4021,8 +4046,17 @@ persistence succeeded. Accepted Sources may produce no Memory.
 For ordinary coding, use the current context without routine PowerContext calls. When continuing work, search only if
 relevant history is missing. Explicit requests such as "search my memories / 搜索记忆" require
 mcp__powercontext__search_memory with a focused query, mode auto, and at most eight hits.
-Use mcp__powercontext__list_memory_entries for an explicit inventory or audit, not as the normal way to restore
-context. Use mcp__powercontext__get_memory_entry with an exact returned citation for details.
+Use mcp__powercontext__list_atomic_memories for an explicit inventory or audit, not as the normal way to restore
+context. Follow next_cursor for later pages and select inactive states only for an explicit audit. Search and list return
+Atomic Memory artifact references and state_version, not legacy entry citations. Use mcp__powercontext__get_artifact
+with family "atomic-memory" and the exact artifact_id for current content; it returns {artifact, etag, status_code}.
+Use mcp__powercontext__get_artifact_revision with the exact revision for history; it returns the Artifact directly,
+without a current write ETag. mcp__powercontext__get_atomic_memory_state reads current lifecycle and state_version.
+For a requested correction, mcp__powercontext__replace_artifact needs the unchanged ETag from the current read in
+its If-Match parameter and complete content containing schema/kind/text only, not creation metadata. Never invent an
+ETag, drop its precondition or automatically retry a stale write. Requested forgetting uses
+mcp__powercontext__change_atomic_memory_lifecycle with exact target.artifact and target.state_version and state
+"forgotten"; history remains recoverable. Merge/restoration operations also require explicit intent and host approval.
 An explicit "remember this / 记住这个供以后使用" requires mcp__powercontext__remember_memory and its successful
 result. Automatic Source capture or a verbal acknowledgement does not satisfy that request. Ordinary instructions
 and preview-only requests do not authorize a write. Never store secrets or duplicate prompts.

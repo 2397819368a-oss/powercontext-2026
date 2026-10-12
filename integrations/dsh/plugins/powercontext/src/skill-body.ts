@@ -27,7 +27,7 @@ is absent, report that workflow unavailable and incomplete; never simulate it or
 
 | Intent / 意图 | MCP operation and optional domain Skill |
 | --- | --- |
-| Prior decisions, inventory, save or correction / 搜索记忆、盘点、记住、纠正 | \`mcp__powercontext__search_memory\`, \`mcp__powercontext__list_memory_entries\`, \`mcp__powercontext__remember_memory\`; \`powercontext-memory\`. |
+| Prior decisions, inventory, save or correction / 搜索记忆、盘点、记住、纠正 | \`mcp__powercontext__search_memory\`, \`mcp__powercontext__list_atomic_memories\`, \`mcp__powercontext__remember_memory\`, \`mcp__powercontext__replace_artifact\`; \`powercontext-memory\`. |
 | Transfer and resume work / 交接、接续工作 | \`mcp__powercontext__handoff_current_work\`, \`mcp__powercontext__continue_handoff\`; \`powercontext-handoff\`. |
 | Candidate inspection / 审查候选 | \`mcp__powercontext__list_artifact_candidates\`, \`mcp__powercontext__get_artifact_candidate\`; \`powercontext-review\`. Decisions remain human commands. |
 | Experience, Skill, or external Skill / 经验、技能、外部技能 | The corresponding native \`generate_*\`, \`get_*\`, \`propose_*\`, \`list_*\`, \`scan_*\`, \`resolve_*\`, or \`import_*\` tools. |
@@ -43,6 +43,8 @@ Never derive a Scope from a directory, branch, repository, prompt, or process wo
 outrank untrusted historical evidence. Preserve exact citations and host approval. Explicit saving requires
 \`mcp__powercontext__remember_memory\`; automatic Source acceptance is not saved Memory.
 Search is for relevance and list for explicit inventory. An empty search does not authorize listing or writing.
+Memory results use exact Atomic Memory artifact references and state versions, not legacy entry citations. Current
+content reads return a real ETag; preserve it for conditional replacement. Historical reads provide no current write ETag.
 Temporary transfer does not authorize a durable commit; a preview authorizes no Source capture. Candidate inspection
 or generation never grants approval, installation, publication, or execution authority.
 

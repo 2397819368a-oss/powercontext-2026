@@ -270,16 +270,37 @@ capabilities = ["memory_read"]
 id = "mcp__powercontext__get_memory_entry"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
-id = "mcp__powercontext__get_memory_capacity"
+id = "mcp__powercontext__get_atomic_memory_state"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "mcp__powercontext__list_atomic_memories"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "mcp__powercontext__search_atomic_memory"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "mcp__powercontext__preview_atomic_memory_restoration"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "mcp__powercontext__get_artifact"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "mcp__powercontext__get_artifact_revision"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
 id = "mcp__powercontext__remember_memory"
 capabilities = ["memory_write"]
 [[toolsets.tools]]
-id = "mcp__powercontext__revise_memory_entry"
+id = "mcp__powercontext__replace_artifact"
 capabilities = ["memory_write"]
 [[toolsets.tools]]
-id = "mcp__powercontext__retire_memory_entry"
+id = "mcp__powercontext__merge_atomic_memories"
+capabilities = ["memory_write"]
+[[toolsets.tools]]
+id = "mcp__powercontext__change_atomic_memory_lifecycle"
+capabilities = ["memory_write"]
+[[toolsets.tools]]
+id = "mcp__powercontext__restore_atomic_memory"
 capabilities = ["memory_write"]
 [[toolsets.tools]]
 id = "mcp__powercontext__capture_content_source"

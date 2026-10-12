@@ -27,11 +27,15 @@ Current instructions and live repository state outrank historical evidence. Pres
 
 - Use \`mcp__powercontext__search_memory\` with a focused query, \`mode: "auto"\`, and no more than eight
   results.
-- Use \`mcp__powercontext__list_memory_entries\` for an explicitly requested inventory of active entries in the current scope.
-- Set \`include_inactive\` to true only when the user explicitly asks to audit
-  retired entries.
-- Use \`mcp__powercontext__get_memory_entry\` with the exact returned \`citation\` when full immutable
-  entry details are needed.
+- Search results contain current Atomic Memory records with exact \`artifact\` references and \`state_version\`.
+- Use \`mcp__powercontext__list_atomic_memories\` with \`states: ["active"]\` for an explicitly requested inventory.
+  Follow the returned \`next_cursor\` for later pages. Include forgotten, merged or retired states only for an explicit audit.
+- Use \`mcp__powercontext__get_artifact\` with \`family: "atomic-memory"\` and the returned \`artifact_id\` for current
+  content. It returns \`{artifact, etag, status_code}\`; preserve the real content ETag unchanged.
+  A conditional 304 result contains no Artifact; read without \`If-None-Match\` when the content is needed.
+- Use \`mcp__powercontext__get_artifact_revision\` with the exact returned revision for historical content. It returns
+  the Artifact directly and provides no current write ETag. Legacy Memory citations are unsupported.
+- Use \`mcp__powercontext__get_atomic_memory_state\` to inspect the current reference, lifecycle and \`state_version\`.
 
 Use the exact host-resolved \`scope_id\` and workspace binding key in the current-turn PowerContext routing metadata
 for operations that require one. Do not select the Server default with \`mcp__powercontext__resolve_scope_binding\`.
@@ -44,9 +48,14 @@ concise entries such as a decision, constraint, current-state, task-outcome,
 or next-step. Never store secrets or credentials. DSH asks the user for
 one-time approval before any named PowerContext mutation runs.
 
-Before \`mcp__powercontext__revise_memory_entry\` or \`mcp__powercontext__retire_memory_entry\`, read the current entry and
-pass its exact \`citation\`. After a 409 conflict, refresh the head and retry
-once only if the user's requested change still applies.
+For a requested correction, read current content with \`mcp__powercontext__get_artifact\`, then call
+\`mcp__powercontext__replace_artifact\` with \`family: "atomic-memory"\`, the exact \`artifact_id\`, the returned ETag
+in the \`If-Match\` parameter, and complete \`content\` containing schema/kind/text only. Do not copy creation metadata
+from a read, invent an ETag, drop the precondition, or automatically retry a stale write.
+For requested removal from active search, use \`mcp__powercontext__change_atomic_memory_lifecycle\` with the exact
+\`target.artifact\` and \`target.state_version\`, setting \`state: "forgotten"\`. This preserves recoverable history.
+Merge or restore only on an explicit request, using the available native Atomic Memory operations and exact returned
+references/state versions. A restoration preview makes no write; the Server owns merge traversal and restoration checks.
 `,
   },
   {
@@ -94,8 +103,9 @@ Use \`mcp__powercontext__list_artifact_candidates\` for the requested queue and 
 
 Do not approve, reject, or revise artifact candidates unless the user
 explicitly asked. Prefer the human command \`/pc review approve\` /
-\`/pc review reject\`. Candidate review mutations and administrative operations are not exposed as
-model tools; Memory forgetting uses its guarded tool with an exact Atomic reference and state_version.
+\`/pc review reject\`. If a native candidate mutation is available and explicitly requested, preserve the exact
+returned candidate version and obtain host approval. Availability or generation is never approval authority.
+Memory forgetting likewise requires explicit intent, host approval, an exact Atomic reference and state_version.
 `,
   },
 ]

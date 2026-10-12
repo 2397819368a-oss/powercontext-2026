@@ -29,6 +29,9 @@ export const MCP_OPERATIONS = {
   "capture_content_source": {
     "readOnly": false
   },
+  "change_atomic_memory_lifecycle": {
+    "readOnly": false
+  },
   "clear_scope_binding": {
     "readOnly": false
   },
@@ -56,7 +59,16 @@ export const MCP_OPERATIONS = {
   "generate_skill": {
     "readOnly": false
   },
+  "get_artifact": {
+    "readOnly": true
+  },
   "get_artifact_candidate": {
+    "readOnly": true
+  },
+  "get_artifact_revision": {
+    "readOnly": true
+  },
+  "get_atomic_memory_state": {
     "readOnly": true
   },
   "get_dream_run": {
@@ -66,9 +78,6 @@ export const MCP_OPERATIONS = {
     "readOnly": true
   },
   "get_handoff_report": {
-    "readOnly": true
-  },
-  "get_memory_capacity": {
     "readOnly": true
   },
   "get_memory_entry": {
@@ -92,6 +101,9 @@ export const MCP_OPERATIONS = {
   "list_artifact_candidates": {
     "readOnly": true
   },
+  "list_atomic_memories": {
+    "readOnly": true
+  },
   "list_dream_runs": {
     "readOnly": true
   },
@@ -107,7 +119,13 @@ export const MCP_OPERATIONS = {
   "list_scopes": {
     "readOnly": true
   },
+  "merge_atomic_memories": {
+    "readOnly": false
+  },
   "prepare_handoff_hint": {
+    "readOnly": true
+  },
+  "preview_atomic_memory_restoration": {
     "readOnly": true
   },
   "propose_experience": {
@@ -131,23 +149,26 @@ export const MCP_OPERATIONS = {
   "remember_memory": {
     "readOnly": false
   },
+  "replace_artifact": {
+    "readOnly": false
+  },
   "resolve_external_skill": {
     "readOnly": true
   },
   "resolve_scope_binding": {
     "readOnly": true
   },
-  "retire_memory_entry": {
+  "restore_atomic_memory": {
     "readOnly": false
   },
   "revise_artifact_candidate": {
     "readOnly": false
   },
-  "revise_memory_entry": {
-    "readOnly": false
-  },
   "scan_external_skills": {
     "readOnly": false
+  },
+  "search_atomic_memory": {
+    "readOnly": true
   },
   "search_memory": {
     "readOnly": true

@@ -145,7 +145,7 @@ test('real DSH rejects secret native writes including nested Handoff content bef
   const env = await environment()
   try {
     const { instance } = env.harness({ capturePrompts: false })
-    for (const operation of ['remember_memory', 'revise_memory_entry', 'capture_content_source',
+    for (const operation of ['remember_memory', 'replace_artifact', 'capture_content_source',
       'handoff_current_work', 'activate_handoff', 'finalize_handoff', 'commit_handoff']) {
       assert.ok((await instance.run(`RUN_PC_SECRET:${operation}`)).finalResponse)
       const input = env.modelRequests.filter(request => request.stream).at(-1)
