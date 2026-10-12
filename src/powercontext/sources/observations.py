@@ -213,7 +213,7 @@ def _input_contract_schema(source_class: type[Source]) -> dict[str, JsonValue]:
     """
 
     schema = _json_object(source_class.model_json_schema())
-    _remove_inherited_declaration(schema, _declaration_signature())
+    _remove_inherited_declaration(schema, source_class)
     _drop_unreferenced_definitions(schema)
     return schema
 
@@ -224,7 +224,7 @@ def _declaration_signature() -> JsonValue:
     return _json_object(Source.model_json_schema()["properties"])["memory_evidence"]
 
 
-def _remove_inherited_declaration(node: JsonValue, signature: JsonValue) -> None:
+def _remove_inherited_declaration(node: JsonValue, source_class: type[Source]) -> None:
     """Strip the inherited declaration from every object schema that carries it.
 
     Recursive and nested Sources keep their fields in a local definition rather
@@ -234,18 +234,42 @@ def _remove_inherited_declaration(node: JsonValue, signature: JsonValue) -> None
     a different meaning, and that field belongs to the captured contract.
     """
 
-    if isinstance(node, dict):
-        properties = node.get("properties")
-        if isinstance(properties, dict) and properties.get("memory_evidence") == signature:
-            del properties["memory_evidence"]
-            required = node.get("required")
-            if isinstance(required, list):
-                node["required"] = [field for field in required if field != "memory_evidence"]
-        for value in node.values():
-            _remove_inherited_declaration(value, signature)
-    elif isinstance(node, list):
-        for item in node:
-            _remove_inherited_declaration(item, signature)
+    source_titles = _source_schema_titles(source_class)
+
+    def walk(value: JsonValue) -> None:
+        if isinstance(value, dict):
+            properties = value.get("properties")
+            if value.get("title") in source_titles and isinstance(properties, dict):
+                properties.pop("memory_evidence", None)
+                required = value.get("required")
+                if isinstance(required, list):
+                    value["required"] = [field for field in required if field != "memory_evidence"]
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(node)
+
+
+def _source_schema_titles(source_class: type[Source]) -> set[str]:
+    """Return schema titles belonging to Source subclasses in the payload tree."""
+
+    titles: set[str] = set()
+    pending: list[type[BaseModel]] = [source_class]
+    seen: set[type[BaseModel]] = set()
+    while pending:
+        model = pending.pop()
+        if model in seen:
+            continue
+        seen.add(model)
+        titles.add(str(model.model_config.get("title", model.__name__)))
+        for field in model.model_fields.values():
+            annotation = field.annotation
+            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                pending.append(annotation)
+    return titles
 
 
 def _drop_unreferenced_definitions(schema: dict[str, JsonValue]) -> None:
