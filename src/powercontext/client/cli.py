@@ -95,6 +95,18 @@ from powercontext.http import (
     ExactScopeSelection,
     ExperienceArtifact,
     ExperienceProposal,
+    ExperimentalCaptureImageRequest,
+    ExperimentalCaptureImageResponse,
+    ExperimentalGetImageAssetRequest,
+    ExperimentalGetImageStatusRequest,
+    ExperimentalGetImageTaskRequest,
+    ExperimentalImageMediaType,
+    ExperimentalImageStatus,
+    ExperimentalImageTask,
+    ExperimentalImageTaskPage,
+    ExperimentalListImageTasksRequest,
+    ExperimentalReparseImageRequest,
+    ExperimentalRetryImageTaskRequest,
     ExternalSkillImportMode,
     ExternalSkillResolution,
     ExtractionStatus,
@@ -171,6 +183,10 @@ _ClientResponse: TypeAlias = (
     | ArtifactPage
     | Capabilities
     | ExperienceArtifact
+    | ExperimentalCaptureImageResponse
+    | ExperimentalImageTask
+    | ExperimentalImageTaskPage
+    | ExperimentalImageStatus
     | ExternalSkillResolution
     | GeneratedCandidateResponse
     | HealthResponse
@@ -348,6 +364,7 @@ scope_binding_app = typer.Typer(
 )
 scope_app.add_typer(scope_binding_app, name="binding")
 candidate_app.add_typer(candidate_revise_app, name="revise")
+
 
 _BINDING_KIND_SESSION = "session"
 _BINDING_KIND_WORKSPACE = "workspace"
@@ -554,6 +571,192 @@ def clear_scope_binding(
 
     request = ClearScopeBindingRequest(key=_binding_key(integration, kind, external_id))
     asyncio.run(_execute(context, lambda client: client.clear_scope_binding(request)))
+
+image_app = typer.Typer(
+    name="image",
+    context_settings={"help_option_names": HELP_OPTION_NAMES},
+    help="Explicitly upload, inspect and download experimental image evidence.",
+    no_args_is_help=True,
+)
+
+
+@image_app.command("upload")
+def upload_image(
+    context: typer.Context,
+    file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    scope_id: Annotated[str, typer.Option(help="Existing Scope receiving the image.")],
+    capture_key: Annotated[str, typer.Option(help="Stable occurrence key; reuse to replay the same upload.")],
+    context_text: Annotated[
+        str, typer.Option(help="Optional fixed text sent with the image during later parsing.")
+    ] = "",
+    media_type: Annotated[ExperimentalImageMediaType | None, typer.Option()] = None,
+) -> None:
+    """Save one PNG or JPEG; the configured background worker parses it later."""
+    try:
+        with file.open("rb") as handle:
+            data = handle.read(8 * 1024 * 1024 + 1)
+        if len(data) > 8 * 1024 * 1024:
+            raise ValueError("image exceeds 8 MiB")  # noqa: TRY003, TRY301
+        if media_type is None:
+            media_type = {
+                ".png": ExperimentalImageMediaType.IMAGE_PNG,
+                ".jpg": ExperimentalImageMediaType.IMAGE_JPEG,
+                ".jpeg": ExperimentalImageMediaType.IMAGE_JPEG,
+            }.get(file.suffix.lower())
+        if media_type is None:
+            raise ValueError("specify --media-type image/png or image/jpeg")  # noqa: TRY003, TRY301
+        request = ExperimentalCaptureImageRequest.model_validate({
+            "scope_id": scope_id,
+            "capture_key": capture_key,
+            "media_type": media_type.value,
+            "bytes_base64": base64.b64encode(data).decode("ascii"),
+            "origin": {"kind": "explicit_upload", "attachment_index": 0},
+            "context": {"text": context_text},
+        })
+    except ValidationError as error:
+        _raise_invalid_request("image upload", error)
+    except (OSError, ValueError) as error:
+        _raise_bad_parameter("cannot read a valid bounded image upload", parameter="file", cause=error)
+    asyncio.run(_execute(context, lambda client: client.capture_image(request)))
+
+
+@image_app.command("probe")
+def probe_image_connection(
+    env_file: Annotated[Path, typer.Option(help="Local Server environment file; credentials stay local.")],
+) -> None:
+    """Explicitly send one synthetic image to Vision; no Source is saved."""
+    from powercontext.builtin.images.probe import probe_vision
+    from powercontext.server.configuration import server_settings_context
+
+    try:
+        with server_settings_context(env_file=env_file) as settings:
+            result = asyncio.run(probe_vision(settings.inference))
+    except (ValueError, OSError):
+        typer.echo("Cannot load the Vision configuration.", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(json.dumps(result, ensure_ascii=False))
+    if not result["ok"]:
+        raise typer.Exit(1)
+
+
+@image_app.command("list")
+def list_images(
+    context: typer.Context,
+    scope_id: Annotated[str, typer.Option()],
+    cursor: Annotated[str | None, typer.Option()] = None,
+    limit: Annotated[int, typer.Option(min=1, max=100)] = 12,
+) -> None:
+    """List retained scoped image materials with cursor pagination."""
+    request = ExperimentalListImageTasksRequest(scope_id=scope_id, cursor=cursor, limit=limit)
+    asyncio.run(_execute(context, lambda client: client.list_image_tasks(request)))
+
+
+@image_app.command("status")
+def image_status(context: typer.Context, scope_id: Annotated[str, typer.Option()]) -> None:
+    """Inspect image processing configuration without a model request."""
+    request = ExperimentalGetImageStatusRequest(scope_id=scope_id)
+    asyncio.run(_execute(context, lambda client: client.get_image_status(request)))
+
+
+@image_app.command("task")
+def show_image_task(
+    context: typer.Context,
+    task_id: Annotated[str, typer.Argument(help="Exact image task ID.")],
+    scope_id: Annotated[str, typer.Option()],
+) -> None:
+    request = ExperimentalGetImageTaskRequest(scope_id=scope_id, task_id=task_id)
+    asyncio.run(_execute(context, lambda client: client.get_image_task(request)))
+
+
+@image_app.command("source")
+def show_image_source(
+    context: typer.Context,
+    analysis_source_id: Annotated[str, typer.Argument(help="Exact analysis Source ID from an Artifact citation.")],
+    scope_id: Annotated[str, typer.Option()],
+) -> None:
+    request = ExperimentalGetImageTaskRequest(scope_id=scope_id, analysis_source_id=analysis_source_id)
+    asyncio.run(_execute(context, lambda client: client.get_image_task(request)))
+
+
+@image_app.command("retry")
+def retry_image(
+    context: typer.Context,
+    task_id: Annotated[str, typer.Argument(help="Failed task to retry with its original profile.")],
+    scope_id: Annotated[str, typer.Option()],
+    retry_key: Annotated[str, typer.Option(help="Stable key for this explicit retry.")],
+) -> None:
+    request = ExperimentalRetryImageTaskRequest(scope_id=scope_id, task_id=task_id, retry_key=retry_key)
+    asyncio.run(_execute(context, lambda client: client.retry_image_task(request)))
+
+
+@image_app.command("reparse")
+def reparse_image(
+    context: typer.Context,
+    original_source_id: Annotated[str, typer.Argument(help="Retained original Source ID to parse again.")],
+    scope_id: Annotated[str, typer.Option()],
+    reparse_key: Annotated[str, typer.Option(help="Stable key; first acceptance pins the current profile.")],
+    expected_profile_digest: Annotated[str | None, typer.Option()] = None,
+) -> None:
+    request = ExperimentalReparseImageRequest.model_validate({
+        "scope_id": scope_id,
+        "original": {"source_type": "experimental.image.original", "source_id": original_source_id},
+        "reparse_key": reparse_key,
+        "expected_profile_digest": expected_profile_digest,
+    })
+    asyncio.run(_execute(context, lambda client: client.reparse_image(request)))
+
+
+@image_app.command("download")
+def download_image(
+    context: typer.Context,
+    asset_id: Annotated[str, typer.Argument(help="Exact retained asset ID.")],
+    scope_id: Annotated[str, typer.Option()],
+    output: Annotated[Path, typer.Option(help="New output file; an existing file is never overwritten.")],
+) -> None:
+    asyncio.run(
+        _download_image(context, ExperimentalGetImageAssetRequest(scope_id=scope_id, asset_id=asset_id), output)
+    )
+
+
+async def _download_image(context: typer.Context, request: ExperimentalGetImageAssetRequest, output: Path) -> None:
+    options = _options(context)
+    try:
+        token = None if options.api_token is None else options.api_token.get_secret_value()
+        async with PowerContextClient(
+            options.server_url, token=token, timeout=options.timeout, allow_insecure_http=options.allow_insecure_http
+        ) as client:
+            response = await client.get_image_asset(request)
+        data = base64.b64decode(response.bytes_base64, validate=True)
+        if len(data) != response.asset.byte_length or (
+            "sha256:" + hashlib.sha256(data).hexdigest() != response.asset.digest.root
+        ):
+            raise ValueError("downloaded image digest does not match")  # noqa: TRY003, TRY301
+    except ClientError as error:
+        typer.echo(_error_message(error), err=True)
+        raise typer.Exit(code=1) from error
+    except ValueError as error:
+        typer.echo("Cannot verify the downloaded image.", err=True)
+        raise typer.Exit(code=1) from error
+    try:
+        saved = await asyncio.to_thread(_save_image_download, output, data)
+    except OSError as error:
+        _raise_bad_parameter("cannot save the verified image", parameter="--output", cause=error)
+    typer.echo(str(saved))
+
+
+def _save_image_download(output: Path, data: bytes) -> Path:
+    descriptor, name = tempfile.mkstemp(prefix=".image-download-", dir=output.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return output.resolve()
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -2066,6 +2269,10 @@ def _dump_json_response(response: _ClientResponse) -> bool:
             CandidateHistory,
             CandidatePage,
             ExperienceArtifact,
+            ExperimentalCaptureImageResponse,
+            ExperimentalImageTask,
+            ExperimentalImageStatus,
+            ExperimentalImageTaskPage,
             ExternalSkillResolution,
             GeneratedCandidateResponse,
             ListExternalSkillsResponse,
@@ -2334,7 +2541,11 @@ def register_commands(cli: typer.Typer) -> set[str]:
     cli.add_typer(experience_app, name="experience")
     cli.add_typer(skill_app, name="skill")
     cli.add_typer(external_skill_app, name="external-skill")
+
     cli.add_typer(scope_app, name="scope")
+
+    cli.add_typer(image_app, name="image")
+
     return {
         "capabilities",
         "stats",
@@ -2347,7 +2558,11 @@ def register_commands(cli: typer.Typer) -> set[str]:
         "experience",
         "skill",
         "external-skill",
+
         "scope",
+
+        "image",
+
     }
 
 

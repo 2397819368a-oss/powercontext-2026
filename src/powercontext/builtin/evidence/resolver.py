@@ -49,6 +49,8 @@ from powercontext.builtin.evidence.models import (
     content_digest,
     reference_key,
 )
+from powercontext.builtin.images.identity import canonical_image_digest
+from powercontext.builtin.images.models import ImageAnalysisSource, OriginalImageSource
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
@@ -474,8 +476,26 @@ class EvidenceResolver:
             except (InvalidSourceProjectionError, SourceProjectionNotFoundError) as error:
                 raise EvidenceResolutionError("evidence_unavailable") from error
         identity = evidence_id(ref)
+        children: tuple[EvidenceChild, ...] = ()
         if eligible:
             attested = None if self.root_identity is None else self.root_identity(ref, source)
+            if isinstance(source, ImageAnalysisSource):
+                if source.original.scope_id != self.scope_id:
+                    raise EvidenceResolutionError("evidence_unavailable")
+                original_ref = SourceRef.model_validate(source.original.source.model_dump(mode="json"))
+                if self.authorize is not None:
+                    await self.authorize(original_ref)
+                original = (await self.sources.get(connection, self.scope_id, original_ref)).value
+                if not isinstance(original, OriginalImageSource):
+                    raise EvidenceResolutionError("evidence_unavailable")
+                # An interpretation is a usable textual root, with an original
+                # lineage-only child. Reparse and duplicate occurrences share
+                # one attested independence group, determined by actual bytes.
+                attested = canonical_image_digest({
+                    "scope_id": self.scope_id,
+                    "image_asset_digest": original.asset.digest.root,
+                })
+                children = ((original_ref, None),)
             group_key = reference_key(ref) if attested is None else attested
             state.groups[identity] = ("root_" + content_digest(group_key.encode())[7:31], attested is not None)
         return (
@@ -487,7 +507,7 @@ class EvidenceResolver:
                 role="root" if eligible else "lineage_only",
             ),
             body,
-            (),
+            children,
         )
 
     @staticmethod

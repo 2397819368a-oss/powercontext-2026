@@ -10,6 +10,326 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
         "version": "1.4.0",
     },
     "paths": {
+        "/v1/experimental/images/task/retry": {
+            "post": {
+                "tags": ["experimental-images"],
+                "summary": "Create a new attempt task from a failed task profile",
+                "operationId": "experimental_retry_image_task",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ExperimentalRetryImageTaskRequest"}
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "202": {
+                        "description": "A "
+                        "new "
+                        "task "
+                        "retains "
+                        "the "
+                        "failed "
+                        "task "
+                        "profile "
+                        "and "
+                        "original "
+                        "reference; "
+                        "the "
+                        "failed "
+                        "task "
+                        "is "
+                        "unchanged.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ExperimentalImageTask"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "410": {
+                        "description": "Original retained evidence is unavailable.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+                    },
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-scope-mode": "current",
+                "x-powercontext-access": {
+                    "action": "scope.contribute",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
+        "/v1/experimental/images/reparse": {
+            "post": {
+                "tags": ["experimental-images"],
+                "summary": "Create a new image analysis task with the selected current profile",
+                "operationId": "experimental_reparse_image",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ExperimentalReparseImageRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "202": {
+                        "description": "New "
+                        "profile "
+                        "is "
+                        "pinned "
+                        "at "
+                        "acceptance; "
+                        "previous "
+                        "tasks, "
+                        "Sources "
+                        "and "
+                        "Artifact "
+                        "evidence "
+                        "remain "
+                        "intact.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ExperimentalImageTask"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "410": {
+                        "description": "Original retained evidence is unavailable.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+                    },
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-scope-mode": "current",
+                "x-powercontext-access": {
+                    "action": "scope.contribute",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
+        "/v1/experimental/images/capture": {
+            "post": {
+                "tags": ["experimental-images"],
+                "summary": "Capture image bytes and durable parse intent",
+                "operationId": "experimental_capture_image",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ExperimentalCaptureImageRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "202": {
+                        "description": "Original "
+                        "asset, "
+                        "Source "
+                        "and "
+                        "initial "
+                        "task "
+                        "are "
+                        "durably "
+                        "stored; "
+                        "parsing "
+                        "and "
+                        "Memory "
+                        "are "
+                        "not "
+                        "complete.",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/ExperimentalCaptureImageResponse"}
+                            }
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "413": {
+                        "description": "Transport bytes or decoded pixel budget exceeded.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+                    },
+                    "415": {
+                        "description": "Unsupported or mismatched image format.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+                    },
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-scope-mode": "current",
+                "x-powercontext-access": {
+                    "action": "scope.contribute",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
+        "/v1/experimental/images/asset/get": {
+            "post": {
+                "tags": ["experimental-images"],
+                "summary": "Read exact retained image bytes",
+                "operationId": "experimental_get_image_asset",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ExperimentalGetImageAssetRequest"}
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Exact retained bytes verified against their digest; no model call.",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/ExperimentalGetImageAssetResponse"}
+                            }
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "410": {
+                        "description": "Retained evidence was explicitly removed or is no longer available.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+                    },
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-scope-mode": "current",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
+        "/v1/experimental/images/tasks/list": {
+            "post": {
+                "tags": ["experimental-images"],
+                "summary": "List scoped image materials with bounded cursor pagination",
+                "operationId": "experimental_list_image_tasks",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ExperimentalListImageTasksRequest"}
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Newest "
+                        "accepted "
+                        "tasks "
+                        "first; "
+                        "legacy "
+                        "acceptance "
+                        "dates "
+                        "remain "
+                        "unknown. "
+                        "No "
+                        "provider "
+                        "call.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ExperimentalImageTaskPage"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-scope-mode": "current",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
+        "/v1/experimental/images/status": {
+            "post": {
+                "tags": ["experimental-images"],
+                "summary": "Diagnose scoped image storage and configured parsing without a model request",
+                "operationId": "experimental_get_image_status",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ExperimentalGetImageStatusRequest"}
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Local configuration readiness, not proof of provider image capability.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ExperimentalImageStatus"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-scope-mode": "current",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
+        "/v1/experimental/images/task/get": {
+            "post": {
+                "tags": ["experimental-images"],
+                "summary": "Read image parse task state",
+                "operationId": "experimental_get_image_task",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ExperimentalGetImageTaskRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Durable "
+                        "task "
+                        "state; "
+                        "succeeded "
+                        "means "
+                        "analysis "
+                        "Source "
+                        "was "
+                        "committed, "
+                        "not "
+                        "Memory "
+                        "extraction.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ExperimentalImageTask"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-scope-mode": "current",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
         "/v1/atomic-memory/list": {
             "post": {
                 "tags": ["atomic-memory"],
@@ -12472,6 +12792,464 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "type": "object",
                 "required": ["versions"],
             },
+            "ExperimentalImageMediaType": {"type": "string", "enum": ["image/png", "image/jpeg"]},
+            "ExperimentalImageDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "ExperimentalImageScopedSource": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "source": {"$ref": "#/components/schemas/SourceTypeReference"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "source"],
+            },
+            "ExperimentalImageAsset": {
+                "properties": {
+                    "asset_id": {"type": "string", "pattern": "^ia_[0-9a-f]{64}$"},
+                    "digest": {"$ref": "#/components/schemas/ExperimentalImageDigest"},
+                    "media_type": {"$ref": "#/components/schemas/ExperimentalImageMediaType"},
+                    "byte_length": {"type": "integer", "maximum": 8388608.0, "minimum": 1.0},
+                    "width": {"type": "integer", "maximum": 16384.0, "minimum": 1.0},
+                    "height": {"type": "integer", "maximum": 16384.0, "minimum": 1.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["asset_id", "digest", "media_type", "byte_length", "width", "height"],
+            },
+            "ExperimentalImageOrigin": {
+                "properties": {
+                    "kind": {"type": "string", "enum": ["explicit_upload", "codex"]},
+                    "attachment_index": {"type": "integer", "maximum": 3.0, "minimum": 0.0},
+                    "host_instance_id": {"type": "string", "maxLength": 128, "minLength": 1, "nullable": True},
+                    "session_id": {"type": "string", "maxLength": 128, "minLength": 1, "nullable": True},
+                    "turn_id": {"type": "string", "maxLength": 128, "minLength": 1, "nullable": True},
+                    "message_id": {"type": "string", "maxLength": 128, "minLength": 1, "nullable": True},
+                    "representation": {"type": "string", "enum": ["original_file", "host_image"], "nullable": True},
+                    "client_variant": {"type": "string", "enum": ["cli_exec", "cli_tui", "desktop"], "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["kind", "attachment_index"],
+            },
+            "ExperimentalImageContext": {
+                "properties": {
+                    "text": {"type": "string", "maxLength": 2048},
+                    "source": {
+                        "allOf": [{"$ref": "#/components/schemas/ExperimentalImageScopedSource"}],
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["text"],
+            },
+            "ExperimentalImageParseProfile": {
+                "properties": {
+                    "model_id": {"type": "string", "maxLength": 128, "minLength": 1},
+                    "deployment_id": {"type": "string", "maxLength": 128, "minLength": 1},
+                    "base_url": {"type": "string", "maxLength": 2048, "minLength": 1, "format": "uri"},
+                    "prompt_version": {"type": "string", "enum": ["image-evidence-v1"]},
+                    "preprocessing_version": {"type": "string", "enum": ["exif-strip-v1"]},
+                    "output_mode": {"type": "string", "enum": ["prompted_json"]},
+                    "timeout_seconds": {"type": "integer", "maximum": 300.0, "minimum": 1.0},
+                    "max_attempts": {"type": "integer", "maximum": 5.0, "minimum": 1.0},
+                    "max_output_tokens": {"type": "integer", "maximum": 8192.0, "minimum": 1.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "model_id",
+                    "deployment_id",
+                    "base_url",
+                    "prompt_version",
+                    "preprocessing_version",
+                    "output_mode",
+                    "timeout_seconds",
+                    "max_attempts",
+                    "max_output_tokens",
+                ],
+            },
+            "ExperimentalImageEntity": {
+                "properties": {
+                    "entity_id": {"type": "string", "maxLength": 64, "minLength": 1},
+                    "label": {"type": "string", "maxLength": 512, "minLength": 1},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["entity_id", "label"],
+            },
+            "ExperimentalImageRelation": {
+                "properties": {
+                    "from_id": {"type": "string", "maxLength": 64, "minLength": 1},
+                    "to_id": {"type": "string", "maxLength": 64, "minLength": 1},
+                    "label": {"type": "string", "maxLength": 512, "minLength": 1},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["from_id", "to_id", "label"],
+            },
+            "ExperimentalImageParseOutput": {
+                "properties": {
+                    "readability": {"type": "string", "enum": ["readable", "partial", "unreadable"]},
+                    "ocr_text": {"type": "string", "maxLength": 16384},
+                    "visual_description": {"type": "string", "maxLength": 4096},
+                    "entities": {
+                        "items": {"$ref": "#/components/schemas/ExperimentalImageEntity"},
+                        "type": "array",
+                        "maxItems": 16,
+                    },
+                    "relations": {
+                        "items": {"$ref": "#/components/schemas/ExperimentalImageRelation"},
+                        "type": "array",
+                        "maxItems": 16,
+                    },
+                    "uncertainties": {
+                        "items": {"type": "string", "maxLength": 512, "minLength": 1},
+                        "type": "array",
+                        "maxItems": 16,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["readability", "ocr_text", "visual_description", "entities", "relations", "uncertainties"],
+            },
+            "ExperimentalImageOriginalPayload": {
+                "properties": {
+                    "name": {"type": "string", "pattern": "^img_[0-9a-f]{64}$"},
+                    "definition_version": {"type": "string", "enum": ["1"]},
+                    "materialization": {"type": "string", "enum": ["captured"]},
+                    "description": {"type": "string", "maxLength": 2048, "nullable": True},
+                    "asset": {"$ref": "#/components/schemas/ExperimentalImageAsset"},
+                    "capture_key": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "origin": {"$ref": "#/components/schemas/ExperimentalImageOrigin"},
+                    "context": {"$ref": "#/components/schemas/ExperimentalImageContext"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "name",
+                    "definition_version",
+                    "materialization",
+                    "asset",
+                    "capture_key",
+                    "origin",
+                    "context",
+                ],
+            },
+            "ExperimentalImageAnalysisPayload": {
+                "properties": {
+                    "name": {"type": "string", "pattern": "^imga_[0-9a-f]{64}$"},
+                    "definition_version": {"type": "string", "enum": ["1"]},
+                    "materialization": {"type": "string", "enum": ["captured"]},
+                    "description": {"type": "string", "maxLength": 2048, "nullable": True},
+                    "original": {"$ref": "#/components/schemas/ExperimentalImageScopedSource"},
+                    "task_id": {"type": "string", "pattern": "^it_[0-9a-f]{64}$"},
+                    "profile_digest": {"$ref": "#/components/schemas/ExperimentalImageDigest"},
+                    "profile": {"$ref": "#/components/schemas/ExperimentalImageParseProfile"},
+                    "input_digest": {"$ref": "#/components/schemas/ExperimentalImageDigest"},
+                    "context_digest": {"$ref": "#/components/schemas/ExperimentalImageDigest"},
+                    "output": {"$ref": "#/components/schemas/ExperimentalImageParseOutput"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "name",
+                    "definition_version",
+                    "materialization",
+                    "original",
+                    "task_id",
+                    "profile_digest",
+                    "profile",
+                    "input_digest",
+                    "context_digest",
+                    "output",
+                ],
+            },
+            "ExperimentalImageTaskState": {
+                "type": "string",
+                "enum": ["pending", "running", "retry_wait", "succeeded", "failed", "cancelled"],
+            },
+            "ExperimentalImageAttempt": {
+                "properties": {
+                    "attempt": {"type": "integer", "maximum": 5.0, "minimum": 1.0},
+                    "claim_revision": {"type": "integer", "minimum": 2.0},
+                    "state": {"type": "string", "enum": ["started", "succeeded", "failed", "interrupted"]},
+                    "started_at": {"type": "string", "format": "date-time"},
+                    "finished_at": {"type": "string", "format": "date-time", "nullable": True},
+                    "provider_requests": {
+                        "type": "integer",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "description": "One "
+                        "attempted "
+                        "network "
+                        "call, "
+                        "zero "
+                        "for "
+                        "preflight "
+                        "rejection, "
+                        "or "
+                        "null "
+                        "after "
+                        "interruption "
+                        "when "
+                        "dispatch "
+                        "cannot "
+                        "be "
+                        "confirmed. "
+                        "Attempts "
+                        "are "
+                        "still "
+                        "spent.",
+                        "nullable": True,
+                    },
+                    "input_digest": {
+                        "allOf": [{"$ref": "#/components/schemas/ExperimentalImageDigest"}],
+                        "nullable": True,
+                    },
+                    "input_tokens": {"type": "integer", "minimum": 0.0, "nullable": True},
+                    "output_tokens": {"type": "integer", "minimum": 0.0, "nullable": True},
+                    "latency_ms": {"type": "integer", "minimum": 0.0, "nullable": True},
+                    "http_status": {"type": "integer", "maximum": 599.0, "minimum": 100.0, "nullable": True},
+                    "error_code": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*$", "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "attempt",
+                    "claim_revision",
+                    "state",
+                    "started_at",
+                    "finished_at",
+                    "provider_requests",
+                    "input_digest",
+                    "input_tokens",
+                    "output_tokens",
+                    "latency_ms",
+                    "http_status",
+                    "error_code",
+                ],
+            },
+            "ExperimentalImageTask": {
+                "properties": {
+                    "task_id": {"type": "string", "pattern": "^it_[0-9a-f]{64}$"},
+                    "original": {"$ref": "#/components/schemas/ExperimentalImageScopedSource"},
+                    "state": {"$ref": "#/components/schemas/ExperimentalImageTaskState"},
+                    "revision": {"type": "integer", "minimum": 1.0},
+                    "attempt_count": {"type": "integer", "maximum": 5.0, "minimum": 0.0},
+                    "max_attempts": {"type": "integer", "maximum": 5.0, "minimum": 1.0},
+                    "profile_digest": {"$ref": "#/components/schemas/ExperimentalImageDigest"},
+                    "analysis": {
+                        "allOf": [{"$ref": "#/components/schemas/ExperimentalImageScopedSource"}],
+                        "nullable": True,
+                    },
+                    "error_code": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*$", "nullable": True},
+                    "next_attempt_at": {"type": "string", "format": "date-time", "nullable": True},
+                    "original_payload": {
+                        "allOf": [{"$ref": "#/components/schemas/ExperimentalImageOriginalPayload"}],
+                        "description": "Exact original Source readback, populated by task/get without a model call.",
+                        "nullable": True,
+                    },
+                    "analysis_payload": {
+                        "allOf": [{"$ref": "#/components/schemas/ExperimentalImageAnalysisPayload"}],
+                        "description": "Exact immutable analysis Source, available after success without a model call.",
+                        "nullable": True,
+                    },
+                    "attempts": {
+                        "items": {"$ref": "#/components/schemas/ExperimentalImageAttempt"},
+                        "type": "array",
+                        "maxItems": 5,
+                        "description": "Durable bounded attempt ledger; unknown token counts remain null.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "task_id",
+                    "original",
+                    "state",
+                    "revision",
+                    "attempt_count",
+                    "max_attempts",
+                    "profile_digest",
+                    "analysis",
+                    "error_code",
+                    "next_attempt_at",
+                ],
+            },
+            "ExperimentalCaptureImageRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "capture_key": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "media_type": {"$ref": "#/components/schemas/ExperimentalImageMediaType"},
+                    "bytes_base64": {
+                        "type": "string",
+                        "maxLength": 11184812,
+                        "minLength": 4,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                        "description": "Bounded "
+                        "transport "
+                        "bytes "
+                        "only. "
+                        "Never "
+                        "part "
+                        "of "
+                        "a "
+                        "Source "
+                        "payload "
+                        "or "
+                        "text "
+                        "projection.",
+                    },
+                    "origin": {"$ref": "#/components/schemas/ExperimentalImageOrigin"},
+                    "context": {"$ref": "#/components/schemas/ExperimentalImageContext"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "capture_key", "media_type", "bytes_base64", "origin", "context"],
+            },
+            "ExperimentalCaptureImageResponse": {
+                "properties": {
+                    "status": {"type": "string", "enum": ["accepted"]},
+                    "original": {"$ref": "#/components/schemas/ExperimentalImageScopedSource"},
+                    "asset": {"$ref": "#/components/schemas/ExperimentalImageAsset"},
+                    "sequence": {"type": "integer", "minimum": 1.0},
+                    "task_id": {"type": "string", "pattern": "^it_[0-9a-f]{64}$"},
+                    "replayed": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["status", "original", "asset", "sequence", "task_id", "replayed"],
+            },
+            "ExperimentalGetImageAssetRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "asset_id": {"type": "string", "pattern": "^ia_[0-9a-f]{64}$"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "asset_id"],
+            },
+            "ExperimentalGetImageAssetResponse": {
+                "properties": {
+                    "asset": {"$ref": "#/components/schemas/ExperimentalImageAsset"},
+                    "bytes_base64": {
+                        "type": "string",
+                        "maxLength": 11184812,
+                        "minLength": 4,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["asset", "bytes_base64"],
+            },
+            "ExperimentalGetImageStatusRequest": {
+                "properties": {"scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id"],
+            },
+            "ExperimentalImageStatus": {
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "available": {"type": "boolean"},
+                    "vision_configured": {"type": "boolean"},
+                    "vision_connection": {"type": "string", "enum": ["dedicated", "generation"]},
+                    "model_id": {"type": "string", "nullable": True},
+                    "pending_count": {"type": "integer", "minimum": 0.0},
+                    "worker_running": {"type": "boolean"},
+                    "error_code": {"type": "string", "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "enabled",
+                    "available",
+                    "vision_configured",
+                    "vision_connection",
+                    "model_id",
+                    "pending_count",
+                    "worker_running",
+                    "error_code",
+                ],
+            },
+            "ExperimentalListImageTasksRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "cursor": {"type": "string", "maxLength": 256, "minLength": 1, "nullable": True},
+                    "limit": {"type": "integer", "maximum": 100.0, "minimum": 1.0, "default": 12},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id"],
+            },
+            "ExperimentalImageTaskListItem": {
+                "properties": {
+                    "task": {"$ref": "#/components/schemas/ExperimentalImageTask"},
+                    "asset": {"$ref": "#/components/schemas/ExperimentalImageAsset"},
+                    "origin": {"$ref": "#/components/schemas/ExperimentalImageOrigin"},
+                    "created_at": {"type": "string", "format": "date-time", "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["task", "asset", "origin", "created_at"],
+            },
+            "ExperimentalImageTaskPage": {
+                "properties": {
+                    "items": {
+                        "items": {"$ref": "#/components/schemas/ExperimentalImageTaskListItem"},
+                        "type": "array",
+                        "maxItems": 100,
+                    },
+                    "next_cursor": {"type": "string", "maxLength": 256, "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["items", "next_cursor"],
+            },
+            "ExperimentalGetImageTaskRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "task_id": {"type": "string", "pattern": "^it_[0-9a-f]{64}$", "nullable": True},
+                    "analysis_source_id": {"type": "string", "pattern": "^imga_[0-9a-f]{64}$", "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id"],
+                "description": "Specify exactly "
+                "one task_id or "
+                "analysis_source_id. "
+                "Analysis citations "
+                "can resolve their "
+                "task, exact "
+                "interpretation and "
+                "original.",
+            },
+            "ExperimentalRetryImageTaskRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "task_id": {"type": "string", "pattern": "^it_[0-9a-f]{64}$"},
+                    "retry_key": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": ".*\\S.*"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "task_id", "retry_key"],
+            },
+            "ExperimentalReparseImageRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "original": {"$ref": "#/components/schemas/SourceTypeReference"},
+                    "reparse_key": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": ".*\\S.*"},
+                    "expected_profile_digest": {
+                        "allOf": [{"$ref": "#/components/schemas/ExperimentalImageDigest"}],
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "original", "reparse_key"],
+            },
         },
         "responses": {
             "ClientUpgradeRequired": {
@@ -12593,5 +13371,37 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
         "access.principal": {"major": 1, "minor": 0},
         "scope.selection": {"major": 1, "minor": 0},
         "memory.explicit": {"major": 1, "minor": 0},
+    },
+    "x-powercontext-experimental-image-source": {
+        "contract_version": "1",
+        "active": True,
+        "implemented_operations": [
+            "experimental_capture_image",
+            "experimental_get_image_asset",
+            "experimental_get_image_task",
+            "experimental_retry_image_task",
+            "experimental_reparse_image",
+            "experimental_list_image_tasks",
+            "experimental_get_image_status",
+        ],
+        "description": "The opt-in SQLite image pipeline "
+        "implements capture, historical "
+        "readback, bounded Vision processing, "
+        "immutable analysis and text "
+        "evidence. Disabled by default; no "
+        "host auto-capture is enabled.",
+        "source_definitions": {
+            "experimental.image.original": {
+                "version": "1",
+                "payload_schema": "#/components/schemas/ExperimentalImageOriginalPayload",
+                "projections": [],
+            },
+            "experimental.image.analysis": {
+                "version": "1",
+                "payload_schema": "#/components/schemas/ExperimentalImageAnalysisPayload",
+                "projections": [{"name": "powercontext.text-evidence", "version": "1"}],
+            },
+        },
+        "planned_paths": {},
     },
 }

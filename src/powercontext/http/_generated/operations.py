@@ -68,6 +68,18 @@ from powercontext.http._generated.models import (
     DreamRunPage,
     EnrollRemoteSkillTargetRequest,
     ExperienceArtifact,
+    ExperimentalCaptureImageRequest,
+    ExperimentalCaptureImageResponse,
+    ExperimentalGetImageAssetRequest,
+    ExperimentalGetImageAssetResponse,
+    ExperimentalGetImageStatusRequest,
+    ExperimentalGetImageTaskRequest,
+    ExperimentalImageStatus,
+    ExperimentalImageTask,
+    ExperimentalImageTaskPage,
+    ExperimentalListImageTasksRequest,
+    ExperimentalReparseImageRequest,
+    ExperimentalRetryImageTaskRequest,
     ExternalSkillResolution,
     FinalizeHandoffRequest,
     FlushMemoryRequest,
@@ -248,6 +260,196 @@ class AccessRequirement(BaseModel):
     scope_id_field: str | None
     resolver: str
 
+
+EXPERIMENTAL_RETRY_IMAGE_TASK = Operation[ExperimentalRetryImageTaskRequest, ExperimentalImageTask](
+    method="POST",
+    path="/v1/experimental/images/task/retry",
+    operation_id="experimental_retry_image_task",
+    request_type=ExperimentalRetryImageTaskRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ExperimentalImageTask,
+    success_status=202,
+    summary="Create a new attempt task from a failed task profile",
+    tags=("experimental-images",),
+    scope_mode="current",
+    responses={
+        202: {
+            "description": "A new task retains the failed task profile and original reference; the "
+            "failed task is unchanged."
+        },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        410: {"description": "Original retained evidence is unavailable."},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action="scope.contribute", resource="scope", scope_id_field="scope_id", resolver="request"
+    ),
+)
+
+EXPERIMENTAL_REPARSE_IMAGE = Operation[ExperimentalReparseImageRequest, ExperimentalImageTask](
+    method="POST",
+    path="/v1/experimental/images/reparse",
+    operation_id="experimental_reparse_image",
+    request_type=ExperimentalReparseImageRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ExperimentalImageTask,
+    success_status=202,
+    summary="Create a new image analysis task with the selected current profile",
+    tags=("experimental-images",),
+    scope_mode="current",
+    responses={
+        202: {
+            "description": "New profile is pinned at acceptance; previous tasks, Sources and Artifact "
+            "evidence remain intact."
+        },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        410: {"description": "Original retained evidence is unavailable."},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action="scope.contribute", resource="scope", scope_id_field="scope_id", resolver="request"
+    ),
+)
+
+EXPERIMENTAL_CAPTURE_IMAGE = Operation[ExperimentalCaptureImageRequest, ExperimentalCaptureImageResponse](
+    method="POST",
+    path="/v1/experimental/images/capture",
+    operation_id="experimental_capture_image",
+    request_type=ExperimentalCaptureImageRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ExperimentalCaptureImageResponse,
+    success_status=202,
+    summary="Capture image bytes and durable parse intent",
+    tags=("experimental-images",),
+    scope_mode="current",
+    responses={
+        202: {
+            "description": "Original asset, Source and initial task are durably stored; parsing and "
+            "Memory are not complete."
+        },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        413: {"description": "Transport bytes or decoded pixel budget exceeded."},
+        415: {"description": "Unsupported or mismatched image format."},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action="scope.contribute", resource="scope", scope_id_field="scope_id", resolver="request"
+    ),
+)
+
+EXPERIMENTAL_GET_IMAGE_ASSET = Operation[ExperimentalGetImageAssetRequest, ExperimentalGetImageAssetResponse](
+    method="POST",
+    path="/v1/experimental/images/asset/get",
+    operation_id="experimental_get_image_asset",
+    request_type=ExperimentalGetImageAssetRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ExperimentalGetImageAssetResponse,
+    success_status=200,
+    summary="Read exact retained image bytes",
+    tags=("experimental-images",),
+    scope_mode="current",
+    responses={
+        200: {"description": "Exact retained bytes verified against their digest; no model call."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        410: {"description": "Retained evidence was explicitly removed or is no longer available."},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+EXPERIMENTAL_LIST_IMAGE_TASKS = Operation[ExperimentalListImageTasksRequest, ExperimentalImageTaskPage](
+    method="POST",
+    path="/v1/experimental/images/tasks/list",
+    operation_id="experimental_list_image_tasks",
+    request_type=ExperimentalListImageTasksRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ExperimentalImageTaskPage,
+    success_status=200,
+    summary="List scoped image materials with bounded cursor pagination",
+    tags=("experimental-images",),
+    scope_mode="current",
+    responses={
+        200: {"description": "Newest accepted tasks first; legacy acceptance dates remain unknown. No provider call."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+EXPERIMENTAL_GET_IMAGE_STATUS = Operation[ExperimentalGetImageStatusRequest, ExperimentalImageStatus](
+    method="POST",
+    path="/v1/experimental/images/status",
+    operation_id="experimental_get_image_status",
+    request_type=ExperimentalGetImageStatusRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ExperimentalImageStatus,
+    success_status=200,
+    summary="Diagnose scoped image storage and configured parsing without a model request",
+    tags=("experimental-images",),
+    scope_mode="current",
+    responses={
+        200: {"description": "Local configuration readiness, not proof of provider image capability."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+EXPERIMENTAL_GET_IMAGE_TASK = Operation[ExperimentalGetImageTaskRequest, ExperimentalImageTask](
+    method="POST",
+    path="/v1/experimental/images/task/get",
+    operation_id="experimental_get_image_task",
+    request_type=ExperimentalGetImageTaskRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=ExperimentalImageTask,
+    success_status=200,
+    summary="Read image parse task state",
+    tags=("experimental-images",),
+    scope_mode="current",
+    responses={
+        200: {
+            "description": "Durable task state; succeeded means analysis Source was committed, not Memory extraction."
+        },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
 
 LIST_ATOMIC_MEMORIES = Operation[ListAtomicMemoryRequest, ListAtomicMemoryResponse](
     method="POST",

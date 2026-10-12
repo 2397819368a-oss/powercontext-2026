@@ -173,3 +173,13 @@ curl -fsS -X POST "$POWERCONTEXT_CLIENT_SERVER_URL/v1/atomic-memory/list" \
 | New session cannot find content | Scope binding, context assembly/explicit search, saved records, and citations |
 
 See [Troubleshoot](../operate/troubleshoot.md) and the [configuration reference](../operate/configuration.md).
+
+## Optional image recognition
+
+The ordinary wizard offers an image step, off by default. A dedicated Vision connection stores its model, endpoint, deployment label and headers in the same .env. Explicit reuse sets `POWERCONTEXT_SERVER_INFERENCE_VISION_USE_GENERATION=true` and uses generation model, base URL and headers. Reuse currently requires an `openai-chat:` model, an explicit base URL and actual image-input capability.
+
+`POWERCONTEXT_SERVER_IMAGES_ENABLED` controls Server intake; `POWERCONTEXT_CODEX_CAPTURE_IMAGES` selects workspace consent during Codex setup. Both default to false. `POWERCONTEXT_SERVER_IMAGES_ASSET_DIRECTORY` can specify original storage; omission preserves an existing database's recorded directory, while an explicit directory change is rejected. Configuration changes do not rewrite historical Sources or silently replace accepted task profiles.
+
+A dedicated connection uses the `POWERCONTEXT_SERVER_INFERENCE_VISION_` prefix with MODEL, BASE_URL, DEPLOYMENT_ID and HEADERS. Keep credentials local. Reuse does not require a second Vision credential. `powercontext image probe --env-file .env` makes one billable synthetic-image request and saves no Source.
+
+Parsing and Memory generation are separate results. Ordinary generation, embedding and existing processing policy still control extraction and recall; the Codex chat model is a separate connection.

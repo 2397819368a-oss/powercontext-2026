@@ -1276,7 +1276,7 @@ def test_setup_claude_code_refreshes_an_existing_powercontext_statusline(
     statusline = json.loads(settings_file.read_text(encoding="utf-8"))["statusLine"]
     assert statusline["command"] != previous_command
     assert "0.0.9" not in statusline["command"]
-    assert "scripts/statusline.py" in statusline["command"]
+    assert "scripts/statusline.py" in statusline["command"].replace("\\", "/")
     assert "--server-url http://127.0.0.1:9000" in statusline["command"]
 
 

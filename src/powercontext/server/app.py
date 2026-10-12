@@ -158,6 +158,7 @@ from powercontext.builtin.handoff_report import (
     HandoffReportInconsistentError,
     HandoffReportTooLargeError,
 )
+from powercontext.builtin.images.service import ImageError
 from powercontext.builtin.inference.errors import InferenceTimeoutError, InferenceUnavailableError
 from powercontext.builtin.persistence.agent_skill_targets import RemoteAgentSkillTarget
 from powercontext.builtin.persistence.artifact_governance import (
@@ -700,6 +701,13 @@ from powercontext.http._generated.operations import (
     DOWNLOAD_REMOTE_SKILL_PACKAGE,
     DOWNLOAD_SKILL_PACKAGE,
     ENROLL_REMOTE_SKILL_TARGET,
+    EXPERIMENTAL_CAPTURE_IMAGE,
+    EXPERIMENTAL_GET_IMAGE_ASSET,
+    EXPERIMENTAL_GET_IMAGE_STATUS,
+    EXPERIMENTAL_GET_IMAGE_TASK,
+    EXPERIMENTAL_LIST_IMAGE_TASKS,
+    EXPERIMENTAL_REPARSE_IMAGE,
+    EXPERIMENTAL_RETRY_IMAGE_TASK,
     FINALIZE_HANDOFF,
     FLUSH_MEMORY,
     FLUSH_PROFILE,
@@ -845,11 +853,12 @@ from powercontext.server.authz.models import (
 from powercontext.server.authz.profiles import ARTIFACT_FAMILY_PROFILES, artifact_family_profile
 from powercontext.server.authz.service import _require_allowed
 from powercontext.server.context import (
+    access_audit_context as _access_audit_context,
+)
+from powercontext.server.context import (
     bind_request_id,
-    current_authentication,
     current_principal,
     current_request_id,
-    is_internal_bridge,
     reset_request_id,
 )
 from powercontext.server.dream_access import DreamAccess, principal_identity
@@ -857,6 +866,16 @@ from powercontext.server.dream_compatibility import (
     LEGACY_DREAM_OPERATIONS,
     negotiate_dream_contract,
     require_extended_dream,
+)
+from powercontext.server.images import (
+    ImageBodyLimitMiddleware,
+    capture_image,
+    get_image_asset,
+    get_image_status,
+    get_image_task,
+    list_image_tasks,
+    reparse_image,
+    retry_image_task,
 )
 from powercontext.server.tracing import request_id_from_span
 from powercontext.sources import ConnectorBinding as RuntimeConnectorBinding
@@ -1360,6 +1379,7 @@ def create_app(
         middleware=list(middleware),
     )
     app.openapi_version = OPENAPI_VERSION
+    app.add_middleware(ImageBodyLimitMiddleware)
     app.state.application = application
     app.state.capability_provider = capability_provider
     app.state.readiness_probe = readiness_probe
@@ -1450,6 +1470,17 @@ def create_app(
         _add_route(app, GET_LIVENESS, get_liveness)
         return app
 
+    @app.exception_handler(ImageError)
+    async def image_error(request: Request, error: ImageError) -> JSONResponse:
+        return _error_response(error.status_code, code=error.code, message="The image operation failed.", details=None)
+
+    _add_route(app, EXPERIMENTAL_CAPTURE_IMAGE, capture_image)
+    _add_route(app, EXPERIMENTAL_GET_IMAGE_ASSET, get_image_asset)
+    _add_route(app, EXPERIMENTAL_GET_IMAGE_TASK, get_image_task)
+    _add_route(app, EXPERIMENTAL_GET_IMAGE_STATUS, get_image_status)
+    _add_route(app, EXPERIMENTAL_LIST_IMAGE_TASKS, list_image_tasks)
+    _add_route(app, EXPERIMENTAL_RETRY_IMAGE_TASK, retry_image_task)
+    _add_route(app, EXPERIMENTAL_REPARSE_IMAGE, reparse_image)
     _add_route(app, CREATE_DREAM_RUN, create_dream_run)
     _add_route(app, GET_DREAM_RUN, get_dream_run)
     _add_route(app, LIST_DREAM_RUNS, list_dream_runs)
@@ -4630,17 +4661,6 @@ def _require_principal() -> PrincipalRef:
     return principal
 
 
-def _access_audit_context(operation: str) -> AccessAuditContext:
-    authentication = current_authentication()
-    return AccessAuditContext(
-        transport="mcp" if is_internal_bridge() else "http",
-        operation=operation,
-        request_id=current_request_id(),
-        actor=None if authentication is None else authentication.actor,
-        subject_groups=() if authentication is None else authentication.subject_groups,
-    )
-
-
 def _access_principal(value: TransportAccessPrincipal) -> PrincipalRef:
     # IDs are canonical. A description in an Access mutation payload is not a
     # trusted directory assertion, so never persist it as identity metadata.
@@ -5654,6 +5674,8 @@ def _map_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
         )
     if isinstance(error, CodeError):
         return error.status, error.code, "The code query could not be completed.", None
+    if isinstance(error, ImageError):
+        return error.status_code, error.code, "The image operation failed.", None
     access_error = _map_access_error(error)
     if access_error is not None:
         return access_error

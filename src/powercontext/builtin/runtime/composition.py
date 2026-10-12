@@ -91,6 +91,7 @@ from powercontext.builtin.evidence.models import content_digest
 from powercontext.builtin.evidence.resolver import AuthorizationContext
 from powercontext.builtin.handoff_report.adapters import RuntimeHandoffReadAdapter
 from powercontext.builtin.handoff_report.application import HandoffReportApplication
+from powercontext.builtin.images.service import ImageService
 from powercontext.builtin.inference import EmbeddingModel, TokenEstimator, character_token_estimator
 from powercontext.builtin.inference.usage import (
     UsageReportingEmbeddingModel,
@@ -761,8 +762,17 @@ async def open_builtin_runtime(
             AtomicArtifactSearcher(application=contexts.atomic_memory),
             embedding_purpose=ModelUsagePurpose.MEMORY_RECALL,
         )
+        images = await ImageService.open(
+            contexts.database,
+            contexts.repositories.sources,
+            contexts.repositories.processing_pending,
+            config.images,
+            config.inference,
+            configured_source_registry,
+        )
         runtime = await resources.enter_async_context(
             BuiltinRuntime(
+                image_service=images,
                 code_service=await resources.enter_async_context(open_code_service(config.code, config.database)),
                 provider=contexts,
                 primary_database=contexts.database,
@@ -883,6 +893,7 @@ async def open_builtin_runtime(
         if config.runtime.memory_rerank_enabled and configured_reranker is None:
             raise BuiltinConfigurationError("memory-reranker")
         _require_decision_backend(config.runtime, configured_decision)
+        runtime.start_image_worker(config.inference, config.runtime.artifact_processing_role)
         yield runtime
 
 
@@ -1840,6 +1851,21 @@ async def _open_pydantic_ai_model(
             ),
         )
     )
+    # MiniCPM's chat template accepts one leading system message. Prompted
+    # structured output adds schema instructions; merge them at the provider
+    # boundary without dropping either the task instructions or the schema.
+    if base_url is not None and base_url.host == "api.modelbest.cn" and model_name.startswith("openai-chat:MiniCPM"):
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
+        from pydantic_ai.providers.openai import OpenAIProvider
+
+        if isinstance(inferred_model, OpenAIChatModel):
+            profile = cast(
+                OpenAIModelProfile, {**inferred_model.profile, "openai_chat_supports_multiple_system_messages": False}
+            )
+            inferred_model = OpenAIChatModel(
+                inferred_model.model_name, provider=OpenAIProvider(openai_client=inferred_model.client), profile=profile
+            )
     provider_model = await resources.enter_async_context(inferred_model)
     model = provider_model if instrumentation is None else InstrumentedModel(provider_model, instrumentation)
     return provider_model, model

@@ -1,0 +1,26 @@
+<!-- Copyright (c) 2026 OceanBase. Licensed under the Apache License, Version 2.0. -->
+{% from 'components/page-heading.html' import page_heading %}
+{% from 'components/pagination.html' import pagination %}
+{{ page_heading(t.images, t.images_subtitle) }}
+{% if image_status %}
+<p class="text-secondary">{{ t.images_enabled if image_status.enabled else t.images_disabled }} · {{ image_status.model_id or t.images_model_missing }}</p>
+{% if image_status.error_code %}<p class="alert alert-warning" role="status">{{ image_status.error_code }}</p>{% endif %}
+{% endif %}
+<div class="row row-cards">
+{% for item in data.images %}
+  <article class="col-md-6 col-xl-4"><div class="card h-100">
+    <a href="{{ link('image-task/' ~ item.task.task_id) }}" hx-boost="false">
+      <img class="card-img-top" style="height: 180px; object-fit: contain" src="{{ link('image-thumbnails/' ~ item.asset.asset_id) }}" alt="{{ t.images_preview }}" loading="lazy">
+    </a>
+    <div class="card-body">
+      <p class="mb-2"><span class="badge bg-secondary-lt">{{ t.get('image_state_' ~ item.task.state, item.task.state) }}</span></p>
+      <p class="small text-secondary">{{ item.created_at or t.images_date_unknown }} · {{ item.asset.width }} × {{ item.asset.height }} · {{ item.asset.byte_length }} B<br>{{ item.origin.client_variant or item.origin.kind }}</p>
+      {% if item.task.error_code %}<p class="text-danger small">{{ item.task.error_code }}</p>{% endif %}
+      <a class="btn btn-outline-primary" href="{{ link('image-task/' ~ item.task.task_id) }}" hx-boost="false">{{ t.images_open }}</a>
+    </div>
+  </div></article>
+{% else %}
+  <div class="empty"><p class="empty-title">{{ t.images_empty }}</p><p class="empty-subtitle">{{ t.images_empty_help }}</p></div>
+{% endfor %}
+</div>
+{{ pagination(image_pager, t) }}

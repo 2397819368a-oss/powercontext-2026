@@ -83,6 +83,18 @@ from powercontext.http import (
     EnrollRemoteSkillTargetRequest,
     ErrorResponse,
     ExperienceArtifact,
+    ExperimentalCaptureImageRequest,
+    ExperimentalCaptureImageResponse,
+    ExperimentalGetImageAssetRequest,
+    ExperimentalGetImageAssetResponse,
+    ExperimentalGetImageStatusRequest,
+    ExperimentalGetImageTaskRequest,
+    ExperimentalImageStatus,
+    ExperimentalImageTask,
+    ExperimentalImageTaskPage,
+    ExperimentalListImageTasksRequest,
+    ExperimentalReparseImageRequest,
+    ExperimentalRetryImageTaskRequest,
     ExternalSkillResolution,
     FinalizeHandoffRequest,
     FlushMemoryRequest,
@@ -244,6 +256,13 @@ from powercontext.http._generated.operations import (
     DOWNLOAD_REMOTE_SKILL_PACKAGE,
     DOWNLOAD_SKILL_PACKAGE,
     ENROLL_REMOTE_SKILL_TARGET,
+    EXPERIMENTAL_CAPTURE_IMAGE,
+    EXPERIMENTAL_GET_IMAGE_ASSET,
+    EXPERIMENTAL_GET_IMAGE_STATUS,
+    EXPERIMENTAL_GET_IMAGE_TASK,
+    EXPERIMENTAL_LIST_IMAGE_TASKS,
+    EXPERIMENTAL_REPARSE_IMAGE,
+    EXPERIMENTAL_RETRY_IMAGE_TASK,
     FINALIZE_HANDOFF,
     FLUSH_MEMORY,
     FLUSH_PROFILE,
@@ -590,6 +609,34 @@ class PowerContextClient:
         """Capture explicit session-local work state as Source evidence."""
 
         return await self._request(CAPTURE_WORKING_NOTE, request)
+
+    async def capture_image(self, request: ExperimentalCaptureImageRequest) -> ExperimentalCaptureImageResponse:
+        """Durably save one original and pending parse intent; no inference waits."""
+        return await self._request(EXPERIMENTAL_CAPTURE_IMAGE, request)
+
+    async def get_image_asset(self, request: ExperimentalGetImageAssetRequest) -> ExperimentalGetImageAssetResponse:
+        """Read exact original bytes within the authorized Scope."""
+        return await self._request(EXPERIMENTAL_GET_IMAGE_ASSET, request)
+
+    async def get_image_task(self, request: ExperimentalGetImageTaskRequest) -> ExperimentalImageTask:
+        """Read exact interpretation, original and bounded attempt history."""
+        return await self._request(EXPERIMENTAL_GET_IMAGE_TASK, request)
+
+    async def list_image_tasks(self, request: ExperimentalListImageTasksRequest) -> ExperimentalImageTaskPage:
+        """Read a bounded page of scoped image materials without calling a model."""
+        return await self._request(EXPERIMENTAL_LIST_IMAGE_TASKS, request)
+
+    async def get_image_status(self, request: ExperimentalGetImageStatusRequest) -> ExperimentalImageStatus:
+        """Inspect image processing readiness without a provider probe."""
+        return await self._request(EXPERIMENTAL_GET_IMAGE_STATUS, request)
+
+    async def retry_image_task(self, request: ExperimentalRetryImageTaskRequest) -> ExperimentalImageTask:
+        """Create an idempotent new task preserving the failed task's profile."""
+        return await self._request(EXPERIMENTAL_RETRY_IMAGE_TASK, request)
+
+    async def reparse_image(self, request: ExperimentalReparseImageRequest) -> ExperimentalImageTask:
+        """Create an idempotent new interpretation using the current Vision profile."""
+        return await self._request(EXPERIMENTAL_REPARSE_IMAGE, request)
 
     async def get_access_principal(self) -> AccessMeResponse:
         """Return the authenticated Principal and enforceable Access capabilities."""

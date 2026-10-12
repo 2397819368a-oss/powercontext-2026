@@ -148,6 +148,7 @@ from powercontext.builtin.evidence.resolver import (
     ScopedEvidenceAuthorizer,
     ScopedEvidenceBatchAuthorizer,
 )
+from powercontext.builtin.images.service import ImageService
 from powercontext.builtin.inference import (
     EmbeddingModel,
 )
@@ -3753,6 +3754,7 @@ class BuiltinRuntime:
         handoff_committer: Callable[..., Awaitable[Handoff]] | None = None,
         extraction_diagnostics: ExtractionDiagnostics | None = None,
         code_service: CodeService | None = None,
+        image_service: ImageService | None = None,
         source_window_limit: int = 100,
         context_assembly_max_entries: int = 8,
         recall_sufficiency_policy: RecallSufficiencyPolicy | None = None,
@@ -3824,6 +3826,7 @@ class BuiltinRuntime:
         self._primary_database = primary_database
         self._owner_write_transactions = owner_write_transactions
         self._handoff_committer = handoff_committer
+        self.images = image_service
         self._capabilities = capabilities
         self._extraction_diagnostics = extraction_diagnostics
         self._review_service = review_service
@@ -3989,6 +3992,20 @@ class BuiltinRuntime:
 
     async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         await self.close()
+
+    def start_image_worker(self, inference: object, role: str) -> None:
+        """Bind the optional worker to Runtime lifecycle and scoped usage accounting."""
+        if self.images is None or role == "api":
+            return
+
+        async def record_usage(scope_id: str, usage: InferenceUsage) -> None:
+            await self.statistics.for_scope(scope_id).record_model_usage(
+                ModelUsagePurpose.IMAGE_PARSING,
+                ModelUsageOperation.GENERATION,
+                usage,
+            )
+
+        self.images.start_worker(inference, record_usage)
 
     async def capabilities(self) -> RuntimeCapabilities:
         async with self._operation():
@@ -4159,6 +4176,8 @@ class BuiltinRuntime:
             async with self._lifecycle:
                 self._closing = True
                 await self._lifecycle.wait_for(lambda: self._active_operations == 0)
+            if self.images is not None:
+                await self.images.aclose()
             if self.artifact_processing_supervisor is not None:
                 await self.artifact_processing_supervisor.close()
             async with self._processor_lock:

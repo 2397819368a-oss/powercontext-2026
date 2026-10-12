@@ -8,6 +8,7 @@ from enum import IntEnum, StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import (
+    AnyUrl,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -3531,6 +3532,383 @@ class CatalogTagResult(BaseModel):
     tags: Annotated[list[Tag2], Field(max_length=32)]
     tag_digest: Annotated[StrictStr, Field(min_length=1)]
     etag: Annotated[StrictStr, Field(min_length=1)]
+
+
+class ExperimentalImageMediaType(StrEnum):
+    IMAGE_PNG = "image/png"
+    IMAGE_JPEG = "image/jpeg"
+
+
+class ExperimentalImageDigest(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
+
+
+class ExperimentalImageScopedSource(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    source: SourceTypeReference
+
+
+class ExperimentalImageAsset(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    asset_id: Annotated[StrictStr, Field(pattern="^ia_[0-9a-f]{64}$")]
+    digest: ExperimentalImageDigest
+    media_type: ExperimentalImageMediaType
+    byte_length: Annotated[StrictInt, Field(ge=1, le=8388608)]
+    width: Annotated[StrictInt, Field(ge=1, le=16384)]
+    height: Annotated[StrictInt, Field(ge=1, le=16384)]
+
+
+class Kind10(StrEnum):
+    EXPLICIT_UPLOAD = "explicit_upload"
+    CODEX = "codex"
+
+
+class Representation(StrEnum):
+    ORIGINAL_FILE = "original_file"
+    HOST_IMAGE = "host_image"
+
+
+class ClientVariant(StrEnum):
+    CLI_EXEC = "cli_exec"
+    CLI_TUI = "cli_tui"
+    DESKTOP = "desktop"
+
+
+class ExperimentalImageOrigin(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    kind: Kind10
+    attachment_index: Annotated[StrictInt, Field(ge=0, le=3)]
+    host_instance_id: Annotated[StrictStr | None, Field(max_length=128, min_length=1)] = None
+    session_id: Annotated[StrictStr | None, Field(max_length=128, min_length=1)] = None
+    turn_id: Annotated[StrictStr | None, Field(max_length=128, min_length=1)] = None
+    message_id: Annotated[StrictStr | None, Field(max_length=128, min_length=1)] = None
+    representation: Representation | None = None
+    client_variant: ClientVariant | None = None
+
+
+class ExperimentalImageContext(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    text: Annotated[StrictStr, Field(max_length=2048)]
+    source: ExperimentalImageScopedSource | None = None
+
+
+class PromptVersion(StrEnum):
+    IMAGE_EVIDENCE_V1 = "image-evidence-v1"
+
+
+class PreprocessingVersion(StrEnum):
+    EXIF_STRIP_V1 = "exif-strip-v1"
+
+
+class OutputMode(StrEnum):
+    PROMPTED_JSON = "prompted_json"
+
+
+class ExperimentalImageParseProfile(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    model_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    deployment_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    base_url: AnyUrl
+    prompt_version: PromptVersion
+    preprocessing_version: PreprocessingVersion
+    output_mode: OutputMode
+    timeout_seconds: Annotated[StrictInt, Field(ge=1, le=300)]
+    max_attempts: Annotated[StrictInt, Field(ge=1, le=5)]
+    max_output_tokens: Annotated[StrictInt, Field(ge=1, le=8192)]
+
+
+class ExperimentalImageEntity(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    entity_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    label: Annotated[StrictStr, Field(max_length=512, min_length=1)]
+
+
+class ExperimentalImageRelation(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    from_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    to_id: Annotated[StrictStr, Field(max_length=64, min_length=1)]
+    label: Annotated[StrictStr, Field(max_length=512, min_length=1)]
+
+
+class Readability(StrEnum):
+    READABLE = "readable"
+    PARTIAL = "partial"
+    UNREADABLE = "unreadable"
+
+
+class Uncertainty(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(max_length=512, min_length=1)]
+
+
+class ExperimentalImageParseOutput(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    readability: Readability
+    ocr_text: Annotated[StrictStr, Field(max_length=16384)]
+    visual_description: Annotated[StrictStr, Field(max_length=4096)]
+    entities: Annotated[list[ExperimentalImageEntity], Field(max_length=16)]
+    relations: Annotated[list[ExperimentalImageRelation], Field(max_length=16)]
+    uncertainties: Annotated[list[Uncertainty], Field(max_length=16)]
+
+
+class DefinitionVersion(StrEnum):
+    FIELD_1 = "1"
+
+
+class ExperimentalImageOriginalPayload(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    name: Annotated[StrictStr, Field(pattern="^img_[0-9a-f]{64}$")]
+    definition_version: DefinitionVersion
+    materialization: Materialization
+    description: Annotated[StrictStr | None, Field(max_length=2048)] = None
+    asset: ExperimentalImageAsset
+    capture_key: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    origin: ExperimentalImageOrigin
+    context: ExperimentalImageContext
+
+
+class ExperimentalImageAnalysisPayload(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    name: Annotated[StrictStr, Field(pattern="^imga_[0-9a-f]{64}$")]
+    definition_version: DefinitionVersion
+    materialization: Materialization
+    description: Annotated[StrictStr | None, Field(max_length=2048)] = None
+    original: ExperimentalImageScopedSource
+    task_id: Annotated[StrictStr, Field(pattern="^it_[0-9a-f]{64}$")]
+    profile_digest: ExperimentalImageDigest
+    profile: ExperimentalImageParseProfile
+    input_digest: ExperimentalImageDigest
+    context_digest: ExperimentalImageDigest
+    output: ExperimentalImageParseOutput
+
+
+class ExperimentalImageTaskState(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    RETRY_WAIT = "retry_wait"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class State1(StrEnum):
+    STARTED = "started"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
+class ExperimentalImageAttempt(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    attempt: Annotated[StrictInt, Field(ge=1, le=5)]
+    claim_revision: Annotated[StrictInt, Field(ge=2)]
+    state: State1
+    started_at: AwareDatetime
+    finished_at: Annotated[AwareDatetime | None, Field(...)]
+    provider_requests: Annotated[
+        StrictInt | None,
+        Field(
+            description="One attempted network call, zero for preflight rejection, or null after interruption when dispatch cannot be confirmed. Attempts are still spent.",
+            ge=0,
+            le=1,
+        ),
+    ]
+    input_digest: Annotated[ExperimentalImageDigest | None, Field(...)]
+    input_tokens: Annotated[StrictInt | None, Field(ge=0)]
+    output_tokens: Annotated[StrictInt | None, Field(ge=0)]
+    latency_ms: Annotated[StrictInt | None, Field(ge=0)]
+    http_status: Annotated[StrictInt | None, Field(ge=100, le=599)]
+    error_code: Annotated[StrictStr | None, Field(max_length=64, pattern="^[a-z][a-z0-9_]*$")]
+
+
+class ExperimentalImageTask(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    task_id: Annotated[StrictStr, Field(pattern="^it_[0-9a-f]{64}$")]
+    original: ExperimentalImageScopedSource
+    state: ExperimentalImageTaskState
+    revision: Annotated[StrictInt, Field(ge=1)]
+    attempt_count: Annotated[StrictInt, Field(ge=0, le=5)]
+    max_attempts: Annotated[StrictInt, Field(ge=1, le=5)]
+    profile_digest: ExperimentalImageDigest
+    analysis: Annotated[ExperimentalImageScopedSource | None, Field(...)]
+    error_code: Annotated[StrictStr | None, Field(max_length=64, pattern="^[a-z][a-z0-9_]*$")]
+    next_attempt_at: Annotated[AwareDatetime | None, Field(...)]
+    original_payload: Annotated[
+        ExperimentalImageOriginalPayload | None,
+        Field(description="Exact original Source readback, populated by task/get without a model call."),
+    ] = None
+    analysis_payload: Annotated[
+        ExperimentalImageAnalysisPayload | None,
+        Field(description="Exact immutable analysis Source, available after success without a model call."),
+    ] = None
+    attempts: Annotated[
+        list[ExperimentalImageAttempt] | None,
+        Field(description="Durable bounded attempt ledger; unknown token counts remain null.", max_length=5),
+    ] = None
+
+
+class ExperimentalCaptureImageRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    capture_key: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    media_type: ExperimentalImageMediaType
+    bytes_base64: Annotated[
+        StrictStr,
+        Field(
+            description="Bounded transport bytes only. Never part of a Source payload or text projection.",
+            max_length=11184812,
+            min_length=4,
+            pattern="^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+        ),
+    ]
+    origin: ExperimentalImageOrigin
+    context: ExperimentalImageContext
+
+
+class Status6(StrEnum):
+    ACCEPTED = "accepted"
+
+
+class ExperimentalCaptureImageResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    status: Status6
+    original: ExperimentalImageScopedSource
+    asset: ExperimentalImageAsset
+    sequence: Annotated[StrictInt, Field(ge=1)]
+    task_id: Annotated[StrictStr, Field(pattern="^it_[0-9a-f]{64}$")]
+    replayed: StrictBool
+
+
+class ExperimentalGetImageAssetRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    asset_id: Annotated[StrictStr, Field(pattern="^ia_[0-9a-f]{64}$")]
+
+
+class ExperimentalGetImageAssetResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    asset: ExperimentalImageAsset
+    bytes_base64: Annotated[
+        StrictStr,
+        Field(
+            max_length=11184812,
+            min_length=4,
+            pattern="^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+        ),
+    ]
+
+
+class ExperimentalGetImageStatusRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+
+
+class VisionConnection(StrEnum):
+    DEDICATED = "dedicated"
+    GENERATION = "generation"
+
+
+class ExperimentalImageStatus(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    enabled: StrictBool
+    available: StrictBool
+    vision_configured: StrictBool
+    vision_connection: VisionConnection
+    model_id: Annotated[StrictStr | None, Field(...)]
+    pending_count: Annotated[StrictInt, Field(ge=0)]
+    worker_running: StrictBool
+    error_code: Annotated[StrictStr | None, Field(...)]
+
+
+class ExperimentalListImageTasksRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    cursor: Annotated[StrictStr | None, Field(max_length=256, min_length=1)] = None
+    limit: Annotated[StrictInt, Field(ge=1, le=100)] = 12
+
+
+class ExperimentalImageTaskListItem(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    task: ExperimentalImageTask
+    asset: ExperimentalImageAsset
+    origin: ExperimentalImageOrigin
+    created_at: Annotated[AwareDatetime | None, Field(...)]
+
+
+class ExperimentalImageTaskPage(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    items: Annotated[list[ExperimentalImageTaskListItem], Field(max_length=100)]
+    next_cursor: Annotated[StrictStr | None, Field(max_length=256)]
+
+
+class ExperimentalGetImageTaskRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    task_id: Annotated[StrictStr | None, Field(pattern="^it_[0-9a-f]{64}$")] = None
+    analysis_source_id: Annotated[StrictStr | None, Field(pattern="^imga_[0-9a-f]{64}$")] = None
+
+
+class ExperimentalRetryImageTaskRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    task_id: Annotated[StrictStr, Field(pattern="^it_[0-9a-f]{64}$")]
+    retry_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern=".*\\S.*")]
+
+
+class ExperimentalReparseImageRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    original: SourceTypeReference
+    reparse_key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern=".*\\S.*")]
+    expected_profile_digest: ExperimentalImageDigest | None = None
 
 
 class AtomicMemoryWriteContent(BaseModel):

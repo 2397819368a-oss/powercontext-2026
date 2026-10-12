@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.memory.prompts import MemoryExtractionProfile
+from powercontext.builtin.images.models import ImageAnalysisSource, image_text_evidence
 from powercontext.builtin.inference import InvalidInferenceOutputError, StructuredGenerator, TokenEstimator
 from powercontext.builtin.persistence.records import _canonical_source_text
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
@@ -224,6 +225,10 @@ async def project_atomic_memory_evidence(
                 content = TextEvidence.model_validate(projection.value).model_dump(mode="json")
                 body_from_text_projection = True
                 break
+    elif isinstance(value, ImageAnalysisSource):
+        projected = image_text_evidence(value)
+        content = projected.model_dump(mode="json")
+        source_metadata = projected.metadata
     else:
         materialized = await sources.read_value(value)
         content = (
@@ -235,7 +240,11 @@ async def project_atomic_memory_evidence(
         source_ref=stored.ref,
         journal_position=stored.journal_position,
         content=body,
-        source_metadata=_compact_source_metadata(value, body=body, body_from_text_projection=body_from_text_projection),
+        source_metadata=(
+            _JSON.validate_python(source_metadata)
+            if isinstance(value, ImageAnalysisSource)
+            else _compact_source_metadata(value, body=body, body_from_text_projection=body_from_text_projection)
+        ),
         via_artifact=via_artifact,
     )
 

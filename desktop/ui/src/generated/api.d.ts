@@ -16,6 +16,125 @@
 
 // Generated from openapi/powercontext.yaml. Do not edit.
 export interface paths {
+    "/v1/experimental/images/task/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a new attempt task from a failed task profile */
+        post: operations["experimental_retry_image_task"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/experimental/images/reparse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a new image analysis task with the selected current profile */
+        post: operations["experimental_reparse_image"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/experimental/images/capture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Capture image bytes and durable parse intent */
+        post: operations["experimental_capture_image"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/experimental/images/asset/get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read exact retained image bytes */
+        post: operations["experimental_get_image_asset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/experimental/images/tasks/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List scoped image materials with bounded cursor pagination */
+        post: operations["experimental_list_image_tasks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/experimental/images/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Diagnose scoped image storage and configured parsing without a model request */
+        post: operations["experimental_get_image_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/experimental/images/task/get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read image parse task state */
+        post: operations["experimental_get_image_task"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/atomic-memory/list": {
         parameters: {
             query?: never;
@@ -5200,6 +5319,211 @@ export interface components {
             /** @default [] */
             versions: components["schemas"]["Candidate"][];
         };
+        /** @enum {string} */
+        ExperimentalImageMediaType: "image/png" | "image/jpeg";
+        ExperimentalImageDigest: string;
+        ExperimentalImageScopedSource: {
+            scope_id: string;
+            source: components["schemas"]["SourceTypeReference"];
+        };
+        ExperimentalImageAsset: {
+            asset_id: string;
+            digest: components["schemas"]["ExperimentalImageDigest"];
+            media_type: components["schemas"]["ExperimentalImageMediaType"];
+            byte_length: number;
+            width: number;
+            height: number;
+        };
+        ExperimentalImageOrigin: {
+            /** @enum {string} */
+            kind: "explicit_upload" | "codex";
+            attachment_index: number;
+            host_instance_id?: string | null;
+            session_id?: string | null;
+            turn_id?: string | null;
+            message_id?: string | null;
+            /** @enum {string|null} */
+            representation?: "original_file" | "host_image" | null;
+            /** @enum {string|null} */
+            client_variant?: "cli_exec" | "cli_tui" | "desktop" | null;
+        };
+        ExperimentalImageContext: {
+            text: string;
+            source?: components["schemas"]["ExperimentalImageScopedSource"] | null;
+        };
+        ExperimentalImageParseProfile: {
+            model_id: string;
+            deployment_id: string;
+            /** Format: uri */
+            base_url: string;
+            /** @enum {string} */
+            prompt_version: "image-evidence-v1";
+            /** @enum {string} */
+            preprocessing_version: "exif-strip-v1";
+            /** @enum {string} */
+            output_mode: "prompted_json";
+            timeout_seconds: number;
+            max_attempts: number;
+            max_output_tokens: number;
+        };
+        ExperimentalImageEntity: {
+            entity_id: string;
+            label: string;
+        };
+        ExperimentalImageRelation: {
+            from_id: string;
+            to_id: string;
+            label: string;
+        };
+        ExperimentalImageParseOutput: {
+            /** @enum {string} */
+            readability: "readable" | "partial" | "unreadable";
+            ocr_text: string;
+            visual_description: string;
+            entities: components["schemas"]["ExperimentalImageEntity"][];
+            relations: components["schemas"]["ExperimentalImageRelation"][];
+            uncertainties: string[];
+        };
+        ExperimentalImageOriginalPayload: {
+            name: string;
+            /** @enum {string} */
+            definition_version: "1";
+            /** @enum {string} */
+            materialization: "captured";
+            description?: string | null;
+            asset: components["schemas"]["ExperimentalImageAsset"];
+            capture_key: string;
+            origin: components["schemas"]["ExperimentalImageOrigin"];
+            context: components["schemas"]["ExperimentalImageContext"];
+        };
+        ExperimentalImageAnalysisPayload: {
+            name: string;
+            /** @enum {string} */
+            definition_version: "1";
+            /** @enum {string} */
+            materialization: "captured";
+            description?: string | null;
+            original: components["schemas"]["ExperimentalImageScopedSource"];
+            task_id: string;
+            profile_digest: components["schemas"]["ExperimentalImageDigest"];
+            profile: components["schemas"]["ExperimentalImageParseProfile"];
+            input_digest: components["schemas"]["ExperimentalImageDigest"];
+            context_digest: components["schemas"]["ExperimentalImageDigest"];
+            output: components["schemas"]["ExperimentalImageParseOutput"];
+        };
+        /** @enum {string} */
+        ExperimentalImageTaskState: "pending" | "running" | "retry_wait" | "succeeded" | "failed" | "cancelled";
+        ExperimentalImageAttempt: {
+            attempt: number;
+            claim_revision: number;
+            /** @enum {string} */
+            state: "started" | "succeeded" | "failed" | "interrupted";
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            finished_at: string | null;
+            /** @description One attempted network call, zero for preflight rejection, or null after interruption when dispatch cannot be confirmed. Attempts are still spent. */
+            provider_requests: number | null;
+            input_digest: components["schemas"]["ExperimentalImageDigest"] | null;
+            input_tokens: number | null;
+            output_tokens: number | null;
+            latency_ms: number | null;
+            http_status: number | null;
+            error_code: string | null;
+        };
+        ExperimentalImageTask: {
+            task_id: string;
+            original: components["schemas"]["ExperimentalImageScopedSource"];
+            state: components["schemas"]["ExperimentalImageTaskState"];
+            revision: number;
+            attempt_count: number;
+            max_attempts: number;
+            profile_digest: components["schemas"]["ExperimentalImageDigest"];
+            analysis: components["schemas"]["ExperimentalImageScopedSource"] | null;
+            error_code: string | null;
+            /** Format: date-time */
+            next_attempt_at: string | null;
+            /** @description Exact original Source readback, populated by task/get without a model call. */
+            original_payload?: components["schemas"]["ExperimentalImageOriginalPayload"] | null;
+            /** @description Exact immutable analysis Source, available after success without a model call. */
+            analysis_payload?: components["schemas"]["ExperimentalImageAnalysisPayload"] | null;
+            /** @description Durable bounded attempt ledger; unknown token counts remain null. */
+            attempts?: components["schemas"]["ExperimentalImageAttempt"][];
+        };
+        ExperimentalCaptureImageRequest: {
+            scope_id: string;
+            capture_key: string;
+            media_type: components["schemas"]["ExperimentalImageMediaType"];
+            /** @description Bounded transport bytes only. Never part of a Source payload or text projection. */
+            bytes_base64: string;
+            origin: components["schemas"]["ExperimentalImageOrigin"];
+            context: components["schemas"]["ExperimentalImageContext"];
+        };
+        ExperimentalCaptureImageResponse: {
+            /** @enum {string} */
+            status: "accepted";
+            original: components["schemas"]["ExperimentalImageScopedSource"];
+            asset: components["schemas"]["ExperimentalImageAsset"];
+            sequence: number;
+            task_id: string;
+            replayed: boolean;
+        };
+        ExperimentalGetImageAssetRequest: {
+            scope_id: string;
+            asset_id: string;
+        };
+        ExperimentalGetImageAssetResponse: {
+            asset: components["schemas"]["ExperimentalImageAsset"];
+            bytes_base64: string;
+        };
+        ExperimentalGetImageStatusRequest: {
+            scope_id: string;
+        };
+        ExperimentalImageStatus: {
+            enabled: boolean;
+            available: boolean;
+            vision_configured: boolean;
+            /** @enum {string} */
+            vision_connection: "dedicated" | "generation";
+            model_id: string | null;
+            pending_count: number;
+            worker_running: boolean;
+            error_code: string | null;
+        };
+        ExperimentalListImageTasksRequest: {
+            scope_id: string;
+            cursor?: string | null;
+            /** @default 12 */
+            limit: number;
+        };
+        ExperimentalImageTaskListItem: {
+            task: components["schemas"]["ExperimentalImageTask"];
+            asset: components["schemas"]["ExperimentalImageAsset"];
+            origin: components["schemas"]["ExperimentalImageOrigin"];
+            /** Format: date-time */
+            created_at: string | null;
+        };
+        ExperimentalImageTaskPage: {
+            items: components["schemas"]["ExperimentalImageTaskListItem"][];
+            next_cursor: string | null;
+        };
+        /** @description Specify exactly one task_id or analysis_source_id. Analysis citations can resolve their task, exact interpretation and original. */
+        ExperimentalGetImageTaskRequest: {
+            scope_id: string;
+            task_id?: string | null;
+            analysis_source_id?: string | null;
+        };
+        ExperimentalRetryImageTaskRequest: {
+            scope_id: string;
+            task_id: string;
+            retry_key: string;
+        };
+        ExperimentalReparseImageRequest: {
+            scope_id: string;
+            original: components["schemas"]["SourceTypeReference"];
+            reparse_key: string;
+            expected_profile_digest?: components["schemas"]["ExperimentalImageDigest"] | null;
+        };
     };
     responses: {
         /** @description This response requires a coordinated client supporting Dream contract 2. Upgrade the Python SDK, CLI or integration and send X-PowerContext-Dream-Contract: 2. Original operations and compatible candidate shapes remain available without the header. */
@@ -5349,6 +5673,261 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    experimental_retry_image_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperimentalRetryImageTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description A new task retains the failed task profile and original reference; the failed task is unchanged. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentalImageTask"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            /** @description Original retained evidence is unavailable. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    experimental_reparse_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperimentalReparseImageRequest"];
+            };
+        };
+        responses: {
+            /** @description New profile is pinned at acceptance; previous tasks, Sources and Artifact evidence remain intact. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentalImageTask"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            /** @description Original retained evidence is unavailable. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    experimental_capture_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperimentalCaptureImageRequest"];
+            };
+        };
+        responses: {
+            /** @description Original asset, Source and initial task are durably stored; parsing and Memory are not complete. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentalCaptureImageResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            /** @description Transport bytes or decoded pixel budget exceeded. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unsupported or mismatched image format. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    experimental_get_image_asset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperimentalGetImageAssetRequest"];
+            };
+        };
+        responses: {
+            /** @description Exact retained bytes verified against their digest; no model call. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentalGetImageAssetResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Retained evidence was explicitly removed or is no longer available. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    experimental_list_image_tasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperimentalListImageTasksRequest"];
+            };
+        };
+        responses: {
+            /** @description Newest accepted tasks first; legacy acceptance dates remain unknown. No provider call. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentalImageTaskPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    experimental_get_image_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperimentalGetImageStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Local configuration readiness, not proof of provider image capability. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentalImageStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    experimental_get_image_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperimentalGetImageTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable task state; succeeded means analysis Source was committed, not Memory extraction. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentalImageTask"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
     list_atomic_memories: {
         parameters: {
             query?: never;

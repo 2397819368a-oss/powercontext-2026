@@ -102,6 +102,10 @@ def main(settings: CodexPluginSettings | None = None) -> int:
         source = payload.get("source")
         if not isinstance(source, str) or source not in _LIFECYCLES:
             settings = CodexPluginSettings() if settings is None else settings
+            if settings.capture_images:
+                from image_desktop_watch import launch_watch
+
+                launch_watch()
             resolve_scope_id(
                 cwd,
                 session_id=session_id,
@@ -113,6 +117,10 @@ def main(settings: CodexPluginSettings | None = None) -> int:
         previous_receipt = load_receipt_state(session_id)
         try:
             settings = CodexPluginSettings() if settings is None else settings
+            if settings.capture_images:
+                from image_desktop_watch import launch_watch
+
+                launch_watch()
         except Exception:
             _clear_observed_receipt(session_id, previous_receipt)
             return 0
