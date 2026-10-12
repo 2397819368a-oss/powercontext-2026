@@ -1230,6 +1230,7 @@ def test_runtime_start_does_not_read_the_archive_or_legacy_entry_tables(migrated
     async def scenario() -> None:
         async with migration_profile(config) as profile, profile.database.transaction() as connection:
             await connection.execute(text(f"DROP TABLE {ARCHIVE_TABLE.name}"))
+            await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_EVIDENCE_TABLE.name}"))
             await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_HEADS_TABLE.name}"))
             await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_VERSIONS_TABLE.name}"))
         async with open_builtin_contexts(BuiltinConfig(database=config)) as contexts:
@@ -1270,6 +1271,7 @@ def test_unfinished_dream_receipt_address_stays_readable_without_rewriting_its_s
         await _seed_and_migrate(config, pinned)
         async with migration_profile(config) as profile, profile.database.transaction() as connection:
             await connection.execute(text(f"DROP TABLE {ARCHIVE_TABLE.name}"))
+            await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_EVIDENCE_TABLE.name}"))
             await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_HEADS_TABLE.name}"))
             await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_VERSIONS_TABLE.name}"))
         async with (
