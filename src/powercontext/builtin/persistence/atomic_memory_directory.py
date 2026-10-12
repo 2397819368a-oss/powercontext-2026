@@ -34,9 +34,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemory, AtomicMemoryContent, AtomicMemoryState
 from powercontext.builtin.persistence.atomic_memory import atomic_memory_state_expression
-from powercontext.builtin.persistence.codec import load_model
 from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
-from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE, identity_string
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, identity_string
 from powercontext.builtin.persistence.tags import tag_predicate
 from powercontext.builtin.records import BaseAccessError
 from powercontext.builtin.sources import validate_scope_id
@@ -262,98 +261,6 @@ class AtomicMemoryDirectoryRepository:
         if result.rowcount != 1:
             raise AtomicMemoryDirectoryUnavailableError
         await self.record_mutation(connection, scope_id)
-
-    async def maintain_batch(  # noqa: C901
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        *,
-        after: str = "",
-        batch_size: int = 200,
-        repair: bool = False,
-    ) -> tuple[str | None, int]:
-        """Validate or repair current metadata for an offline domain-task executor.
-
-        Return (next position, changed heads). The caller owns maintenance locks,
-        backup, schema readiness, transactions and the full-Scope iteration.
-        Verification never writes. Repair reads exact current content only and
-        advances generation only when this batch actually changes metadata.
-        """
-
-        validate_scope_id(scope_id)
-        if type(batch_size) is not int or not 1 <= batch_size <= 200 or type(repair) is not bool:
-            raise ValueError("invalid directory maintenance batch")  # noqa: TRY003
-        if after:
-            ArtifactRef(family="atomic-memory", artifact_id=after, revision=1)
-        if repair:
-            await self.lock_scope(connection, scope_id)
-        generation = await connection.scalar(
-            select(_SCOPES.c.atomic_memory_directory_generation).where(_SCOPES.c.scope_id == scope_id)
-        )
-        if type(generation) is not int or not 0 <= generation <= _MAX_GENERATION:
-            raise AtomicMemoryDirectoryUnavailableError
-        heads, artifacts = ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE
-        rows = (
-            (
-                await connection.execute(
-                    select(
-                        heads.c.artifact_id,
-                        heads.c.revision,
-                        _KIND.label("kind"),
-                        atomic_memory_state_expression().label("state"),
-                        heads.c.governance_generation.label("state_version"),
-                        heads.c.merged_into_id,
-                        heads.c.replacement_artifact_id,
-                        artifacts.c.content,
-                    )
-                    .select_from(
-                        heads.outerjoin(
-                            artifacts,
-                            (artifacts.c.scope_id == heads.c.scope_id)
-                            & (artifacts.c.family == heads.c.family)
-                            & (artifacts.c.artifact_id == heads.c.artifact_id)
-                            & (artifacts.c.revision == heads.c.revision),
-                        )
-                    )
-                    .where(
-                        heads.c.scope_id == scope_id,
-                        heads.c.family == "atomic-memory",
-                        heads.c.artifact_id > after,
-                    )
-                    .order_by(heads.c.artifact_id)
-                    .limit(batch_size + 1)
-                )
-            )
-            .mappings()
-            .all()
-        )
-        changes = []
-        # Validate the entire batch before changing any head. An outer join
-        # ensures a missing exact body cannot disappear from verification.
-        for row in rows[:batch_size]:
-            content = load_model(AtomicMemoryContent, row["content"], kind="artifact", name="atomic-memory")
-            _directory_item({**row, "kind": content.kind})
-            if row["kind"] != content.kind:
-                if not repair:
-                    raise AtomicMemoryDirectoryUnavailableError
-                changes.append((row["artifact_id"], row["revision"], content.kind))
-        for identity, revision, kind in changes:
-            result = await connection.execute(
-                update(_HEADS)
-                .where(
-                    _HEADS.c.scope_id == scope_id,
-                    _HEADS.c.family == "atomic-memory",
-                    _HEADS.c.artifact_id == identity,
-                    _HEADS.c.revision == revision,
-                )
-                .values(content_kind=kind)
-            )
-            if result.rowcount != 1:
-                raise AtomicMemoryDirectoryUnavailableError
-        if changes:
-            await self.record_mutation(connection, scope_id)
-        next_after = str(rows[batch_size - 1]["artifact_id"]) if len(rows) > batch_size else None
-        return next_after, len(changes)
 
     async def record_mutation(self, connection: AsyncConnection, scope_id: str) -> None:
         """Invalidate cursors after an effective state/tag/repair mutation; never commit."""
