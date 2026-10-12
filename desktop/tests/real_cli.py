@@ -52,7 +52,6 @@ def main():
             json.dumps({
                 "executable": str(executable),
                 "sha256": digest,
-                "version": version,
                 "source": "explicit_local_installation",
             }),
             encoding="utf-8",
@@ -83,13 +82,16 @@ def main():
         )
         if result.returncode:
             raise RuntimeError(result.stderr[-2000:])
+        native_result = json.loads(result.stdout)
+        if any(native_result[kind].get("cliVersion") not in (None, version) for kind in ("service", "integrations")):
+            raise RuntimeError("observed_cli_version_mismatch")
         report = {
             "version": version,
             "serverCommit": qualification["serverCommit"],
             "wheelSha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
             "launcherSha256": digest,
             "environment": "Isolated home and system-only PATH; wheel extracted on explicit test PYTHONPATH",
-            "result": json.loads(result.stdout),
+            "result": native_result,
         }
         (artifacts / "real-cli.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

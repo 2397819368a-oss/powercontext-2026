@@ -54,6 +54,9 @@ pub struct HostDiagnostic {
 pub struct DiagnosticReport {
     pub checked_at: u64,
     pub exit_code: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cli_version: Option<String>,
     pub items: Vec<DiagnosticItem>,
     pub hosts: Vec<HostDiagnostic>,
 }
@@ -83,6 +86,7 @@ pub fn project(
             .unwrap_or_default()
             .as_secs(),
         exit_code,
+        cli_version: None,
         items: vec![],
         hosts: vec![],
     };
@@ -192,13 +196,18 @@ pub fn project(
 }
 
 #[cfg(any(windows, test))]
-fn valid_cli_version_identifier(version: &str) -> bool {
-    // Bound registration metadata; the fixed --version probe verifies exact identity.
-    version.len() <= 128
+fn cli_version_from_output(output: &[u8], exit_code: i32) -> Option<String> {
+    if exit_code != 0 {
+        return None;
+    }
+    let version = std::str::from_utf8(output).ok()?.trim();
+    // Version is bounded display metadata; diagnostic responses establish compatibility.
+    (version.len() <= 128
         && version.as_bytes().first().is_some_and(u8::is_ascii_digit)
         && version
             .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'+' | b'-' | b'_'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'+' | b'-' | b'_')))
+    .then(|| version.to_owned())
 }
 
 #[cfg(windows)]
@@ -207,7 +216,8 @@ fn valid_cli_version_identifier(version: &str) -> bool {
 struct CliRegistration {
     executable: std::path::PathBuf,
     sha256: String,
-    version: String,
+    #[serde(default, rename = "version")]
+    _legacy_version: Option<serde::de::IgnoredAny>,
     source: String,
 }
 /// Native-only registration. A renderer cannot supply a program, path, arguments, or environment.
@@ -271,7 +281,6 @@ fn execute(
         serde_json::from_slice(&bytes).map_err(|_| SafeError::InvalidInput)?;
     // This is an explicit local-installation pin, not publisher-signature verification.
     if config.source != "explicit_local_installation"
-        || !valid_cli_version_identifier(&config.version)
         || config.sha256.len() != 64
         || !config.sha256.bytes().all(|v| v.is_ascii_hexdigit())
         || !config.executable.is_absolute()
@@ -279,7 +288,7 @@ fn execute(
     {
         return Err(SafeError::CompatibilityUnverified);
     }
-    // Keep a read-only, no-delete/no-write-sharing handle open through both invocations.
+    // Keep a read-only, no-delete/no-write-sharing handle open through all invocations.
     let mut executable = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(1)
@@ -300,18 +309,6 @@ fn execute(
     if format!("{:x}", digest.finalize()) != config.sha256.to_ascii_lowercase() {
         return Err(SafeError::CompatibilityUnverified);
     }
-    // A fixed version probe validates the pinned CLI before either diagnostic command runs.
-    let version = crate::diagnostic_process::run(
-        &config.executable,
-        &["--version"],
-        Duration::from_secs(15),
-        cancelled.clone(),
-    )?;
-    if version.exit_code != 0
-        || std::str::from_utf8(&version.stdout).map(str::trim) != Ok(config.version.as_str())
-    {
-        return Err(SafeError::CompatibilityUnverified);
-    }
     let timeout = match kind {
         DiagnosticKind::Service => 20,
         DiagnosticKind::Integrations => 60,
@@ -320,9 +317,18 @@ fn execute(
         &config.executable,
         &kind.arguments(),
         Duration::from_secs(timeout),
-        cancelled,
+        cancelled.clone(),
     )?;
-    project(kind, &result.stdout, result.exit_code)
+    let mut report = project(kind, &result.stdout, result.exit_code)?;
+    report.cli_version = crate::diagnostic_process::run(
+        &config.executable,
+        &["--version"],
+        Duration::from_secs(15),
+        cancelled,
+    )
+    .ok()
+    .and_then(|version| cli_version_from_output(&version.stdout, version.exit_code));
+    Ok(report)
 }
 
 pub struct DiagnosticHost {
@@ -348,10 +354,10 @@ impl DiagnosticHost {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_cli_version_identifier;
+    use super::cli_version_from_output;
 
     #[test]
-    fn cli_version_identifiers_accept_release_and_development_builds() {
+    fn cli_version_information_accepts_release_and_development_builds() {
         for version in [
             "1.0.1",
             "1.0.1.dev61+g63f918b7e.d20260919",
@@ -367,25 +373,33 @@ mod tests {
             "2.0.0.post1",
             "2.0.1.dev3+build_1",
         ] {
-            assert!(valid_cli_version_identifier(version), "invalid {version}");
+            assert_eq!(
+                cli_version_from_output(version.as_bytes(), 0),
+                Some(version.to_owned())
+            );
         }
     }
 
     #[test]
-    fn malformed_or_oversized_cli_version_identifiers_are_rejected() {
+    fn malformed_or_unavailable_cli_version_information_is_omitted() {
         for version in [
             "",
             "not-a-version",
             "+1.3.1",
             "1.2.1.dev86 with spaces",
-            "1.2.1.dev86\n",
             "1.2.1.dev86+未知",
         ] {
-            assert!(!valid_cli_version_identifier(version), "valid {version}");
+            assert_eq!(cli_version_from_output(version.as_bytes(), 0), None);
         }
-        assert!(!valid_cli_version_identifier(&format!(
-            "1.2.1.dev{}",
-            "a".repeat(128)
-        )));
+        assert_eq!(
+            cli_version_from_output(format!("1.2.1.dev{}", "a".repeat(128)).as_bytes(), 0),
+            None
+        );
+        assert_eq!(
+            cli_version_from_output(b"1.3.1\r\n", 0),
+            Some("1.3.1".to_owned())
+        );
+        assert_eq!(cli_version_from_output(b"1.3.1", 1), None);
+        assert_eq!(cli_version_from_output(&[0xff], 0), None);
     }
 }
