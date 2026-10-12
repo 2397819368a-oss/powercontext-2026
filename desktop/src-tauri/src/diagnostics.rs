@@ -192,14 +192,13 @@ pub fn project(
 }
 
 #[cfg(any(windows, test))]
-fn supported_cli_version(version: &str) -> bool {
-    ((version == "1.0.1" || version.starts_with("1.0.1.dev"))
-        || (version == "1.1.1" || version.starts_with("1.1.1.dev"))
-        || (version == "1.2.1" || version.starts_with("1.2.1.dev")))
-        && version.len() <= 128
+fn valid_cli_version_identifier(version: &str) -> bool {
+    // Bound registration metadata; the fixed --version probe verifies exact identity.
+    version.len() <= 128
+        && version.as_bytes().first().is_some_and(u8::is_ascii_digit)
         && version
             .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'+' | b'-'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'+' | b'-' | b'_'))
 }
 
 #[cfg(windows)]
@@ -272,7 +271,7 @@ fn execute(
         serde_json::from_slice(&bytes).map_err(|_| SafeError::InvalidInput)?;
     // This is an explicit local-installation pin, not publisher-signature verification.
     if config.source != "explicit_local_installation"
-        || !supported_cli_version(&config.version)
+        || !valid_cli_version_identifier(&config.version)
         || config.sha256.len() != 64
         || !config.sha256.bytes().all(|v| v.is_ascii_hexdigit())
         || !config.executable.is_absolute()
@@ -349,10 +348,10 @@ impl DiagnosticHost {
 
 #[cfg(test)]
 mod tests {
-    use super::supported_cli_version;
+    use super::valid_cli_version_identifier;
 
     #[test]
-    fn qualified_cli_versions_include_the_actual_atomic_ci_build() {
+    fn cli_version_identifiers_accept_release_and_development_builds() {
         for version in [
             "1.0.1",
             "1.0.1.dev61+g63f918b7e.d20260919",
@@ -360,28 +359,31 @@ mod tests {
             "1.1.1.dev1+g6e237568",
             "1.2.1",
             "1.2.1.dev86+g3d3a6290d",
+            "1.2.0",
+            "1.3.1",
+            "1.3.1.dev2+g338dfa00d",
+            "2.0.0",
+            "2.0.0rc1",
+            "2.0.0.post1",
+            "2.0.1.dev3+build_1",
         ] {
-            assert!(supported_cli_version(version), "unqualified {version}");
+            assert!(valid_cli_version_identifier(version), "invalid {version}");
         }
     }
 
     #[test]
-    fn unqualified_or_malformed_cli_versions_remain_rejected() {
+    fn malformed_or_oversized_cli_version_identifiers_are_rejected() {
         for version in [
             "",
-            "1.2.0",
-            "1.2.2.dev86+g3d3a6290d",
-            "1.2.10",
-            "1.2.10.dev86+g3d3a6290d",
-            "1.3.1",
-            "1.2.1rc1",
+            "not-a-version",
+            "+1.3.1",
             "1.2.1.dev86 with spaces",
             "1.2.1.dev86\n",
             "1.2.1.dev86+未知",
         ] {
-            assert!(!supported_cli_version(version), "qualified {version}");
+            assert!(!valid_cli_version_identifier(version), "valid {version}");
         }
-        assert!(!supported_cli_version(&format!(
+        assert!(!valid_cli_version_identifier(&format!(
             "1.2.1.dev{}",
             "a".repeat(128)
         )));

@@ -17,11 +17,40 @@
 #[cfg(windows)]
 #[tokio::main]
 async fn main() {
-    use powercontext_desktop::diagnostics::{DiagnosticKind, LocalDiagnostics};
-    let path = std::env::args_os()
-        .nth(1)
-        .expect("isolated fixture registration");
-    let diagnostics = LocalDiagnostics::new(path.into());
+    use powercontext_desktop::{
+        diagnostics::{DiagnosticKind, LocalDiagnostics},
+        error::SafeError,
+    };
+    let path = std::path::PathBuf::from(
+        std::env::args_os()
+            .nth(1)
+            .expect("isolated fixture registration"),
+    );
+    let registration: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read isolated registration"))
+            .expect("parse isolated registration");
+    let invalid_directory = tempfile::tempdir().expect("isolated invalid registrations");
+    for (field, mismatch) in [
+        (
+            "version",
+            format!("{}-mismatch", registration["version"].as_str().unwrap()),
+        ),
+        ("sha256", "0".repeat(64)),
+    ] {
+        let mut invalid = registration.clone();
+        invalid[field] = mismatch.into();
+        let invalid_path = invalid_directory.path().join(format!("{field}.json"));
+        std::fs::write(&invalid_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert_eq!(
+            LocalDiagnostics::new(invalid_path)
+                .run(DiagnosticKind::Service)
+                .await
+                .unwrap_err(),
+            SafeError::CompatibilityUnverified,
+            "mismatched {field} must remain rejected"
+        );
+    }
+    let diagnostics = LocalDiagnostics::new(path);
     let service = diagnostics
         .run(DiagnosticKind::Service)
         .await
@@ -39,7 +68,8 @@ async fn main() {
     assert_eq!(integrations.hosts.len(), 8);
     println!(
         "{}",
-        serde_json::json!({"service":service,"integrations":integrations})
+        serde_json::json!({"service":service,"integrations":integrations,
+            "registrationChecks":{"versionMismatchRejected":true,"digestMismatchRejected":true}})
     );
 }
 #[cfg(not(windows))]

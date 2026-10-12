@@ -84,3 +84,34 @@ async fn missing_or_mismatched_cli_registration_never_runs_a_program() {
         SafeError::CompatibilityUnverified
     );
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn malformed_cli_version_metadata_is_rejected_with_a_matching_digest() {
+    use powercontext_desktop::diagnostics::LocalDiagnostics;
+    use sha2::{Digest, Sha256};
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("powercontext.exe");
+    let bytes = b"not executable";
+    std::fs::write(&executable, bytes).unwrap();
+    let registration = directory.path().join("diagnostic-cli.json");
+    for version in [
+        "".to_owned(),
+        "1.3.1\n".to_owned(),
+        "1.3.1 with spaces".to_owned(),
+        "1.3.1+未知".to_owned(),
+        format!("1.3.1.dev{}", "a".repeat(128)),
+    ] {
+        let value = serde_json::json!({"executable":executable,
+            "sha256":format!("{:x}", Sha256::digest(bytes)),"version":version,
+            "source":"explicit_local_installation"});
+        std::fs::write(&registration, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            LocalDiagnostics::new(registration.clone())
+                .run(DiagnosticKind::Service)
+                .await
+                .unwrap_err(),
+            SafeError::CompatibilityUnverified
+        );
+    }
+}

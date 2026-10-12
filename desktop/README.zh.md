@@ -59,7 +59,7 @@ pnpm --dir desktop desktop:dev
 
 设置中的诊断只检查当前电脑，与远程连接状态分开。程序不从 PATH 自动选择 CLI，也不安装或启动 Server。集成检查可能运行临时 Agent 辅助进程；结果不代表实际 capture/recall 已验证。
 
-显式信任某个本地 PowerContext 安装后，在 `%APPDATA%/com.powercontext.desktop.preview/diagnostic-cli.json` 写入下面的配置。`executable` 必须是 `powercontext.exe` 的绝对路径，`sha256` 是该文件经核对的 SHA-256。当前诊断适配器允许 1.0.1 和 1.1.1 及其开发构建；必须填写实际安装的精确版本，下列示例是已测试基线。其他版本系列需另行验证。不要把文件摘要匹配当作发布者签名认证；Python 安装及其依赖也必须来自你信任的环境。
+显式信任某个本地 PowerContext 安装后，在 `%APPDATA%/com.powercontext.desktop.preview/diagnostic-cli.json` 写入下面的配置。`executable` 必须是 `powercontext.exe` 的绝对路径，`sha256` 是该文件经核对的 SHA-256，`version` 必须填写实际安装的精确版本，并与运行时 `--version` 的输出一致。正式版本和开发构建使用相同校验，不按版本系列设置白名单；诊断响应仍须符合适配器支持的输出格式。下列示例是已测试基线。不要把文件摘要匹配当作发布者签名认证；Python 安装及其依赖也必须来自你信任的环境。
 
 ```json
 {

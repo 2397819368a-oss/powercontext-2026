@@ -25,10 +25,13 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from fixture_qualification import fixture_profile
+
 
 def main():
     root = Path(__file__).resolve().parents[2]
     artifacts = root / "desktop/.artifacts"
+    qualification = fixture_profile()
     (wheel,) = (artifacts / "server-wheel").glob("*.whl")
     with tempfile.TemporaryDirectory(prefix="desktop-real-cli-") as directory:
         fixture = Path(directory)
@@ -82,6 +85,7 @@ def main():
             raise RuntimeError(result.stderr[-2000:])
         report = {
             "version": version,
+            "serverCommit": qualification["serverCommit"],
             "wheelSha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
             "launcherSha256": digest,
             "environment": "Isolated home and system-only PATH; wheel extracted on explicit test PYTHONPATH",
