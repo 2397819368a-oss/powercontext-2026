@@ -49,6 +49,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        suite: [unit, e2e]
       fail-fast: false
     defaults:
       run:
@@ -68,12 +69,14 @@ jobs:
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
 
       - name: Cache DSH configuration dependencies
+        if: matrix.suite == 'unit'
         uses: ./.github/actions/cache-pnpm
         with:
           working-directory: integrations/dsh/plugins/powercontext/tests/config-runtime
           cache-dependency-glob: integrations/dsh/plugins/powercontext/tests/config-runtime/pnpm-lock.yaml
 
       - name: Install and resolve native DSH configuration test APIs
+        if: matrix.suite == 'unit'
         run: |
           pnpm --dir integrations/dsh/plugins/powercontext/tests/config-runtime install --frozen-lockfile
           boot="$(node --input-type=module -e "import { createRequire } from 'node:module'; import { resolve } from 'node:path'; const require = createRequire(resolve('integrations/dsh/plugins/powercontext/tests/config-runtime/package.json')); process.stdout.write(require.resolve('@deepseek-ai/dsh-app-boot'))")"
@@ -81,11 +84,13 @@ jobs:
           echo "DSH_TEST_CONFIG_BOOT=$boot" >> "$GITHUB_ENV"
 
       - name: Run unit tests
+        if: matrix.suite == 'unit'
         env:
           PYTEST_ADDOPTS: --require-dsh-config-runtime
         run: make unit-test
 
       - name: Run end-to-end tests
+        if: matrix.suite == 'e2e'
         run: make e2e-test
 
   evaluation-tests:
