@@ -53,6 +53,8 @@ def _column_budget(column) -> int:
         return 8
     if isinstance(column.type, Date):
         return 3
+    if isinstance(column.type, DateTime):
+        return 8
     raise _UnbudgetedColumnTypeError(column.type)
 
 
