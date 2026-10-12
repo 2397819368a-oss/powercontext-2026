@@ -93,7 +93,10 @@ def test_neutral_declaration_keeps_the_pre_change_definition_identity() -> None:
 
     declared_properties = cast("dict[str, object]", manifest.source_schema["properties"])
     assert "memory_evidence" not in declared_properties
-    assert manifest.fingerprint == ("sha256:0b58627bec9b987d1c3613d98c72f3131ec2a81f95cbc620ef05d923585e0935")
+    # The upstream atomic-memory merge expanded ContentSource's captured schema;
+    # the neutral declaration is still excluded, so this is the new stable
+    # fingerprint for the merged contract.
+    assert manifest.fingerprint == ("sha256:02539903e42db50f9626df111df186bcafc195c9a33204c9df1d7ebc0ebebd12")
 
 
 def test_version_parts_are_rejected_before_they_cannot_be_transported() -> None:

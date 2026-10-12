@@ -218,12 +218,6 @@ def _input_contract_schema(source_class: type[Source]) -> dict[str, JsonValue]:
     return schema
 
 
-def _declaration_signature() -> JsonValue:
-    """Return the schema Pydantic emits for the declaration a Source inherits."""
-
-    return _json_object(Source.model_json_schema()["properties"])["memory_evidence"]
-
-
 def _remove_inherited_declaration(node: JsonValue, source_class: type[Source]) -> None:
     """Strip the inherited declaration from every object schema that carries it.
 
@@ -267,7 +261,7 @@ def _source_schema_titles(source_class: type[Source]) -> set[str]:
         titles.add(str(model.model_config.get("title", model.__name__)))
         for field in model.model_fields.values():
             annotation = field.annotation
-            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            if isinstance(annotation, type) and issubclass(annotation, Source):
                 pending.append(annotation)
     return titles
 
