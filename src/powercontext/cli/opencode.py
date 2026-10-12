@@ -102,6 +102,7 @@ def install_opencode_plugin(*, source: str, ref: str, server_url: str = "http://
     tui_source = plugin_dir / OPENCODE_TUI_BUNDLE
     legacy_tui_target = config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}-tui.js"
     skill_target = config_dir / "skills" / "powercontext-project-context"
+    _require_no_pending_recovery(skill_target, config_dir=config_dir)
     require_replaceable_plugin(plugin_target)
     require_replaceable_plugin(legacy_tui_target)
     require_replaceable_skill(skill_target)
@@ -144,13 +145,13 @@ def _install_opencode_files(
         staged_skill = transaction / "skill"
         _stage_skill(plugin_dir / OPENCODE_SKILL.parent, skill_target, staged_skill)
         backups: list[tuple[Path, Path | None]] = []
-        for index, target in enumerate((
+        for target in (
             plugin_target,
             _plugin_manifest_path(plugin_target),
             tui_config[0],
             legacy_tui_target,
-        )):
-            backup = transaction / str(index) if target.exists() else None
+        ):
+            backup = transaction / target.name if target.exists() else None
             if backup is not None:
                 shutil.copy2(target, backup)
             backups.append((target, backup))
@@ -160,12 +161,15 @@ def _install_opencode_files(
             legacy_tui_target.unlink(missing_ok=True)
             # Skill replacement is last and restores its old directory if the swap fails.
             _commit_skill(staged_skill, skill_target)
-        except BaseException:
+        except BaseException as error:
             failed = _restore_opencode_files(backups)
             if failed:
                 keep_backups = True
-                message = f"OpenCode installation recovery failed for {failed}; backups retained at {transaction}"
-                raise SetupError(message) from None
+                message = (
+                    f"OpenCode installation recovery failed for {', '.join(failed)}; backups retained at {transaction}. "
+                    f"Initial failure: {error}"
+                )
+                raise SetupError(message) from error
             raise
     except (OSError, GuidanceError) as error:
         raise SetupError.command_unavailable(["install", "OpenCode", "plugin and Skill"], error) from error
@@ -187,6 +191,30 @@ def _restore_opencode_files(backups: list[tuple[Path, Path | None]]) -> list[str
         except OSError:
             failed.append(str(target))
     return failed
+
+
+def _require_no_pending_recovery(skill_target: Path, *, config_dir: Path | None = None) -> None:
+    """Do not mistake a failed restoration for a new installation."""
+    locations = [(skill_target.parent, f".{skill_target.name}.", ".bak")]
+    if config_dir is not None:
+        locations.append((config_dir, ".powercontext-install-", ""))
+    retained: list[Path] = []
+    for directory, prefix, suffix in locations:
+        try:
+            retained.extend(
+                path for path in directory.iterdir() if path.name.startswith(prefix) and path.name.endswith(suffix)
+            )
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise SetupError.command_unavailable(["inspect", "OpenCode", "recovery", str(directory)], error) from error
+    if retained:
+        paths = ", ".join(str(path) for path in sorted(retained))
+        message = (
+            f"Pending OpenCode recovery at {paths}. "
+            "Restore or reconcile the retained contents before removing these paths and retrying installation."
+        )
+        raise SetupError(message)
 
 
 def resolve_opencode_plugin_dir(*, source: str, ref: str) -> Path:
@@ -257,6 +285,7 @@ def require_replaceable_plugin(target: Path) -> None:
 
 
 def _install_skill(source: Path, target: Path) -> None:
+    _require_no_pending_recovery(target)
     require_replaceable_skill(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / f".{target.name}.{uuid4().hex}.tmp"
@@ -292,7 +321,11 @@ def _commit_skill(staging: Path, target: Path) -> None:
         os.replace(staging, target)
     except BaseException:
         if backup is not None and backup.exists() and not target.exists():
-            os.replace(backup, target)
+            try:
+                os.replace(backup, target)
+            except OSError as error:
+                message = f"OpenCode Skill recovery failed for {target}; backup retained at {backup}"
+                raise SetupError(message) from error
         raise
     else:
         if backup is not None:
