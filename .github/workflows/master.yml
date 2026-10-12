@@ -24,13 +24,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ~/.cache/prek
-          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
-
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
+
+      - name: Resolve Python version for hook cache
+        id: python
+        run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache prek environments
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/prek
+          key: prek-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.version }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Run checks
         run: make check
@@ -62,6 +67,12 @@ jobs:
       - name: Set up project tools
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
 
+      - name: Cache DSH configuration dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/dsh/plugins/powercontext/tests/config-runtime
+          cache-dependency-glob: integrations/dsh/plugins/powercontext/tests/config-runtime/pnpm-lock.yaml
+
       - name: Install and resolve native DSH configuration test APIs
         run: |
           pnpm --dir integrations/dsh/plugins/powercontext/tests/config-runtime install --frozen-lockfile
@@ -88,6 +99,15 @@ jobs:
 
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
+        with:
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            integrations/langchain/pyproject.toml
+            integrations/langgraph/pyproject.toml
+            integrations/opendal/pyproject.toml
+            evaluation/pyproject.toml
+            evaluation/uv.lock
 
       # Evaluation has its own uv project. Collect each suite's unit tests through
       # its dedicated path; the root project's testpaths do not include them.
@@ -317,6 +337,14 @@ jobs:
         uses: ./.github/actions/setup-python-env
         with:
           python-version: "3.12"
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            integrations/langchain/pyproject.toml
+            integrations/langgraph/pyproject.toml
+            integrations/opendal/pyproject.toml
+            integrations/dify/pyproject.toml
+            integrations/dify/uv.lock
 
       - name: Check out the supported Dify host helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -400,6 +428,12 @@ jobs:
       - name: Set up project tools
         uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
 
+      - name: Cache DSH dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/dsh/plugins/powercontext
+          cache-dependency-glob: integrations/dsh/plugins/powercontext/**/pnpm-lock.yaml
+
       - name: Test DSH package
         run: make js-test
 
@@ -439,6 +473,12 @@ jobs:
       - name: Set up project tools
         uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
 
+      - name: Cache Pi dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/pi/plugins/powercontext
+          cache-dependency-glob: integrations/pi/plugins/powercontext/pnpm-lock.yaml
+
       - name: Test Pi package
         run: make pi-test
 
@@ -456,6 +496,11 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - name: Cache OpenCode dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/opencode/plugins/powercontext
+          cache-dependency-glob: integrations/opencode/plugins/powercontext/pnpm-lock.yaml
       - name: Test OpenCode package
         run: make opencode-test
 
@@ -475,6 +520,11 @@ jobs:
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
       # The pinned OpenClaw SDK requires the SQLite runtime shipped with Node 24.15+.
       - run: mise install node@24.15.0
+      - name: Cache OpenClaw dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/openclaw/plugins/memory-powercontext
+          cache-dependency-glob: integrations/openclaw/plugins/memory-powercontext/pnpm-lock.yaml
       - name: Test OpenClaw package
         run: mise exec node@24.15.0 -- make openclaw-plugin-test
 
@@ -511,6 +561,12 @@ jobs:
       - name: Set up website tools
         uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
 
+      - name: Cache website dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: website
+          cache-dependency-glob: website/pnpm-lock.yaml
+
       - name: Install website dependencies
         run: pnpm --dir website install --frozen-lockfile
 
@@ -531,6 +587,12 @@ jobs:
 
       - name: Set up website tools
         uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+
+      - name: Cache website dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: website
+          cache-dependency-glob: website/pnpm-lock.yaml
 
       - name: Check website
         run: make docs-test
