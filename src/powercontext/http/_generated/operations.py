@@ -2840,9 +2840,7 @@ BIND_ARTIFACT_HANDLE = Operation[BindArtifactHandleRequest, ArtifactHandleBindin
         503: {"$ref": "#/components/responses/Unavailable"},
         500: {"$ref": "#/components/responses/InternalError"},
     },
-    access=AccessRequirement(
-        action="scope.contribute", resource="scope", scope_id_field="scope_id", resolver="request"
-    ),
+    access=AccessRequirement(action="scope.admin", resource="scope", scope_id_field="scope_id", resolver="request"),
 )
 
 GET_ARTIFACT = Operation[None, ArtifactRevision](

@@ -3875,7 +3875,7 @@ paths:
         binding the key to another Artifact revision returns 409. Verify the family, Artifact ID, revision, and key
         before committing the binding; a mistakenly bound key cannot be reused in that Scope.
       operationId: bind_artifact_handle
-      x-powercontext-access: {action: scope.contribute, resource: {type: scope, scope-id-from: scope_id}}
+      x-powercontext-access: {action: scope.admin, resource: {type: scope, scope-id-from: scope_id}}
       parameters:
         - name: scope_id
           in: path

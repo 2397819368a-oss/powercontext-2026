@@ -3981,7 +3981,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "Scope.",
                 "operationId": "bind_artifact_handle",
                 "x-powercontext-access": {
-                    "action": "scope.contribute",
+                    "action": "scope.admin",
                     "resource": {"type": "scope", "scope-id-from": "scope_id"},
                 },
                 "parameters": [
