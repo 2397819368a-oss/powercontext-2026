@@ -211,9 +211,10 @@ def _read_state(backend: _BackendTarget):
             if "pc_schema_revision" in tables
             else None
         )
+        # The frozen p0001-p0003 bundle predates the unified Candidate table names.
         columns = {
             name: {row[0] for row in connection.exec_driver_sql(f"SHOW COLUMNS FROM {name}")}
-            for name in ("pc_artifacts", "pc_candidate_versions")
+            for name in ("pc_artifacts", "pc_artifact_candidate_versions")
             if name in tables
         }
         content = (
@@ -298,7 +299,7 @@ def test_mysql_operator_backup_choices_preserve_baseline_data_without_fork(
     assert state["content"] == [(b'{"content":"preserved"}',)]
     assert state["tags"] == [("Keep",)]
     assert "memory_citations" in state["columns"]["pc_artifacts"]
-    assert "memory_citations" in state["columns"]["pc_candidate_versions"]
+    assert "memory_citations" in state["columns"]["pc_artifact_candidate_versions"]
     assert backend.runner().verify().state == "ready"
 
 
@@ -350,7 +351,7 @@ def _interrupt_after_committed_citation_ddl(backend: _BackendTarget) -> None:
     state = _read_state(backend)
     assert state["revision"] == "p0001"
     assert "memory_citations" in state["columns"]["pc_artifacts"]
-    assert "memory_citations" not in state["columns"]["pc_candidate_versions"]
+    assert "memory_citations" not in state["columns"]["pc_artifact_candidate_versions"]
     assert state["content"] == [(b'{"content":"preserved"}',)]
 
 
@@ -401,7 +402,7 @@ def test_mysql_empty_source_recovers_baseline_and_citation_ddl_without_probing_b
     second = _read_state(backend)
     assert second["revision"] == "p0001"
     assert "memory_citations" in second["columns"]["pc_artifacts"]
-    assert "memory_citations" not in second["columns"]["pc_candidate_versions"]
+    assert "memory_citations" not in second["columns"]["pc_artifact_candidate_versions"]
     recovery = backend.runner(backup_factory=_forbidden_automatic_backup).plan()
     replacement = _acknowledge_known_completed_interruption(
         backend, recovery, backup_factory=_forbidden_automatic_backup
@@ -445,7 +446,7 @@ def test_mysql_committed_revision_recovers_before_evidence_advance(backend: _Bac
     state = _read_state(backend)
     assert state["revision"] == "p0002"
     assert "memory_citations" in state["columns"]["pc_artifacts"]
-    assert "memory_citations" in state["columns"]["pc_candidate_versions"]
+    assert "memory_citations" in state["columns"]["pc_artifact_candidate_versions"]
     replacement = backend.runner()
     recovery = replacement.plan(backup_policy="manual")
     assert recovery.source_revision == "p0002"
