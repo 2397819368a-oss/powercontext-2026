@@ -134,3 +134,87 @@ def test_target_evidence_requires_independent_support(database, operation, selec
                 assert (await records.get_tags(tag_target)).tags == ("shenzhen",)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("independent_source", [False, True])
+def test_memory_entry_tag_target_is_not_its_own_support(database, independent_source):
+    from powercontext.builtin.evidence.resolver import evidence_id
+    from powercontext.builtin.tags import MemoryEntryTagTarget
+    from tests.e2e.test_artifact_dreaming import MemoryPipeline, seed
+
+    class Generator:
+        config_id = "memory-tag-target-test"
+        correction = None
+
+        async def generate(self, value):
+            assert value.target_evidence_id is not None
+            used = (value.target_evidence_id,)
+            if independent_source:
+                assert self.correction is not None
+                used += (evidence_id(self.correction),)
+            return GenerationResult(
+                output=DreamPlan(
+                    outcome="proposed",
+                    intent="correct",
+                    reason="Classify the verified correction.",
+                    proposal=TagChangeProposal(after_tags=("verified",)),
+                    evidence_ids=used,
+                )
+            )
+
+    async def scenario():
+        generator = Generator()
+        async with open_dream_runtime(
+            BuiltinConfig(database=database),
+            candidate_pipeline=MemoryPipeline(),
+            dream_generator=generator,
+        ) as runtime:
+            scope, ancestor, basis = await seed(runtime)
+            records = runtime.records.for_scope(scope)
+            target = MemoryEntryTagTarget(artifact_id=basis.memory_ref.artifact_id, entry_id=basis.entry_id)
+            before = await records.get_tags(target)
+            sources = ()
+            if independent_source:
+                correction = await runtime.sources.for_scope(scope).capture(
+                    CaptureSource(
+                        source_id="independent-correction",
+                        content="The receipt confirms the corrected classification.",
+                        metadata={},
+                    )
+                )
+                generator.correction = correction.source_ref
+                sources = (correction.source_ref,)
+            run = await runtime.dream.for_scope(scope).create(
+                CreateDreamRunRequest(
+                    operation="revise_tags",
+                    memory_citations=(basis,),
+                    sources=sources,
+                    tag_target=TagDreamTarget(target=target, expected_etag=before.etag, basis_citation=basis),
+                    idempotency_key="memory-entry-tags",
+                )
+            )
+            await process_pending(runtime)
+            run = await runtime.dream.for_scope(scope).get(GetDreamRunRequest(run_id=run.run_id))
+            assert await records.get_tags(target) == before
+            if not independent_source:
+                assert (run.status, run.outcome, run.candidate) == ("succeeded", "needs_evidence", None)
+            else:
+                assert run.candidate is not None, run
+                review = runtime.review.for_scope(scope)
+                candidate = await review.get(GetCandidateRequest(candidate_id=run.candidate.candidate_id))
+                assert candidate.sources == sources and ancestor not in candidate.sources
+                assert candidate.memory_citations == (basis,)
+                approved = await review.approve(
+                    ApproveCandidateRequest(
+                        candidate_id=candidate.candidate_id,
+                        expected_version=candidate.version,
+                    )
+                )
+                assert approved.status == "approved"
+                assert (await records.get_tags(target)).tags == ("verified",)
+            assert run.input_manifest is not None
+            node = next(node for node in run.input_manifest.nodes if node.evidence_id == evidence_id(basis))
+            assert node.role == "target" and node.memory_citations == (basis,)
+            assert all(node.source != ancestor for node in run.input_manifest.nodes)
+
+    asyncio.run(scenario())

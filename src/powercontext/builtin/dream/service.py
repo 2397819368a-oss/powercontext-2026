@@ -786,7 +786,7 @@ def _resolve_references(request: CreateDreamRunRequest):
             *request.memory_citations,
             *((target.basis_citation,) if target.basis_citation is not None else ()),
         )),
-        target.basis_ref,
+        target.basis_ref or target.basis_citation,
     )
 
 

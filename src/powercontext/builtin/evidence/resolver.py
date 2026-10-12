@@ -73,7 +73,7 @@ RootIdentityResolver = Callable[[SourceRef, Source], str | None]
 @dataclass
 class _Traversal:
     project: bool = True
-    target_ref: ArtifactRef | None = None
+    target_ref: ArtifactRef | MemoryCitation | None = None
     prompt_target: ArtifactRef | None = None
     catalog_target: ArtifactRef | None = None
     nodes: dict[str, EvidenceNode] = field(default_factory=dict)
@@ -196,7 +196,7 @@ class EvidenceResolver:
         sources: tuple[SourceRef, ...] = (),
         artifacts: tuple[ArtifactRef, ...] = (),
         memory_citations: tuple[MemoryCitation, ...] = (),
-        target: ArtifactRef | None = None,
+        target: ArtifactRef | MemoryCitation | None = None,
         include_memory_text: bool = True,
         lock_memory: bool = False,
         pinned: EvidenceManifest | None = None,
@@ -207,8 +207,8 @@ class EvidenceResolver:
         traversal = _Traversal(
             project=project,
             target_ref=target,
-            prompt_target=target if expose_prompt_target else None,
-            catalog_target=target if expose_catalog_target else None,
+            prompt_target=target if expose_prompt_target and isinstance(target, ArtifactRef) else None,
+            catalog_target=target if expose_catalog_target and isinstance(target, ArtifactRef) else None,
         )
         refs: tuple[EvidenceReference, ...] = (*sources, *artifacts, *memory_citations)
         if lock_memory:
@@ -324,7 +324,11 @@ class EvidenceResolver:
         if isinstance(ref, SourceRef):
             return await self._read_source(connection, ref, state, direct=direct)
         if isinstance(ref, MemoryCitation):
-            return await self._read_memory(connection, ref, locked=locked)
+            node, body, children = await self._read_memory(connection, ref, locked=locked)
+            # A Tag basis is context, so its ancestors cannot silently become supporting evidence.
+            if state.target_ref is not None and evidence_id(ref) == evidence_id(state.target_ref):
+                return node.model_copy(update={"role": "target"}), body, ()
+            return node, body, children
         artifact = await self.artifacts.get(connection, self.scope_id, ref)
         digest = content_digest(artifact.model_dump_json().encode())
         if ref == state.catalog_target:

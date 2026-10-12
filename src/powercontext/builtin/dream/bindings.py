@@ -158,8 +158,8 @@ DREAM_OPERATIONS = (
         "catalog.approve",
         "catalog.replace_tags",
         "review_then_replace_tags",
-        # Older candidates may have dropped supporting Artifact references.
-        spec_version="powercontext.dream.operation.v2",
+        # Require complete supporting references and exclude the exact Tag basis from support.
+        spec_version="powercontext.dream.operation.v3",
         output_kind="tag_candidate",
     ),
 )

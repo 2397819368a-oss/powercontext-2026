@@ -35,7 +35,7 @@ def select_evidence(
     used: tuple[str, ...],
     *,
     skill: bool,
-    target: ArtifactRef | None,
+    target: ArtifactRef | MemoryCitation | None,
     catalog: bool = False,
 ) -> SelectedEvidence:
     nodes = {node.evidence_id: node for node in manifest.nodes}
@@ -70,8 +70,10 @@ def select_evidence(
         if skill
         else tuple(citation for key, node in nodes.items() if key in chosen for citation in node.memory_citations)
     )
-    if target is not None:
+    if isinstance(target, ArtifactRef):
         artifacts = unique_references((*artifacts, target))
+    target_citations = (target,) if isinstance(target, MemoryCitation) else ()
+    citations = unique_references((*citations, *target_citations))
     memory_derived = any(nodes[key].kind == "memory" for key in dependencies)
     if memory_derived and not sources:
         raise EvidenceResolutionError("needs_evidence")
