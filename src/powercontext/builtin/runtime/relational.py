@@ -66,6 +66,7 @@ from powercontext.builtin.artifacts.memory import (
     MemoryQueryEmbedding,
     MemoryReranker,
 )
+from powercontext.builtin.artifacts.memory.protocols import MemoryWriteGate
 from powercontext.builtin.artifacts.profile import Profile
 from powercontext.builtin.artifacts.profile.management import ProfileManagementWriter
 from powercontext.builtin.artifacts.profile.models import ProfileCandidateProposal
@@ -130,6 +131,7 @@ from powercontext.builtin.persistence.candidates import CandidateRepository
 from powercontext.builtin.persistence.connectors import ConnectorCheckpointRepository
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.decision_observations import DecisionObservationRepository
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError, StoredPayloadConflictError
 from powercontext.builtin.persistence.experience_index import ExperienceIndex, NoExperienceIndex
 from powercontext.builtin.persistence.external_skills import ExternalSkillRepository
@@ -282,6 +284,7 @@ class _Repositories:
     processing_leases: ArtifactProcessingLeaseRepository
     processing_binding_states: ArtifactProcessingBindingStateRepository
     topic_memories: TopicMemoryRepository
+    decision_observations: DecisionObservationRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -474,6 +477,8 @@ class RelationalContexts:
         token_estimator: TokenEstimator | None = None,
         memory_reranker: MemoryReranker | None = None,
         decision_model: DecisionModel | None = None,
+        memory_write_gate: MemoryWriteGate | None = None,
+        decision_observation_retention_days: int | None = None,
         memory_rerank_candidate_limit: int = 30,
         id_factory: IdFactory | None = None,
         handoff_artifact_id: str = "handoff",
@@ -560,6 +565,7 @@ class RelationalContexts:
             processing_leases=ArtifactProcessingLeaseRepository(),
             processing_binding_states=ArtifactProcessingBindingStateRepository(),
             topic_memories=topic_memory_repository,
+            decision_observations=DecisionObservationRepository(),
         )
         self._model_usage = _ModelUsageRecorder(
             database,
@@ -594,6 +600,9 @@ class RelationalContexts:
             pipeline=candidate_pipeline,
             prompts=self.prompts,
             config=atomic_memory_processing_config,
+            memory_write_gate=memory_write_gate,
+            decision_observations=self.repositories.decision_observations,
+            decision_observation_retention_days=decision_observation_retention_days,
             tracing=tracing,
         )
         self._generation_receipts = HandoffGenerationReceipts(

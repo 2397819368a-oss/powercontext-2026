@@ -78,6 +78,8 @@ from powercontext.server.context import current_principal, current_request_id
 from powercontext.server.cursor_secret import resolve_cursor_secret
 from powercontext.server.dashboard import mount_dashboard
 from powercontext.server.dream_access import DreamAccess
+from powercontext.server.identity import ServerIdentityRepository
+from powercontext.server.info import server_info
 from powercontext.server.mcp import mount_mcp
 from powercontext.server.metrics import CONTENT_TYPE_LATEST, HttpMetricsMiddleware, ServerMetrics
 from powercontext.server.middleware import AuthenticationMiddleware
@@ -244,6 +246,9 @@ def create_server_app(  # noqa: C901
                     ),
                 )
             )
+            identity_repository = ServerIdentityRepository(runtime.primary_database)
+            await identity_repository.initialize()
+            server_id = await identity_repository.load_or_create()
             _bind_evidence_access(runtime, active_access_control, resolved.access.mode)
             if active_access_control is not None:
                 migrated, unresolved = await runtime._records().migrate_handoff_receipts(
@@ -272,6 +277,7 @@ def create_server_app(  # noqa: C901
 
             app.state.capabilities = capabilities
             app.state.capability_provider = current_capabilities
+            app.state.server_info = server_info(server_id)
             await readiness_probe()
             try:
                 yield
@@ -282,6 +288,7 @@ def create_server_app(  # noqa: C901
                 app.state.capability_provider = None
                 app.state.access_control = configured_access_control
                 app.state.authentication_provider = configured_authentication
+                app.state.server_info = None
                 app.state.capabilities = Capabilities(
                     source_types=[],
                     artifact_families=[],

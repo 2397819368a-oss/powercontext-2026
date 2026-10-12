@@ -24,8 +24,6 @@ from typing import cast
 import pytest
 from sqlalchemy import func, select
 
-import powercontext.builtin.runtime.composition as composition
-import powercontext.builtin.runtime.family_processing as family_processing
 from powercontext.builtin.artifacts.atomic_memory.extraction import AtomicMemoryCandidate, AtomicMemoryExtractionOutput
 from powercontext.builtin.artifacts.experience import ExperienceCandidateInput, ExperienceContent
 from powercontext.builtin.inference import InferenceTimeoutError
@@ -457,43 +455,6 @@ def test_spawned_family_restores_trusted_identity_and_persists_noop_ack(tmp_path
                 )
                 assert intent is not None and intent.handled_generation == assignment.claimed_request_generation
                 assert intent.clean_generation == intent.dirty_generation
-
-    asyncio.run(scenario())
-
-
-def test_spawned_memory_worker_rejects_legacy_gate_before_model_creation(monkeypatch, tmp_path):
-    def unexpected_initialization(*_args, **_kwargs):
-        pytest.fail("Legacy gate configuration must fail before model and worker initialization")
-
-    monkeypatch.setattr(composition, "_embedding_models", unexpected_initialization)
-    monkeypatch.setattr(composition, "_prompt_registry", unexpected_initialization)
-    monkeypatch.setattr(composition, "open_builtin_contexts", unexpected_initialization)
-    monkeypatch.setattr(family_processing, "process_family_invocation", unexpected_initialization)
-
-    async def scenario():
-        database_path = tmp_path / "worker-gate.db"
-        config = BuiltinConfig(
-            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database_path}"),
-            inference=InferenceConfig(generation_model="test"),
-            runtime=RuntimeConfig(memory_write_gate_enabled=True),
-        )
-        assignment = ArtifactProcessingWorkAssignment(
-            binding_name=FAMILY_BINDINGS["memory"],
-            scope_id="scope-a",
-            artifact_family="memory",
-            claimed_request_generation=1,
-            fence=ArtifactProcessingFence(
-                supervisor_group="global",
-                holder_id="worker-test",
-                supervisor_generation=1,
-                lease_mode="single-process",
-            ),
-            worker_id="worker-1",
-        )
-
-        with pytest.raises(composition.BuiltinConfigurationError, match="legacy Memory write gate"):
-            await family_processing._run_family_worker(FamilyWorkerSpec(config=config), assignment)
-        assert not database_path.exists()
 
     asyncio.run(scenario())
 

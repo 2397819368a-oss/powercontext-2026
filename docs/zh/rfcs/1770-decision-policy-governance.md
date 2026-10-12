@@ -44,7 +44,7 @@
 
 项目已经在这个边界上有具体压力。#1742 提出了 Memory 写入时的 evidence gate。#1745 提出了 decision-model reranker，并明确把 rerank 的 fail-closed 行为与 advisory gate 的 fail-open 行为分开。RFC 1652 将 Memory consolidation、supersession 和 lifecycle effects 留给 review-gated 流程。如果没有共享 policy 与 observation 契约，每个消费者都会重新发明自己的阈值、fallback、隐私和审计规则。
 
-预期结果是一层很小的共享机制，使实现 PR 能按一致顺序推进：
+对于寻求从 `shadow` 或 `advisory` 晋升的 policy，这层共享机制支持以下证据链：
 
 1. 先用 shadow mode 定义 policy；
 2. 在不改变领域行为的前提下收集 observation；
@@ -52,7 +52,9 @@
 4. 只 promote 该 policy 已经证明可以承担的窄域动作；
 5. 领域权威、review、持久化和访问控制仍由所属服务负责。
 
-这是一个 enablement RFC，不是对某个具体后端的采用建议。
+这是一个 enablement RFC，不是对某个具体后端的采用建议，也不承诺实现列出的每个 consumer。consumer 可以停在
+`disabled`、`shadow` 或 `advisory`，除非要进入更强模式，否则不需要实现 replay runner、dashboard 或跨 consumer
+evaluation bundle。
 
 # Guide-level explanation
 
@@ -285,7 +287,7 @@ Shadow mode 要求：
 1. 最终领域输出与 no-gate 路径 byte-for-byte 或语义等价。
 2. 每次 gate attempt 都产生 `DecisionObservation`。
 3. observation 区分 no-call、local-rule、successful backend、backend fallback、privacy fallback 和 parse failure。
-4. 只要仍能解析足够精确引用，policy 就可以在不重跑整个 workload 的情况下 replay 或 rescore。
+4. 被考虑进入 `enforcing` 的 policy，在仍能解析足够精确引用时，可以不重跑整个 workload 而 replay 或 rescore。
 
 Replay 有两种形式：
 
@@ -293,6 +295,10 @@ Replay 有两种形式：
 - **Re-evaluate**：重新解析精确引用，并在新 policy 或模型版本下调用后端。
 
 两者都必须报告输入覆盖率。无法解析足够原始材料的 replay 结果不是 policy 的负面结果；它是不完整 replay。
+
+replay/rescore 是 promotion 所需的证据，不是每个 `shadow` 或 `advisory` consumer 都必须交付的运行时功能。缺少该
+证据的 consumer 不得晋升到 `enforcing`。
+Memory write gate 的 promotion evidence 另由 [#1930](https://github.com/oceanbase/powercontext/issues/1930) 跟踪。
 
 ## Promotion criteria
 
@@ -394,8 +400,6 @@ PowerContext 已经有相关基础：
 
 # Unresolved questions
 
-- `DecisionObservation` 的第一个具体存储目标是什么：结构化日志、evaluation artifact，还是私有内部 ledger？
-- 默认应保留哪些 observation，保留多久？
 - policy definition 应以 Python constant、JSON/YAML resource，还是两者并存？
 - 如果 #1742 调整为符合本 RFC，它应使用哪些数字 promotion criteria？
 - 第一个托管后端启用前，是否需要先有面向用户的 hosted-provider privacy configuration 文档？
@@ -406,6 +410,5 @@ PowerContext 已经有相关基础：
 - 在 dashboard 中增加 policy registry 页面，展示 active policy、mode、fallback rate 和最近 replay 结果。
 - 增加 CLI 命令，对最近 observation replay 一个 policy，并输出候选阈值。
 - 为 decision policy 提供标准 evaluation bundle，供 Jev、Laya、本地规则和未来后端共用。
-- 增加带 retention controls 的私有 decision-observation ledger，并支持导出做离线 evaluation。
 - Review Inbox 支持按 policy 分组，让 review item 反链到触发它的 policy observation。
 - 面向气隙部署的 local-only decision backend，复用相同 policy 与 observation 契约。
