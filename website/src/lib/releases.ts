@@ -36,8 +36,8 @@ export const releases: Release[] = [
       zh: '独立 Atomic Memory · 决策模型写入治理 · Artifact 合并与恢复',
     },
     summary: {
-      en: 'PowerContext 1.3.0 stores individual memories as independent Artifacts and brings explicit policy modes, privacy boundaries, and durable observations to decision-model Memory write assessment. It also adds shared Artifact merge and restoration, family-scoped search, and improved Server diagnostics and Agent integrations.',
-      zh: 'PowerContext 1.3.0 将单条记忆保存为独立 Artifact，为决策模型判断 Memory 写入引入显式策略模式、隐私边界和持久化观测记录，并新增通用 Artifact 合并与恢复、按类型搜索，完善 Server 诊断与 Agent 集成。',
+      en: 'PowerContext 1.3.0 lets users manage each memory independently and adds policy controls, privacy protection, and traceable records when decision models assess which information is worth remembering. Users can also merge duplicate content, restore historical versions, and more easily find memories, Experiences, and Skills, alongside improved Server diagnostics and Agent integrations.',
+      zh: 'PowerContext 1.3.0 让每条记忆都能独立管理，并为决策模型判断“哪些信息值得记住”加入策略控制、隐私保护和可追踪记录。同时支持合并重复内容、恢复历史版本，更方便地查找记忆、经验与技能，并完善 Server 诊断和 Agent 集成。',
     },
     changes: {
       en: [
