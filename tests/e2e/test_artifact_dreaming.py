@@ -2947,3 +2947,139 @@ def test_profile_dream_admission_completes_with_concurrent_decision(  # noqa: C9
             assert current.revision == initial.revision + (decision == "approve")
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("pause_at", ["admission", "planning"])
+@pytest.mark.parametrize("winner", ["approve", "reject", "advance", "revoke"])
+def test_memory_approval_replays_across_servers(  # noqa: C901 - keep race barriers and public outcomes together
+    database: DatabaseConfig, monkeypatch, pause_at, winner
+) -> None:
+    """A competing publication must not turn identical approvals into stale-target errors."""
+    from contextvars import ContextVar
+
+    import httpx
+
+    from powercontext.builtin.artifacts.atomic_memory.service import AtomicMemoryService
+    from powercontext.builtin.review.service import ReviewService
+    from powercontext.server.app import create_app
+    from powercontext.server.authz.errors import AccessDeniedError
+
+    delayed = ContextVar("delayed_memory_approval", default=False)
+
+    async def scenario() -> None:  # noqa: C901 - both servers share the controlled scheduling boundary
+        async with (
+            open_builtin_runtime(
+                config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=Generator(),
+            ) as first,
+            open_builtin_runtime(
+                config(database),
+                candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+                dream_generator=Generator(),
+            ) as second,
+        ):
+            scope, source, target = await seed(first)
+            candidate = await first._review(scope).propose_memory_dream(
+                AtomicMemoryContent(kind="task_record", text="Verify the committed result before retrying."),
+                sources=(source,),
+                artifacts=(target,),
+                target=target,
+                reason="Correct the retry result.",
+                candidate_id="memory-approval-race",
+            )
+            competing = None
+            if winner == "advance":
+                competing = await first._review(scope).propose_memory_dream(
+                    AtomicMemoryContent(kind="task_record", text="A separate correction supersedes the target."),
+                    sources=(source,),
+                    artifacts=(target,),
+                    target=target,
+                    reason="Independent correction.",
+                    candidate_id="competing-memory-approval",
+                )
+            entered, release = asyncio.Event(), asyncio.Event()
+            paused = revoked = False
+
+            async def barrier():
+                nonlocal paused
+                if delayed.get() and not paused:
+                    paused = True
+                    entered.set()
+                    await asyncio.wait_for(release.wait(), 10)
+
+            authorize = ReviewService._authorize_decision
+            inspect = AtomicMemoryService.inspect_change
+
+            async def controlled_authorize(self, action, value):
+                await authorize(self, action, value)
+                if delayed.get() and revoked:
+                    raise AccessDeniedError
+                if pause_at == "admission" and action == "approve":
+                    await barrier()
+
+            async def controlled_inspect(self, *args, **kwargs):
+                if pause_at == "planning":
+                    await barrier()
+                return await inspect(self, *args, **kwargs)
+
+            monkeypatch.setattr(ReviewService, "_authorize_decision", controlled_authorize)
+            monkeypatch.setattr(AtomicMemoryService, "inspect_change", controlled_inspect)
+            payload = {"scope_id": scope, "candidate_id": candidate.candidate_id, "expected_version": candidate.version}
+            async with (
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=create_app(application=cast(ServerApplication, first))),
+                    base_url="http://first",
+                ) as a,
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=create_app(application=cast(ServerApplication, second))),
+                    base_url="http://second",
+                ) as b,
+            ):
+
+                async def delayed_request():
+                    token = delayed.set(True)
+                    try:
+                        return await b.post("/v1/candidates/approve", json=payload)
+                    finally:
+                        delayed.reset(token)
+
+                pending = asyncio.create_task(delayed_request())
+                try:
+                    await asyncio.wait_for(entered.wait(), 10)
+                    winning_payload = (
+                        payload if competing is None else {**payload, "candidate_id": competing.candidate_id}
+                    )
+                    if winner == "reject":
+                        winning_payload = {**payload, "reason": "Not suitable."}
+                    result = await a.post(
+                        "/v1/candidates/" + ("reject" if winner == "reject" else "approve"), json=winning_payload
+                    )
+                    assert result.status_code == 200, result.text
+                    revoked = winner == "revoke"
+                finally:
+                    release.set()
+                replay = await asyncio.wait_for(pending, 10)
+                if winner == "approve":
+                    assert replay.status_code == 200, replay.text
+                    assert replay.json() == result.json()
+                else:
+                    assert replay.status_code == (403 if winner == "revoke" else 409), replay.text
+                current = await first.atomic_memory.for_scope(scope).get(target.artifact_id)
+                assert current.ref.revision == target.revision + (winner != "reject")
+                stored = await first.review.for_scope(scope).get(
+                    GetCandidateRequest(candidate_id=candidate.candidate_id)
+                )
+                expected_status = {
+                    "approve": "approved",
+                    "revoke": "approved",
+                    "advance": "pending",
+                    "reject": "rejected",
+                }
+                assert stored.status == expected_status[winner]
+                wrong_version = await b.post(
+                    "/v1/candidates/approve", json={**payload, "expected_version": candidate.version + 1}
+                )
+                assert wrong_version.status_code == 409, wrong_version.text
+
+    asyncio.run(scenario())

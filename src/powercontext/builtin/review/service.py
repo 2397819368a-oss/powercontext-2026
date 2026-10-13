@@ -576,9 +576,9 @@ class ReviewService:
 
         try:
             return await self._approve(candidate_id, expected_version)
-        except (ArtifactTargetConflictError, CandidateTerminalError):
+        except (ArtifactTargetConflictError, CandidateTerminalError, RevisionConflictError):
             # Another instance can publish after our pending read. Leave the failed
-            # publication transaction before reading the terminal decision; never
+            # transaction before reading the terminal decision; never
             # invert the target-before-Candidate order in the pending write path.
             async with self._connection() as connection:
                 current = await self._candidates.get(connection, self._scope_id, candidate_id, current=True)
@@ -848,6 +848,8 @@ class ReviewService:
             if not isinstance(preview.proposal, AtomicMemoryContent) or preview.target is None:
                 raise InvalidCandidateError("family", "Memory Dream proposal required")
             await self._authorize_decision("approve", preview)
+            if preview.status is CandidateStatus.APPROVED:
+                return preview
             state = await self._memory.states.get(connection, self._scope_id, preview.target.artifact_id)
             if state.state is not AtomicMemoryStateValue.ACTIVE:
                 raise EvidenceResolutionError("memory_entry_inactive")
