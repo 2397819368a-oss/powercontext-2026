@@ -4,7 +4,7 @@ title: Image evidence and Artifact integration
 
 - Proposal Name: `image_evidence_artifact_integration`
 - Start Date: 2026-10-13
-- RFC PR: [oceanbase/powercontext#0000](https://github.com/oceanbase/powercontext/pull/0000)
+- RFC PR: [oceanbase/powercontext#1972](https://github.com/oceanbase/powercontext/pull/1972)
 - Tracking Issue: [#1932](https://github.com/oceanbase/powercontext/issues/1932)
 - Experimental implementation: [draft PR #1956](https://github.com/oceanbase/powercontext/pull/1956)
 - Related RFCs: [Source definitions](1400_source_definition_and_observation_model.md),

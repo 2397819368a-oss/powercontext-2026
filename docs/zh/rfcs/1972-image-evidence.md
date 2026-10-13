@@ -4,7 +4,7 @@ title: 图片证据与 Artifact 集成
 
 - 提案名称：`image_evidence_artifact_integration`
 - 起始日期：2026-10-13
-- RFC PR：[oceanbase/powercontext#0000](https://github.com/oceanbase/powercontext/pull/0000)
+- RFC PR：[oceanbase/powercontext#1972](https://github.com/oceanbase/powercontext/pull/1972)
 - Tracking Issue：[#1932](https://github.com/oceanbase/powercontext/issues/1932)
 - 实验实现：[草稿 PR #1956](https://github.com/oceanbase/powercontext/pull/1956)
 - 相关 RFC：[Source Definition](1400_source_definition_and_observation_model.md)、
