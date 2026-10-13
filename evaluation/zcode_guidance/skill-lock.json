@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_path": "integrations/zcode/plugins/powercontext/skills/powercontext-project-context",
-  "source_commit": "b2d672d4b9bdbe9bdeb8ae1f69c4c42b69a36104",
+  "source_commit": "b5bcfe24bcce9c574ee85175d623bb9963970a41",
   "files": {
     ".powercontext-guidance.json": "655cbbb72bd53c08f9e846e315ed64d3a855eb54767e97580b00b88b237f5358",
     "SKILL.md": "391cbb19e5dbc6b6b5e65c02753de702f67cead755bde07ba51efa19d01a4b55",

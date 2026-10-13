@@ -17,11 +17,13 @@
 import copy
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from evaluation.zcode_guidance import pin
 from evaluation.zcode_guidance.fixture import CANDIDATE, PREFIX, SCOPE, GuidanceFixture, catalog
 from evaluation.zcode_guidance.pin import PROJECT, REPOSITORY, SOURCE, check
 from evaluation.zcode_guidance.report import grade, replay, scheduled, write_json
@@ -90,6 +92,29 @@ def saved_reply() -> dict:
             }
         ],
     }
+
+
+@pytest.mark.parametrize("mutation", ["unchanged", "crlf", "changed", "added", "removed"])
+def test_packaged_skill_pin_accepts_checkout_line_endings_but_rejects_drift(tmp_path, monkeypatch, mutation):
+    source = tmp_path / SOURCE
+    shutil.copytree(REPOSITORY / SOURCE, source)
+    monkeypatch.setattr(pin, "REPOSITORY", tmp_path)
+    if mutation == "crlf":
+        for path in source.rglob("*"):
+            if path.is_file():
+                path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    elif mutation == "changed":
+        skill = source / "SKILL.md"
+        skill.write_bytes(skill.read_bytes() + b"\nChanged instruction.\n")
+    elif mutation == "added":
+        (source / "extra.json").write_text("{}", encoding="utf-8")
+    elif mutation == "removed":
+        (source / ".powercontext-guidance.json").unlink()
+    if mutation in {"unchanged", "crlf"}:
+        assert check()["files"]
+    else:
+        with pytest.raises(ValueError, match="^skill_pin_mismatch$"):
+            check()
 
 
 def test_contract_catalog_and_transport(tools):
