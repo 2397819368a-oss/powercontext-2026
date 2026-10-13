@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 import pytest
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 import powercontext.client.cli as client_cli
@@ -92,4 +93,4 @@ def test_topic_processing_cli_preserves_exact_block_identity_and_diagnostics(mon
 def test_retry_cli_requires_an_explicit_observed_block_id():
     result = CliRunner().invoke(create_cli([]), ["topic-memory", "retry", "--scope-id", "project"])
     assert result.exit_code == 2
-    assert "--block-id" in result.output
+    assert "--block-id" in strip_ansi(result.output)
