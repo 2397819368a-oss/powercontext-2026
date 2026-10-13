@@ -132,8 +132,11 @@ def test_failed_registry_write_restores_plugin_and_registration(kimi_home, monke
     assert {p.relative_to(kimi_home): p.read_bytes() for p in kimi_home.rglob("*") if p.is_file()} == before
 
 
-def test_doctor_reports_unavailable_server_without_writes(kimi_home):
-    install(server_url="http://127.0.0.1:1")
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:1", "http://127.0.0.2:1", "http://127.255.255.254:1", "http://[::1]:1"]
+)
+def test_doctor_reports_unavailable_server_without_writes(kimi_home, url):
+    install(server_url=url)
     before = {p.relative_to(kimi_home): p.read_bytes() for p in kimi_home.rglob("*") if p.is_file()}
     report = kimi_code.run_kimi_diagnostics()
     assert report["plugin"].ok and report["mcp"].ok and report["hook"].ok

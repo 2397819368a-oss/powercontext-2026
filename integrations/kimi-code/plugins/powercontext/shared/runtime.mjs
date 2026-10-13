@@ -15,6 +15,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { isIP } from 'node:net'
 import { fileURLToPath } from 'node:url'
 
 export const MAX_CONTEXT_BYTES = 8000
@@ -38,7 +39,9 @@ export function loadSettings() {
   } catch { throw new Failure('invalid_settings') }
   let url
   try { url = new URL(value.server_url) } catch { throw new Failure('invalid_settings') }
-  const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+  // Match the shared transport policy: IPv4 loopback covers the entire 127/8 range.
+  const loopback = ['localhost', '[::1]'].includes(url.hostname) ||
+    (isIP(url.hostname) === 4 && url.hostname.startsWith('127.'))
   if (!(url.protocol === 'https:' || url.protocol === 'http:' && loopback) ||
       url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Failure('invalid_settings')
   if (typeof value.scope_id !== 'string' || !value.scope_id.trim() || [...value.scope_id].length > 256 ||

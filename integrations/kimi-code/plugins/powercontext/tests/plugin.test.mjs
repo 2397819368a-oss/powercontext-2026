@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 
 const plugin = fileURLToPath(new URL('..', import.meta.url))
 const prompt = 'The deployment color is teal-731.'
-async function fixture(t, overrides = {}, settings = {}) {
+async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1') {
   const root = await mkdtemp(join(tmpdir(), 'pc-kimi-'))
   const installed = join(root, 'plugin')
   await cp(plugin, installed, { recursive: true, filter: path => !path.includes('tests') })
@@ -50,9 +50,9 @@ async function fixture(t, overrides = {}, settings = {}) {
     }
     res.writeHead(404); res.end('{}')
   })
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  await new Promise(resolve => server.listen(0, listenHost, resolve))
   await writeFile(join(installed, 'powercontext.json'), JSON.stringify({
-    server_url: 'http://127.0.0.1:' + server.address().port, scope_id: 'scope-test', capture_prompts: true, use_token: false, ...settings,
+    server_url: 'http://' + listenHost + ':' + server.address().port, scope_id: 'scope-test', capture_prompts: true, use_token: false, ...settings,
   }))
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }) })
   async function invoke(input = { hook_event_name: 'UserPromptSubmit', session_id: 'session-test', cwd: '/workspace', prompt },
@@ -145,4 +145,21 @@ test('timeouts fail open within the automatic budget', async t => {
   assert.deepEqual(output, {})
   assert.match(stderr, /server_unavailable/)
   assert.ok(Date.now() - started < 5000)
+})
+
+test('loopback aliases support automatic context and Source capture', async t => {
+  const f = await fixture(t, {}, {}, '127.0.0.2')
+  const { output, stderr } = await f.invoke()
+  assert.match(output.message, /Historical context: use uv/)
+  assert.equal(stderr, '')
+  assert.equal(f.captures[0].content, prompt)
+  assert.equal(f.captures[0].scope_id, 'scope-test')
+})
+
+test('non-loopback plaintext settings are rejected before sending requests', async t => {
+  const f = await fixture(t, {}, { server_url: 'http://127.0.0.1.example.test:8000' })
+  const { output, stderr } = await f.invoke()
+  assert.deepEqual(output, {})
+  assert.match(stderr, /invalid_settings/)
+  assert.deepEqual(f.requests, [])
 })
