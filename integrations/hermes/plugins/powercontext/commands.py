@@ -614,6 +614,21 @@ def get_tool_schemas() -> list[dict[str, Any]]:
 
     json_object = {"type": "object", "additionalProperties": True}
     json_array = {"type": "array", "items": json_object}
+    handoff_rollover_reasons = {
+        "type": "array",
+        "items": {
+            "type": "string",
+            "enum": [
+                "user_requested",
+                "host_context_budget",
+                "host_compaction",
+                "context_quality",
+                "delegation",
+                "manual_checkpoint",
+            ],
+        },
+        "maxItems": 6,
+    }
     schemas.extend([
         _operation_schema(
             "powercontext_prepare_context",
@@ -760,6 +775,7 @@ def get_tool_schemas() -> list[dict[str, Any]]:
                 "boundary_source": json_object,
                 "objective": {"type": "string"},
                 "evidence": json_array,
+                "rollover_reasons": handoff_rollover_reasons,
                 "max_bytes": {"type": "integer", "minimum": 512, "maximum": 32768},
             },
             ("boundary_source", "objective"),
@@ -776,6 +792,7 @@ def get_tool_schemas() -> list[dict[str, Any]]:
             {
                 "objective": {"type": "string"},
                 "evidence": json_array,
+                "rollover_reasons": handoff_rollover_reasons,
                 "max_bytes": {"type": "integer", "minimum": 512, "maximum": 32768},
             },
             ("objective", "evidence"),
