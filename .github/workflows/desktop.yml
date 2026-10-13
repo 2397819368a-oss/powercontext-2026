@@ -42,11 +42,22 @@ jobs:
           if ((git rev-parse refs/tags/powercontext-v1.0.0) -ne 'ec97efba5f26fc972e9d8bf5027d8233acab3ca1') {
             throw 'Unexpected Server version baseline tag'
           }
-      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
           working_directory: desktop
       - name: Install pinned Windows Rust toolchain
         run: rustup toolchain install 1.95.0-x86_64-pc-windows-msvc --profile minimal --component rustfmt --component clippy
+      - name: Cache desktop dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: desktop
+          cache-dependency-glob: desktop/pnpm-lock.yaml
+      - name: Cache Rust dependencies and compilation
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: ${{ hashFiles('desktop/rust-toolchain.toml') }}
+          cache-bin: false
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
       - run: pnpm lint
@@ -65,6 +76,14 @@ jobs:
         uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           version: "0.10.12"
+          enable-cache: true
+          cache-suffix: desktop-${{ github.job }}-py3.12
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            integrations/langchain/pyproject.toml
+            integrations/langgraph/pyproject.toml
+            integrations/opendal/pyproject.toml
       - name: Install locked Server test dependencies
         working-directory: .
         run: uv sync --locked --python 3.12
@@ -102,7 +121,7 @@ jobs:
       - name: Smoke test installed package
         timeout-minutes: 8
         run: ./scripts/windows-smoke.ps1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: desktop-windows-internal-unsigned
@@ -144,6 +163,14 @@ jobs:
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           version: "0.10.12"
+          enable-cache: true
+          cache-suffix: desktop-${{ github.job }}-py3.12
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            integrations/langchain/pyproject.toml
+            integrations/langgraph/pyproject.toml
+            integrations/opendal/pyproject.toml
       - name: Prepare isolated Server fixture
         run: |
           uv sync --locked --python 3.12
@@ -176,7 +203,7 @@ jobs:
       - name: Exercise existing installed package
         timeout-minutes: 8
         run: ./desktop/scripts/windows-smoke.ps1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: desktop-installed-diagnostics

@@ -16,13 +16,18 @@
 
 from __future__ import annotations
 
+import logging
 import math
+from base64 import urlsafe_b64encode
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from typing import TYPE_CHECKING, Literal, NoReturn
 
 from sqlalchemy import update
+from sqlalchemy.exc import OperationalError
 
+from powercontext._logging import log_safely
 from powercontext.artifacts import ArtifactLineage, ArtifactRef
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
@@ -41,8 +46,14 @@ from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
     AtomicMemoryWorkingItem,
 )
 from powercontext.builtin.artifacts.memory.canonical import canonical_embedding
+from powercontext.builtin.artifacts.memory.protocols import (
+    MemoryWriteGate,
+    MemoryWriteGateRequest,
+    MemoryWriteVerdict,
+)
 from powercontext.builtin.artifacts.prompt.errors import PromptError
 from powercontext.builtin.artifacts.prompt.service import PromptService, current_prompt
+from powercontext.builtin.decision_observations import DecisionObservation
 from powercontext.builtin.inference import (
     InferenceTimeoutError,
     InferenceUnavailableError,
@@ -51,11 +62,13 @@ from powercontext.builtin.inference import (
 )
 from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndexError, AtomicMemoryRelatedRequest
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
+from powercontext.builtin.persistence.decision_observations import DecisionObservationRepository
 from powercontext.builtin.persistence.errors import GenerationConflictError
 from powercontext.builtin.persistence.memory_windows import MemorySourceWindowRepository
 from powercontext.builtin.persistence.sources import SourceRepository
 from powercontext.builtin.persistence.tables import SOURCE_JOURNAL_HEADS_TABLE
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication, deferred_decision_audit
+from powercontext.builtin.runtime.decision_policy import emit_decision_observation
 from powercontext.builtin.runtime.models import MemoryFlushResult
 from powercontext.builtin.runtime.processing_execution import ScopeInvocation
 from powercontext.builtin.runtime.protocols import RuntimeTracing
@@ -65,6 +78,9 @@ from powercontext.errors import RevisionConflictError
 
 if TYPE_CHECKING:
     from powercontext.builtin.runtime.config import RuntimeConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,6 +124,9 @@ class AtomicMemorySourceWindowProcessor:
         pipeline: object | None,
         prompts: PromptService | None = None,
         config: AtomicMemoryProcessingConfig | None = None,
+        memory_write_gate: MemoryWriteGate | None = None,
+        decision_observations: DecisionObservationRepository | None = None,
+        decision_observation_retention_days: int | None = None,
         tracing: RuntimeTracing | None = None,
     ) -> None:
         self.application = application
@@ -116,6 +135,9 @@ class AtomicMemorySourceWindowProcessor:
         self.pipeline = None if pipeline is None else require_atomic_memory_pipeline(pipeline)
         self.prompts = prompts
         self.config = config or AtomicMemoryProcessingConfig()
+        self.memory_write_gate = memory_write_gate
+        self.decision_observations = decision_observations
+        self.decision_observation_retention_days = decision_observation_retention_days
         self.windows = MemorySourceWindowRepository()
         self.tracing = tracing
 
@@ -191,7 +213,7 @@ class AtomicMemorySourceWindowProcessor:
         pipeline = self.pipeline if eligible else None
         try:
             workset, consulted_artifacts = await self._prepare(scope_id, eligible, pipeline, context)
-            prepared = await self._inspect_decisions(scope_id, workset, context)
+            prepared, decision, observation = await self._inspect_decisions(scope_id, workset, context)
         except (InferenceTimeoutError, InvalidInferenceOutputError) as error:
             reducible = (isinstance(error, InferenceTimeoutError) and error.operation == "generate") or (
                 isinstance(error, InvalidInferenceOutputError) and error.operation == "atomic-memory-input-budget"
@@ -199,21 +221,36 @@ class AtomicMemorySourceWindowProcessor:
             if reducible and action.through - action.after > 1:
                 await self._reduce_window(scope_id, context, processing, cursor, state, action, high_watermark)
             raise
-        await self._publish(
-            scope_id,
-            context,
-            processing,
-            cursor,
-            transition,
-            action,
-            window,
-            eligible,
-            consulted_artifacts,
-            workset,
-            prepared,
+        try:
+            finalized = await self._publish(
+                scope_id,
+                context,
+                processing,
+                cursor,
+                transition,
+                action,
+                window,
+                eligible,
+                consulted_artifacts,
+                workset,
+                prepared,
+                decision,
+                observation,
+                high_watermark,
+            )
+        except Exception:
+            self._emit_failed_observation(observation)
+            raise
+        if finalized is not None:
+            emit_decision_observation(finalized)
+        return self._result(
+            action.after,
+            action.through,
             high_watermark,
+            len(eligible),
+            held=decision is not None and decision.verdict is MemoryWriteVerdict.HOLD,
+            hold_codes=() if decision is None or decision.code is None else (decision.code.value,),
         )
-        return self._result(action.after, action.through, high_watermark, len(eligible))
 
     async def _reduce_window(self, scope_id, context, processing, cursor, state, action, high_watermark):
         async with self.application.database.transaction() as connection:
@@ -263,7 +300,8 @@ class AtomicMemorySourceWindowProcessor:
                     )
                 plans.append(plan)
         prepared = tuple([await application.service.prepare_change(plan) for plan in plans])
-        return prepared
+        decision, observation = await self._assess_write_gate(scope_id, workset, prepared)
+        return prepared, decision, observation
 
     async def _publish(
         self,
@@ -278,10 +316,13 @@ class AtomicMemorySourceWindowProcessor:
         consulted_artifacts,
         workset,
         prepared,
+        decision,
+        observation,
         high_watermark,
     ):
         application = self.application
         writes = tuple(write for item in prepared for write in item.plan.writes)
+        finalized = None
         with self._stage(
             "memory.commit",
             {
@@ -319,8 +360,20 @@ class AtomicMemorySourceWindowProcessor:
                 )
                 for ref in consulted_artifacts:
                     await self._authorize_artifact(connection, scope_id, context, ref)
-                await application.service.commit_window(
-                    connection, scope_id, prepared, context, read_set=tuple(workset.reads.values())
+                results = ()
+                if decision is None or decision.verdict is not MemoryWriteVerdict.HOLD:
+                    results = await application.service.commit_window(
+                        connection, scope_id, prepared, context, read_set=tuple(workset.reads.values())
+                    )
+                finalized = await self._finalize_observation(
+                    connection,
+                    observation,
+                    final_action=(
+                        "memory_write_hold"
+                        if decision is not None and decision.verdict is MemoryWriteVerdict.HOLD
+                        else "memory_write_applied"
+                    ),
+                    subject_refs=tuple(_artifact_reference(result.primary.ref) for result in results),
                 )
                 await self.cursors.save(
                     connection,
@@ -332,6 +385,7 @@ class AtomicMemorySourceWindowProcessor:
                 await self.windows.clear_consumed(connection, scope_id, action.through)
                 if processing is not None:
                     await processing.complete(connection, remaining_work=action.through < high_watermark)
+        return finalized
 
     async def _prepare(self, scope_id, eligible, pipeline, context):
         workset = AtomicMemoryWindowWorkset()
@@ -574,8 +628,76 @@ class AtomicMemorySourceWindowProcessor:
         if tuple(item.journal_position for item in window) != tuple(range(after + 1, through + 1)):
             _conflict("Source journal window is not an exact contiguous interval")
 
+    async def _assess_write_gate(self, scope_id, workset, prepared):
+        gate = self.memory_write_gate
+        if gate is None or not prepared:
+            return None, None
+        items = workset.changes()
+        collector = _PendingObservationSink()
+        request = MemoryWriteGateRequest(
+            candidates=tuple(item.content.text for item in items),
+            evidence=tuple(_gate_evidence_text(item) for item in items for item in item.evidence),
+            scope_id=scope_id,
+            operation_id=_window_operation_id(prepared),
+            subject_refs=tuple(f"candidate:{index}" for index in range(1, len(items) + 1)),
+            evidence_refs=tuple(dict.fromkeys(_evidence_reference(value) for item in items for value in item.evidence)),
+            observation_sink=collector,
+            defer_observation_emission=True,
+        )
+        try:
+            decision = await gate.assess(request)
+        except Exception:
+            return None, None
+        return decision, collector.observation
+
+    async def _finalize_observation(self, connection, observation, *, final_action, subject_refs):
+        if observation is None or self.decision_observations is None:
+            return None
+        finalized = observation.model_copy(
+            update={
+                "final_action": final_action,
+                "subject_refs": observation.subject_refs if final_action == "memory_write_hold" else subject_refs,
+            }
+        )
+        try:
+            async with connection.begin_nested():
+                await self.decision_observations.append(connection, finalized)
+                if self.decision_observation_retention_days is not None:
+                    from datetime import UTC, datetime, timedelta
+
+                    await self.decision_observations.prune_before(
+                        connection,
+                        finalized.scope_id,
+                        datetime.now(UTC) - timedelta(days=self.decision_observation_retention_days),
+                    )
+        except Exception as error:
+            # SQLite RAISE(ROLLBACK, ...) invalidates the owner transaction and
+            # destroys this savepoint. Continuing would consume the source window
+            # in a new transaction after the Memory write was lost.
+            if (
+                connection.dialect.name == "sqlite"
+                and isinstance(error, OperationalError)
+                and "no such savepoint" in str(error)
+            ):
+                raise
+            log_safely(
+                logger,
+                logging.WARNING,
+                "Decision observation persistence failed",
+                extra={"event": "decision.observation_sink_failed", "exception_type": type(error).__name__},
+            )
+            return None
+        return finalized
+
     @staticmethod
-    def _result(after, through, high_watermark, count):
+    def _emit_failed_observation(observation):
+        if observation is not None:
+            emit_decision_observation(
+                observation.model_copy(update={"final_action": "memory_write_failed", "subject_refs": ()})
+            )
+
+    @staticmethod
+    def _result(after, through, high_watermark, count, *, held=False, hold_codes=()):
         return MemoryFlushResult(
             previous_cursor=after,
             current_cursor=through,
@@ -583,7 +705,45 @@ class AtomicMemorySourceWindowProcessor:
             source_count=count,
             memory_ref=None,
             remaining_work=through < high_watermark,
+            held_count=1 if held else 0,
+            hold_codes=hold_codes,
         )
+
+
+@dataclass(slots=True)
+class _PendingObservationSink:
+    observation: DecisionObservation | None = None
+
+    async def record(self, observation: DecisionObservation, /) -> None:
+        self.observation = observation
+
+
+def _gate_evidence_text(value) -> str:
+    if isinstance(value, AtomicMemoryEvidence):
+        import json
+
+        return json.dumps(value.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return value.content.text
+
+
+def _reference_component(value: str) -> str:
+    return urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _artifact_reference(reference: ArtifactRef) -> str:
+    return f"artifact:{_reference_component(reference.family)}:{_reference_component(reference.artifact_id)}@{reference.revision}"
+
+
+def _evidence_reference(value) -> str:
+    if isinstance(value, AtomicMemoryEvidence):
+        reference = value.source_ref
+        return f"source:{_reference_component(reference.source_type)}:{_reference_component(reference.source_id)}"
+    return _artifact_reference(value.artifact_ref)
+
+
+def _window_operation_id(prepared) -> str:
+    identities = ":".join(item.plan.primary_artifact_id for item in prepared)
+    return f"atomic-memory-window:{sha256(identities.encode('utf-8')).hexdigest()}"
 
 
 def _conflict(detail: str) -> NoReturn:

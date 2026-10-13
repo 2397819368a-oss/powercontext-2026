@@ -47,7 +47,7 @@ from powercontext.builtin.artifacts.memory import (
 from powercontext.builtin.inference.errors import InferenceTimeoutError, InferenceUnavailableError
 from powercontext.builtin.inference.pydantic_ai import InferenceLimits, PydanticAIStructuredGenerator
 from powercontext.builtin.records import ArtifactRecord
-from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, open_builtin_runtime
+from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, open_builtin_contexts, open_builtin_runtime
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryRerankTrace, AtomicMemorySearchHit
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.server.settings import ServerSettings
@@ -281,6 +281,10 @@ async def ingest_dataset(
         else {}
     )
     config = _runtime_config(settings)
+    # A resumed run has to resolve the Scopes ingestion recorded while no inference client
+    # exists yet, so a database that cannot answer for this run fails as such rather than
+    # behind a provider failure. A first run records no Scope here and registers them below.
+    await _require_registered_scopes(config, persisted_scopes)
     started = perf_counter()
     total_sessions = sum(len(conversation.sessions) for conversation in conversations)
     completed_sessions = 0
@@ -452,6 +456,9 @@ async def evaluate_dataset(  # noqa: C901
             rerank_mode=rerank_mode,
             rerank_candidate_limit=top_k,
         )
+        # Resolve the Scopes ingestion recorded while no inference client exists yet. A database
+        # that cannot answer for this run has to fail as such, not behind a provider failure.
+        await _require_registered_scopes(config, scope_ids)
         limits = InferenceLimits(
             timeout_seconds=settings.inference.generation_timeout_seconds,
             max_requests=settings.inference.generation_max_requests,
@@ -460,6 +467,9 @@ async def evaluate_dataset(  # noqa: C901
         semaphore = asyncio.Semaphore(concurrency)
         async with AsyncExitStack() as resources:
             runtime = await resources.enter_async_context(open_builtin_runtime(config))
+            # Read the ingested projections this run scores against before the answer and judge
+            # clients exist, so a database that cannot answer for the run fails on its own terms.
+            artifact_sources = await _artifact_source_maps(runtime, scope_ids)
             model = await resources.enter_async_context(infer_model(generation_model))
             answer_generator = PydanticAIStructuredGenerator(
                 model=model,
@@ -489,7 +499,6 @@ async def evaluate_dataset(  # noqa: C901
                 limits=limits,
                 model_settings=_benchmark_model_settings(),
             )
-            artifact_sources = await _artifact_source_maps(runtime, scope_ids)
 
             async def evaluate_one(question: LoCoMoQuestion) -> dict[str, Any]:
                 async with semaphore:
@@ -1255,6 +1264,23 @@ async def _lineage_source_ids(
         pending.append((current, True))
         pending.extend((ancestor, False) for ancestor in reversed(record.artifacts))
     return cache[_ref_identity(ref)]
+
+
+async def _require_registered_scopes(config: BuiltinConfig, scope_ids: Mapping[str, str]) -> None:
+    """Fail when this database cannot resolve a recorded Scope, before any inference exists.
+
+    Opening the runtime composes the generation and embedding providers first, so a database
+    that never ingested the run would report a provider setup failure instead of the missing
+    Scope. The preflight opens the built-in contexts, which construct no model client, and
+    resolves every Scope ingestion recorded there. A run that recorded none has nothing to
+    resolve and opens nothing.
+    """
+
+    if not scope_ids:
+        return
+    async with open_builtin_contexts(config) as contexts:
+        for scope in scope_ids.values():
+            await contexts.scopes.get(scope)
 
 
 async def _artifact_source_maps(runtime, scope_ids: Mapping[str, str]):

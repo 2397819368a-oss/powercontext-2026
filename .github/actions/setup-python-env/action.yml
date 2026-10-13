@@ -10,6 +10,15 @@ inputs:
     description: "uv version to use"
     required: true
     default: "0.10.12"
+  cache-dependency-glob:
+    description: "Dependency files used to invalidate the uv cache, relative to the repository root"
+    required: false
+    default: |
+      pyproject.toml
+      uv.lock
+      integrations/langchain/pyproject.toml
+      integrations/langgraph/pyproject.toml
+      integrations/opendal/pyproject.toml
 
 runs:
   using: "composite"
@@ -23,7 +32,8 @@ runs:
       with:
         version: ${{ inputs.uv-version }}
         enable-cache: 'true'
-        cache-suffix: ${{ matrix.python-version }}
+        cache-suffix: ${{ github.job }}-py${{ inputs.python-version }}
+        cache-dependency-glob: ${{ inputs.cache-dependency-glob }}
 
     - name: Install Python dependencies
       run: uv sync --frozen
