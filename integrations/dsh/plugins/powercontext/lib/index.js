@@ -1913,6 +1913,7 @@ const PUBLIC_ERROR_CODES = new Set([
 	"scope_not_found",
 	"memory_not_found",
 	"artifact_not_found",
+	"artifact_handle_not_found",
 	"candidate_not_found",
 	"handoff_evidence_not_found",
 	"source_definition_not_found",
