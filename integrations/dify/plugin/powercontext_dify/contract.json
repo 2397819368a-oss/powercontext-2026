@@ -1231,7 +1231,8 @@
             "$ref": "#/components/schemas/AtomicMemoryRecord"
           },
           "score": {
-            "type": "number"
+            "type": "number",
+            "description": "Raw RRF score. Hybrid mode applies the deployment's normalized relative FTS/vector weights."
           },
           "matched_by": {
             "type": "array",

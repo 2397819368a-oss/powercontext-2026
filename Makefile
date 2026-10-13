@@ -40,18 +40,21 @@ workflow-actions-check: ## Verify third-party GitHub Actions use immutable commi
 	@echo "🚀 Static type checking: Running ty for the Pydantic AI integration"
 	@uv run ty check integrations/pydantic-ai/src
 
+# pytest-xdist worker count; set PYTEST_WORKERS=0 to run tests in a single process.
+PYTEST_WORKERS ?= auto
+
 .PHONY: test
 test: ## Test the code with pytest
 	@echo "🚀 Testing code: Running pytest"
-	@uv run python -m pytest --doctest-modules
+	@uv run python -m pytest -n $(PYTEST_WORKERS) --doctest-modules
 
 .PHONY: unit-test
 unit-test: ## Run tests that do not cross the Server boundary end to end.
-	@uv run python -m pytest --doctest-modules --ignore=tests/e2e
+	@uv run python -m pytest -n $(PYTEST_WORKERS) --doctest-modules --ignore=tests/e2e
 
 .PHONY: e2e-test
 e2e-test: ## Run CLI to Client SDK to Server end-to-end tests.
-	@uv run python -m pytest tests/e2e
+	@uv run python -m pytest -n $(PYTEST_WORKERS) tests/e2e
 
 .PHONY: evaluation-unit-test
 evaluation-unit-test: ## Run the evaluation project's unit tests, the work-continuity benchmark included.
