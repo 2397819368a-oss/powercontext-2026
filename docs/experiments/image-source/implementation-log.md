@@ -761,3 +761,9 @@ Server 保持运行于 127.0.0.1:18171，仅绑定 loopback，实验访问控制
 Access/Atomic Memory 与 ZCode 协议、宿主联合回归 85 项通过。完整 Python 3.11 CI 的 4669 项单元测试通过后，E2E 又发现 Dream 向导新建用例缺少图片关闭回答，以及已有普通模型的字符串 URL 被 MiniCPM 专用 host 检查读取。补齐该用例的明确关闭输入；适配条件先检查 MiniCPM 模型，再按实际请求使用的字符串 URL 解析 hostname，不改变其他 provider。已有 Dream admission 和真实 MiniCPM 单 system message 回归继续执行。
 
 两个 Dream 向导用例及 MiniCPM 请求格式回归合计 3 项通过；后者使用受控 HTTP provider，不记作真实面壁请求。Ruff、Linux 目标全库 ty 和差异检查通过。更新后的修复保持审计必需、图片默认关闭和原有 admission 断言，继续由新 head 的完整 CI 验证。
+
+## 2026-10-13：PR #1956 适配最新召回权重契约
+
+本轮属于主干集成维护：用户要求解决同一草稿 PR 的新冲突。前置状态为干净 worktree、分支与远端同为 90902943；该提交的 CI 已完成，32 项成功、1 项按 workflow 条件跳过。最新 upstream/master 为 28244c8a，包含召回通道权重配置和依赖 action 更新；预检发现两份 Desktop 派生操作清单冲突。
+
+目标是在保留分支快照后 rebase 到当前主干，从合并后的 OpenAPI 契约重新生成各端派生文件，验证图片与召回配置、类型及契约检查，再以精确 lease 更新现有草稿并确认可合并状态。保留默认关闭、Scope/授权边界、历史原图/解析 Source 身份和已有 CI 修复；本轮不扩展功能、不操作现有桌面服务，也不把受控测试当作真实图片或新会话召回验收。
