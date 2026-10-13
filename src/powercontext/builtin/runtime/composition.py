@@ -1854,7 +1854,11 @@ async def _open_pydantic_ai_model(
     # MiniCPM's chat template accepts one leading system message. Prompted
     # structured output adds schema instructions; merge them at the provider
     # boundary without dropping either the task instructions or the schema.
-    if base_url is not None and base_url.host == "api.modelbest.cn" and model_name.startswith("openai-chat:MiniCPM"):
+    if (
+        model_name.startswith("openai-chat:MiniCPM")
+        and base_url is not None
+        and urlsplit(str(base_url)).hostname == "api.modelbest.cn"
+    ):
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.profiles.openai import OpenAIModelProfile
         from pydantic_ai.providers.openai import OpenAIProvider

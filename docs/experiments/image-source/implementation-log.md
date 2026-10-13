@@ -749,3 +749,15 @@ Server 保持运行于 127.0.0.1:18171，仅绑定 loopback，实验访问控制
 新主干的 ZCode acceptance 还暴露旧 Skill pin 与 #1877 生成产物不一致。使用官方 pin --revision 命令重新绑定 b5bcfe24 的不可变 Git 字节，更新说明；严格摘要校验保留，不把重置 pin 当成真实模型资格。分别继续执行离线 pin/fixture 测试和后续 CI，真实 ZCode 模型行为需另行验收。
 
 官方 pin check 通过，ZCode 离线与协议/宿主测试 69 项通过；Linux 目标 ty、Ruff 和差异检查通过。两个残留 CI 修复单独提交后更新同一草稿，继续检查最新提交的全部任务，保留 Draft 状态。
+
+### Memory 写入并发审计的 CI 回归
+
+1ef1bd94 的严格配置和 harness 检查通过，ZCode 实际 CLI 验收首次出现一个原生进程异常退出，另一组独立验收通过。单独重跑后，一组通过，另一组在更新 Memory 时收到 access_unavailable 503。保留两次实际日志与验收摘要，不以重跑或降低断言代替修复。
+
+隔离 SQLite 服务复现了准备阶段权限审计的 database is locked：AtomicMemoryManagementWriter.prepare_command 在读取事务内追加决策审计；并发提交使该快照不能升级为写事务。复用现有 deferred_decision_audit，使决策仍在原准备事务中检查，审计在该事务关闭后落库；正式提交仍使用原有权限、版本和 Owner 校验。
+
+新增跨组件回归使用实际 SQLite 独立提交插入并发点，通过公开 HTTP 验证创建、更新、最终正文与 revision、审计可读和旧 ETag 拒绝。两例在去掉修复时均以 access_unavailable 503 失败，恢复修复后两例通过。进一步执行 Access/Atomic Memory 联合回归，再更新 PR 并核查最新提交的完整 CI。
+
+Access/Atomic Memory 与 ZCode 协议、宿主联合回归 85 项通过。完整 Python 3.11 CI 的 4669 项单元测试通过后，E2E 又发现 Dream 向导新建用例缺少图片关闭回答，以及已有普通模型的字符串 URL 被 MiniCPM 专用 host 检查读取。补齐该用例的明确关闭输入；适配条件先检查 MiniCPM 模型，再按实际请求使用的字符串 URL 解析 hostname，不改变其他 provider。已有 Dream admission 和真实 MiniCPM 单 system message 回归继续执行。
+
+两个 Dream 向导用例及 MiniCPM 请求格式回归合计 3 项通过；后者使用受控 HTTP provider，不记作真实面壁请求。Ruff、Linux 目标全库 ty 和差异检查通过。更新后的修复保持审计必需、图片默认关闭和原有 admission 断言，继续由新 head 的完整 CI 验证。
