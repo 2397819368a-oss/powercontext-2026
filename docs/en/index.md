@@ -31,7 +31,9 @@ home:
         command: powercontext config init
       - title: Install the personal service
         description: On supported macOS and Linux, install the personal service with .env and check its status.
-        command: powercontext service install --env-file .env
+        command: |
+          powercontext service install --env-file .env
+          powercontext service status
       - title: Connect your Agent and verify memory
         description: Follow .env.next-steps.md to create or select a Scope and connect your Agent. Verify that a real conversation becomes a Source, then check memory processing if enabled.
   continuity:
