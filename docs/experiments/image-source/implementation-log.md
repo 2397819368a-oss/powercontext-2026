@@ -741,3 +741,11 @@ Server 保持运行于 127.0.0.1:18171，仅绑定 loopback，实验访问控制
 - 图片、证据、API/JS 契约、Vision 与生命周期联合回归 99 项通过。Ruff、格式、Linux 目标 ty、release-version、129 个 action pin、生成 API/JS、集成 guidance/能力文档检查和非类型 prek 全部通过。原生 Windows ty 的既有 POSIX 问题保留，不修改检查配置。
 
 推送使用精确 force-with-lease，要求远端仍为已读取的 df4c7666，避免覆盖别人的更新。后续以更新后提交的 CI 和 mergeable 状态确认结果；完整真实召回、配对恢复及最终 OCR 验收仍是独立事项。
+
+### 更新后的 CI 继续修复
+
+078cf6f8 已推送，GitHub 确认 MERGEABLE，原内容冲突消失。新的 License 与第一批检查通过，但 harness 走到测试后发现旧 fixture 只复制三个插件文件，缺少新增配置模块：改为复制实际插件目录并忽略缓存，继续断言 harness URL 正确且图片默认关闭。未弱化生产配置或吞掉缺失模块错误。
+
+新主干的 ZCode acceptance 还暴露旧 Skill pin 与 #1877 生成产物不一致。使用官方 pin --revision 命令重新绑定 b5bcfe24 的不可变 Git 字节，更新说明；严格摘要校验保留，不把重置 pin 当成真实模型资格。分别继续执行离线 pin/fixture 测试和后续 CI，真实 ZCode 模型行为需另行验收。
+
+官方 pin check 通过，ZCode 离线与协议/宿主测试 69 项通过；Linux 目标 ty、Ruff 和差异检查通过。两个残留 CI 修复单独提交后更新同一草稿，继续检查最新提交的全部任务，保留 Draft 状态。
