@@ -1,0 +1,1152 @@
+{
+  "metadata": {
+    "evidence_level": "One synthetic offline probe using real Builder baselines and current outer renderers. No Server, database, Agent, Reader, Judge, or provider execution.",
+    "fixed_query": "订单重试策略、幂等条件、资金操作例外、revision 3",
+    "limit": "Proposed body transformation is not a production compiler; actual model understanding, injection compatibility and task quality are untested.",
+    "output_dir": "/data/codex-tmp/powercontext-token-rfc-mechanism-probe-20261013",
+    "profiles": {
+      "cl100k_base": {
+        "counting": "len(encoding.encode(content, disallowed_special=()))",
+        "mergeable_ranks_sha256": "2f42d9ac99cced2beb3c9c7fede745880915fa54be5739f990c19656a4e7fcba",
+        "n_vocab": 100277
+      },
+      "o200k_base": {
+        "counting": "len(encoding.encode(content, disallowed_special=()))",
+        "mergeable_ranks_sha256": "a36684b621acb8cd23025abd3819b857814480b9b7480f43e68dc96f826660d2",
+        "n_vocab": 200019
+      }
+    },
+    "python": "3.14.6 (main, Jun 23 2026, 15:18:23) [Clang 22.1.3 ]",
+    "python_executable": "/home/jingshun.tq/project/powercontext/.venv/bin/python",
+    "renderers": {
+      "baseline": "asserted equal to PreparedContextBuilder.build_result with max_bytes=32768",
+      "json": "powercontext.builtin.runtime.prepared_context._render",
+      "markdown": "powercontext.builtin.runtime.prepared_text.render_context_text"
+    },
+    "repo_root": "/home/jingshun.tq/project/CE/hidb4ai/workspace2/powercontext",
+    "source_revision": "4ae1371cbe61a8911451236e8d38178f1ccee2d4",
+    "tiktoken_version": "0.13.0",
+    "tokenizer_cache": "/data/codex-tmp/powercontext-token-strategy-20261012/tokenizer-cache"
+  },
+  "results": [
+    {
+      "case": "topic-repeat-positive",
+      "information_effect": "All distinct values retained; presentation is different, not byte-identical and not proven model-equivalent.",
+      "legacy": {
+        "content_bytes": 1165,
+        "content_sha256": "f89cd728f73507194507a1c970b05f2eba121c2b0a5f821ea2cf94b2d18d1069",
+        "content_tokens": {
+          "cl100k_base": 308,
+          "o200k_base": 271
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "topic-exact-repeat",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "mechanism": "Exact summary == snippet; repeat value once while retaining both field roles.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Proposed body transform only; actual outer trust/citation/renderers are unchanged.",
+      "proposed": {
+        "content_bytes": 898,
+        "content_sha256": "1cdc3de26660cfcae1648b18661198afefe31b652e388a858bb823a281abf7fb",
+        "content_tokens": {
+          "cl100k_base": 220,
+          "o200k_base": 202
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "topic-exact-repeat",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "7f3db01ff796525b5065038a4a98259c66b96f645aed6c3711c17fc538f6339e",
+      "source_objects_sha256_before": "7f3db01ff796525b5065038a4a98259c66b96f645aed6c3711c17fc538f6339e",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 28.57,
+          "tokens": 88
+        },
+        "o200k_base": {
+          "percent": 25.46,
+          "tokens": 69
+        }
+      }
+    },
+    {
+      "case": "topic-repeat-positive",
+      "information_effect": "All distinct values retained; presentation is different, not byte-identical and not proven model-equivalent.",
+      "legacy": {
+        "content_bytes": 1185,
+        "content_sha256": "cbc0c5015b48c1467847ab500897c6115d209c856e90e11ba588e86af565a099",
+        "content_tokens": {
+          "cl100k_base": 327,
+          "o200k_base": 289
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-exact-repeat",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "Exact summary == snippet; repeat value once while retaining both field roles.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Proposed body transform only; actual outer trust/citation/renderers are unchanged.",
+      "proposed": {
+        "content_bytes": 918,
+        "content_sha256": "cdbaf3ebb83c1608ed869311b602570110cb19b8ae3b471ef3e10b4b747c2cc0",
+        "content_tokens": {
+          "cl100k_base": 239,
+          "o200k_base": 220
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-exact-repeat",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "7f3db01ff796525b5065038a4a98259c66b96f645aed6c3711c17fc538f6339e",
+      "source_objects_sha256_before": "7f3db01ff796525b5065038a4a98259c66b96f645aed6c3711c17fc538f6339e",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 26.91,
+          "tokens": 88
+        },
+        "o200k_base": {
+          "percent": 23.88,
+          "tokens": 69
+        }
+      }
+    },
+    {
+      "case": "topic-repeat-negative",
+      "information_effect": "No information or byte change.",
+      "legacy": {
+        "content_bytes": 940,
+        "content_sha256": "d7befee100c320830a97ea328a06d4858a6dbd26b1c3b7862d73a05e8aabe945",
+        "content_tokens": {
+          "cl100k_base": 234,
+          "o200k_base": 212
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "topic-no-repeat",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "mechanism": "No exact repetition: pass through.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "No saving is claimed.",
+      "proposed": {
+        "content_bytes": 940,
+        "content_sha256": "d7befee100c320830a97ea328a06d4858a6dbd26b1c3b7862d73a05e8aabe945",
+        "content_tokens": {
+          "cl100k_base": 234,
+          "o200k_base": 212
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "topic-no-repeat",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "28a3612d04878b7e8f8dbf5a068ea7f281013ddfdfae5cee5b495755bb316f8b",
+      "source_objects_sha256_before": "28a3612d04878b7e8f8dbf5a068ea7f281013ddfdfae5cee5b495755bb316f8b",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "topic-repeat-negative",
+      "information_effect": "No information or byte change.",
+      "legacy": {
+        "content_bytes": 960,
+        "content_sha256": "66dc0c7fafbf92e831eceb1a8bb4b89904fb65424afeaa81e6357a4f3227991b",
+        "content_tokens": {
+          "cl100k_base": 254,
+          "o200k_base": 230
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-no-repeat",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "No exact repetition: pass through.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "No saving is claimed.",
+      "proposed": {
+        "content_bytes": 960,
+        "content_sha256": "66dc0c7fafbf92e831eceb1a8bb4b89904fb65424afeaa81e6357a4f3227991b",
+        "content_tokens": {
+          "cl100k_base": 254,
+          "o200k_base": 230
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-no-repeat",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "28a3612d04878b7e8f8dbf5a068ea7f281013ddfdfae5cee5b495755bb316f8b",
+      "source_objects_sha256_before": "28a3612d04878b7e8f8dbf5a068ea7f281013ddfdfae5cee5b495755bb316f8b",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "experience-repeat-positive",
+      "information_effect": "Every distinct field value and label association retained; all failure labels/values remain independent and complete.",
+      "legacy": {
+        "content_bytes": 1755,
+        "content_sha256": "adb473390d1b8dd4d01d6678235ee98af52c007db42d5e4eaa24fbb7d30f2e41",
+        "content_tokens": {
+          "cl100k_base": 487,
+          "o200k_base": 416
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "experience-repeat",
+          "family": "experience",
+          "revision": 3
+        }
+      ],
+      "mechanism": "Group identical values only across Situation/Action/Outcome/Lesson; failure fields remain verbatim separate lines.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Action/Lesson share a value; Verification condition repeats it independently and is NOT grouped. Not byte-identical or proven model-equivalent.",
+      "proposed": {
+        "content_bytes": 1466,
+        "content_sha256": "23d5f5beb97fe61f1559e7c7b888685219ad7011186e5f5874236812d34b9e05",
+        "content_tokens": {
+          "cl100k_base": 393,
+          "o200k_base": 341
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "experience-repeat",
+          "family": "experience",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "016504e85067008c63e18fede9a8eb904ac5d7df0b5af4134b1655c299b674d2",
+      "source_objects_sha256_before": "016504e85067008c63e18fede9a8eb904ac5d7df0b5af4134b1655c299b674d2",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 19.3,
+          "tokens": 94
+        },
+        "o200k_base": {
+          "percent": 18.03,
+          "tokens": 75
+        }
+      }
+    },
+    {
+      "case": "experience-repeat-positive",
+      "information_effect": "Every distinct field value and label association retained; all failure labels/values remain independent and complete.",
+      "legacy": {
+        "content_bytes": 1810,
+        "content_sha256": "aeab633eb73a0b1a740e29962b62e0e6f8444b679d7e5bcf62c8884f7b055eaf",
+        "content_tokens": {
+          "cl100k_base": 507,
+          "o200k_base": 436
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "experience-repeat",
+            "family": "experience",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "Group identical values only across Situation/Action/Outcome/Lesson; failure fields remain verbatim separate lines.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Action/Lesson share a value; Verification condition repeats it independently and is NOT grouped. Not byte-identical or proven model-equivalent.",
+      "proposed": {
+        "content_bytes": 1516,
+        "content_sha256": "13ab3f37ed866eca54a6752777501a57c3b305555a3c2212dea17da9362415a6",
+        "content_tokens": {
+          "cl100k_base": 412,
+          "o200k_base": 360
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "experience-repeat",
+            "family": "experience",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "016504e85067008c63e18fede9a8eb904ac5d7df0b5af4134b1655c299b674d2",
+      "source_objects_sha256_before": "016504e85067008c63e18fede9a8eb904ac5d7df0b5af4134b1655c299b674d2",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 18.74,
+          "tokens": 95
+        },
+        "o200k_base": {
+          "percent": 17.43,
+          "tokens": 76
+        }
+      }
+    },
+    {
+      "case": "experience-repeat-negative",
+      "information_effect": "No information or byte change.",
+      "legacy": {
+        "content_bytes": 1352,
+        "content_sha256": "29f7eed3f5c0cd6b008c1fc8a09cc53e982d3685e39432b98bda5c4ec1187a12",
+        "content_tokens": {
+          "cl100k_base": 362,
+          "o200k_base": 317
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "experience-no-repeat",
+          "family": "experience",
+          "revision": 3
+        }
+      ],
+      "mechanism": "All field values differ: pass through.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "No saving is claimed.",
+      "proposed": {
+        "content_bytes": 1352,
+        "content_sha256": "29f7eed3f5c0cd6b008c1fc8a09cc53e982d3685e39432b98bda5c4ec1187a12",
+        "content_tokens": {
+          "cl100k_base": 362,
+          "o200k_base": 317
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "experience-no-repeat",
+          "family": "experience",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "0e31d15fa2eb768922e60770bd801947c4a9f75e31f265f407a3c03f5f35707c",
+      "source_objects_sha256_before": "0e31d15fa2eb768922e60770bd801947c4a9f75e31f265f407a3c03f5f35707c",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "experience-repeat-negative",
+      "information_effect": "No information or byte change.",
+      "legacy": {
+        "content_bytes": 1407,
+        "content_sha256": "10302e68f26ffabeda3c5cd395fa89a394ab539f7229dbe999d6d45ca0cd4a5a",
+        "content_tokens": {
+          "cl100k_base": 382,
+          "o200k_base": 337
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "experience-no-repeat",
+            "family": "experience",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "All field values differ: pass through.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "No saving is claimed.",
+      "proposed": {
+        "content_bytes": 1407,
+        "content_sha256": "10302e68f26ffabeda3c5cd395fa89a394ab539f7229dbe999d6d45ca0cd4a5a",
+        "content_tokens": {
+          "cl100k_base": 382,
+          "o200k_base": 337
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "experience-no-repeat",
+            "family": "experience",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "0e31d15fa2eb768922e60770bd801947c4a9f75e31f265f407a3c03f5f35707c",
+      "source_objects_sha256_before": "0e31d15fa2eb768922e60770bd801947c4a9f75e31f265f407a3c03f5f35707c",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "topic-query-excerpt-positive",
+      "information_effect": "Lossy task projection: the three omitted sections are no longer delivered. Original source object is unchanged.",
+      "legacy": {
+        "content_bytes": 1272,
+        "content_sha256": "6c7f1e126b37aef1931eb6f5dbe18076be31f909011399cd3f7059cbfbdc9aca",
+        "content_tokens": {
+          "cl100k_base": 368,
+          "o200k_base": 322
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "topic-task-excerpt",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "mechanism": "Fixed synthetic task: keep action plus complete declared protection paragraph; omit unrelated paragraphs.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Declared synthetic section contract; this is not a generic free-prose dependency extractor.",
+      "proposed": {
+        "content_bytes": 943,
+        "content_sha256": "aa1057b3826b3098be6b68dda0d05abce0a8d1244903634c96b710213307e8d7",
+        "content_tokens": {
+          "cl100k_base": 255,
+          "o200k_base": 230
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "topic-task-excerpt",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "6c7e5d5b704612ccd5aec568b27f6088b888a2711205e33955e753f39a157990",
+      "source_objects_sha256_before": "6c7e5d5b704612ccd5aec568b27f6088b888a2711205e33955e753f39a157990",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 30.71,
+          "tokens": 113
+        },
+        "o200k_base": {
+          "percent": 28.57,
+          "tokens": 92
+        }
+      }
+    },
+    {
+      "case": "topic-query-excerpt-positive",
+      "information_effect": "Lossy task projection: the three omitted sections are no longer delivered. Original source object is unchanged.",
+      "legacy": {
+        "content_bytes": 1318,
+        "content_sha256": "ff6a066c2b768b0961e0ee251ccae8004d7eb14d4407c36bb445aec619887a07",
+        "content_tokens": {
+          "cl100k_base": 381,
+          "o200k_base": 334
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-task-excerpt",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "Fixed synthetic task: keep action plus complete declared protection paragraph; omit unrelated paragraphs.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Declared synthetic section contract; this is not a generic free-prose dependency extractor.",
+      "proposed": {
+        "content_bytes": 974,
+        "content_sha256": "8d91417411ccd1e3f2ee66324f8837da40f5ab86398a253ac2194164beaf8898",
+        "content_tokens": {
+          "cl100k_base": 268,
+          "o200k_base": 242
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-task-excerpt",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "6c7e5d5b704612ccd5aec568b27f6088b888a2711205e33955e753f39a157990",
+      "source_objects_sha256_before": "6c7e5d5b704612ccd5aec568b27f6088b888a2711205e33955e753f39a157990",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 29.66,
+          "tokens": 113
+        },
+        "o200k_base": {
+          "percent": 27.54,
+          "tokens": 92
+        }
+      }
+    },
+    {
+      "case": "topic-query-excerpt-negative",
+      "information_effect": "No information or byte change.",
+      "legacy": {
+        "content_bytes": 850,
+        "content_sha256": "b4844edea7f5fe3ff075b26919d8c84bc1376959de4d866739f0b61bf13ae825",
+        "content_tokens": {
+          "cl100k_base": 217,
+          "o200k_base": 199
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "topic-task-no-filler",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "mechanism": "All paragraphs relevant/required: pass through.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "No saving is claimed.",
+      "proposed": {
+        "content_bytes": 850,
+        "content_sha256": "b4844edea7f5fe3ff075b26919d8c84bc1376959de4d866739f0b61bf13ae825",
+        "content_tokens": {
+          "cl100k_base": 217,
+          "o200k_base": 199
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "topic-task-no-filler",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "f2d605dd13dfbd3feaf0ff5486f97d8c05f5d8d2b78623057c317502824c4e85",
+      "source_objects_sha256_before": "f2d605dd13dfbd3feaf0ff5486f97d8c05f5d8d2b78623057c317502824c4e85",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "topic-query-excerpt-negative",
+      "information_effect": "No information or byte change.",
+      "legacy": {
+        "content_bytes": 872,
+        "content_sha256": "cc43bea174716998d9332d07108cc0e5fecd4e956faa9f7c5ea72f211230fc3c",
+        "content_tokens": {
+          "cl100k_base": 230,
+          "o200k_base": 211
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-task-no-filler",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "All paragraphs relevant/required: pass through.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "No saving is claimed.",
+      "proposed": {
+        "content_bytes": 872,
+        "content_sha256": "cc43bea174716998d9332d07108cc0e5fecd4e956faa9f7c5ea72f211230fc3c",
+        "content_tokens": {
+          "cl100k_base": 230,
+          "o200k_base": 211
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-task-no-filler",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "f2d605dd13dfbd3feaf0ff5486f97d8c05f5d8d2b78623057c317502824c4e85",
+      "source_objects_sha256_before": "f2d605dd13dfbd3feaf0ff5486f97d8c05f5d8d2b78623057c317502824c4e85",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "candidate-selection-positive",
+      "information_effect": "Coverage reduced from two exact origins to one; NOT same-origins representation compression.",
+      "legacy": {
+        "content_bytes": 1354,
+        "content_sha256": "c011e83bbf29936b8ca6e03fc0d120f995ab657ed3aa12f3aa3402fb46069a8e",
+        "content_tokens": {
+          "cl100k_base": 354,
+          "o200k_base": 316
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "topic-duplicate-a",
+          "family": "topic-memory",
+          "revision": 3
+        },
+        {
+          "artifact_id": "topic-duplicate-b",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "mechanism": "Keep first of two equal-valued candidates from the same pool; do not merge their identities.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Equality of text is insufficient for automatic production selection; current-state/authority differences need verification.",
+      "proposed": {
+        "content_bytes": 859,
+        "content_sha256": "e00a10d563a6845ec3557d8d4e09b04485a7312129409e3e481f327e776fcbe4",
+        "content_tokens": {
+          "cl100k_base": 213,
+          "o200k_base": 195
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "topic-duplicate-a",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "same_origins": false,
+      "source_objects_sha256_after": "31d5751463beb692f41086a4edbfda478a9e67a50a417c762d7db7b51cbddffe",
+      "source_objects_sha256_before": "31d5751463beb692f41086a4edbfda478a9e67a50a417c762d7db7b51cbddffe",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 39.83,
+          "tokens": 141
+        },
+        "o200k_base": {
+          "percent": 38.29,
+          "tokens": 121
+        }
+      }
+    },
+    {
+      "case": "candidate-selection-positive",
+      "information_effect": "Coverage reduced from two exact origins to one; NOT same-origins representation compression.",
+      "legacy": {
+        "content_bytes": 1375,
+        "content_sha256": "56c9a79b3bdf11e6f89ed124139795634edbc8b5d1bda98c1cd46d0a6da55c9e",
+        "content_tokens": {
+          "cl100k_base": 382,
+          "o200k_base": 343
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-duplicate-a",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        },
+        {
+          "artifact": {
+            "artifact_id": "topic-duplicate-b",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "Keep first of two equal-valued candidates from the same pool; do not merge their identities.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Equality of text is insufficient for automatic production selection; current-state/authority differences need verification.",
+      "proposed": {
+        "content_bytes": 873,
+        "content_sha256": "50978cd394fe334e0da0a8be2f0368cf717604f49334e8bb97d8b0f7eb8b39b6",
+        "content_tokens": {
+          "cl100k_base": 227,
+          "o200k_base": 208
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-duplicate-a",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": false,
+      "source_objects_sha256_after": "31d5751463beb692f41086a4edbfda478a9e67a50a417c762d7db7b51cbddffe",
+      "source_objects_sha256_before": "31d5751463beb692f41086a4edbfda478a9e67a50a417c762d7db7b51cbddffe",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 40.58,
+          "tokens": 155
+        },
+        "o200k_base": {
+          "percent": 39.36,
+          "tokens": 135
+        }
+      }
+    },
+    {
+      "case": "candidate-selection-negative",
+      "information_effect": "No information, coverage, or byte change.",
+      "legacy": {
+        "content_bytes": 1143,
+        "content_sha256": "6c9c29ea362e3af482a1dfce14c5397e3569aed9ec85b7453c0b7e55ede394dd",
+        "content_tokens": {
+          "cl100k_base": 287,
+          "o200k_base": 261
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "topic-duplicate-a",
+          "family": "topic-memory",
+          "revision": 3
+        },
+        {
+          "artifact_id": "topic-distinct-b",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "mechanism": "Distinct candidate contributes a separate constraint: keep both.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "No saving is claimed.",
+      "proposed": {
+        "content_bytes": 1143,
+        "content_sha256": "6c9c29ea362e3af482a1dfce14c5397e3569aed9ec85b7453c0b7e55ede394dd",
+        "content_tokens": {
+          "cl100k_base": 287,
+          "o200k_base": 261
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "topic-duplicate-a",
+          "family": "topic-memory",
+          "revision": 3
+        },
+        {
+          "artifact_id": "topic-distinct-b",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "db7424afae3699fe18fd33409659e62a10635c0ca277ddd05d9ae477a3c89acb",
+      "source_objects_sha256_before": "db7424afae3699fe18fd33409659e62a10635c0ca277ddd05d9ae477a3c89acb",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "candidate-selection-negative",
+      "information_effect": "No information, coverage, or byte change.",
+      "legacy": {
+        "content_bytes": 1164,
+        "content_sha256": "788a864a9c5b6a2524025c6eb5f17c56febbb9dd51d6a56ffb3550646ad76b99",
+        "content_tokens": {
+          "cl100k_base": 317,
+          "o200k_base": 288
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-duplicate-a",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        },
+        {
+          "artifact": {
+            "artifact_id": "topic-distinct-b",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "Distinct candidate contributes a separate constraint: keep both.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "No saving is claimed.",
+      "proposed": {
+        "content_bytes": 1164,
+        "content_sha256": "788a864a9c5b6a2524025c6eb5f17c56febbb9dd51d6a56ffb3550646ad76b99",
+        "content_tokens": {
+          "cl100k_base": 317,
+          "o200k_base": 288
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-duplicate-a",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        },
+        {
+          "artifact": {
+            "artifact_id": "topic-distinct-b",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "db7424afae3699fe18fd33409659e62a10635c0ca277ddd05d9ae477a3c89acb",
+      "source_objects_sha256_before": "db7424afae3699fe18fd33409659e62a10635c0ca277ddd05d9ae477a3c89acb",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "json-table-positive",
+      "information_effect": "All columns, row order, duplicate row, value types and numeric lexemes preserved; display differs from native JSON.",
+      "legacy": {
+        "content_bytes": 1799,
+        "content_sha256": "e7d76644fed0d0b1d9183cf821af21ee28e2f166a3b0a31cf8c43daf8a84d3df",
+        "content_tokens": {
+          "cl100k_base": 520,
+          "o200k_base": 522
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "topic-homogeneous-json",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "mechanism": "Strict homogeneous flat JSON rows: repeat column names once, retain every JSON cell and row in order.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Requires a verified structured-field format; not used for Atomic Memory text. No provider/task equivalence claim.",
+      "proposed": {
+        "content_bytes": 1176,
+        "content_sha256": "c4a964fd4bc88ff891804396ba8328492bad882a04be6bc6f7ed46a672b10506",
+        "content_tokens": {
+          "cl100k_base": 341,
+          "o200k_base": 343
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "topic-homogeneous-json",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "a7475d1d66decaed3fa249d4da0aa575e9e2ba8aeb946dbd256dc3186aab5090",
+      "source_objects_sha256_before": "a7475d1d66decaed3fa249d4da0aa575e9e2ba8aeb946dbd256dc3186aab5090",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 34.42,
+          "tokens": 179
+        },
+        "o200k_base": {
+          "percent": 34.29,
+          "tokens": 179
+        }
+      }
+    },
+    {
+      "case": "json-table-positive",
+      "information_effect": "All columns, row order, duplicate row, value types and numeric lexemes preserved; display differs from native JSON.",
+      "legacy": {
+        "content_bytes": 1477,
+        "content_sha256": "009e72f7279a215795019ca3690450fb0d6547fbf36fa1cd8f6b1187c6ade772",
+        "content_tokens": {
+          "cl100k_base": 365,
+          "o200k_base": 366
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-homogeneous-json",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "Strict homogeneous flat JSON rows: repeat column names once, retain every JSON cell and row in order.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Requires a verified structured-field format; not used for Atomic Memory text. No provider/task equivalence claim.",
+      "proposed": {
+        "content_bytes": 1100,
+        "content_sha256": "8c5ccf23229ae9aaf2b430cff8f8aa0f5b9267ac7e6bd1cb4a80bc78975d5aa3",
+        "content_tokens": {
+          "cl100k_base": 297,
+          "o200k_base": 298
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-homogeneous-json",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "a7475d1d66decaed3fa249d4da0aa575e9e2ba8aeb946dbd256dc3186aab5090",
+      "source_objects_sha256_before": "a7475d1d66decaed3fa249d4da0aa575e9e2ba8aeb946dbd256dc3186aab5090",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 18.63,
+          "tokens": 68
+        },
+        "o200k_base": {
+          "percent": 18.58,
+          "tokens": 68
+        }
+      }
+    },
+    {
+      "case": "json-table-negative",
+      "information_effect": "No information, coverage, or byte change.",
+      "legacy": {
+        "content_bytes": 1788,
+        "content_sha256": "926508fb1f29ca58861c5d7df099e02d3055bc886cccf3eaf62cc2721b850c65",
+        "content_tokens": {
+          "cl100k_base": 515,
+          "o200k_base": 516
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact_id": "topic-json-missing-field",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "mechanism": "A row is missing retry_limit: reject table projection and pass through.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Nested structures, duplicate object keys, and non-JSON constants are also rejected by the same prototype guard.",
+      "proposed": {
+        "content_bytes": 1788,
+        "content_sha256": "926508fb1f29ca58861c5d7df099e02d3055bc886cccf3eaf62cc2721b850c65",
+        "content_tokens": {
+          "cl100k_base": 515,
+          "o200k_base": 516
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact_id": "topic-json-missing-field",
+          "family": "topic-memory",
+          "revision": 3
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "682c5cf1bd87e951118081fc7efed0b51862b929c07fa0ac2e70c7b266a90ed0",
+      "source_objects_sha256_before": "682c5cf1bd87e951118081fc7efed0b51862b929c07fa0ac2e70c7b266a90ed0",
+      "style": "json",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    },
+    {
+      "case": "json-table-negative",
+      "information_effect": "No information, coverage, or byte change.",
+      "legacy": {
+        "content_bytes": 1472,
+        "content_sha256": "9a969be7c5c9393cee1f7c1904e6079f8bb17499e8c9929b9df1746e86213051",
+        "content_tokens": {
+          "cl100k_base": 363,
+          "o200k_base": 363
+        }
+      },
+      "legacy_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-json-missing-field",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "mechanism": "A row is missing retry_limit: reject table projection and pass through.",
+      "native_get": "Not invoked; no backend/storage/API operation. Only synthetic immutable objects were read.",
+      "notes": "Nested structures, duplicate object keys, and non-JSON constants are also rejected by the same prototype guard.",
+      "proposed": {
+        "content_bytes": 1472,
+        "content_sha256": "9a969be7c5c9393cee1f7c1904e6079f8bb17499e8c9929b9df1746e86213051",
+        "content_tokens": {
+          "cl100k_base": 363,
+          "o200k_base": 363
+        }
+      },
+      "proposed_origins": [
+        {
+          "artifact": {
+            "artifact_id": "topic-json-missing-field",
+            "family": "topic-memory",
+            "revision": 3
+          },
+          "scope_id": "project:synthetic-mechanism-probe"
+        }
+      ],
+      "same_origins": true,
+      "source_objects_sha256_after": "682c5cf1bd87e951118081fc7efed0b51862b929c07fa0ac2e70c7b266a90ed0",
+      "source_objects_sha256_before": "682c5cf1bd87e951118081fc7efed0b51862b929c07fa0ac2e70c7b266a90ed0",
+      "style": "markdown",
+      "token_reduction": {
+        "cl100k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        },
+        "o200k_base": {
+          "percent": 0.0,
+          "tokens": 0
+        }
+      }
+    }
+  ]
+}
