@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from time import perf_counter
-from typing import Literal
+from typing import Literal, cast
 
 from powercontext._logging import log_safely
 from powercontext.builtin.artifacts.memory.protocols import (
@@ -306,8 +306,7 @@ class DecisionMemoryWriteGate:
             redaction_facts = projection.redaction_facts
             projection_applied = True
         started = perf_counter()
-        decision_model = self._decision_model
-        assert decision_model is not None  # guarded by _allow_model_evaluation
+        decision_model = cast(DecisionModel, self._decision_model)
         decision = await decision_model.evaluate(decision_request)
         latency_ms = (perf_counter() - started) * 1000
         assessment = self._map(request, decision)
