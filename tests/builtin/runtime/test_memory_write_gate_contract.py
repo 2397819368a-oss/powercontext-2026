@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import pytest
 
@@ -33,6 +34,10 @@ from powercontext.builtin.runtime.decision_policy import (
     DecisionPolicyMode,
     DecisionPrivacyBoundary,
     DecisionVerdict,
+)
+from powercontext.builtin.runtime.decision_projection import (
+    DecisionRequestProjection,
+    KnownSecretDecisionRequestSanitizer,
 )
 from powercontext.builtin.runtime.memory_write_gate import (
     DecisionMemoryWriteGate,
@@ -74,6 +79,10 @@ class _RecordingDecisionModel(_StaticDecisionModel):
     async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
         self.requests.append(request)
         return await super().evaluate(request)
+
+
+class _RemoteRecordingDecisionModel(_RecordingDecisionModel):
+    is_local_only = False
 
 
 class _IdentifiedDecisionModel(_StaticDecisionModel):
@@ -633,7 +642,7 @@ def test_direct_gate_construction_honors_the_no_external_call_boundary() -> None
     asyncio.run(scenario())
 
 
-def test_local_only_boundary_refuses_a_backend_without_a_locality_attestation() -> None:
+def test_local_only_boundary_treats_an_explicit_non_local_model_as_remote() -> None:
     class _RemoteDecisionModel(_RecordingDecisionModel):
         is_local_only = False
 
@@ -651,6 +660,215 @@ def test_local_only_boundary_refuses_a_backend_without_a_locality_attestation() 
         assert assessment.verdict is MemoryWriteVerdict.ACCEPT
         assert assessment.used_fallback is True
         assert backend.requests == []
+
+    asyncio.run(scenario())
+
+
+def test_local_only_boundary_treats_an_unattested_model_as_remote() -> None:
+    class _UnattestedDecisionModel:
+        policy_id = "powercontext.decision.unattested.v1"
+
+        def __init__(self) -> None:
+            self.requests: list[DecisionRequest] = []
+
+        async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
+            self.requests.append(request)
+            return _verdict(DecisionOutcome.YES)
+
+    async def scenario() -> None:
+        backend = _UnattestedDecisionModel()
+        gate = build_memory_write_gate(backend, enabled=True, privacy_boundary=DecisionPrivacyBoundary.LOCAL_ONLY)
+
+        assert isinstance(gate, DecisionMemoryWriteGate)
+        assessment = await gate.assess(_request(evidence=("source:task:1",)))
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_direct_gate_refuses_to_call_without_a_sanitizer() -> None:
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.YES))
+        sink = _RecordingObservationSink()
+        gate = DecisionMemoryWriteGate(
+            backend,
+            policy=memory_write_policy(privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED),
+        )
+
+        assessment = await gate.assess(_request(evidence=("source:task:1",), observation_sink=sink))
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        assert sink.observations[0].fallback_reason == "projection_sanitizer_missing"
+        assert sink.observations[0].privacy_outcome == "hosted_redacted_sanitizer_missing"
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_boundary_sends_only_the_permitted_projection(caplog: pytest.LogCaptureFixture) -> None:
+    class _Sanitizer:
+        def sanitize(self, request: DecisionRequest, /) -> DecisionRequestProjection:
+            assert "RAW_SENTINEL" in request.subject
+            assert request.evidence == ("RAW_EVIDENCE",)
+            return DecisionRequestProjection.permitted(
+                DecisionRequest(
+                    request.decision_kind,
+                    request.question,
+                    "sanitized candidate",
+                    ("sanitized evidence",),
+                ),
+                redaction_facts=("subject_redacted", "evidence_redacted"),
+            )
+
+    async def scenario() -> None:
+        caplog.set_level(logging.INFO, logger="powercontext.builtin.runtime.decision_policy")
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=_Sanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("RAW_SENTINEL",),
+                evidence=("RAW_EVIDENCE",),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert len(backend.requests) == 1
+        assert backend.requests[0].subject == "sanitized candidate"
+        assert backend.requests[0].evidence == ("sanitized evidence",)
+        observation = sink.observations[0]
+        assert observation.privacy_outcome == "hosted_redacted_model_called"
+        assert observation.metadata["redaction_facts"] == ["subject_redacted", "evidence_redacted"]
+        assert "RAW_SENTINEL" not in observation.model_dump_json()
+        assert "RAW_EVIDENCE" not in observation.model_dump_json()
+        record = next(record for record in caplog.records if getattr(record, "event", None) == "decision.observation")
+        assert record.__dict__["privacy_outcome"] == "hosted_redacted_model_called"
+        assert "RAW_SENTINEL" not in caplog.text
+        assert "RAW_EVIDENCE" not in caplog.text
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_boundary_keeps_local_model_outcome_local() -> None:
+    async def scenario() -> None:
+        backend = _RecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+        )
+
+        assert isinstance(gate, DecisionMemoryWriteGate)
+        await gate.assess(_request(evidence=("local evidence",), observation_sink=sink))
+
+        assert sink.observations[0].privacy_outcome == "local_model_called"
+
+    asyncio.run(scenario())
+
+
+def test_default_projection_sanitizer_withholds_a_provider_prefixed_secret() -> None:
+    sanitizer = KnownSecretDecisionRequestSanitizer()
+    projection = sanitizer.sanitize(
+        DecisionRequest(
+            DecisionKind.MEMORY_WRITE_GATE.value,
+            "Keep this?",
+            "sk-provider-secret-1234567890",
+        )
+    )
+    benign = sanitizer.sanitize(
+        DecisionRequest(
+            DecisionKind.MEMORY_WRITE_GATE.value,
+            "Keep this?",
+            "risk-assessment-planning",
+        )
+    )
+
+    assert projection.is_permitted is False
+    assert projection.reason_code == "projection_material_removed"
+    assert benign.is_permitted is True
+    assert benign.request is not None
+    assert benign.request.subject == "risk-assessment-planning"
+
+
+@pytest.mark.parametrize(
+    ("result", "reason"),
+    [
+        (DecisionRequestProjection.withheld("projection_material_removed"), "projection_material_removed"),
+        (object(), "projection_sanitizer_invalid"),
+        (DecisionRequest(DecisionKind.MEMORY_WRITE_GATE.value, "Keep this?", "raw"), "projection_sanitizer_invalid"),
+    ],
+)
+def test_hosted_redacted_projection_refusal_never_calls_the_backend(result: object, reason: str) -> None:
+    class _Sanitizer:
+        def sanitize(self, request: DecisionRequest, /) -> Any:
+            return result
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.YES))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=_Sanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(_request(evidence=("evidence",), observation_sink=sink))
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        observation = sink.observations[0]
+        assert observation.assessment.coverage is DecisionCoverage.UNADJUDICATED
+        assert observation.assessment.used_fallback is True
+        assert observation.fallback_reason == reason
+        assert observation.privacy_outcome in {
+            "hosted_redacted_withheld",
+            "hosted_redacted_sanitizer_invalid",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_sanitizer_failure_is_a_bounded_no_call() -> None:
+    class _FailingSanitizer:
+        def sanitize(self, request: DecisionRequest, /) -> DecisionRequestProjection:
+            raise RuntimeError("RAW_SENTINEL sanitizer failure")  # noqa: TRY003
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=_FailingSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(_request(evidence=("RAW_EVIDENCE",), observation_sink=sink))
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        observation = sink.observations[0]
+        assert observation.fallback_reason == "projection_sanitizer_failed"
+        assert "RAW_SENTINEL" not in observation.model_dump_json()
+        assert "RAW_EVIDENCE" not in observation.model_dump_json()
 
     asyncio.run(scenario())
 
