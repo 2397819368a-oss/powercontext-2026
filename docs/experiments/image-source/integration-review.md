@@ -5,7 +5,7 @@ description: 草稿 PR 的实现范围、Atomic Memory 适配、真实验收证�
 
 # 图片功能整合审查与验收结论
 
-本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master 95bfbc9e0b59f58aee119c750c69a448b7666d0c。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
+本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master b5bcfe24bcce9c574ee85175d623bb9963970a41。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
 
 ## 当前实现
 

@@ -161,6 +161,83 @@ function writeFailureConfirmation(error) {
 //#endregion
 //#region src/operations.generated.ts
 const OPERATIONS = {
+	experimental_retry_image_task: {
+		method: "POST",
+		path: "/v1/experimental/images/task/retry",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [202],
+		emptyStatuses: []
+	},
+	experimental_reparse_image: {
+		method: "POST",
+		path: "/v1/experimental/images/reparse",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [202],
+		emptyStatuses: []
+	},
+	experimental_capture_image: {
+		method: "POST",
+		path: "/v1/experimental/images/capture",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [202],
+		emptyStatuses: []
+	},
+	experimental_get_image_asset: {
+		method: "POST",
+		path: "/v1/experimental/images/asset/get",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	experimental_list_image_tasks: {
+		method: "POST",
+		path: "/v1/experimental/images/tasks/list",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	experimental_get_image_status: {
+		method: "POST",
+		path: "/v1/experimental/images/status",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	experimental_get_image_task: {
+		method: "POST",
+		path: "/v1/experimental/images/task/get",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
 	list_atomic_memories: {
 		method: "POST",
 		path: "/v1/atomic-memory/list",

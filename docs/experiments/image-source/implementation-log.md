@@ -303,7 +303,7 @@ pending 任务会保留至阶段三处理，本轮没有 running claim、模型�
 
 ### 代码审查与修复
 
-本轮使用 [Open Code Review 委托模式](C:/Users/Administrator/.codex/plugins/cache/open-code-review/open-code-review-codex/1.0.0/skills/open-code-review-delegate/SKILL.md)，OCR v1.12.12 负责选择文件和解析规则，由当前 agent 按 REVIEW.md 审查。没有向额外 OCR 模型服务发送代码，也没有发布评论。
+本轮使用 [Open Code Review 委托模式](https://github.com/alibaba/open-code-review/blob/main/skills/open-code-review-delegate/SKILL.md)，OCR v1.12.12 负责选择文件和解析规则，由当前 agent 按 REVIEW.md 审查。没有向额外 OCR 模型服务发送代码，也没有发布评论。
 
 全部 28 个选中的手写生产文件均已复核；另检查六个图片测试文件和八份实验文档，生成文件通过 canonical generator 与契约测试验证。最终清单、规则、逐文件状态及 SHA-256 覆盖记录保存在 phase34 的 review-selection-final.json、review-rules.json 和 review-coverage.json，没有跳过选中文件或未处理的阻断问题。
 
@@ -371,7 +371,7 @@ pending 任务会保留至阶段三处理，本轮没有 running claim、模型�
 
 本轮重新执行 Open Code Review v1.12.12 的模型审查，使用既有 deepseek-flash 配置，传入实验业务背景、固定契约和 REVIEW.md。代码、凭据及模型结果只按已授权的审查路径处理，没有改动 reviewer 配置或重新请求 MiniCPM。审查覆盖未提交工作区中的阶段三、四及其必要图片边界，生成文件和锁文件通过专门检查验证。
 
-OCR 命令退出码为 0，但报告的状态为 partial：28 个选中文件中 18 个完成模型审查，10 个因上下文压缩或工具轮数限制未完成；共返回 5 条意见，耗时 25 分 16 秒。没有把退出成功等同于完整审查，也没有盲目重跑模型。未完成的十个文件使用 [Open Code Review 委托模式](C:/Users/Administrator/.codex/plugins/cache/open-code-review/open-code-review-codex/1.0.0/skills/open-code-review-delegate/SKILL.md) 的选择与规则继续逐文件检查，包含公共契约、导出、统计、Runtime 组合、准入、Topic Memory、Source 注册和 EvidenceResolver。修复后再次检查全部 28 个选中文件，保存最终 SHA-256，补查六个图片测试文件和八份实验文档。
+OCR 命令退出码为 0，但报告的状态为 partial：28 个选中文件中 18 个完成模型审查，10 个因上下文压缩或工具轮数限制未完成；共返回 5 条意见，耗时 25 分 16 秒。没有把退出成功等同于完整审查，也没有盲目重跑模型。未完成的十个文件使用 [Open Code Review 委托模式](https://github.com/alibaba/open-code-review/blob/main/skills/open-code-review-delegate/SKILL.md) 的选择与规则继续逐文件检查，包含公共契约、导出、统计、Runtime 组合、准入、Topic Memory、Source 注册和 EvidenceResolver。修复后再次检查全部 28 个选中文件，保存最终 SHA-256，补查六个图片测试文件和八份实验文档。
 
 完整模型报告位于忽略目录 .powercontext/image-source-experiment/phase34-review/ocr-report.json；selection-final.json、rules.json 和 coverage-final.json 分别保存最终选择、规则及模型／委托覆盖。最终 reviewed_files 为 28，skipped_files 为 0，没有未处理的阻断问题；这不表示 OCR 模型单独完成了全部文件。
 
@@ -728,3 +728,16 @@ Server 保持运行于 127.0.0.1:18171，仅绑定 loopback，实验访问控制
 本轮目标：读取上游失败任务的实际日志，区分同一根因导致的矩阵失败与独立缺陷；保存分支快照并对齐最新 upstream/master，解决集成冲突；修复对应代码、许可证和文档/生成契约问题，运行相关检查后更新 PR 分支，确认新提交的 CI 结果。用户已明确授权修复并更新该草稿 PR，不进行合并、发布或转为 ready。
 
 前置状态：实验 worktree 干净，PR head 为 df4c7666；检查显示冲突。失败包含四个 Python 版本、Desktop、License、E2E harness、DSH 和网站。最新主干新增宿主 guidance、连接取消清理及 Desktop 版本检查等机制，需保留这些行为并适配图片路径。普通模型真实召回等既有待验收事项不因 CI 修复而自动完成。
+
+### 修复与本地验证
+
+- 保留 codex/backup-pr1956-before-ci-20261013 快照，并 rebase 到 upstream/master b5bcfe24。唯一内容冲突位于 hosts.install_host：保留新的 HOST_GUIDANCE installer 调度与每个宿主选项，只对 Codex 传递显式 capture_images；增加启用、关闭及未指定三种取值的边界回归。
+- 四个 Python 版本的原始失败来自相同的两条向导用例：最后保存的 y 被新图片步骤误读为启用。输入增加明确关闭回答，保留远程地址/Scope/下一步断言，并增加默认关闭的配置断言。两条原失败本地通过；相关向导、安装、guidance 与能力清单 170 项通过。
+- 根据真实 License 日志，为 16 个 Python/HTML 文件换用仓库完整 Apache-2.0 头；不修改许可检查或排除规则。
+- 运行 Desktop 官方 generate，同步 api.d.ts、operations.ts 与 Rust operations.json。lint、generate:check、typecheck、28 条 UI 测试与前端 build 通过，不手工编辑派生类型。
+- 重建并规范化 DSH lib/index.js，包含新增七个操作。318 条单元测试通过、1 跳过，9 条跨组件测试通过。
+- 使用 uv lock --project e2e/bub 更新其对根包新增 images/Pillow metadata 的快照，无其他包版本升级；根、harness、Codex runtime、evaluation 与 Dify 的 lock check 均通过。
+- 将三个指向个人插件缓存的 Markdown 链接改为已核实存在的上游 Skill 源码链接。没有关闭网站链接验证。本机网站原生依赖下载遇到 curl 23，完整网站构建由新提交的上游 CI 继续验证；harness 大型依赖仍在下载，不把本地未完成测试记作通过。
+- 图片、证据、API/JS 契约、Vision 与生命周期联合回归 99 项通过。Ruff、格式、Linux 目标 ty、release-version、129 个 action pin、生成 API/JS、集成 guidance/能力文档检查和非类型 prek 全部通过。原生 Windows ty 的既有 POSIX 问题保留，不修改检查配置。
+
+推送使用精确 force-with-lease，要求远端仍为已读取的 df4c7666，避免覆盖别人的更新。后续以更新后提交的 CI 和 mergeable 状态确认结果；完整真实召回、配对恢复及最终 OCR 验收仍是独立事项。

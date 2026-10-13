@@ -49,13 +49,15 @@ def test_mixed_ssh_agents_keep_their_endpoints_and_codex_client_checks(tmp_path,
     result = CliRunner().invoke(
         app,
         ["init", "--language", "en", "--output", str(output)],
-        input=f"sqlite\n{tmp_path / 'context.db'}\nremote\nbase\ny\nssh\n\nt1\n18000\n{agents}none\ny\n",
+        input=f"sqlite\n{tmp_path / 'context.db'}\nremote\nbase\ny\nssh\n\nt1\n18000\n{agents}none\nn\ny\n",
     )
 
     assert result.exit_code == 0, result.output
     client = parse_environment(output.read_text())
     assert client["POWERCONTEXT_CLIENT_SERVER_URL"] == "http://127.0.0.1:18000"
     assert client["POWERCONTEXT_CLAUDE_SERVER_URL"] == "http://127.0.0.1:17429"
+    assert client["POWERCONTEXT_SERVER_IMAGES_ENABLED"] == "false"
+    assert client["POWERCONTEXT_CODEX_CAPTURE_IMAGES"] == "false"
     steps = output.with_name("server.env.next-steps.md").read_text()
     assert "Run each Agent's commands on the computer where that Agent will run" in steps
     assert "POWERCONTEXT_CLIENT_SERVER_URL=http://127.0.0.1:17429 powercontext ready" in steps

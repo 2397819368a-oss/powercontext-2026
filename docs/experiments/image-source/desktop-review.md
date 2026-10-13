@@ -13,7 +13,7 @@ description: Open Code Review 调用、Delegate 审查覆盖、已修复问题�
 
 首次实际执行 `ocr review`，外部模型为 deepseek-flash，100,000 token 预算。OCR 规划阶段估计首组需要 294,736 token，触发预算限制，17 个选择项全部失败，完成文件为 0；其“0 finding”不代表审查通过。
 
-随后使用同插件的 [Delegate Skill](C:/Users/Administrator/.codex/plugins/cache/open-code-review/open-code-review-codex/1.0.0/skills/open-code-review-delegate/SKILL.md)：实际执行 `ocr delegate preview` 和 `ocr delegate rule` 获取选择与规则，由当前 Codex 按文件、调用方、持久化和恢复边界进行审查。此模式不由 OCR 再调用外部 LLM。初始选择 17 个，17 个均完成，跳过 0，覆盖率 100%；另审查了后续的 Windows 资产路径修复、配置引导、相关测试、依赖解析路径和文档。
+随后使用同插件的 [Delegate Skill](https://github.com/alibaba/open-code-review/blob/main/skills/open-code-review-delegate/SKILL.md)：实际执行 `ocr delegate preview` 和 `ocr delegate rule` 获取选择与规则，由当前 Codex 按文件、调用方、持久化和恢复边界进行审查。此模式不由 OCR 再调用外部 LLM。初始选择 17 个，17 个均完成，跳过 0，覆盖率 100%；另审查了后续的 Windows 资产路径修复、配置引导、相关测试、依赖解析路径和文档。
 
 | 完成的选择项 | 核查重点 |
 | --- | --- |
