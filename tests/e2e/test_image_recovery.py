@@ -26,6 +26,8 @@ from powercontext.builtin.inference import InferenceUsage
 from tests.e2e.test_image_processing import VISIBLE, Backend, _listen, _running, _terminal
 from tests.e2e.test_image_source_product import ASSET_GET, TASK_GET, _capture, _picture, _request, _scope
 
+_VISION_TIMEOUT = 10
+
 _CHILD = """import sys
 from pathlib import Path
 import uvicorn
@@ -34,11 +36,11 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import InferenceConfig, RuntimeConfig
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import AccessControlConfig, McpConfig, MetricsConfig, ServerSettings
-root, endpoint, port = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+root, endpoint, port, timeout = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 settings=ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{root/'images.db'}"),
     images=ImageConfig(enabled=True,asset_directory=root/'assets'),
     inference=InferenceConfig(vision_model="test-vision",vision_base_url=endpoint,
-        vision_deployment_id="test-deployment",vision_max_attempts=2,vision_timeout_seconds=1),
+        vision_deployment_id="test-deployment",vision_max_attempts=2,vision_timeout_seconds=timeout),
     runtime=RuntimeConfig(artifact_processing_families=()),access=AccessControlConfig(mode="disabled"),
     mcp=McpConfig(enabled=False),metrics=MetricsConfig(enabled=False))
 uvicorn.run(create_server_app(settings=settings,scheduler_path=root/'scheduler.db'),
@@ -62,6 +64,7 @@ def test_actual_process_kill_recovers_running_attempt_after_real_lease_expiry(tm
                     str(tmp_path),
                     endpoint + "/v1",
                     str(port),
+                    str(_VISION_TIMEOUT),
                     stdout=subprocess.DEVNULL,
                     stderr=error_log,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
@@ -79,24 +82,28 @@ def test_actual_process_kill_recovers_running_attempt_after_real_lease_expiry(tm
                                     await asyncio.sleep(0.05)
                         scope = await _scope(http)
                         accepted = await _capture(http, _request(scope, "abrupt-restart", _picture()))
-                        await asyncio.wait_for(backend.entered.wait(), 5)
+                        await asyncio.wait_for(backend.entered.wait(), _VISION_TIMEOUT)
+                        initial = await http.post(TASK_GET, json={"scope_id": scope, "task_id": accepted["task_id"]})
+                        assert initial.json()["state"] == "running"
+                        assert initial.json()["attempt_count"] == 1
+                        assert initial.json()["attempts"][0]["provider_requests"] is None
                         # Only the process launched by this test is killed. No
                         # database edits or fake clocks establish this recovery.
                         child.kill()
                         await asyncio.wait_for(child.wait(), 5)
                         backend.release.set()
-                    async with _running(tmp_path, endpoint + "/v1", attempts=2, vision_timeout=1) as (_, http):
-                        initial = await http.post(TASK_GET, json={"scope_id": scope, "task_id": accepted["task_id"]})
-                        assert initial.json()["state"] == "running"
-                        assert initial.json()["attempt_count"] == 1
-                        assert initial.json()["attempts"][0]["provider_requests"] is None
+                    async with _running(tmp_path, endpoint + "/v1", attempts=2, vision_timeout=_VISION_TIMEOUT) as (
+                        _,
+                        http,
+                    ):
                         asset = await http.post(
                             ASSET_GET, json={"scope_id": scope, "asset_id": accepted["asset"]["asset_id"]}
                         )
                         assert asset.status_code == 200
-                        recovered = await _terminal(http, scope, accepted["task_id"], deadline=45)
+                        recovered = await _terminal(http, scope, accepted["task_id"], deadline=60)
                         assert recovered["state"] == "succeeded" and recovered["attempt_count"] == 2
                         assert [attempt["state"] for attempt in recovered["attempts"]] == ["interrupted", "succeeded"]
+                        assert recovered["attempts"][0]["provider_requests"] is None
                         assert recovered["original"] == accepted["original"]
                         assert len(backend.requests) == 2
                 finally:

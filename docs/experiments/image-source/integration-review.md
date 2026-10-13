@@ -5,7 +5,7 @@ description: 草稿 PR 的实现范围、Atomic Memory 适配、真实验收证�
 
 # 图片功能整合审查与验收结论
 
-本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master 28244c8a918707351605525ed0e0caf49723ac69。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
+本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master 75481152ddd97f2de34607ede8297069334eb20e。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
 
 ## 当前实现
 
@@ -43,6 +43,7 @@ Rebase 解决了 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access �
 | 实际 Dashboard | 可查看图片列表、缩略图、任务、OCR 与原图；新 Atomic Memory 到原图的完整桌面链路待验收 |
 | 官方 Atomic Memory 迁移 | 31 条旧 entry 导入后 ready；原有 70 条 Source 的身份、payload、journal_position 和五个资产摘要保持不变，integrity_check 为 ok |
 | Ruff、Linux 目标 ty、契约、锁文件、wheel | 通过；提交前文档及最后回归另见实施记录 |
+| 召回权重契约与图片集成回归 | 顺序联合回归 402 项通过；同步并行机制并修复终止测试时序后，两 worker 的图片/采集/配置/召回回归 117 项通过，两组存在重叠 |
 | GitHub CI（90902943） | 32 项成功、1 项按 workflow 条件跳过，含 Python 3.11–3.14、E2E、Desktop、网站及 License；新基线提交的结果独立核查 |
 | 更广兼容测试 | 231 通过、3 跳过、2 个 CLI 失败；两个失败在同版本 upstream 基线上复现 |
 

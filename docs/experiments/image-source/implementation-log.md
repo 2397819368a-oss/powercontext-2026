@@ -776,3 +776,13 @@ Access/Atomic Memory 与 ZCode 协议、宿主联合回归 85 项通过。完整
 - Ruff、1260 文件格式检查、Linux 目标全库 ty、根锁文件、129 个 action pin、生成 guidance 和 ZCode pin 检查通过；这些是离线或受控 provider 验证，未重新操作真实 Desktop 或 MiniCPM 服务。
 
 推送前 upstream/master 又推进至 75481152，新增 pytest-xdist、拆分 unit/e2e CI 矩阵和相应锁文件，预检没有新增代码冲突。继续同步该提交并验证图片/宿主测试在并行执行下保持隔离，更新文档基线及同一 PR；不回退上游并行检查。
+
+两 worker 首次回归 116 项通过、1 项失败。检查失败测试的隔离数据库：被终止前的第 1 次调用已在约 1.5 秒后正常超时，记录为 failed，随后第 2 次调用启动；不是租约提前恢复或生产重试错误。真实进程终止用例把调用超时设为 1 秒，负载下可能在测试控制器得到 provider entered 信号前先超时，且重启后的第一次查询时机不是固定业务状态。修复目标是通过公开接口在终止前确认正在进行的第 1 次调用，给予该终止场景合理的调用时间，仍使用真实租约过期恢复，并在最终回读中保留第 1 次 interrupted、第 2 次 succeeded、两次请求及原图身份不变的断言；不修改 runtime 或增加盲目重跑。
+
+### 并行机制适配结果
+
+无冲突同步至 75481152，保留新的 unit/e2e CI 矩阵、pytest-xdist 和根/harness 锁文件。终止恢复用例使用同一个 10 秒调用预算传给子进程及恢复服务，在终止前通过 task/get 确认第 1 次请求仍在运行；恢复允许真实租约在首次查询之前或之后过期，最终 interrupted/succeeded、未知首次用量、两次请求和原图引用检查均保留。既有短超时失败测试和生产超时/租约算法未改动。
+
+执行 uv run --no-sync python -m pytest -n 2 -q 的图片采集、生命周期、诊断、向导、CLI、召回权重、证据/恢复和并发审计集合，117 项通过（95.23 秒）。根与 e2e/bub 的 uv lock --check、API/JS/Desktop 生成检查通过；完整非类型 prek 和 Linux 目标 ty 通过，提交前再核查这四个已修改文件。Windows 原生全库 ty 的既有 POSIX 限制保留。
+
+同一草稿 PR 使用精确 force-with-lease 更新，要求远端仍为 90902943，公开说明改为当前基线和独立的新 CI 状态。推送和 GitHub head/可合并状态回读保存在忽略目录 .powercontext/image-source-experiment/pr1956-conflicts-20261013/；旧 head 的 32 项成功不充当新 head 的完成结果。后续以新提交的 CI 为准，继续独立的真实 Atomic Memory/新桌面召回、配对恢复与完整复审；本轮不标记 ready。
