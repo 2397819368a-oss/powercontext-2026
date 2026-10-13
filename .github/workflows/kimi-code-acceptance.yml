@@ -17,7 +17,6 @@ concurrency:
 env:
   # Upgrade only after qualifying the new CLI with the controlled host acceptance.
   KIMI_VERSION: '2.1.1'
-  KIMI_CLI_BIN: ${{ runner.temp }}/kimi-host/node_modules/@moonshot-ai/kimi-code/dist/main.mjs
   CI: 'true'
 
 jobs:
@@ -49,10 +48,18 @@ jobs:
           node-version: '24.15.0'
 
       - name: Install the pinned Kimi CLI
-        run: >-
-          npm install --prefix "${{ runner.temp }}/kimi-host"
-          --registry https://registry.npmjs.org --ignore-scripts --no-audit --no-fund
-          "@moonshot-ai/kimi-code@$KIMI_VERSION"
+        run: |
+          npm install --prefix "${{ runner.temp }}/kimi-host" \
+            --registry https://registry.npmjs.org --ignore-scripts --no-audit --no-fund \
+            "@moonshot-ai/kimi-code@$KIMI_VERSION"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          cli = Path(os.environ["RUNNER_TEMP"]) / "kimi-host/node_modules/@moonshot-ai/kimi-code/dist/main.mjs"
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
+              environment.write(f"KIMI_CLI_BIN={cli}\n")
+          PY
 
       - name: Verify the real CLI and record provenance
         run: |
