@@ -25,6 +25,7 @@ from powercontext.builtin.artifacts.topic_memory.processing import (
     TopicMemoryBlockConflictError,
     TopicMemoryBlockNotFoundError,
 )
+from powercontext.builtin.inference import InferenceTimeoutError
 from powercontext.builtin.persistence.processing import ArtifactProcessingPendingRepository
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import TOPIC_MEMORY_WORK_BUDGETS_TABLE as BUDGETS
@@ -268,6 +269,69 @@ def test_generic_failed_workers_retain_last_error_and_stop_after_three_attempts(
                 assert supervisor.family_status["topic-memory"]["failed"] == 3
                 assert (await service.status("scope-a")).block == block
                 assert "private provider payload" not in block.model_dump_json()
+        finally:
+            await manager.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("error_code", ["worker_timeout", "model_timeout"])
+def test_timeout_diagnostics_survive_database_reopen(tmp_path, error_code):
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'timeout.db'}")
+
+    async def scenario():
+        manager, profile, sources, topics = await _repositories(config)
+        try:
+            await _capture(profile, sources, 1)
+
+            operation = "private model operation"
+
+            async def timeout(_count):
+                if error_code == "model_timeout":
+                    raise InferenceTimeoutError(operation, 0.01)
+                await asyncio.Event().wait()
+
+            # The launcher is a test double; the Supervisor enforces the real deadline.
+            launcher = _Launcher(
+                profile.database, on_work=_processor(profile, sources, topics, _Probe(timeout)).process
+            )
+            async with ArtifactProcessingSupervisor(
+                database=profile.database,
+                bindings=(
+                    ArtifactProcessingBinding(
+                        BINDING,
+                        "topic-memory",
+                        launcher,
+                        worker_timeout_seconds=0.5,
+                        work_block=topic_memory_processing_block,
+                        work_failure=record_topic_memory_work_failure,
+                    ),
+                ),
+                lease_mode="single-process",
+                retry_base_seconds=0.01,
+                retry_cap_seconds=0.01,
+                retry_jitter=lambda: 1,
+                blocked_check_seconds=0.03,
+            ) as supervisor:
+                await _wait(lambda: supervisor.family_status["topic-memory"]["failed"] == 3, timeout_seconds=10)
+                service = TopicMemoryRecoveryService(profile.database)
+                status = await service.status("scope-a")
+                block = status.block
+                assert status.state == "blocked" and block is not None
+                assert (status.source_cursor, status.source_head) == (0, 1)
+                assert block.attempts == 3 and block.error_code == "window_attempt_limit"
+                assert supervisor.family_status["topic-memory"]["last_error"] == error_code
+                assert block.last_error_code == error_code
+                assert await service.get_block("scope-a", block.block_id) == block
+                assert operation not in block.model_dump_json()
+        finally:
+            await manager.__aexit__(None, None, None)
+
+        manager, profile, _, _ = await _repositories(config)
+        try:
+            service = TopicMemoryRecoveryService(profile.database)
+            assert (await service.status("scope-a")).block == block
+            assert await service.get_block("scope-a", block.block_id) == block
         finally:
             await manager.__aexit__(None, None, None)
 

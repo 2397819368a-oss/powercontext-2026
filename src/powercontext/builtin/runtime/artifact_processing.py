@@ -1387,11 +1387,7 @@ class ArtifactProcessingSupervisor:
                 elif isinstance(error, _WorkerExecutionError) and error.failure.cancelled:
                     observed_outcome = "cancelled"
                 if state.binding.work_failure is not None:
-                    code = (
-                        processing_error_code(error.failure.exception_type, error.failure.error_code)
-                        if isinstance(error, _WorkerExecutionError)
-                        else processing_error_code(type(error), _safe_error_attribute(error, "error_code", ""))
-                    )
+                    code = _worker_error_code(error)
                     try:
                         async with (
                             asyncio.timeout(_ADMISSION_PROBE_TIMEOUT_SECONDS),
@@ -1524,17 +1520,11 @@ class ArtifactProcessingSupervisor:
     def _record_failure(
         self, state: _FamilyState | None, error: BaseException, stage: str, *, count_error: bool = True
     ) -> None:
-        error_code = (
-            processing_error_code(error.failure.exception_type, error.failure.error_code)
-            if isinstance(error, _WorkerExecutionError)
-            else processing_error_code(type(error))
-        )
+        error_code = _worker_error_code(error)
         if stage in {"supervisor", "lease_renewal", "scope_discovery"}:
             error_code = f"{stage}_failed"
         elif is_inference_failure_code(error_code):
             stage = "inference"
-        elif isinstance(error, TimeoutError):
-            error_code = "worker_timeout"
         occurred_at = datetime.now(UTC).isoformat()
         _, category = _attempt_failure_observation(error)
         for affected in self._families.values() if state is None else (state,):
@@ -1822,6 +1812,16 @@ def _attempt_failure_observation(error: BaseException) -> tuple[str, str]:
         else processing_error_code(type(error))
     )
     return "failure", "timeout" if isinstance(error, TimeoutError) else error_category(code) or "internal"
+
+
+def _worker_error_code(error: BaseException) -> str:
+    """Keep live and retained Worker diagnostics in the same controlled category."""
+    if isinstance(error, _WorkerExecutionError):
+        return processing_error_code(error.failure.exception_type, error.failure.error_code)
+    code = processing_error_code(type(error), _safe_error_attribute(error, "error_code", ""))
+    if code == "processing_failed" and isinstance(error, TimeoutError):
+        return "worker_timeout"
+    return code
 
 
 def _worker_failure_category(error: BaseException) -> str:
