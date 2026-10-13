@@ -31,6 +31,7 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
   const root = await mkdtemp(join(tmpdir(), 'pc-kimi-'))
   const installed = join(root, 'plugin')
   const home = join(root, 'home')
+  const workspace = join(root, 'workspace')
   await cp(plugin, installed, { recursive: true, filter: path => !path.includes('tests') })
   const captures = []
   const requests = []
@@ -58,7 +59,7 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
     server_url: 'http://' + listenHost + ':' + server.address().port, scope_id: 'scope-test', capture_prompts: true, use_token: false, ...settings,
   }))
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }) })
-  async function invoke(input = { hook_event_name: 'UserPromptSubmit', session_id: 'session-test', cwd: '/workspace', prompt },
+  async function invoke(input = { hook_event_name: 'UserPromptSubmit', session_id: 'session-test', cwd: workspace, prompt },
     environment = {}) {
     const env = { ...process.env, KIMI_CODE_HOME: home, ...environment }
     if (!Object.hasOwn(environment, 'POWERCONTEXT_KIMI_TOKEN')) delete env.POWERCONTEXT_KIMI_TOKEN
@@ -72,7 +73,7 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
     assert.equal(code, 0, stderr)
     return { output: JSON.parse(stdout), stderr }
   }
-  async function status(session = 'session-test', cwd = '/workspace') {
+  async function status(session = 'session-test', cwd = workspace) {
     const args = [join(installed, 'scripts/status.mjs'), '--cwd', cwd]
     if (session !== undefined) args.push('--session-id', session)
     const result = await promisify(execFile)(process.execPath, args,
