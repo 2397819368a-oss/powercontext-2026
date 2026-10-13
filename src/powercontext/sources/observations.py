@@ -264,7 +264,11 @@ def _payload_exclusions(value: object) -> dict[Any, Any]:
         from dataclasses import fields, is_dataclass
 
         if is_dataclass(value) and not isinstance(value, type):
-            return {field.name: nested for field in fields(value) if (nested := _payload_exclusions(getattr(value, field.name)))}
+            return {
+                field.name: nested
+                for field in fields(value)
+                if (nested := _payload_exclusions(getattr(value, field.name)))
+            }
     except TypeError:
         pass
     if isinstance(value, dict):
