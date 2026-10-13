@@ -1,3 +1,5 @@
+
+<!-- POWERCONTEXT-GUIDANCE:START -->
 # Scope and Memory
 
 ## Resolve the current Scope
@@ -68,3 +70,4 @@ chain. Legacy `revise_memory_entry` and `retire_memory_entry` are not current MC
 
 Keep the resolved Scope for Handoff, candidate inspection, and other operations. Scope scripts manage binding;
 they never replace the MCP tool. If a required tool is absent, report the operation unavailable and incomplete.
+<!-- POWERCONTEXT-GUIDANCE:END -->

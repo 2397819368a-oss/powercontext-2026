@@ -59,18 +59,17 @@ pnpm --dir desktop desktop:dev
 
 设置中的诊断只检查当前电脑，与远程连接状态分开。程序不从 PATH 自动选择 CLI，也不安装或启动 Server。集成检查可能运行临时 Agent 辅助进程；结果不代表实际 capture/recall 已验证。
 
-显式信任某个本地 PowerContext 安装后，在 `%APPDATA%/com.powercontext.desktop.preview/diagnostic-cli.json` 写入下面的配置。`executable` 必须是 `powercontext.exe` 的绝对路径，`sha256` 是该文件经核对的 SHA-256。当前诊断适配器允许 1.0.1 和 1.1.1 及其开发构建；必须填写实际安装的精确版本，下列示例是已测试基线。其他版本系列需另行验证。不要把文件摘要匹配当作发布者签名认证；Python 安装及其依赖也必须来自你信任的环境。
+显式信任某个本地 PowerContext 安装后，在 `%APPDATA%/com.powercontext.desktop.preview/diagnostic-cli.json` 写入下面的配置。`executable` 必须是 `powercontext.exe` 的绝对路径，`sha256` 是该文件经核对的 SHA-256。无需配置版本号；已有配置中的 `version` 字段会被忽略。兼容性由诊断响应是否符合适配器支持的输出格式决定。程序文件发生变化时，需要更新登记的摘要。不要把文件摘要匹配当作发布者签名认证；Python 安装及其依赖也必须来自你信任的环境。
 
 ```json
 {
   "executable": "C:/trusted/powercontext/Scripts/powercontext.exe",
   "sha256": "填写经核对的64位SHA256摘要",
-  "version": "1.0.1.dev61+g63f918b7e.d20260919",
   "source": "explicit_local_installation"
 }
 ```
 
-Desktop 在每次诊断前检查固定路径、摘要，并用固定的 `--version` 核验版本；然后只允许 `service status --json` 或 `doctor integrations --json`。版本核验最长 15 秒，服务检查最长 20 秒，集成检查最长 60 秒；每次进程调用的 stdout/stderr 合计最多 256 KiB。窗口隐藏，进程及其后代归属于本次专属 Windows Job，结束或超时后清理。界面只显示允许的状态字段，不显示任意 detail、路径或原始输出。合法 JSON 配合退出码 1 仍可显示不健康结果。
+Desktop 在每次诊断前检查固定路径和摘要，然后只允许 `service status --json` 或 `doctor integrations --json`。收到符合格式的诊断响应后，尝试读取实际 CLI 版本用于显示；版本查询失败时显示“未知”，不阻止有效诊断结果。版本查询最长 15 秒，服务检查最长 20 秒，集成检查最长 60 秒；每次进程调用的 stdout/stderr 合计最多 256 KiB。窗口隐藏，进程及其后代归属于本次专属 Windows Job，结束或超时后清理。界面只显示允许的状态字段，不显示任意 detail、路径或原始输出。合法 JSON 配合退出码 1 仍可显示不健康结果。
 
 未配置或未通过核验时，本机诊断不可用，独立远程业务仍可使用。进程树清理和隔离真实 CLI 测试已通过；安装后交互与完整 S2 资格仍待验收。
 

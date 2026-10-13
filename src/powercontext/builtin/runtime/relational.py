@@ -80,7 +80,11 @@ from powercontext.builtin.artifacts.prompt.service import (
     current_prompt,
     prompt_operation,
 )
-from powercontext.builtin.artifacts.search import AdmissionFloor
+from powercontext.builtin.artifacts.search import (
+    DEFAULT_RECALL_CHANNEL_WEIGHTS,
+    AdmissionFloor,
+    RecallChannelWeights,
+)
 from powercontext.builtin.artifacts.skill import (
     ExternalSkillProvider,
     ExternalSkillRegistryUnavailableError,
@@ -480,6 +484,7 @@ class RelationalContexts:
         memory_write_gate: MemoryWriteGate | None = None,
         decision_observation_retention_days: int | None = None,
         memory_rerank_candidate_limit: int = 30,
+        recall_channel_weights: RecallChannelWeights = DEFAULT_RECALL_CHANNEL_WEIGHTS,
         id_factory: IdFactory | None = None,
         handoff_artifact_id: str = "handoff",
         source_registry: SourceDefinitionRegistry | None = None,
@@ -536,13 +541,18 @@ class RelationalContexts:
             embedding_model=embedding_model,
             reranker=memory_reranker,
             rerank_candidate_limit=memory_rerank_candidate_limit,
+            recall_channel_weights=recall_channel_weights,
             prompt_context_factory=lambda scope_id: ScopedPrompts(self.prompts, scope_id),
             cursor_secret=cursor_secret,
             id_factory=id_factory,
             preview_signer=preview_signer,
             restore_retry_budget=atomic_memory_restore_retry_budget,
         )
-        topic_memory_repository = TopicMemoryRepository(artifacts=artifact_repository, index=self.topic_memory_index)
+        topic_memory_repository = TopicMemoryRepository(
+            artifacts=artifact_repository,
+            index=self.topic_memory_index,
+            recall_channel_weights=recall_channel_weights,
+        )
         self.repositories = _Repositories(
             sources=source_repository,
             artifacts=artifact_repository,
