@@ -83,6 +83,8 @@ class ToolSurfaceProbe(StrEnum):
     SERVER_MCP = "server_mcp"
     JSON_PROMPT_HOOK = "json_prompt_hook"
     ZCODE_PROMPT_HOOK = "zcode_prompt_hook"
+    KIMI_CODE_MCP = "kimi_code_mcp"
+    KIMI_CODE_PROMPT_HOOK = "kimi_code_prompt_hook"
     DSH_TOOLS = "dsh_tools"
     DIFY_TOOLS = "dify_tools"
     DSH_COMMANDS = "dsh_commands"
@@ -471,6 +473,21 @@ def _probe_toolset(probe: ToolSurfaceProbe, root: Path) -> set[str]:
         return set(_MCP_OPERATION_IDS)
     if probe is ToolSurfaceProbe.JSON_PROMPT_HOOK:
         return _prompt_hook_ids(root)
+    if probe in {ToolSurfaceProbe.KIMI_CODE_MCP, ToolSurfaceProbe.KIMI_CODE_PROMPT_HOOK}:
+        plugin = root / "integrations/kimi-code/plugins/powercontext"
+        manifest = json.loads((plugin / "kimi.plugin.json").read_text(encoding="utf-8"))
+        if probe is ToolSurfaceProbe.KIMI_CODE_MCP:
+            entry = manifest["mcpServers"]["powercontext"]
+            if entry.get("url") != "http://127.0.0.1:8000/mcp":
+                raise ValueError("missing Kimi HTTP MCP endpoint")
+            return set(entry["enabledTools"])
+        script = (plugin / "hooks/user_prompt_submit.mjs").read_text(encoding="utf-8")
+        expected = {"event": "UserPromptSubmit", "command": "node ./hooks/user_prompt_submit.mjs", "timeout": 5}
+        if manifest.get("hooks") != [expected] or not all(
+            marker in script for marker in ("/v1/context/prepare", "/v1/sources/content", "message")
+        ):
+            raise ValueError("missing Kimi prompt capture or context output")
+        return {"kimi-code:UserPromptSubmit"}
     if probe is ToolSurfaceProbe.ZCODE_PROMPT_HOOK:
         return _zcode_prompt_hook_ids(root)
     if probe is ToolSurfaceProbe.DSH_TOOLS:

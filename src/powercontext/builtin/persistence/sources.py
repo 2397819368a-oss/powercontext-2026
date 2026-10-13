@@ -104,6 +104,8 @@ class SourceRepository:
         scope_id: str,
         source: Source,
         /,
+        *,
+        apply_definition: bool = False,
     ) -> tuple[StoredSource, bool]:
         """Add one Source and report whether this call inserted its journal row."""
 
@@ -112,7 +114,8 @@ class SourceRepository:
             ref = SourceRef(source_type=source.source_type, source_id=source.name)
             representation: Literal["native", "observation"] = "observation"
         else:
-            source = self._registry.materialize(source)
+            if apply_definition:
+                source = self._registry.materialize(source)
             definition = self._registry.definition_for_source(source)
             ref = SourceRef(source_type=definition.name, source_id=source.name)
             representation = "native"

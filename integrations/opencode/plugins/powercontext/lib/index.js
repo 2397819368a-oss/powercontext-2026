@@ -212,6 +212,17 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
+	get_server_info: {
+		method: "GET",
+		path: "/v1/server-info",
+		location: null,
+		scopeMode: "none",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
 	get_capabilities: {
 		method: "GET",
 		path: "/v1/capabilities",
@@ -2241,6 +2252,14 @@ const handoffEvidence = z.union([z.object({
 	kind: z.literal("artifact"),
 	artifact_ref: jsonObject()
 })]);
+const handoffRolloverReasons = z.array(z.enum([
+	"user_requested",
+	"host_context_budget",
+	"host_compaction",
+	"context_quality",
+	"delegation",
+	"manual_checkpoint"
+])).max(6);
 const handoffStatement = z.object({
 	text: z.string().min(1),
 	citations: z.array(handoffEvidence).min(1)
@@ -2420,25 +2439,29 @@ function createTools(runtime) {
 			args: {
 				boundary_source: sourceReference,
 				objective: z.string(),
-				evidence: z.array(handoffEvidence).optional()
+				evidence: z.array(handoffEvidence).optional(),
+				rollover_reasons: handoffRolloverReasons.optional()
 			},
 			operationId: "activate_handoff",
 			payload: (args) => ({
 				boundary_source: args.boundary_source,
 				objective: args.objective,
-				evidence: args.evidence ?? []
+				evidence: args.evidence ?? [],
+				...args.rollover_reasons === void 0 ? {} : { rollover_reasons: args.rollover_reasons }
 			})
 		}),
 		pc_handoff_prepare: operationTool(runtime, {
 			description: "This returns an unfinished Draft in data, NOT a transferable Handoff. To complete a requested transfer, you must next call pc_handoff_finalize with draft=data, then return finalize.data. This does not require a durable commit. Only call after an existing exact Source or Artifact reference was returned by a tool. If only current facts are available, call pc_capture_source first and wait for its result. Use evidence [{kind: \"source\", source_ref: data.source}] with the full returned name and source_id; never fabricate a reference. Prepare an inspectable PowerContext Handoff Draft from exact evidence for a requested transfer. Inspect facts, omissions, and the next action before finalizing. The Draft is temporary and grants no authority; preparation is not a durable commit or proof that a receiver continued the work.",
 			args: {
 				objective: z.string(),
-				evidence: z.array(handoffEvidence)
+				evidence: z.array(handoffEvidence),
+				rollover_reasons: handoffRolloverReasons.optional()
 			},
 			operationId: "prepare_handoff",
 			payload: (args) => ({
 				objective: args.objective,
-				evidence: args.evidence
+				evidence: args.evidence,
+				...args.rollover_reasons === void 0 ? {} : { rollover_reasons: args.rollover_reasons }
 			})
 		}),
 		pc_handoff_finalize: operationTool(runtime, {

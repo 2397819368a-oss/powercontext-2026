@@ -225,6 +225,12 @@ class _SourceInputSchema(GenerateJsonSchema):
             schema["schema"] = _source_input_fields(schema["schema"])
         return super().model_schema(schema)
 
+    @override
+    def encode_default(self, dft: Any) -> Any:
+        if isinstance(dft, BaseModel):
+            dft = dft.model_dump(mode="json", exclude=_payload_exclusions(dft))
+        return super().encode_default(dft)
+
 
 def _source_input_fields(schema: Any) -> Any:
     """Copy only the wrappers containing this Source's field definitions."""
@@ -244,12 +250,23 @@ def _payload_exclusions(value: object) -> dict[Any, Any]:
 
     if isinstance(value, BaseModel):
         excluded: dict[Any, Any] = dict.fromkeys(DECLARATION_OWNED_FIELDS, True) if isinstance(value, Source) else {}
+        if type(value).__name__ == "RootModel" or (
+            set(type(value).model_fields) == {"root"} and hasattr(value, "root")
+        ):
+            return _payload_exclusions(value.root)
         for name in type(value).model_fields:
             if name not in excluded and (nested := _payload_exclusions(getattr(value, name))):
                 excluded[name] = nested
         return excluded
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, set, frozenset)):
         return {index: nested for index, item in enumerate(value) if (nested := _payload_exclusions(item))}
+    try:
+        from dataclasses import fields, is_dataclass
+
+        if is_dataclass(value) and not isinstance(value, type):
+            return {field.name: nested for field in fields(value) if (nested := _payload_exclusions(getattr(value, field.name)))}
+    except TypeError:
+        pass
     if isinstance(value, dict):
         return {key: nested for key, item in value.items() if (nested := _payload_exclusions(item))}
     return {}

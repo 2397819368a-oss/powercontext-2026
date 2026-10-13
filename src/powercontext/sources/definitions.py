@@ -232,7 +232,7 @@ def definition_memory_evidence(definition: object, /) -> MemoryEvidenceDeclarati
     return declared if isinstance(declared, MemoryEvidenceDeclaration) else MemoryEvidenceDeclaration()
 
 
-def _validate_definition(definition: object) -> tuple[type[object], type[Source]]:
+def _validate_definition(definition: object) -> tuple[type[object], type[Source]]:  # noqa: C901
     definition_type = type(definition)
     input_class = getattr(definition, "input_class", None)
     if not isinstance(input_class, type):
@@ -246,6 +246,10 @@ def _validate_definition(definition: object) -> tuple[type[object], type[Source]
     source_class = getattr(definition, "source_class", None)
     if not isinstance(source_class, type) or not issubclass(source_class, Source):
         raise InvalidSourceAdapterError(definition_type, "source_class", "must be a Source subclass")
+    if source_class.model_fields["memory_evidence"].annotation is not MemoryEvidenceDeclaration:
+        raise InvalidSourceDefinitionError(
+            definition_type, "source_class", "memory_evidence is reserved for MemoryEvidenceDeclaration"
+        )
     projections = getattr(definition, "projections", None)
     if not isinstance(projections, tuple):
         raise InvalidSourceDefinitionError(definition_type, "projections", "must be a tuple")

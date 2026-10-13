@@ -87,10 +87,14 @@ def test_canonical_discovery_description_is_refreshed(guidance_tree: Path) -> No
 
 
 def test_all_packaged_references_resolve_and_openclaw_keeps_its_limits(guidance_tree: Path) -> None:
-    for relative in FILE_HOSTS.values():
+    for host, relative in FILE_HOSTS.items():
         skill = file_skill(guidance_tree / relative)
         assert "references/scope-memory.md" in skill["resources"]
-        assert "references/work-handoff.md" in skill["resources"]
+        if host == "kimi-code":
+            assert "references/work-handoff.md" not in skill["resources"]
+            assert "get_artifact_revision" in skill["resources"]["references/scope-memory.md"]
+        else:
+            assert "references/work-handoff.md" in skill["resources"]
     openclaw = file_skill(guidance_tree / FILE_HOSTS["openclaw"])
     assert "Unavailable here." in openclaw["content"]
     assert "`list_memory_entries`" not in openclaw["content"]

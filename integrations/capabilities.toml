@@ -927,3 +927,35 @@ toolsets = ["dify-tools"]
 implementation = ["integrations/dify/plugin/provider/powercontext.yaml", "integrations/dify/plugin/powercontext_dify/tool.py", "integrations/dify/plugin/powercontext_dify/client.py"]
 documentation = ["docs/en/docs/integrations/dify.md", "docs/zh/docs/integrations/dify.md"]
 tests = ["integrations/dify/tests/test_plugin_contract.py", "tests/e2e/test_dify_tools_http.py"]
+
+[[toolsets]]
+id = "kimi-code-mcp"
+probe = "kimi_code_mcp"
+[[toolsets.tools]]
+id = "search_memory"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "remember_memory"
+capabilities = ["memory_write"]
+[[toolsets.tools]]
+id = "get_artifact_revision"
+capabilities = ["memory_read"]
+
+[[toolsets]]
+id = "kimi-code-prompt-hook"
+probe = "kimi_code_prompt_hook"
+[[toolsets.tools]]
+id = "kimi-code:UserPromptSubmit"
+capabilities = ["source_capture", "context_injection"]
+
+[[integrations]]
+id = "kimi-code"
+kind = "agent_host"
+availability = "experimental"
+capabilities = ["memory_read", "memory_write", "source_capture", "context_injection"]
+profiles = ["minimal"]
+toolsets = ["kimi-code-mcp", "kimi-code-prompt-hook"]
+[integrations.evidence]
+implementation = ["integrations/kimi-code/plugins/powercontext/kimi.plugin.json", "integrations/kimi-code/plugins/powercontext/hooks/user_prompt_submit.mjs", "src/powercontext/cli/kimi_code.py"]
+documentation = ["docs/en/docs/integrations/kimi-code.md", "docs/zh/docs/integrations/kimi-code.md"]
+tests = ["tests/test_cli_kimi_code.py", "integrations/kimi-code/plugins/powercontext/tests/plugin.test.mjs", "tests/e2e/test_kimi_code_host.py"]

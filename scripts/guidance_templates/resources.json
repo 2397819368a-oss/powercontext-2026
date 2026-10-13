@@ -62,5 +62,9 @@
     "references/review-publication.md",
     "references/scope-memory.md",
     "references/work-handoff.md"
+  ],
+  "kimi-code": [
+    "SKILL.md",
+    "references/scope-memory.md"
   ]
 }

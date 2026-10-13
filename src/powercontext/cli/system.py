@@ -654,6 +654,51 @@ def setup_dsh(
     )
 
 
+@setup_app.command("kimi-code")
+def setup_kimi_code(
+    source: Annotated[Path, typer.Option(help="Local PowerContext checkout or plugin directory.")],
+    server_url: Annotated[
+        str | None, typer.Option(help="Server origin; omission preserves the installed endpoint.")
+    ] = None,
+    scope_id: Annotated[str | None, typer.Option(help="Existing Scope ID; required on first installation.")] = None,
+    capture_prompts: Annotated[
+        bool | None,
+        typer.Option("--capture-prompts/--no-capture-prompts", help="Omission preserves capture preference."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Write installation metadata as JSON.")] = False,
+) -> None:
+    """Install the minimal Kimi Code memory plugin from a local checkout."""
+    from powercontext.cli.kimi_code import install_kimi_plugin
+
+    try:
+        result = install_kimi_plugin(
+            source=source, server_url=server_url, scope_id=scope_id, capture_prompts=capture_prompts
+        )
+    except (SetupError, OSError, ValueError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from error
+    if json_output:
+        typer.echo(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        typer.echo(f"Kimi Code setup complete: {result.plugin_path}")
+        typer.echo(
+            "Open a new Kimi session, then run powercontext doctor kimi-code. Existing disablement is preserved."
+        )
+
+
+@doctor_app.command("kimi-code")
+def doctor_kimi_code(
+    json_output: Annotated[bool, typer.Option("--json", help="Write diagnostics as JSON.")] = False,
+) -> None:
+    """Check Kimi plugin declarations and readonly Server/Scope connectivity."""
+    from powercontext.cli.kimi_code import run_kimi_diagnostics
+
+    diagnostics = run_kimi_diagnostics()
+    _write_diagnostics(diagnostics, json_output=json_output)
+    if _diagnostics_status(diagnostics) is not DiagnosticStatus.OK:
+        raise typer.Exit(code=1)
+
+
 @setup_app.command("zcode")
 def setup_zcode(
     source: Annotated[

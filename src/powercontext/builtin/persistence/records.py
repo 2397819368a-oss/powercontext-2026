@@ -213,7 +213,9 @@ class RelationalRecordService:
     ) -> SourceRecord:
         try:
             async with self._database.transaction() as connection:
-                stored, created = await self._sources.add_with_status(connection, scope_id, source)
+                stored, created = await self._sources.add_with_status(
+                    connection, scope_id, source, apply_definition=True
+                )
                 if created and self._processing_pending is not None:
                     for binding_name in self._source_processing_bindings:
                         await self._processing_pending.raise_source(
