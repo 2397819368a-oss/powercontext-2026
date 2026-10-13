@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from powercontext.cli import kimi_code
@@ -60,7 +61,7 @@ def test_doctor_runtime_option_requires_explicit_selection(kimi_home):
     install()
     result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "kimi-code", "--session-id", "session"])
     assert result.exit_code != 0
-    assert "require --runtime" in result.output
+    assert "require --runtime" in unstyle(result.output)
 
 
 def test_cli_installs_repeatably_and_preserves_configuration(kimi_home):
