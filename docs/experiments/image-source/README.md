@@ -31,7 +31,7 @@ description: 图片采集、原图保存、后台视觉解析与文字证据接�
 | Worktree | D:/code/git-project/powermem/powermem-image-source-experiment |
 | 本地分支 | codex/experiment-image-source |
 | 起始提交 | 6b2f6e8a4c1aac59fca75662aca26d78748bfa29 |
-| 当前主干基线 | b5bcfe24bcce9c574ee85175d623bb9963970a41（Atomic Memory 与宿主 guidance） |
+| 当前主干基线 | 28244c8a918707351605525ed0e0caf49723ac69（Atomic Memory、宿主 guidance 与召回通道权重） |
 | 实验文档 | docs/experiments/image-source/ |
 | 运行环境 | 首版只支持独立文件 SQLite 实验部署；WAL／DELETE journal、FULL 及以上 synchronous |
 | 私有运行数据 | worktree 内已被忽略的 .powercontext/image-source-experiment/ |

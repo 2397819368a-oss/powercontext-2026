@@ -767,3 +767,12 @@ Access/Atomic Memory 与 ZCode 协议、宿主联合回归 85 项通过。完整
 本轮属于主干集成维护：用户要求解决同一草稿 PR 的新冲突。前置状态为干净 worktree、分支与远端同为 90902943；该提交的 CI 已完成，32 项成功、1 项按 workflow 条件跳过。最新 upstream/master 为 28244c8a，包含召回通道权重配置和依赖 action 更新；预检发现两份 Desktop 派生操作清单冲突。
 
 目标是在保留分支快照后 rebase 到当前主干，从合并后的 OpenAPI 契约重新生成各端派生文件，验证图片与召回配置、类型及契约检查，再以精确 lease 更新现有草稿并确认可合并状态。保留默认关闭、Scope/授权边界、历史原图/解析 Source 身份和已有 CI 修复；本轮不扩展功能、不操作现有桌面服务，也不把受控测试当作真实图片或新会话召回验收。
+
+### 契约冲突与验证
+
+- 建立 codex/backup-pr1956-before-recall-rebase-20261013，rebase 到 28244c8a；仅 Desktop operations.ts 和 Rust operations.json 发生内容冲突。运行 pnpm --dir desktop generate 从合并后的契约重建，range-diff 确认原有七个功能/修复提交保留，变动仅为生成的契约摘要。
+- 本机没有 make，执行对应 recipe：uv run --locked python scripts/generate_api.py、JS 生成/检查及 API 检查；Python 生成结果无漂移，Dify 契约检查通过。保留主干 score 约束、两类 recall_channel_weights 注入、Memory 延迟审计和 MiniCPM 单 system message 适配。
+- 以 Python 3.14 顺序运行 API、图片解析/恢复/证据/Dashboard、召回权重/fusion 及 Access 并发联合回归，402 项通过。Desktop lint、生成/图标/格式检查、28 条 UI 测试和前端 build 通过。
+- Ruff、1260 文件格式检查、Linux 目标全库 ty、根锁文件、129 个 action pin、生成 guidance 和 ZCode pin 检查通过；这些是离线或受控 provider 验证，未重新操作真实 Desktop 或 MiniCPM 服务。
+
+推送前 upstream/master 又推进至 75481152，新增 pytest-xdist、拆分 unit/e2e CI 矩阵和相应锁文件，预检没有新增代码冲突。继续同步该提交并验证图片/宿主测试在并行执行下保持隔离，更新文档基线及同一 PR；不回退上游并行检查。

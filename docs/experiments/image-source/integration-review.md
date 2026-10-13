@@ -5,7 +5,7 @@ description: 草稿 PR 的实现范围、Atomic Memory 适配、真实验收证�
 
 # 图片功能整合审查与验收结论
 
-本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master b5bcfe24bcce9c574ee85175d623bb9963970a41。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
+本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master 28244c8a918707351605525ed0e0caf49723ac69。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
 
 ## 当前实现
 
@@ -18,6 +18,8 @@ description: 草稿 PR 的实现范围、Atomic Memory 适配、真实验收证�
 ## 修复与审查状态
 
 Rebase 解决了 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access 与 OpenAPI 冲突。已有 HTTP 路径与 schema 保持原样，七个图片操作及类型重新生成 Python/JS 契约。
+
+当前契约保留主干新增的召回通道权重和 score 约束。Desktop 的操作摘要及类型由合并后的 OpenAPI 重新生成；原有图片接口和此前的 Memory 并发审计、MiniCPM 适配修复均保留。
 
 - 补齐 Interrupt Hook 集成清单。
 - 按授权时间恢复停机期间的新会话，保留已经登记的读取游标。
@@ -41,18 +43,19 @@ Rebase 解决了 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access �
 | 实际 Dashboard | 可查看图片列表、缩略图、任务、OCR 与原图；新 Atomic Memory 到原图的完整桌面链路待验收 |
 | 官方 Atomic Memory 迁移 | 31 条旧 entry 导入后 ready；原有 70 条 Source 的身份、payload、journal_position 和五个资产摘要保持不变，integrity_check 为 ok |
 | Ruff、Linux 目标 ty、契约、锁文件、wheel | 通过；提交前文档及最后回归另见实施记录 |
+| GitHub CI（90902943） | 32 项成功、1 项按 workflow 条件跳过，含 Python 3.11–3.14、E2E、Desktop、网站及 License；新基线提交的结果独立核查 |
 | 更广兼容测试 | 231 通过、3 跳过、2 个 CLI 失败；两个失败在同版本 upstream 基线上复现 |
 
 当前真实模型可以抽取候选，但新主干的完整后台协调和发布尚未验收通过。Flash/Pro 曾返回无效输出；空正文问题的说明及结构化重试已修复，仍需验证真实后台产物与新会话实际引用。旧 Memory 机制的成功实验记录不能代替当前 Atomic Memory 验收。
 
-Windows 全库 ty 仍有既有 POSIX 原生扫描相关错误，Linux 目标检查通过；没有宣称 Windows 全库全部通过。完整 Python 版本矩阵与文档网站构建尚未完成。
+Windows 本地全库 ty 仍有既有 POSIX 原生扫描相关错误，Linux 目标检查通过；没有宣称本地 Windows 全库全部通过。已有 GitHub CI 通过不能替代真实图片、普通模型和新桌面会话的独立验收。
 
 ## 合并前待完成
 
 - 当前 Atomic Memory 的真实后台发布、精确来源以及新桌面聊天的显式检索、自动召回和实际答案。
 - 数据库与图片资产配对备份的实际恢复，核查历史身份、字节、引用及索引。
 - 拖入、粘贴、JPEG、多图、中断、禁用/重开，以及最终完整 Open Code Review 与修复后复审。
-- 完整支持版本、文档/CI 检查，以及 macOS/Linux 生命周期和长期资源/质量测试。
+- 新提交的文档/CI 检查，以及 macOS/Linux 生命周期和长期资源/质量测试。
 - 依据维护者意见收敛公开命名、迁移和 PR 范围；managed-local 下载与运行另行实现。
 
 操作见 [桌面指南](desktop-testing.md)，素材与预期答案见 [复杂测试案例](complex-test-case.md)。私有连接、真实附件、数据库、探测脚本和完整日志位于被忽略的本地目录，不进入 PR。
