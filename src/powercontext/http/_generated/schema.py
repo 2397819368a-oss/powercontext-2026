@@ -5505,6 +5505,13 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "boundary_source": {"$ref": "#/components/schemas/SourceReference"},
                     "objective": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
+                    "rollover_reasons": {
+                        "items": {"$ref": "#/components/schemas/HandoffRolloverReason"},
+                        "type": "array",
+                        "maxItems": 6,
+                        "uniqueItems": True,
+                        "default": [],
+                    },
                     "evidence": {
                         "items": {"$ref": "#/components/schemas/HandoffCitation"},
                         "type": "array",
@@ -7682,6 +7689,13 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "properties": {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "objective": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
+                    "rollover_reasons": {
+                        "items": {"$ref": "#/components/schemas/HandoffRolloverReason"},
+                        "type": "array",
+                        "maxItems": 6,
+                        "uniqueItems": True,
+                        "default": [],
+                    },
                     "evidence": {
                         "items": {"$ref": "#/components/schemas/HandoffCitation"},
                         "type": "array",
@@ -10756,6 +10770,17 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "HandoffDisposition": {"type": "string", "enum": ["continuable", "blocked", "complete"]},
             "HandoffEvidenceStatus": {"type": "string", "enum": ["available", "unavailable"]},
             "HandoffResolutionStatus": {"type": "string", "enum": ["empty", "resolved"]},
+            "HandoffRolloverReason": {
+                "type": "string",
+                "enum": [
+                    "user_requested",
+                    "host_context_budget",
+                    "host_compaction",
+                    "context_quality",
+                    "delegation",
+                    "manual_checkpoint",
+                ],
+            },
             "HandoffSchema": {"type": "string", "enum": ["powercontext.handoff.v1"]},
             "HandoffSelection": {"type": "string", "enum": ["prepared", "exact", "latest"]},
             "PreparedHandoffSchema": {"type": "string", "enum": ["powercontext.prepared-handoff.v1"]},

@@ -96,6 +96,7 @@ These tags describe PowerContext integration maintenance and use. See the
 <td align="center" width="120"><a href="integrations/minimax/README.md"><img src="assets/minimax-code.png" alt="MiniMax Code" width="48" height="48" /><br /><sub><b>MiniMax Code</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/integrations/dsh.md"><img src="assets/deepseek.png" alt="DeepSeek Harness" width="48" height="48" /><br /><sub><b>DeepSeek Harness</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/integrations/zcode.md"><img src="assets/zcode.png" alt="ZCode" width="48" height="48" /><br /><sub><b>ZCode</b></sub></a></td>
+<td align="center" width="120"><a href="docs/en/docs/integrations/kimi-code.md"><img src="https://github.com/MoonshotAI.png?size=120" alt="Kimi Code" width="48" height="48" /><br /><sub><b>Kimi Code</b></sub></a></td>
 <td align="center" width="120"><a href="integrations/hermes/README.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/hermes-dark.png"><img src="assets/hermes.png" alt="Hermes Agent" width="48" height="48" /></picture><br /><sub><b>Hermes Agent</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/integrations/pi.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/pi-dark.png"><img src="assets/pi.png" alt="Pi Coding Agent" width="48" height="48" /></picture><br /><sub><b>Pi Coding Agent</b></sub></a></td>
 </tr>

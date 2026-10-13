@@ -189,6 +189,8 @@
   "memory_recall": "Memory search",
   "skill_generation": "Skill generation",
   "handoff_generation": "Handoff generation",
+  "profile_generation": "Profile generation",
+  "prompt_generation": "Prompt generation",
   "model_type": "Model type",
   "generation_total": "Text generation total",
   "embedding_total": "Embedding total",

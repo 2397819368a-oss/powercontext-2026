@@ -189,6 +189,8 @@
   "memory_recall": "记忆检索",
   "skill_generation": "生成技能",
   "handoff_generation": "生成交接",
+  "profile_generation": "生成画像",
+  "prompt_generation": "生成提示词",
   "model_type": "模型类型",
   "generation_total": "文本生成合计",
   "embedding_total": "向量模型合计",

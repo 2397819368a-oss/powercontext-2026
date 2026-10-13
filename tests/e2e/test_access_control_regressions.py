@@ -88,6 +88,52 @@ async def _scope(client):
     return result.json()["scope_id"]
 
 
+def test_remember_memory_survives_concurrent_write_after_authorization(tmp_path: Path, monkeypatch) -> None:
+    async def scenario() -> None:
+        async with _server(tmp_path) as (_, client, access):
+            scope_id = await _scope(client)
+            original_check = BuiltinAuthorizationProvider.check
+            interleaved = False
+
+            async def check_with_concurrent_write(provider, request):
+                nonlocal interleaved
+                decision = await original_check(provider, request)
+                if (
+                    not interleaved
+                    and request.context.operation == "remember_memory"
+                    and request.action == AccessAction.SCOPE_CONTRIBUTE
+                    and provider._repository._bound_connection is not None
+                ):
+                    interleaved = True
+                    other = await client.post(
+                        "/v1/scopes",
+                        json={
+                            "title": "Concurrent scope",
+                            "summary": "Another writer",
+                            "idempotency_key": "concurrent",
+                        },
+                    )
+                    assert other.status_code == 201, other.text
+                return decision
+
+            monkeypatch.setattr(BuiltinAuthorizationProvider, "check", check_with_concurrent_write)
+            remembered = await client.post(
+                "/v1/memory/remember", json={"scope_id": scope_id, "kind": "fact", "text": "Concurrent save succeeds."}
+            )
+            assert interleaved
+            assert remembered.status_code == 200, remembered.text
+            artifact = remembered.json()["records"][0]["artifact"]
+            revision = await client.get(
+                f"/v1/scopes/{scope_id}/artifacts/atomic-memory/{artifact['artifact_id']}/revisions/{artifact['revision']}"
+            )
+            assert revision.status_code == 200, revision.text
+            assert revision.json()["content"]["text"] == "Concurrent save succeeds."
+            audit = await access.audit.list_audit(resource=ResourceRef.scope(scope_id), limit=100)
+            assert any(event.operation == "remember_memory" and event.allowed for event in audit)
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("backend", ["builtin", "casbin"])
 @pytest.mark.parametrize("target_contributor", [False, True])
 def test_missing_subject_target_preserves_authorization(tmp_path, backend, target_contributor):

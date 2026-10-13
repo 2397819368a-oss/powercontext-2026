@@ -2495,10 +2495,14 @@ class ScopedReviewApplication:
                 return await self._runtime._catalog_review(self.scope_id).approve(
                     request.candidate_id, request.expected_version
                 )
-            return await self._runtime._review(self.scope_id).approve(
-                request.candidate_id,
-                request.expected_version,
-            )
+            async with self._runtime._scoped_operation(
+                self.scope_id,
+                embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING if current.family == "atomic-memory" else None,
+            ):
+                return await self._runtime._review(self.scope_id).approve(
+                    request.candidate_id,
+                    request.expected_version,
+                )
 
     async def reject(self, request: RejectCandidateRequest, /) -> ReviewedCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
