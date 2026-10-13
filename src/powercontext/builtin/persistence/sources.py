@@ -112,6 +112,7 @@ class SourceRepository:
             ref = SourceRef(source_type=source.source_type, source_id=source.name)
             representation: Literal["native", "observation"] = "observation"
         else:
+            source = self._registry.materialize(source)
             definition = self._registry.definition_for_source(source)
             ref = SourceRef(source_type=definition.name, source_id=source.name)
             representation = "native"

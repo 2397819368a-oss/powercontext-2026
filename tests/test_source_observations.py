@@ -19,6 +19,7 @@ import hashlib
 import json
 import urllib.request
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -51,6 +52,7 @@ from powercontext.sources import (
     project_source_for_transport,
 )
 from powercontext.sources.definitions import AdapterSourceDefinition
+from tests.source_contract_models import source_contract_case
 
 
 class EmptySourceBackend:
@@ -59,6 +61,22 @@ class EmptySourceBackend:
 
     async def get(self, source: Source, /) -> Source:
         raise AssertionError(source)
+
+
+@pytest.mark.parametrize("case", ["nested", "title_collision", "reference_collision"])
+def test_source_contract_preserves_pre_declaration_schema_and_payload(case: str) -> None:
+    # Frozen output from these models against base b5bcfe24bcce9c574ee85175d623bb9963970a41.
+    baseline = json.loads(
+        (Path(__file__).parent / "fixtures/source_declaration_upgrade.json").read_text(encoding="utf-8")
+    )
+    definition, source = source_contract_case(case)
+    registry = SourceDefinitionRegistry((definition,))
+    manifest = manifest_for_definition(definition)
+    observation = project_source_for_transport(registry, source)
+
+    assert manifest.model_dump(mode="json", by_alias=True) == baseline[case]["manifest"]
+    assert observation.payload == baseline[case]["observation"]["payload"]
+    _json_schema_validator(manifest.name, manifest.source_schema).validate(observation.payload)
 
 
 def _legacy_manifest(current: SourceDefinitionManifest) -> SourceDefinitionManifest:

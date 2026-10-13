@@ -23,7 +23,7 @@ from powercontext.errors import (
     SourceNotFoundError,
 )
 from powercontext.sources.adapters import SourceAdapter
-from powercontext.sources.definitions import SourceDefinitionRegistry, definition_memory_evidence
+from powercontext.sources.definitions import SourceDefinitionRegistry
 from powercontext.sources.models import MemoryEvidenceDeclaration, Source, SourceProjectionKey, SourceRef
 from powercontext.sources.observations import SourceObservation
 from powercontext.sources.protocols import SourceCatalogBackend
@@ -77,8 +77,7 @@ class SourceCatalog:
 
         if isinstance(source, SourceObservation):
             return source
-        definition = self._registry.definition_for_source(source)
-        return source.model_copy(update={"memory_evidence": definition_memory_evidence(definition)})
+        return self._registry.materialize(source)
 
     async def resolve(self, value: object, /) -> Source:
         return await self._registry.resolve(value)

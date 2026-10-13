@@ -17,8 +17,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import re
 from typing import Any, Literal
 
 import rfc8785
@@ -33,6 +31,9 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
+from typing_extensions import override
 
 from powercontext.errors import (
     InvalidSourceDefinitionError,
@@ -54,7 +55,6 @@ from powercontext.sources.models import (
 )
 
 _JSON_VALUE = TypeAdapter(JsonValue)
-_JSON_SCHEMA_REFERENCE = re.compile(r"#/\$defs/([^\"\\]+)")
 
 
 class SourceProjectionManifest(BaseModel):
@@ -212,77 +212,47 @@ def _input_contract_schema(source_class: type[Source]) -> dict[str, JsonValue]:
     because an unused ``$defs`` entry still changes the hashed document.
     """
 
-    schema = _json_object(source_class.model_json_schema())
-    _remove_inherited_declaration(schema, source_class)
-    _drop_unreferenced_definitions(schema)
+    return _json_object(source_class.model_json_schema(schema_generator=_SourceInputSchema))
+
+
+class _SourceInputSchema(GenerateJsonSchema):
+    """Omit Source metadata before Pydantic assigns captured schema reference names."""
+
+    @override
+    def model_schema(self, schema: core_schema.ModelSchema) -> JsonSchemaValue:
+        if issubclass(schema["cls"], Source):
+            schema = schema.copy()
+            schema["schema"] = _source_input_fields(schema["schema"])
+        return super().model_schema(schema)
+
+
+def _source_input_fields(schema: Any) -> Any:
+    """Copy only the wrappers containing this Source's field definitions."""
+
+    if schema["type"] == "model-fields":
+        return {
+            **schema,
+            "fields": {name: field for name, field in schema["fields"].items() if name not in DECLARATION_OWNED_FIELDS},
+        }
+    if schema["type"] in {"function-before", "function-after", "function-wrap"}:
+        return {**schema, "schema": _source_input_fields(schema["schema"])}
     return schema
 
 
-def _remove_inherited_declaration(node: JsonValue, source_class: type[Source]) -> None:
-    """Strip the inherited declaration from every object schema that carries it.
+def _payload_exclusions(value: object) -> dict[Any, Any]:
+    """Exclude metadata by model ownership while retaining captured fields."""
 
-    Recursive and nested Sources keep their fields in a local definition rather
-    than at the root, so the walk covers the whole document. The field is matched
-    by the schema a Source inherits rather than by its name alone, because an
-    ordinary captured model may declare a field of its own with the same name and
-    a different meaning, and that field belongs to the captured contract.
-    """
-
-    source_titles = _source_schema_titles(source_class)
-
-    def walk(value: JsonValue) -> None:
-        if isinstance(value, dict):
-            properties = value.get("properties")
-            if value.get("title") in source_titles and isinstance(properties, dict):
-                properties.pop("memory_evidence", None)
-                required = value.get("required")
-                if isinstance(required, list):
-                    value["required"] = [field for field in required if field != "memory_evidence"]
-            for child in value.values():
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
-
-    walk(node)
-
-
-def _source_schema_titles(source_class: type[Source]) -> set[str]:
-    """Return schema titles belonging to Source subclasses in the payload tree."""
-
-    titles: set[str] = set()
-    pending: list[type[BaseModel]] = [source_class]
-    seen: set[type[BaseModel]] = set()
-    while pending:
-        model = pending.pop()
-        if model in seen:
-            continue
-        seen.add(model)
-        titles.add(str(model.model_config.get("title", model.__name__)))
-        for field in model.model_fields.values():
-            annotation = field.annotation
-            if isinstance(annotation, type) and issubclass(annotation, Source):
-                pending.append(annotation)
-    return titles
-
-
-def _drop_unreferenced_definitions(schema: dict[str, JsonValue]) -> None:
-    """Remove ``$defs`` entries no longer referenced anywhere in the schema."""
-
-    definitions = schema.get("$defs")
-    if not isinstance(definitions, dict):
-        return
-    while True:
-        # Reference discovery has to see the whole document: the properties that
-        # point at a definition live outside ``$defs``.
-        referenced = set(_JSON_SCHEMA_REFERENCE.findall(json.dumps(schema)))
-        unreferenced = [name for name in definitions if name not in referenced]
-        if not unreferenced:
-            break
-        for name in unreferenced:
-            del definitions[name]
-    if not definitions:
-        del schema["$defs"]
+    if isinstance(value, BaseModel):
+        excluded: dict[Any, Any] = dict.fromkeys(DECLARATION_OWNED_FIELDS, True) if isinstance(value, Source) else {}
+        for name in type(value).model_fields:
+            if name not in excluded and (nested := _payload_exclusions(getattr(value, name))):
+                excluded[name] = nested
+        return excluded
+    if isinstance(value, (list, tuple)):
+        return {index: nested for index, item in enumerate(value) if (nested := _payload_exclusions(item))}
+    if isinstance(value, dict):
+        return {key: nested for key, item in value.items() if (nested := _payload_exclusions(item))}
+    return {}
 
 
 def manifest_for_definition(definition: SourceDefinition[Any, Any, Any], /) -> SourceDefinitionManifest:
@@ -335,9 +305,7 @@ def project_source_for_transport(
     # Definition-owned metadata is not part of it. Carrying it here would make a
     # generated observation fail its own schema, and would change the payload of an
     # unchanged Source, so replaying a pre-upgrade observation would conflict.
-    payload = _json_object({
-        key: value for key, value in source.model_dump(mode="json").items() if key not in DECLARATION_OWNED_FIELDS
-    })
+    payload = _json_object(source.model_dump(mode="json", exclude=_payload_exclusions(source)))
     projections = tuple(
         SourceProjectionValue(key=key, value=registry.project(source, key)) for key in registry.projection_keys(source)
     )

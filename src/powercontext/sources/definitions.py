@@ -172,8 +172,7 @@ class SourceDefinitionRegistry:
         source = await definition.resolve(value)
         if type(source) is not definition.source_class:
             raise InvalidSourceResultError(definition.name, "resolve", definition.source_class, type(source))
-        self.definition_for_source(source)
-        return cast(Source, source.model_copy(update={"memory_evidence": definition_memory_evidence(definition)}))
+        return self.materialize(source)
 
     async def read(self, source: Source, /) -> object:
         definition = self.definition_for_source(source)
@@ -213,6 +212,12 @@ class SourceDefinitionRegistry:
             return source.memory_evidence
         self.definition_for_source(source)
         return source.memory_evidence
+
+    def materialize(self, source: Source, /) -> Source:
+        """Stamp Definition-owned metadata on every native persistence path."""
+
+        definition = self.definition_for_source(source)
+        return source.model_copy(update={"memory_evidence": definition_memory_evidence(definition)})
 
 
 def definition_memory_evidence(definition: object, /) -> MemoryEvidenceDeclaration:
