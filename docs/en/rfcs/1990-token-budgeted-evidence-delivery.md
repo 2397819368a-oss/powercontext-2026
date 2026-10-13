@@ -5,7 +5,7 @@ title: Stateless Server-Side Evidence Compilation and Token Budgets
 - Proposal Name: `token_budgeted_evidence_delivery`
 - Start Date: 2026-10-13
 - Status: Proposed
-- RFC PR: Not created; assign a number after opening a PR through the RFC process.
+- RFC PR: [oceanbase/powercontext#1990](https://github.com/oceanbase/powercontext/pull/1990)
 - Related Issue: [#1989](https://github.com/oceanbase/powercontext/issues/1989)
 - Related Discussion: [#1971](https://github.com/oceanbase/powercontext/discussions/1971)
 - Related RFCs: [RFC 1489](1489_prepared_context_text_assembly.md),

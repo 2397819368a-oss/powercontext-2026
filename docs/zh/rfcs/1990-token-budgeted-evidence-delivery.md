@@ -5,7 +5,7 @@ title: 服务端无状态证据编译与 Token 预算
 - Proposal Name: `token_budgeted_evidence_delivery`
 - Start Date: 2026-10-13
 - Status: Proposed
-- RFC PR: 未创建；按 RFC 流程在创建 PR 后分配编号。
+- RFC PR: [oceanbase/powercontext#1990](https://github.com/oceanbase/powercontext/pull/1990)
 - Related Issue: [#1989](https://github.com/oceanbase/powercontext/issues/1989)
 - Related Discussion: [#1971](https://github.com/oceanbase/powercontext/discussions/1971)
 - Related RFCs: [RFC 1489](1489_prepared_context_text_assembly.md)、
