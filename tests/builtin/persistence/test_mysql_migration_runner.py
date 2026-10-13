@@ -113,17 +113,44 @@ def _oceanbase_scratch_target(config: OceanBaseConfig, evidence_directory: Path)
                 pytest.fail("OceanBase owned test database cleanup failed", pytrace=False)
 
 
+@contextmanager
+def _seekdb_scenario_lifetime(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    binding = pytest.importorskip("pylibseekdb")
+    open_instance = binding.aopen
+    instances = {}
+
+    async def open_with_scenario_lifetime(path: str):
+        # Keep a real native lease across this scenario's independent
+        # maintenance connections. Rapid last-client exits in seekdb 1.4
+        # can strand a background DDL lock on restart. Engine restart and
+        # cross-process ownership have separate connection acceptance tests.
+        # Acquire lazily so inspecting a missing target still creates nothing.
+        if path not in instances:
+            instances[path] = await open_instance(path)
+        return await open_instance(path)
+
+    monkeypatch.setattr(binding, "aopen", open_with_scenario_lifetime)
+    try:
+        yield
+    finally:
+        for instance in instances.values():
+            instance.close()
+
+
 @pytest.fixture(params=("seekdb", "oceanbase"), ids=("seekdb", "oceanbase"))
 def backend(
-    request: pytest.FixtureRequest, short_tmp_path: Path, caplog: pytest.LogCaptureFixture
+    request: pytest.FixtureRequest,
+    short_tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[_BackendTarget]:
     if os.environ.get("POWERCONTEXT_TEST_MIGRATION_SQL_LOG") == "1":
         caplog.set_level(logging.INFO, logger="sqlalchemy.engine")
     if request.param == "seekdb":
         if os.environ.get("POWERCONTEXT_TEST_MIGRATION_SEEKDB") != "1":
             pytest.skip("real seekdb probe not enabled")
-        pytest.importorskip("pylibseekdb")
-        yield _BackendTarget(SeekDBConfig(path=short_tmp_path / "seekdb"), short_tmp_path / "evidence")
+        with _seekdb_scenario_lifetime(monkeypatch):
+            yield _BackendTarget(SeekDBConfig(path=short_tmp_path / "seekdb"), short_tmp_path / "evidence")
         return
     value = os.environ.get("POWERCONTEXT_TEST_MIGRATION_OCEANBASE_URL")
     if not value:

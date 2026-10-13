@@ -112,8 +112,8 @@ export function Diagnostics({ language }: { language: Language }) {
               : "No registered local CLI was found; remote connections are unaffected."
             : code === "compatibility_unverified"
               ? zh
-                ? "本机 CLI 的摘要或版本未通过核验，请重新核对登记信息。"
-                : "The local CLI digest or version did not pass verification. Check its registration."
+                ? "本机 CLI 注册未通过校验，请核对程序路径和摘要。"
+                : "The local CLI registration did not pass verification. Check its executable path and digest."
               : connectionError(error, language)}
         </p>
       )}
@@ -133,6 +133,10 @@ export function Diagnostics({ language }: { language: Language }) {
               zh ? "zh-CN" : "en-US",
             )}{" "}
             · {zh ? "退出码" : "Exit code"}: {report.exitCode}
+          </p>
+          <p>
+            CLI {zh ? "版本" : "version"}:{" "}
+            {report.cliVersion ?? (zh ? "未知" : "Unknown")}
           </p>
           <dl>
             {report.items.map((item) => (

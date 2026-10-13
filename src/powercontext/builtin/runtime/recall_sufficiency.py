@@ -456,8 +456,13 @@ def build_recall_candidates(
 def _normalize_memory_score(hit: AtomicMemorySearchHit) -> float:
     """Normalize fused RRF ranking against its per-channel upper bound, not a probability."""
 
-    channels = max(1, len(hit.matched_by))
-    upper_bound = channels / (_RRF_CONSTANT + 1)
+    upper_bound = hit.score_upper_bound
+    if upper_bound is None:
+        # Compatibility fallback for unweighted or externally reconstructed hits.
+        # The internal weighted bound is excluded from serialization, so an in-process
+        # weighted fusion must supply it; the exact weighted scale cannot be recovered here.
+        channels = max(1, len(hit.matched_by))
+        upper_bound = channels / (_RRF_CONSTANT + 1)
     if upper_bound <= 0.0:
         return 0.0
     return max(0.0, min(1.0, hit.hit.score / upper_bound))
