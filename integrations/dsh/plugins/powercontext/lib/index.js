@@ -4052,6 +4052,20 @@ const HANDOFF_EVIDENCE = {
 	},
 	description: "For captured evidence use {kind: \"source\", source_ref: data.source}, copying the exact result. No raw facts."
 };
+const HANDOFF_ROLLOVER_REASONS = {
+	type: "array",
+	items: {
+		type: "string",
+		enum: [
+			"user_requested",
+			"host_context_budget",
+			"host_compaction",
+			"context_quality",
+			"delegation",
+			"manual_checkpoint"
+		]
+	}
+};
 function handoffTools(runtime, defineTool) {
 	return [
 		pcTool(defineTool, {
@@ -4070,12 +4084,14 @@ function handoffTools(runtime, defineTool) {
 				evidence: {
 					type: "array",
 					items: HANDOFF_EVIDENCE
-				}
+				},
+				rollover_reasons: HANDOFF_ROLLOVER_REASONS
 			},
 			execute: (args, exec) => run(runtime, exec, "activate_handoff", {
 				boundary_source: args.boundary_source,
 				objective: args.objective,
-				evidence: args.evidence ?? []
+				evidence: args.evidence ?? [],
+				...args.rollover_reasons === void 0 ? {} : { rollover_reasons: args.rollover_reasons }
 			})
 		}),
 		pcTool(defineTool, {
@@ -4091,11 +4107,13 @@ function handoffTools(runtime, defineTool) {
 					type: "array",
 					required: true,
 					items: HANDOFF_EVIDENCE
-				}
+				},
+				rollover_reasons: HANDOFF_ROLLOVER_REASONS
 			},
 			execute: (args, exec) => run(runtime, exec, "prepare_handoff", {
 				objective: args.objective,
-				evidence: args.evidence
+				evidence: args.evidence,
+				...args.rollover_reasons === void 0 ? {} : { rollover_reasons: args.rollover_reasons }
 			})
 		}),
 		pcTool(defineTool, {
