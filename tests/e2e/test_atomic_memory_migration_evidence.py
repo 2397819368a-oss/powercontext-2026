@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import Engine, ForeignKeyConstraint, MetaData, event, insert, inspect, select, text, tuple_
+import rfc8785
+from sqlalchemy import Engine, ForeignKeyConstraint, MetaData, event, insert, inspect, select, text, tuple_, update
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
@@ -991,6 +992,84 @@ def test_work_text_mentioning_legacy_field_names_migrates_unchanged(migration_ba
             )
             assert isinstance(payload, bytes | bytearray | memoryview)
             assert json.loads(json.loads(bytes(payload))["value"]["content"])["message"] == mention
+            report = await verify_atomic_memory_migration(connection, index=contexts.atomic_memory.index)
+            assert report.ready, report.errors
+
+    asyncio.run(scenario())
+
+
+async def _unenvelope(connection, ref: SourceRef) -> None:
+    """Rewrite one stored Source row into the payload layout used before the envelope."""
+
+    where = (SOURCES_TABLE.c.scope_id == SCOPE, SOURCES_TABLE.c.source_id == ref.source_id)
+    payload = await connection.scalar(select(SOURCES_TABLE.c.payload).where(*where))
+    assert isinstance(payload, bytes)
+    await connection.execute(
+        update(SOURCES_TABLE).where(*where).values(payload=rfc8785.dumps(json.loads(bytes(payload))["value"]))
+    )
+
+
+def test_unenveloped_source_mentioning_memory_migrates_unchanged(migration_backend: MigrationBackend) -> None:
+    config = migration_backend.config
+    mention = "Restore durable memory context before accepting this Handoff."
+    capture = SourceRef(source_type="content", source_id="unenveloped-capture")
+
+    async def seeded(contexts, connection) -> None:
+        await contexts.repositories.sources.add(
+            connection,
+            SCOPE,
+            ContentSource(name=capture.source_id, materialization=SourceMaterialization.CAPTURED, content=mention),
+        )
+        await _unenvelope(connection, capture)
+
+    async def scenario() -> None:
+        await _seed_and_migrate(config, seeded)
+        async with (
+            open_builtin_contexts(BuiltinConfig(database=config)) as contexts,
+            contexts.database.transaction() as connection,
+        ):
+            stored = (await contexts.repositories.sources.get(connection, SCOPE, capture)).value
+            assert isinstance(stored, ContentSource) and stored.content == mention
+            report = await verify_atomic_memory_migration(connection, index=contexts.atomic_memory.index)
+            assert report.ready, report.errors
+
+    asyncio.run(scenario())
+
+
+def test_unenveloped_work_source_citations_convert_and_keep_their_layout(
+    migration_backend: MigrationBackend,
+) -> None:
+    config = migration_backend.config
+    alpha = _atomic("alpha", 2)
+    outcome = SourceRef(source_type="content", source_id="legacy-layout-outcome")
+    legacy = {**LEGACY_OUTCOME, "produced_artifacts": [_collection(2)]}
+
+    async def seeded(contexts, connection) -> None:
+        await _scope_row(connection)
+        await _work_source(contexts, connection, outcome, "task-outcome", "powercontext.task-outcome.v1", legacy)
+        await _unenvelope(connection, outcome)
+
+    async def scenario() -> None:
+        await _seed_and_migrate(config, seeded)
+        async with (
+            open_builtin_contexts(BuiltinConfig(database=config)) as contexts,
+            contexts.database.transaction() as connection,
+        ):
+            payload = await connection.scalar(
+                select(SOURCES_TABLE.c.payload).where(
+                    SOURCES_TABLE.c.scope_id == SCOPE, SOURCES_TABLE.c.source_id == outcome.source_id
+                )
+            )
+            assert isinstance(payload, bytes)
+            stored = json.loads(bytes(payload))
+            assert "value" not in stored, "a converted legacy row keeps the layout it was written with"
+            converted = TaskOutcome.model_validate_json(stored["content"])
+            assert converted.observations[0].evidence == (HandoffArtifactCitation(artifact_ref=alpha),)
+            assert converted.produced_artifacts == ()
+            incoming = (await _archive_metadata(connection, 2))["incoming_references"]
+            assert [(item["carrier"], item["value"]) for item in incoming] == [("work_source", _collection(2))]
+            source = (await contexts.repositories.sources.get(connection, SCOPE, outcome)).value
+            assert isinstance(source, ContentSource)
             report = await verify_atomic_memory_migration(connection, index=contexts.atomic_memory.index)
             assert report.ready, report.errors
 

@@ -5214,6 +5214,7 @@ components:
           $ref: '#/components/schemas/AtomicMemoryRecord'
         score:
           type: number
+          description: Raw RRF score. Hybrid mode applies the deployment's normalized relative FTS/vector weights.
         matched_by:
           type: array
           items:
@@ -10410,6 +10411,8 @@ components:
         score:
           type: number
           minimum: 0
+          maximum: 100
+          description: Weighted RRF relevance normalized to the 0..100 range.
         matched_by:
           type: array
           minItems: 1

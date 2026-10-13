@@ -2258,6 +2258,7 @@ export interface components {
         };
         AtomicMemorySearchHit: {
             memory: components["schemas"]["AtomicMemoryRecord"];
+            /** @description Raw RRF score. Hybrid mode applies the deployment's normalized relative FTS/vector weights. */
             score: number;
             matched_by: ("text" | "vector")[];
         };
@@ -4177,6 +4178,7 @@ export interface components {
             title: string;
             summary: string;
             snippet: string | null;
+            /** @description Weighted RRF relevance normalized to the 0..100 range. */
             score: number;
             matched_by: components["schemas"]["TopicMemoryMatchedBy"][];
         };

@@ -24,13 +24,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ~/.cache/prek
-          key: prek-${{ hashFiles('.pre-commit-config.yaml') }}
-
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
+
+      - name: Resolve Python version for hook cache
+        id: python
+        run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache prek environments
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/prek
+          key: prek-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.version }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Run checks
         run: make check
@@ -44,6 +49,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        suite: [unit, e2e]
       fail-fast: false
     defaults:
       run:
@@ -60,9 +66,17 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Set up project tools
-        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+
+      - name: Cache DSH configuration dependencies
+        if: matrix.suite == 'unit'
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/dsh/plugins/powercontext/tests/config-runtime
+          cache-dependency-glob: integrations/dsh/plugins/powercontext/tests/config-runtime/pnpm-lock.yaml
 
       - name: Install and resolve native DSH configuration test APIs
+        if: matrix.suite == 'unit'
         run: |
           pnpm --dir integrations/dsh/plugins/powercontext/tests/config-runtime install --frozen-lockfile
           boot="$(node --input-type=module -e "import { createRequire } from 'node:module'; import { resolve } from 'node:path'; const require = createRequire(resolve('integrations/dsh/plugins/powercontext/tests/config-runtime/package.json')); process.stdout.write(require.resolve('@deepseek-ai/dsh-app-boot'))")"
@@ -70,11 +84,13 @@ jobs:
           echo "DSH_TEST_CONFIG_BOOT=$boot" >> "$GITHUB_ENV"
 
       - name: Run unit tests
+        if: matrix.suite == 'unit'
         env:
           PYTEST_ADDOPTS: --require-dsh-config-runtime
         run: make unit-test
 
       - name: Run end-to-end tests
+        if: matrix.suite == 'e2e'
         run: make e2e-test
 
   evaluation-tests:
@@ -88,6 +104,15 @@ jobs:
 
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
+        with:
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            integrations/langchain/pyproject.toml
+            integrations/langgraph/pyproject.toml
+            integrations/opendal/pyproject.toml
+            evaluation/pyproject.toml
+            evaluation/uv.lock
 
       # Evaluation has its own uv project. Collect each suite's unit tests through
       # its dedicated path; the root project's testpaths do not include them.
@@ -161,11 +186,11 @@ jobs:
           mkdir -p "$TMPDIR"
           collect_diagnostics() {
             df -h . /tmp
-            # A timed-out pytest process cannot run fixture cleanup. Retain
-            # bounded native logs from its isolated data directories as well
-            # as the Python stack and SQL trace.
+            # A timed-out pytest process cannot run fixture cleanup. Preserve
+            # native startup/recovery evidence too: a tail alone can omit the
+            # transaction that acquired the lock blocking the final SQL query.
             find "$TMPDIR" -type f \( -name '*.log' -o -name '*.log.wf' \) \
-              -print -exec tail -c 8388608 {} \; > seekdb-native.log
+              -printf '%P\0' | tar -czf seekdb-native.tar.gz -C "$TMPDIR" --null -T -
           }
           trap collect_diagnostics EXIT
           df -h . /tmp
@@ -197,12 +222,12 @@ jobs:
 
       - name: Upload seekdb migration diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: seekdb-migrations-${{ matrix.python-version }}
           path: |
             seekdb-migrations.log
-            seekdb-native.log
+            seekdb-native.tar.gz
           if-no-files-found: ignore
 
   atomic-memory-clean-seekdb:
@@ -247,7 +272,7 @@ jobs:
 
       - name: Save clean migration reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: atomic-memory-clean-seekdb-${{ github.sha }}
           path: ${{ env.MIGRATION_REPORTS }}/
@@ -283,6 +308,15 @@ jobs:
           tests/builtin/test_native_code_multilanguage.py
           tests/e2e/test_native_code_multilanguage.py
 
+      - name: Verify managed guidance and exact rollback bytes on Windows
+        run: >-
+          uv run --locked --no-sync pytest -q
+          tests/test_guidance_generation.py
+          tests/test_guidance_installation.py
+          tests/test_opencode_installation.py
+          tests/test_cli_zcode.py::test_zcode_upgrade_rejects_missing_packaged_reference_and_preserves_installation
+          tests/test_setup_rollback.py
+
       - name: Exercise fixtures without Windows long-path support
         shell: pwsh
         run: |
@@ -317,6 +351,14 @@ jobs:
         uses: ./.github/actions/setup-python-env
         with:
           python-version: "3.12"
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            integrations/langchain/pyproject.toml
+            integrations/langgraph/pyproject.toml
+            integrations/opendal/pyproject.toml
+            integrations/dify/pyproject.toml
+            integrations/dify/uv.lock
 
       - name: Check out the supported Dify host helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -346,13 +388,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go for daemon entity serialization
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .artifacts/dify-daemon/go.mod
           cache-dependency-path: .artifacts/dify-daemon/go.sum
 
       - name: Set up project tools
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
 
       - name: Check daemon serialization, host casting, Workflow selectors and SDK HTTP readback
         env:
@@ -398,7 +440,13 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Set up project tools
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+
+      - name: Cache DSH dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/dsh/plugins/powercontext
+          cache-dependency-glob: integrations/dsh/plugins/powercontext/**/pnpm-lock.yaml
 
       - name: Test DSH package
         run: make js-test
@@ -437,7 +485,13 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Set up project tools
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+
+      - name: Cache Pi dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/pi/plugins/powercontext
+          cache-dependency-glob: integrations/pi/plugins/powercontext/pnpm-lock.yaml
 
       - name: Test Pi package
         run: make pi-test
@@ -455,7 +509,12 @@ jobs:
       - name: Set up the Python environment
         uses: ./.github/actions/setup-python-env
 
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - name: Cache OpenCode dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/opencode/plugins/powercontext
+          cache-dependency-glob: integrations/opencode/plugins/powercontext/pnpm-lock.yaml
       - name: Test OpenCode package
         run: make opencode-test
 
@@ -472,9 +531,14 @@ jobs:
       - name: Set up the Python environment
         uses: ./.github/actions/setup-python-env
 
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       # The pinned OpenClaw SDK requires the SQLite runtime shipped with Node 24.15+.
       - run: mise install node@24.15.0
+      - name: Cache OpenClaw dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: integrations/openclaw/plugins/memory-powercontext
+          cache-dependency-glob: integrations/openclaw/plugins/memory-powercontext/pnpm-lock.yaml
       - name: Test OpenClaw package
         run: mise exec node@24.15.0 -- make openclaw-plugin-test
 
@@ -509,7 +573,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up website tools
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+
+      - name: Cache website dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: website
+          cache-dependency-glob: website/pnpm-lock.yaml
 
       - name: Install website dependencies
         run: pnpm --dir website install --frozen-lockfile
@@ -530,7 +600,13 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Set up website tools
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+
+      - name: Cache website dependencies
+        uses: ./.github/actions/cache-pnpm
+        with:
+          working-directory: website
+          cache-dependency-glob: website/pnpm-lock.yaml
 
       - name: Check website
         run: make docs-test

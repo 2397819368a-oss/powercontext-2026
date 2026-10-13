@@ -85,6 +85,24 @@ _WORK_MODELS: dict[str, type[BaseModel]] = {
 _TERMINAL_DREAM = frozenset({"succeeded", "failed"})
 
 
+def _stored_work_payload(payload: bytes, /) -> tuple[type[BaseModel], Mapping[str, Any], Mapping[str, Any]] | None:
+    """Return one stored Source's typed Work payload with its stored root, or None when it holds none.
+
+    The stored payload envelope arrived after structured Work Sources did, so a Work
+    payload can sit at the top level of a row written by an earlier release. The root
+    lets a rewrite keep the layout the row already uses.
+    """
+
+    stored = json.loads(payload)
+    if not isinstance(stored, dict):
+        return None
+    value = stored.get("value")
+    if not isinstance(value, dict):
+        value = stored
+    model = _WORK_MODELS.get(str((value.get("metadata") or {}).get("kind")))
+    return None if model is None else (model, value, stored)
+
+
 class _LegacyValue(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -710,11 +728,10 @@ async def _work_sources(context: _Context, units: _Units) -> None:  # noqa: C901
             ),
             dict(key),
         )
-        envelope = json.loads(bytes(stored))
-        value = envelope["value"]
-        model = _WORK_MODELS.get(str((value.get("metadata") or {}).get("kind")))
-        if model is None:
+        work = _stored_work_payload(bytes(stored))
+        if work is None:
             return
+        model, value, root = work
         original = json.loads(value["content"])
         # A receipt's unavailable evidence records what was missing; it asserts no support to drop.
         dropped: list[tuple[str, dict[str, Any]]] | None = None if model is HandoffReceipt else []
@@ -749,13 +766,15 @@ async def _work_sources(context: _Context, units: _Units) -> None:  # noqa: C901
         context.count("work_sources")
         if not context.write:
             return
-        value = {**value, "content": after.model_dump_json(by_alias=True, exclude_none=False, indent=2)}
+        updated = {**value, "content": after.model_dump_json(by_alias=True, exclude_none=False, indent=2)}
+        # A legacy row keeps its own layout; only its content changes.
+        rewritten = {**root, "content": updated["content"]} if value is root else {**root, "value": updated}
         await connection.execute(
             text(
                 "UPDATE pc_sources SET payload = :payload WHERE scope_id = :scope_id AND source_type = :source_type "
                 "AND source_id = :source_id"
             ),
-            {**key, "payload": rfc8785.dumps({**envelope, "value": value})},
+            {**key, "payload": rfc8785.dumps(rewritten)},
         )
         if isinstance(after, TaskOutcome):
             changed = _outcome_digests(_legacy_item_digests(original), after)
@@ -932,10 +951,10 @@ async def _dream_inputs_change(  # noqa: C901 - One check over each kind of pinn
         )
         if stored is None:
             continue
-        value = json.loads(bytes(stored)).get("value") or {}
-        model = _WORK_MODELS.get(str((value.get("metadata") or {}).get("kind")))
-        if model is None:
+        work = _stored_work_payload(bytes(stored))
+        if work is None:
             continue
+        model, value, _root = work
         content = json.loads(value["content"])
         if model is HandoffReceipt:
             # These unavailable addresses survive unchanged, so the Source digest stays pinned.
@@ -1295,12 +1314,11 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
             ("payload",),
             "WHERE source_type = 'content' AND CAST(payload AS CHAR) LIKE '%memory%'",
         ):
-            value = json.loads(bytes(row["payload"]))["value"]
-            model = _WORK_MODELS.get(str((value.get("metadata") or {}).get("kind")))
-            if model is None:
+            work = _stored_work_payload(bytes(row["payload"]))
+            if work is None:
                 continue
-            content = value["content"]
-            current = json.loads(content)
+            model, value, _root = work
+            current = json.loads(value["content"])
             if model is HandoffReceipt:
                 # Only unavailable addresses may describe an archived collection.
                 current["unavailable_evidence"] = [

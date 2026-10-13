@@ -115,6 +115,30 @@ def test_zcode_install_rejects_unowned_plugin_without_changing_config(tmp_path: 
     assert not zcode.zcode_config_file().exists()
 
 
+def test_zcode_upgrade_rejects_missing_packaged_reference_and_preserves_installation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from powercontext.cli.guidance import HOST_GUIDANCE, SKILL_DIRECTORY
+
+    home = tmp_path / "home"
+    monkeypatch.setattr(zcode, "zcode_config_file", lambda: home / ".zcode/cli/config.json")
+    monkeypatch.setattr(zcode, "zcode_executable", lambda: "zcode")
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
+    checkout = tmp_path / "checkout"
+    source = _checkout(checkout)
+    shutil.copytree(Path(__file__).parents[1] / HOST_GUIDANCE["zcode"].skill, source / SKILL_DIRECTORY)
+    result = zcode.install_zcode_plugin(source=str(checkout), ref="unused", server_url="https://memory.example.test")
+    installed = Path(result.plugin_path)
+    (installed / SKILL_DIRECTORY / "personal.md").write_bytes(b"My instructions\r\n")
+    before = {path: path.read_bytes() for path in home.rglob("*") if path.is_file()}
+    (source / SKILL_DIRECTORY / "references/work-handoff.md").unlink()
+
+    with pytest.raises(SetupError, match="restored"):
+        zcode.install_zcode_plugin(source=str(checkout), ref="unused", server_url="https://memory.example.test")
+    assert {path: path.read_bytes() for path in home.rglob("*") if path.is_file()} == before
+    assert not list(installed.parent.glob(".powercontext-stage-*"))
+
+
 def test_zcode_diagnostics_distinguish_registration_hook_mcp_and_server(tmp_path: Path, monkeypatch) -> None:
     home = tmp_path / "home"
     monkeypatch.setattr(zcode, "zcode_config_file", lambda: home / ".zcode" / "cli" / "config.json")

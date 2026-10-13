@@ -32,6 +32,7 @@ from powercontext.builtin.artifacts.memory.canonical import canonical_embedding,
 from powercontext.builtin.artifacts.search import (
     DEFAULT_ADMISSION_FLOOR,
     AdmissionFloor,
+    RecallChannelWeights,
     analyze_text,
     fts_query_requirements,
 )
@@ -41,6 +42,7 @@ from powercontext.builtin.persistence.tables import ARTIFACT_TAGS_TABLE
 from powercontext.builtin.tags import TagFilter
 
 AtomicMemorySearchMode = Literal["fts", "vector", "hybrid"]
+ATOMIC_MEMORY_RRF_CONSTANT = 60
 # Columns of unreleased development layouts; their tables are derived and rebuilt rather than migrated.
 _OBSOLETE_PROJECTION_COLUMNS = frozenset({"read_grants", "owner_type", "owner_id"})
 
@@ -402,7 +404,12 @@ def atomic_memory_channel_hits(rows: Any, /, *, vector: bool = False) -> tuple[A
     )
 
 
-def combine_atomic_memory_channels(channels: AtomicMemorySearchChannels, /) -> tuple[AtomicMemoryIndexHit, ...]:
+def combine_atomic_memory_channels(
+    channels: AtomicMemorySearchChannels,
+    /,
+    *,
+    channel_weights: RecallChannelWeights | None = None,
+) -> tuple[AtomicMemoryIndexHit, ...]:
     """Return exact-ref union with the RRF score used for its stable ordering.
 
     Vector distance remains independent of the fused ranking score. Revision or
@@ -412,17 +419,24 @@ def combine_atomic_memory_channels(channels: AtomicMemorySearchChannels, /) -> t
     versions: dict[str, tuple[int, int]] = {}
     hits: dict[str, AtomicMemoryIndexHit] = {}
     ranks: dict[str, float] = {}
+    # Validate all retrieved identities, including evidence from a zero-weight channel.
     for channel in (channels.fts, channels.vector):
-        for rank, hit in enumerate(channel):
+        for hit in channel:
             artifact_id = hit.artifact_ref.artifact_id
             version = (hit.artifact_ref.revision, hit.state_version)
             if artifact_id in versions and versions[artifact_id] != version:
                 raise AtomicMemoryIndexError("stale-recall", "Atomic Memory changed between retrieval channels")
             versions[artifact_id] = version
+    weights = (1.0, 1.0) if channel_weights is None else (channel_weights.fts, channel_weights.vector)
+    for channel, weight in zip((channels.fts, channels.vector), weights, strict=True):
+        if weight == 0.0:
+            continue
+        for rank, hit in enumerate(channel, start=1):
+            artifact_id = hit.artifact_ref.artifact_id
             previous = hits.setdefault(artifact_id, hit)
             if previous.distance is None and hit.distance is not None:
                 hits[artifact_id] = replace(previous, distance=hit.distance)
-            ranks[artifact_id] = ranks.get(artifact_id, 0.0) + 1.0 / (60 + rank + 1)
+            ranks[artifact_id] = ranks.get(artifact_id, 0.0) + weight / (ATOMIC_MEMORY_RRF_CONSTANT + rank)
     return tuple(
         replace(hits[identity], score=ranks[identity])
         for identity in sorted(hits, key=lambda identity: (-ranks[identity], identity))
@@ -613,6 +627,7 @@ class RelationalAtomicMemoryIndex:
 
 
 __all__ = [
+    "ATOMIC_MEMORY_RRF_CONSTANT",
     "AtomicMemoryIndex",
     "AtomicMemoryIndexCapabilities",
     "AtomicMemoryIndexError",

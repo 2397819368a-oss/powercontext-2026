@@ -42,8 +42,10 @@ from powercontext.builtin.artifacts.memory.canonical import canonical_embedding,
 from powercontext.builtin.artifacts.memory.models import MemoryQueryEmbedding
 from powercontext.builtin.artifacts.memory.reranking import MemoryReranker
 from powercontext.builtin.artifacts.search import (
+    DEFAULT_RECALL_CHANNEL_WEIGHTS,
     AdmissionCounts,
     AdmissionFloor,
+    RecallChannelWeights,
     analyze_text,
     unit_l2_cosine_similarity,
 )
@@ -57,6 +59,7 @@ from powercontext.builtin.inference import (
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository, atomic_memory_state_expression
 from powercontext.builtin.persistence.atomic_memory_index import (
+    ATOMIC_MEMORY_RRF_CONSTANT,
     AtomicMemoryIndex,
     AtomicMemoryIndexError,
     AtomicMemoryIndexFilter,
@@ -105,8 +108,11 @@ class AtomicMemoryPage:
 
 @dataclass(frozen=True, slots=True)
 class AtomicMemorySearchHit:
+    """Exact retrieval evidence with an in-process bound for normalized RRF captures."""
+
     hit: AtomicMemoryIndexHit
     matched_by: tuple[str, ...]
+    score_upper_bound: float | None = None
 
     @property
     def text(self) -> str:
@@ -116,7 +122,11 @@ class AtomicMemorySearchHit:
     def relevance(self) -> float | None:
         """Cosine similarity of the vector channel, when this hit was vector-matched."""
 
-        return None if self.hit.distance is None else unit_l2_cosine_similarity(self.hit.distance)
+        return (
+            None
+            if "vector" not in self.matched_by or self.hit.distance is None
+            else unit_l2_cosine_similarity(self.hit.distance)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,12 +166,14 @@ class AtomicMemoryApplication:
         preview_signer: AtomicMemoryPreviewSigner | None = None,
         reranker: MemoryReranker | None = None,
         rerank_candidate_limit: int = 30,
+        recall_channel_weights: RecallChannelWeights = DEFAULT_RECALL_CHANNEL_WEIGHTS,
         prompt_context_factory=None,
     ) -> None:
         if reranker is not None and not getattr(reranker, "supports_atomic_memory", False):
             raise BaseOperationNotSupportedError("artifact_family", "atomic-memory", "Atomic text candidate contract")
         self.reranker = reranker
         self.rerank_candidate_limit = rerank_candidate_limit
+        self.recall_channel_weights = recall_channel_weights
         self.prompt_context_factory = prompt_context_factory
         self.database = database
         self.artifacts = artifacts
@@ -325,6 +337,7 @@ class ScopedAtomicMemory:
         mode, vector, query_embedding, embedding_calls = await self._resolve_query_embedding(
             query, mode, query_embedding, embedding_timeout_seconds, allow_embedding
         )
+        channel_weights = application.recall_channel_weights if mode == "hybrid" else None
         profile = application.index.capabilities.embedding_profile if vector is not None else None
         # Inference finishes before the business snapshot opens. Builtin policy
         # reads share it; configured providers retain their own read boundary.
@@ -351,28 +364,36 @@ class ScopedAtomicMemory:
                 admission=admission,
             )
             channels = await application.index.search(connection, self.scope_id, request)
-            hits = combine_atomic_memory_channels(channels)[: request.limit]
+            hits = combine_atomic_memory_channels(channels, channel_weights=channel_weights)[: request.limit]
             await self._validate_search_hits(connection, hits, verify_vectors=vector is not None)
             recoverable = recovery_admission is not None and await application.index.probe_recoverable(
                 connection, self.scope_id, request, recovery_admission
             )
         fts = {_artifact_key(item.artifact_ref) for item in channels.fts}
         vectors = {_artifact_key(item.artifact_ref) for item in channels.vector}
-        candidates = tuple(
-            AtomicMemorySearchHit(
-                hit,
-                tuple(
-                    channel
-                    for channel, refs in (("text", fts), ("vector", vectors))
-                    if _artifact_key(hit.artifact_ref) in refs
-                ),
+        weights = {
+            "text": 1.0 if channel_weights is None else channel_weights.fts,
+            "vector": 1.0 if channel_weights is None else channel_weights.vector,
+        }
+        candidates: list[AtomicMemorySearchHit] = []
+        for hit in hits:
+            matched_by = tuple(
+                channel
+                for channel, refs in (("text", fts), ("vector", vectors))
+                if weights[channel] > 0.0 and _artifact_key(hit.artifact_ref) in refs
             )
-            for hit in hits
-        )
+            candidates.append(
+                AtomicMemorySearchHit(
+                    hit,
+                    matched_by,
+                    score_upper_bound=sum(weights[channel] for channel in matched_by)
+                    / (ATOMIC_MEMORY_RRF_CONSTANT + 1),
+                )
+            )
         page = await self._rerank(
             query,
             mode,
-            candidates,
+            tuple(candidates),
             limit,
             query_embedding if vector is not None else None,
             embedding_calls,

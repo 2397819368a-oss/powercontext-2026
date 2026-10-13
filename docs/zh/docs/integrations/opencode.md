@@ -60,6 +60,21 @@ HTTPS 证书校验仍然启用。安装与持久化同意见[连接远程 Server
 
 ## 验证安装
 
+### 恢复失败的更新
+
+如果 setup 报告 `recovery failed`，请保留报错中列出的备份。只要配置目录中仍有 `.powercontext-install-*`
+或 `.powercontext-project-context.*.bak` 恢复路径，后续 setup 就会在安装写入前停止；此时不会把缺失的 Skill
+目录当成首次安装。
+
+按照报错列出的失败目标，从安装备份目录还原对应文件，文件备份使用原文件名。如果 `skills/powercontext-project-context`
+不存在，将保留的 Skill 备份目录恢复到该位置。如果已有当前 Skill 或多个备份，先比较并整理其中的内容；setup 不会自动
+选择或合并版本。请保留个人文件及管理区域外的笔记。
+
+恢复或核对完内容后，再将剩余恢复路径移出 OpenCode 配置目录，重新执行 setup，并运行下面的检查。仅为绕过检查而删除
+备份，可能丢弃用户笔记。以上保护针对可捕获的文件操作失败，不保证进程崩溃或并发安装时的恢复。
+
+### 检查插件
+
 ```bash
 powercontext doctor
 powercontext doctor opencode
