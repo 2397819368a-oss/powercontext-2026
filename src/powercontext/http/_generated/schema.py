@@ -7,7 +7,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
     "info": {
         "title": "PowerContext API",
         "description": "Remote PowerContext transport. Runtime behavior is reported by /v1/capabilities.",
-        "version": "1.2.0",
+        "version": "1.3.0",
     },
     "paths": {
         "/v1/atomic-memory/list": {
@@ -5185,7 +5185,21 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "AtomicMemorySearchHit": {
                 "properties": {
                     "memory": {"$ref": "#/components/schemas/AtomicMemoryRecord"},
-                    "score": {"type": "number"},
+                    "score": {
+                        "type": "number",
+                        "description": "Raw "
+                        "RRF "
+                        "score. "
+                        "Hybrid "
+                        "mode "
+                        "applies "
+                        "the "
+                        "deployment's "
+                        "normalized "
+                        "relative "
+                        "FTS/vector "
+                        "weights.",
+                    },
                     "matched_by": {"items": {"type": "string", "enum": ["text", "vector"]}, "type": "array"},
                 },
                 "additionalProperties": False,
@@ -5452,6 +5466,13 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "boundary_source": {"$ref": "#/components/schemas/SourceReference"},
                     "objective": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
+                    "rollover_reasons": {
+                        "items": {"$ref": "#/components/schemas/HandoffRolloverReason"},
+                        "type": "array",
+                        "maxItems": 6,
+                        "uniqueItems": True,
+                        "default": [],
+                    },
                     "evidence": {
                         "items": {"$ref": "#/components/schemas/HandoffCitation"},
                         "type": "array",
@@ -7551,6 +7572,13 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "properties": {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "objective": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
+                    "rollover_reasons": {
+                        "items": {"$ref": "#/components/schemas/HandoffRolloverReason"},
+                        "type": "array",
+                        "maxItems": 6,
+                        "uniqueItems": True,
+                        "default": [],
+                    },
                     "evidence": {
                         "items": {"$ref": "#/components/schemas/HandoffCitation"},
                         "type": "array",
@@ -9568,7 +9596,12 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "title": {"type": "string", "maxLength": 512, "minLength": 1},
                     "summary": {"type": "string", "maxLength": 8000, "minLength": 1},
                     "snippet": {"type": "string", "nullable": True},
-                    "score": {"type": "number", "minimum": 0.0},
+                    "score": {
+                        "type": "number",
+                        "maximum": 100.0,
+                        "minimum": 0.0,
+                        "description": "Weighted RRF relevance normalized to the 0..100 range.",
+                    },
                     "matched_by": {
                         "items": {"$ref": "#/components/schemas/TopicMemoryMatchedBy"},
                         "type": "array",
@@ -10578,6 +10611,17 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "HandoffDisposition": {"type": "string", "enum": ["continuable", "blocked", "complete"]},
             "HandoffEvidenceStatus": {"type": "string", "enum": ["available", "unavailable"]},
             "HandoffResolutionStatus": {"type": "string", "enum": ["empty", "resolved"]},
+            "HandoffRolloverReason": {
+                "type": "string",
+                "enum": [
+                    "user_requested",
+                    "host_context_budget",
+                    "host_compaction",
+                    "context_quality",
+                    "delegation",
+                    "manual_checkpoint",
+                ],
+            },
             "HandoffSchema": {"type": "string", "enum": ["powercontext.handoff.v1"]},
             "HandoffSelection": {"type": "string", "enum": ["prepared", "exact", "latest"]},
             "PreparedHandoffSchema": {"type": "string", "enum": ["powercontext.prepared-handoff.v1"]},

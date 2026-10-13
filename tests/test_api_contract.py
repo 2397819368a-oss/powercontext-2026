@@ -57,6 +57,7 @@ from powercontext.http import (
     HandoffCurrentWorkRequest,
     HandoffDraft,
     HandoffResolution,
+    HandoffRolloverReason,
     ImportExternalSkillRequest,
     ListArtifactsRequest,
     ListExternalSkillsRequest,
@@ -188,7 +189,7 @@ def test_contract_uses_the_namespaced_request_id_header() -> None:
 def test_server_info_contract_is_observable_and_forward_compatible() -> None:
     contract = yaml.safe_load(CONTRACT_PATH.read_text())
 
-    assert contract["info"]["version"] == "1.2.0"
+    assert contract["info"]["version"] == "1.3.0"
     operation = contract["paths"]["/v1/server-info"]["get"]
     assert operation["operationId"] == "get_server_info"
     assert operation["x-powercontext-access"] == {
@@ -703,6 +704,29 @@ def test_handoff_operations_expose_the_complete_explicit_lifecycle() -> None:
     assert COMMIT_HANDOFF.response_type is CommittedHandoff
     assert CONTINUE_HANDOFF.request_type is ContinueHandoffRequest
     assert CONTINUE_HANDOFF.response_type is HandoffResolution
+
+
+def test_handoff_prepare_and_activation_accept_advisory_rollover_reasons() -> None:
+    citation = {
+        "kind": "source",
+        "source_ref": {"name": "content", "source_id": "turn-1"},
+    }
+
+    prepare = PrepareHandoffRequest.model_validate({
+        "scope_id": "project",
+        "objective": "Continue the current work in a fresh session.",
+        "rollover_reasons": ["user_requested", "context_quality"],
+        "evidence": [citation],
+    })
+    activation = ActivateHandoffRequest.model_validate({
+        "scope_id": "project",
+        "boundary_source": citation["source_ref"],
+        "objective": "Continue the current work in a fresh session.",
+        "rollover_reasons": ["host_context_budget"],
+    })
+
+    assert prepare.rollover_reasons == [HandoffRolloverReason.USER_REQUESTED, HandoffRolloverReason.CONTEXT_QUALITY]
+    assert activation.rollover_reasons == [HandoffRolloverReason.HOST_CONTEXT_BUDGET]
 
 
 def test_work_operations_expose_the_high_level_continuity_loop() -> None:

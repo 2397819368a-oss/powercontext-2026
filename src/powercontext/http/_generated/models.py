@@ -2780,6 +2780,15 @@ class HandoffResolutionStatus(StrEnum):
     RESOLVED = "resolved"
 
 
+class HandoffRolloverReason(StrEnum):
+    USER_REQUESTED = "user_requested"
+    HOST_CONTEXT_BUDGET = "host_context_budget"
+    HOST_COMPACTION = "host_compaction"
+    CONTEXT_QUALITY = "context_quality"
+    DELEGATION = "delegation"
+    MANUAL_CHECKPOINT = "manual_checkpoint"
+
+
 class HandoffSchema(StrEnum):
     POWERCONTEXT_HANDOFF_V1 = "powercontext.handoff.v1"
 
@@ -3286,7 +3295,12 @@ class AtomicMemorySearchHit(BaseModel):
         extra="forbid",
     )
     memory: AtomicMemoryRecord
-    score: StrictFloat
+    score: Annotated[
+        StrictFloat,
+        Field(
+            description="Raw RRF score. Hybrid mode applies the deployment's normalized relative FTS/vector weights."
+        ),
+    ]
     matched_by: list[MatchedByEnum]
 
 
@@ -4131,7 +4145,9 @@ class SearchTopicMemoryHit(BaseModel):
     title: Annotated[StrictStr, Field(max_length=512, min_length=1)]
     summary: Annotated[StrictStr, Field(max_length=8000, min_length=1)]
     snippet: Annotated[StrictStr | None, Field(...)]
-    score: Annotated[StrictFloat, Field(ge=0.0)]
+    score: Annotated[
+        StrictFloat, Field(description="Weighted RRF relevance normalized to the 0..100 range.", ge=0.0, le=100.0)
+    ]
     matched_by: Annotated[list[TopicMemoryMatchedBy], Field(min_length=1)]
 
 
@@ -4394,6 +4410,7 @@ class PrepareHandoffRequest(BaseModel):
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     objective: Annotated[StrictStr, Field(max_length=8192, min_length=1, pattern=".*\\S.*")]
+    rollover_reasons: Annotated[list[HandoffRolloverReason], Field(max_length=6)] = []
     evidence: Annotated[list[HandoffCitation], Field(max_length=32, min_length=1)]
     max_bytes: Annotated[StrictInt, Field(ge=512, le=32768)] = 8000
 
@@ -4504,6 +4521,7 @@ class ActivateHandoffRequest(BaseModel):
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     boundary_source: SourceReference
     objective: Annotated[StrictStr, Field(max_length=8192, min_length=1, pattern=".*\\S.*")]
+    rollover_reasons: Annotated[list[HandoffRolloverReason], Field(max_length=6)] = []
     evidence: Annotated[list[HandoffCitation], Field(max_length=32, validate_default=True)] = []
     max_bytes: Annotated[StrictInt, Field(ge=512, le=32768)] = 8000
 

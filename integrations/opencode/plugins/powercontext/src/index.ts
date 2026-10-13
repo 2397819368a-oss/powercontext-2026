@@ -289,6 +289,14 @@ const handoffEvidence = z.union([
   z.object({ kind: z.literal('source'), source_ref: sourceReference }),
   z.object({ kind: z.literal('artifact'), artifact_ref: jsonObject() }),
 ])
+const handoffRolloverReasons = z.array(z.enum([
+  'user_requested',
+  'host_context_budget',
+  'host_compaction',
+  'context_quality',
+  'delegation',
+  'manual_checkpoint',
+])).max(6)
 const handoffStatement = z.object({ text: z.string().min(1), citations: z.array(handoffEvidence).min(1) })
 const handoffDraft = z.object({
   objective: z.string().min(1),
@@ -447,9 +455,19 @@ function createTools(runtime: Runtime) {
         'a generated Draft before finalizing it. An ignored boundary does not establish a new handoff; ' +
         'do not claim a committed milestone. Conceptual or preview-only requests do not authorize this ' +
         'write.',
-      args: { boundary_source: sourceReference, objective: z.string(), evidence: z.array(handoffEvidence).optional() },
+      args: {
+        boundary_source: sourceReference,
+        objective: z.string(),
+        evidence: z.array(handoffEvidence).optional(),
+        rollover_reasons: handoffRolloverReasons.optional(),
+      },
       operationId: 'activate_handoff',
-      payload: (args) => ({ boundary_source: args.boundary_source, objective: args.objective, evidence: args.evidence ?? [] }),
+      payload: (args) => ({
+        boundary_source: args.boundary_source,
+        objective: args.objective,
+        evidence: args.evidence ?? [],
+        ...(args.rollover_reasons === undefined ? {} : { rollover_reasons: args.rollover_reasons }),
+      }),
     }),
     pc_handoff_prepare: operationTool(runtime, {
       description:
@@ -458,9 +476,17 @@ function createTools(runtime: Runtime) {
         'transfer. Inspect facts, omissions, and the next action before finalizing. The Draft is ' +
         'temporary and grants no authority; preparation is not a durable commit or proof that a ' +
         'receiver continued the work.',
-      args: { objective: z.string(), evidence: z.array(handoffEvidence) },
+      args: {
+        objective: z.string(),
+        evidence: z.array(handoffEvidence),
+        rollover_reasons: handoffRolloverReasons.optional(),
+      },
       operationId: 'prepare_handoff',
-      payload: (args) => ({ objective: args.objective, evidence: args.evidence }),
+      payload: (args) => ({
+        objective: args.objective,
+        evidence: args.evidence,
+        ...(args.rollover_reasons === undefined ? {} : { rollover_reasons: args.rollover_reasons }),
+      }),
     }),
     pc_handoff_finalize: operationTool(runtime, {
       description:
