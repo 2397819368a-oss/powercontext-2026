@@ -137,9 +137,24 @@ class RuntimeConfig(BaseModel):
             raise ValueError("Worker quota must be a positive integer")  # noqa: TRY003, TRY004 - Pydantic validation
         return value
 
+    @field_validator("token_optimization_target_tokens", mode="before")
+    @classmethod
+    def validate_token_optimization_target(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+            valid = re.fullmatch(r"[+-]?[0-9]+", value) is not None
+        else:
+            valid = isinstance(value, int) and not isinstance(value, bool)
+        if not valid:
+            raise ValueError("Token optimization target must be a positive integer")  # noqa: TRY003
+        return value
+
     scope_cache_size: int = Field(default=DEFAULT_SCOPE_CACHE_SIZE, ge=1)
     source_window_limit: int = Field(default=100, ge=1)
     context_assembly_max_entries: int = Field(default=8, ge=1)
+    token_optimization_mode: Literal["off", "shadow", "active"] = Field(default="off")
+    token_optimization_target_tokens: int = Field(default=1800, ge=1)
+    token_optimization_tokenizer: Literal["cl100k_base", "o200k_base"] = Field(default="o200k_base")
     memory_extraction_profile: MemoryExtractionProfile = MemoryExtractionProfile.CODING
     memory_rerank_enabled: bool = False
     memory_rerank_candidate_limit: int = Field(default=30, ge=1, le=100)

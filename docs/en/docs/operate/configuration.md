@@ -111,6 +111,9 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_RUNTIME_SCOPE_CACHE_SIZE` | `128` | Inactive scope compositions retained by the Runtime; in-flight scopes are never evicted |
 | `POWERCONTEXT_SERVER_RUNTIME_SOURCE_WINDOW_LIMIT` | `100` | Maximum Source journal positions per activation; Memory reduces its window after generation timeouts |
 | `POWERCONTEXT_SERVER_RUNTIME_CONTEXT_ASSEMBLY_MAX_ENTRIES` | `8` | Maximum sum of explicit `assembly.sections[].limit`; positive integer. Per-family limits still apply. |
+| `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE` | `off` | Prepared-context optimization: `off` keeps the original path, `shadow` compares candidates but returns the original body, and `active` adopts validated, smaller bodies |
+| `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_TARGET_TOKENS` | `1800` | Positive integer target for one complete prepared body, including trust, citations, and formatting; request byte limits still apply |
+| `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_TOKENIZER` | `o200k_base` | Exact counting profile: `cl100k_base` or `o200k_base` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_EXTRACTION_PROFILE` | `coding` | Memory selection policy: `coding` or `conversation` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_ENABLED` | `false` | Apply listwise reranking after coarse Memory retrieval |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_CANDIDATE_LIMIT` | `30` | Coarse candidate pool supplied to the reranker |
@@ -192,6 +195,32 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_INFERENCE_DECISION_MAX_REQUESTS` | generation request limit | Maximum model requests for one decision operation, including model-output validation retries; excludes provider SDK HTTP retries |
 | `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | unset | Experience automatic admission interval; unset preserves accepted work and stops new automatic admission |
 | `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` | automatic local project targets | JSON override containing the host identity and explicit Agent Skill targets |
+
+Token optimization applies to existing `prepare_context` calls; it does not compress native search/get records,
+third-party tool output, or the Agent's existing history. It preserves current retrieval, authorization, and public
+request/response fields. The target is a planning goal, not a full model-input or task-billing limit. Unsupported content,
+unavailable tokenizer dependencies or vocabulary caches, unmet constraints, and optimization errors retain the original
+prepared body. `off` skips the optimizer and its tokenizer. Restart the Server after changing deployment settings;
+already-delivered context remains in the caller's history.
+
+`active` currently enables exact Experience-field deduplication, exact Topic summary/snippet association, and
+complete flat JSON-row tables. Atomic text, citations, source revisions, scalar types, row order, and duplicate rows
+are preserved. Markdown section selection and coverage-based removal are candidates in `shadow` only; their
+proposals do not change delivered context. An unchanged or larger proposal retains the original body, which can
+exceed the planning target. Reported preparation-token gains do not establish provider billing savings.
+
+The tokenizer uses the pinned local vocabulary and never downloads it during Server startup or preparation. Before
+starting with `shadow` or `active`, populate a writable cache in an approved environment and keep its path identical
+for the Server process:
+
+```bash
+export TIKTOKEN_CACHE_DIR=/path/to/tokenizer-cache
+python -c 'import tiktoken; tiktoken.get_encoding("o200k_base")'
+```
+
+Use the configured `cl100k_base` profile instead when selected. Missing, corrupt, or incompatible vocabulary files
+disable optimization and preserve the original body. This profile counts the entire prepared body, including wrappers;
+it does not claim to match a provider with a different tokenizer. Measure actual model usage before claiming savings.
 
 The recall channel weights are a ratio and apply to Atomic Memory and Topic Memory only after hybrid candidates pass
 their channel admission floors. Single-channel searches remain unweighted; `auto` applies the weights only when it
