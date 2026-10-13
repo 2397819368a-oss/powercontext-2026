@@ -478,6 +478,27 @@ def test_copy_exact_maintains_kind_and_overflow_rolls_back_business_publication(
     asyncio.run(scenario())
 
 
+def test_fractional_sqlite_generation_cannot_commit_business_writes_or_be_incremented():
+    async def scenario():
+        reader = AtomicMemoryDirectoryRepository(SignedCursorCodec(secret=b"fixture"))
+        async with directory_profile() as (profile, scopes, heads):
+            async with profile.database.transaction() as connection:
+                await publish(connection, reader)
+                # SQLite BIGINT affinity and a nonnegative CHECK still admit fractions.
+                await connection.execute(update(scopes).values(atomic_memory_directory_generation=0.5))
+            with pytest.raises(AtomicMemoryDirectoryUnavailableError):
+                async with profile.database.transaction() as connection:
+                    await publish(connection, reader, "must-not-commit")
+            with pytest.raises(AtomicMemoryDirectoryUnavailableError):
+                async with profile.database.transaction() as connection:
+                    await reader.record_mutation(connection, "scope-a")
+            async with profile.database.transaction(consistent_snapshot=True) as connection:
+                assert (await connection.execute(select(heads.c.artifact_id))).scalars().all() == ["a"]
+                assert await connection.scalar(select(scopes.c.atomic_memory_directory_generation)) == 0.5
+
+    asyncio.run(scenario())
+
+
 def test_other_scopes_and_families_do_not_invalidate_atomic_directory():
     async def scenario():
         from tests.builtin.persistence.contract import Handoff, HandoffContent, HandoffDraft

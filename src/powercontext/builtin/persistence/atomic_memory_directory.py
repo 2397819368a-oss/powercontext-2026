@@ -27,7 +27,7 @@ from typing import Any, Literal, cast
 
 import rfc8785
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, field_validator
-from sqlalchemy import BigInteger, ColumnElement, column, literal_column, select, table, update
+from sqlalchemy import BigInteger, ColumnElement, column, func, literal_column, select, table, update
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -147,6 +147,7 @@ class AtomicMemoryDirectoryRepository:
             update(_SCOPES)
             .where(
                 _SCOPES.c.scope_id == scope_id,
+                func.typeof(_SCOPES.c.atomic_memory_directory_generation) == "integer",
                 _SCOPES.c.atomic_memory_directory_generation >= 0,
                 _SCOPES.c.atomic_memory_directory_generation <= _MAX_GENERATION,
             )
@@ -269,6 +270,7 @@ class AtomicMemoryDirectoryRepository:
             update(_SCOPES)
             .where(
                 _SCOPES.c.scope_id == scope_id,
+                func.typeof(_SCOPES.c.atomic_memory_directory_generation) == "integer",
                 _SCOPES.c.atomic_memory_directory_generation >= 0,
                 _SCOPES.c.atomic_memory_directory_generation < _MAX_GENERATION,
             )
