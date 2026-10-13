@@ -25,6 +25,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    RootModel,
     SerializerFunctionWrapHandler,
     TypeAdapter,
     field_validator,
@@ -227,8 +228,8 @@ class _SourceInputSchema(GenerateJsonSchema):
 
     @override
     def encode_default(self, dft: Any) -> Any:
-        if isinstance(dft, BaseModel):
-            dft = dft.model_dump(mode="json", exclude=_payload_exclusions(dft))
+        if isinstance(dft, (BaseModel, list, tuple, set, frozenset, dict)):
+            dft = _normalize_default(dft)
         return super().encode_default(dft)
 
 
@@ -250,16 +251,17 @@ def _payload_exclusions(value: object) -> dict[Any, Any]:
 
     if isinstance(value, BaseModel):
         excluded: dict[Any, Any] = dict.fromkeys(DECLARATION_OWNED_FIELDS, True) if isinstance(value, Source) else {}
-        if type(value).__name__ == "RootModel" or (
-            set(type(value).model_fields) == {"root"} and hasattr(value, "root")
-        ):
+        if isinstance(value, RootModel):
             return _payload_exclusions(cast(Any, value).root)
         for name in type(value).model_fields:
             if name not in excluded and (nested := _payload_exclusions(getattr(value, name))):
                 excluded[name] = nested
         return excluded
     if isinstance(value, (list, tuple, set, frozenset)):
-        return {index: nested for index, item in enumerate(value) if (nested := _payload_exclusions(item))}
+        nested = {index: child for index, item in enumerate(value) if (child := _payload_exclusions(item))}
+        if isinstance(value, (set, frozenset)) and nested:
+            return {"__all__": next(iter(nested.values()))}
+        return nested
     try:
         from dataclasses import fields, is_dataclass
 
@@ -274,6 +276,38 @@ def _payload_exclusions(value: object) -> dict[Any, Any]:
     if isinstance(value, dict):
         return {key: nested for key, item in value.items() if (nested := _payload_exclusions(item))}
     return {}
+
+
+def _normalize_default(value: Any) -> Any:
+    """Serialize defaults while removing Source-owned declaration fields."""
+    if isinstance(value, BaseModel):
+        return _strip_payload_metadata(value, value.model_dump(mode="json"))
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_normalize_default(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_default(item) for key, item in value.items()}
+    return value
+
+
+def _strip_payload_metadata(original: object, encoded: Any) -> Any:  # noqa: C901
+    """Remove declaration fields after JSON encoding, including set-like containers."""
+    if isinstance(original, RootModel):
+        return _strip_payload_metadata(cast(Any, original).root, encoded)
+    if isinstance(original, Source) and isinstance(encoded, dict):
+        encoded = {key: value for key, value in encoded.items() if key not in DECLARATION_OWNED_FIELDS}
+    if isinstance(original, BaseModel) and isinstance(encoded, dict):
+        for name in type(original).model_fields:
+            if name in encoded:
+                encoded[name] = _strip_payload_metadata(getattr(original, name), encoded[name])
+    elif isinstance(original, (list, tuple, set, frozenset)) and isinstance(encoded, list):
+        for index, item in enumerate(original):
+            if index < len(encoded):
+                encoded[index] = _strip_payload_metadata(item, encoded[index])
+    elif isinstance(original, dict) and isinstance(encoded, dict):
+        for key, item in original.items():
+            if key in encoded:
+                encoded[key] = _strip_payload_metadata(item, encoded[key])
+    return encoded
 
 
 def manifest_for_definition(definition: SourceDefinition[Any, Any, Any], /) -> SourceDefinitionManifest:
@@ -326,7 +360,7 @@ def project_source_for_transport(
     # Definition-owned metadata is not part of it. Carrying it here would make a
     # generated observation fail its own schema, and would change the payload of an
     # unchanged Source, so replaying a pre-upgrade observation would conflict.
-    payload = _json_object(source.model_dump(mode="json", exclude=_payload_exclusions(source)))
+    payload = _json_object(_strip_payload_metadata(source, source.model_dump(mode="json")))
     projections = tuple(
         SourceProjectionValue(key=key, value=registry.project(source, key)) for key in registry.projection_keys(source)
     )

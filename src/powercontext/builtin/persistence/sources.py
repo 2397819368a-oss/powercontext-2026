@@ -92,10 +92,12 @@ class SourceRepository:
         scope_id: str,
         source: Source,
         /,
+        *,
+        apply_definition: bool = False,
     ) -> StoredSource:
         """Add one stable Source or return an identical existing capture."""
 
-        stored, _created = await self.add_with_status(connection, scope_id, source)
+        stored, _created = await self.add_with_status(connection, scope_id, source, apply_definition=apply_definition)
         return stored
 
     async def add_with_status(

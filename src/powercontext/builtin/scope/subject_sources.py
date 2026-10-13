@@ -128,7 +128,7 @@ class SubjectSourceService:
                 await self._scopes.ensure_binding(connection, key, target)
             stored = {}
             for actual_scope in sorted((scope_id, target)):
-                stored[actual_scope] = await self._sources.add(connection, actual_scope, source)
+                stored[actual_scope] = await self._sources.add(connection, actual_scope, source, apply_definition=True)
             return target, (_source_record(scope_id, stored[scope_id]), _source_record(target, stored[target]))
 
 
