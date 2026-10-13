@@ -722,3 +722,9 @@ Server 保持运行于 127.0.0.1:18171，仅绑定 loopback，实验访问控制
 提交前最后联合回归 43 项通过；Linux 目标 ty、生成 API/JS 校验、锁文件和非类型 prek 检查通过。原生 Windows ty 仍为 32 个既有 POSIX 诊断，因此本次提交仅跳过该 hook，已独立执行 Linux 目标类型检查；未修改仓库检查配置。新增文本的高置信密钥模式扫描没有匹配。
 
 实际推送 origin 的 codex/experiment-image-source，并通过 gh pr create --draft 创建上游 [草稿 PR #1956](https://github.com/oceanbase/powercontext/pull/1956)，目标为 master、关联 #1932。回读确认 OPEN、isDraft=true，已附加到当前聊天。当前修复已提交，私有配置和运行材料未上传。下一步继续当前 Atomic Memory/新会话召回、配对恢复和最终完整复审，接受维护者对范围和 RFC 的反馈后再转为正式评审。
+
+## 2026-10-13：草稿 PR #1956 的 CI 修复与冲突解决
+
+本轮目标：读取上游失败任务的实际日志，区分同一根因导致的矩阵失败与独立缺陷；保存分支快照并对齐最新 upstream/master，解决集成冲突；修复对应代码、许可证和文档/生成契约问题，运行相关检查后更新 PR 分支，确认新提交的 CI 结果。用户已明确授权修复并更新该草稿 PR，不进行合并、发布或转为 ready。
+
+前置状态：实验 worktree 干净，PR head 为 df4c7666；检查显示冲突。失败包含四个 Python 版本、Desktop、License、E2E harness、DSH 和网站。最新主干新增宿主 guidance、连接取消清理及 Desktop 版本检查等机制，需保留这些行为并适配图片路径。普通模型真实召回等既有待验收事项不因 CI 修复而自动完成。
