@@ -178,6 +178,7 @@ async def process_family_invocation(
         "memory": ModelUsagePurpose.MEMORY_EXTRACTION,
         "experience": ModelUsagePurpose.EXPERIENCE_GENERATION,
         "skill": ModelUsagePurpose.SKILL_GENERATION,
+        "handoff": ModelUsagePurpose.HANDOFF_GENERATION,
     }.get(assignment.artifact_family)
     with bind_usage_reporter(
         # The runtime-owned recorder writes this window's usage, so the worker's

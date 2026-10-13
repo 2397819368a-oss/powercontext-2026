@@ -1610,13 +1610,20 @@ async def _process_topic_dream_if_pending(
             security = await resources.enter_async_context(
                 open_worker_security(spec.worker_security, contexts.database)
             )
-        return await process_dream_invocation(
-            contexts,
-            assignment,
-            config=spec.config,
-            generator=generator,
-            security=security,
-        )
+        with bind_usage_reporter(
+            contexts.model_usage_reporter(assignment.scope_id),
+            generation_purpose=ModelUsagePurpose.TOPIC_MEMORY_GENERATION,
+        ):
+            try:
+                return await process_dream_invocation(
+                    contexts,
+                    assignment,
+                    config=spec.config,
+                    generator=generator,
+                    security=security,
+                )
+            finally:
+                await contexts.flush_model_usage()
 
 
 @asynccontextmanager
