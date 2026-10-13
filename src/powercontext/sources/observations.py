@@ -253,7 +253,7 @@ def _payload_exclusions(value: object) -> dict[Any, Any]:
         if type(value).__name__ == "RootModel" or (
             set(type(value).model_fields) == {"root"} and hasattr(value, "root")
         ):
-            return _payload_exclusions(value.root)
+            return _payload_exclusions(getattr(value, "root"))
         for name in type(value).model_fields:
             if name not in excluded and (nested := _payload_exclusions(getattr(value, name))):
                 excluded[name] = nested
