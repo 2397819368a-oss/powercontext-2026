@@ -52,8 +52,9 @@ the pin check. To evaluate a deliberately updated, committed Skill:
 uv run --locked python -m evaluation.zcode_guidance.pin --revision <committed-revision>
 ```
 
-The current Skill pin is `b5bcfe24bcce9c574ee85175d623bb9963970a41`, using the Atomic Memory contract and generated
-guidance markers and metadata. The lock includes every packaged Skill file, including `.powercontext-guidance.json`.
+The current Skill pin is `afadbb472bb29d2b4ac84e28249dc61dcb654f8d`, using the Atomic Memory and unified Candidate
+contracts, with generated guidance markers and metadata. The lock includes every packaged Skill file, including
+`.powercontext-guidance.json`.
 This pin has not been rerun with a live model. Offline validation confirms fixture and grader compatibility;
 a new paired live run is required before claiming qualification for this Skill and contract. Changing the pin alone
 grants no qualification.
