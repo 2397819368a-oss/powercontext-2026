@@ -34,9 +34,7 @@ sys.path.insert(0, str(_PLUGIN_ROOT))
 sys.path.insert(0, str(_SCRIPTS_ROOT))
 
 from bootstrap_state import (  # noqa: E402
-    clear_receipt,
     clear_receipt_if_matches,
-    load_receipt,
     load_receipt_state,
     save_receipt,
 )
@@ -110,19 +108,20 @@ def main(settings: ClaudeCodePluginSettings | None = None) -> int:
             or source not in _LIFECYCLES
         ):
             return 0
+        previous_receipt = load_receipt_state(session_id)
         try:
             settings = ClaudeCodePluginSettings.from_environment() if settings is None else settings
         except Exception:
-            clear_receipt(session_id)
+            _clear_observed_receipt(session_id, previous_receipt)
             return 0
         deadline = monotonic() + settings.http_budget_seconds
         prepared = _resolve_and_prepare(cwd, session_id, source, payload, settings=settings, deadline=deadline)
         if prepared is None:
-            clear_receipt(session_id)
+            _clear_observed_receipt(session_id, previous_receipt)
             return 0
         scope_id, response = prepared
         if response["status"] != "ready":
-            receipt = _synchronize_non_ready_receipt(session_id, scope_id, response)
+            receipt = _synchronize_non_ready_receipt(session_id, scope_id, response, previous_receipt)
             if response["status"] == "empty":
                 _emit_bootstrap_event(
                     "empty",
@@ -135,7 +134,6 @@ def main(settings: ClaudeCodePluginSettings | None = None) -> int:
             return 0
         receipt = cast(dict[str, str], response["receipt"])
         receipt_id = receipt["receipt_id"]
-        previous_receipt = load_receipt_state(session_id)
         try:
             delivered = validate_delivery_receipt(
                 _post_json(
@@ -298,6 +296,11 @@ def _clear_stale_receipt_after_failed_claim(
         clear_receipt_if_matches(session_id, *previous_receipt)
 
 
+def _clear_observed_receipt(session_id: str, previous_receipt: tuple[str, str] | None) -> None:
+    if previous_receipt is not None:
+        clear_receipt_if_matches(session_id, *previous_receipt)
+
+
 def _handle_output_failure(session_id: str, scope_id: str, receipt_id: str, error: Exception) -> None:
     clear_receipt_if_matches(session_id, scope_id, receipt_id)
     if isinstance(error, BrokenPipeError):
@@ -317,6 +320,7 @@ def _synchronize_non_ready_receipt(
     session_id: str,
     scope_id: str,
     response: Mapping[str, object],
+    previous_receipt: tuple[str, str] | None,
 ) -> dict[str, str]:
     """Retain a receipt only when this exact lifecycle event was already injected."""
 
@@ -325,10 +329,10 @@ def _synchronize_non_ready_receipt(
         response.get("status") == "skipped"
         and response.get("reason") == "already_delivered"
         and receipt["state"] == "injected"
-        and load_receipt(session_id, scope_id) == receipt["receipt_id"]
+        and previous_receipt == (scope_id, receipt["receipt_id"])
     ):
         return receipt
-    clear_receipt(session_id)
+    _clear_observed_receipt(session_id, previous_receipt)
     return receipt
 
 

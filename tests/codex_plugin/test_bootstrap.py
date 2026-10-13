@@ -20,6 +20,7 @@ import os
 import sys
 from hashlib import sha256
 from pathlib import Path
+from threading import Event, Thread
 from types import ModuleType
 from typing import cast
 
@@ -242,6 +243,60 @@ def test_repeated_injected_event_preserves_receipt_for_first_query(
     assert json.loads(state_files[0].read_text())["receipt_id"] == "bcr_test"
 
 
+def test_terminal_retry_preserves_a_concurrently_saved_winner_receipt(
+    session_binding_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap_state = sys.modules[session_binding_module.load_receipt_state.__module__]
+    original_read = bootstrap_state._read_receipt_state
+    snapshot_read = Event()
+    winner_saved = Event()
+    winner_started = False
+    winner: Thread | None = None
+
+    def synchronized_read(path):
+        state = original_read(path)
+        snapshot_read.set()
+        if winner_started:
+            assert winner_saved.wait(2)
+        return state
+
+    def save_winner() -> None:
+        if snapshot_read.wait(2):
+            session_binding_module.save_receipt("session-1", "scope:test", "bcr_test")
+        winner_saved.set()
+
+    def post(*_args, **_kwargs):
+        nonlocal winner, winner_started
+        winner_started = True
+        winner = Thread(target=save_winner)
+        winner.start()
+        return _already_delivered()
+
+    monkeypatch.setattr(bootstrap_state, "_read_receipt_state", synchronized_read)
+    monkeypatch.setattr(session_binding_module, "resolve_scope_id", lambda *_args, **_kwargs: "scope:test")
+    monkeypatch.setattr(session_binding_module, "_post_json", post)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps({
+                "source": "startup",
+                "session_id": "session-1",
+                "cwd": "/workspace",
+                "event_id": "event-1",
+            })
+        ),
+    )
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+
+    assert session_binding_module.main(session_binding_module.CodexPluginSettings(bootstrap_context=True)) == 0
+    assert winner is not None
+    winner.join(timeout=2)
+    assert not winner.is_alive()
+    assert session_binding_module.load_receipt_state("session-1") == ("scope:test", "bcr_test")
+
+
 def test_invalid_settings_clear_a_stale_receipt(
     session_binding_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -364,7 +419,7 @@ def test_concurrent_delivery_loser_preserves_the_winner_receipt(
     monkeypatch.setattr(sys, "stderr", io.StringIO())
 
     assert session_binding_module.main(session_binding_module.CodexPluginSettings(bootstrap_context=True)) == 0
-    assert session_binding_module.load_receipt("session-1", "scope:test") == "bcr_test"
+    assert session_binding_module.load_receipt_state("session-1") == ("scope:test", "bcr_test")
 
 
 def test_session_start_output_failure_clears_the_deduplication_receipt(
