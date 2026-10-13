@@ -16,6 +16,7 @@
 
 import base64
 import importlib
+import json
 from time import monotonic
 
 import pytest
@@ -236,3 +237,116 @@ def test_changed_bytes_under_one_message_identity_report_conflict_after_delivery
     worker.drain(settings, wait_seconds=0)
     assert len(requests) == 1
     assert outbox.status(config.workspace_key(tmp_path))[0]["error"] == "image_capture_conflict"
+
+
+@pytest.mark.parametrize("recovery", ["automatic", "retry", "legacy_error"])
+def test_capacity_pressure_resumes_from_saved_cursor_after_upload(
+    image_capture_module, monkeypatch, tmp_path, recovery
+):
+    config, outbox, worker, settings, path, payload, requests = _setup(image_capture_module, monkeypatch, tmp_path)
+    pictures = [b"\x89PNG\r\n\x1a\none", b"\x89PNG\r\n\x1a\ntwo"]
+    monkeypatch.setattr(importlib.import_module("image_outbox"), "MAX_PENDING_BYTES", len(pictures[0]))
+    _append(path, "turn_context", {"turn_id": "turn-1"})
+    image_capture_module.enqueue_capture(payload, settings, deadline=monotonic() + 6)
+    job = outbox.jobs()[0]
+    job_id = job["id"]
+    for index, picture in enumerate(pictures):
+        _message(path, "message-" + str(index), [picture])
+    worker.drain(settings, wait_seconds=0)
+    assert [base64.b64decode(request["bytes_base64"]) for request in requests] == pictures[:1]
+    if recovery == "retry":
+        outbox.reset_delivery(config.workspace_key(tmp_path))
+    elif recovery == "legacy_error":
+        # Preserve recovery for the persisted state emitted by earlier collectors.
+        outbox.finish(job_id, state="error", error="image_outbox_full")
+        monkeypatch.setattr(importlib.import_module("image_outbox"), "MAX_JOBS", 1)
+        with pytest.raises(ValueError, match="image_outbox_full"):
+            outbox.register(json.loads(job["payload"]) | {"turn_id": "new-turn"}, cursor=path.stat().st_size)
+    for _ in range(3):
+        worker.drain(settings, wait_seconds=0)
+    assert [base64.b64decode(request["bytes_base64"]) for request in requests] == pictures
+    assert all(item["state"] == "accepted" for item in outbox.status(config.workspace_key(tmp_path))[0]["attachments"])
+
+
+@pytest.mark.parametrize("change", ["disable", "endpoint"])
+def test_ineligible_workspace_does_not_block_delivery_and_retains_its_backlog(
+    image_capture_module, monkeypatch, tmp_path, change
+):
+    config, outbox, worker, settings, path, payload, requests = _setup(image_capture_module, monkeypatch, tmp_path)
+    _append(path, "turn_context", {"turn_id": "turn-1"})
+    image_capture_module.enqueue_capture(payload, settings, deadline=monotonic() + 6)
+    pictures = [b"\x89PNG\r\n\x1a\n" + str(index).encode() for index in range(8)]
+    for index, picture in enumerate(pictures):
+        _message(path, "message-" + str(index), [picture])
+    other = tmp_path / "enabled"
+    other.mkdir()
+    config.write_profile(other, server_url=settings.server_url, scope_id="scope", enabled=True)
+    other_path = path.with_name("rollout-enabled.jsonl")
+    _append(
+        other_path,
+        "session_meta",
+        {
+            "id": "other-session",
+            "cli_version": "0.162.0-alpha.2",
+            "source": "vscode",
+            "originator": "Codex Desktop",
+        },
+    )
+    _append(other_path, "turn_context", {"turn_id": "other-turn"})
+    image_capture_module.enqueue_capture(
+        payload
+        | {
+            "cwd": str(other),
+            "session_id": "other-session",
+            "turn_id": "other-turn",
+            "transcript_path": str(other_path),
+        },
+        settings,
+        deadline=monotonic() + 6,
+    )
+    other_picture = b"\x89PNG\r\n\x1a\nother"
+    _message(other_path, "other-message", [other_picture])
+    upload = worker._post_json
+
+    def offline(*args, **kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr(worker, "_post_json", offline)
+    worker.drain(settings, wait_seconds=0)
+    config.write_profile(
+        tmp_path,
+        server_url="http://other.invalid" if change == "endpoint" else settings.server_url,
+        scope_id="scope",
+        enabled=change != "disable",
+    )
+    _message(path, "off-period", [b"\x89PNG\r\n\x1a\nnot-authorized"])
+    for workspace in (tmp_path, other):
+        outbox.reset_delivery(config.workspace_key(workspace))
+    monkeypatch.setattr(worker, "_post_json", upload)
+    for _ in range(3):
+        worker.drain(settings, wait_seconds=0)
+    assert [base64.b64decode(request["bytes_base64"]) for request in requests] == [other_picture]
+    backlog = outbox.status(config.workspace_key(tmp_path))[0]["attachments"]
+    assert len(backlog) == 8 and all(item["state"] == "pending" for item in backlog)
+    config.write_profile(tmp_path, server_url=settings.server_url, scope_id="scope", enabled=True)
+    for _ in range(3):
+        worker.drain(settings, wait_seconds=0)
+    assert [base64.b64decode(request["bytes_base64"]) for request in requests] == [other_picture, *pictures]
+
+
+def test_capacity_reader_recovery_does_not_backfill_after_consent_renewal(image_capture_module, monkeypatch, tmp_path):
+    config, _, worker, settings, path, payload, requests = _setup(image_capture_module, monkeypatch, tmp_path)
+    picture = b"\x89PNG\r\n\x1a\ndata"
+    monkeypatch.setattr(importlib.import_module("image_outbox"), "MAX_PENDING_BYTES", len(picture))
+    _append(path, "turn_context", {"turn_id": "turn-1"})
+    image_capture_module.enqueue_capture(payload, settings, deadline=monotonic() + 6)
+    _message(path, "first", [picture])
+    _message(path, "capacity-blocked", [picture])
+    worker.drain(settings, wait_seconds=0)
+    assert len(requests) == 1
+    config.write_profile(tmp_path, server_url=settings.server_url, scope_id="scope", enabled=False)
+    _message(path, "off-period", [picture])
+    config.write_profile(tmp_path, server_url=settings.server_url, scope_id="scope", enabled=True)
+    for _ in range(3):
+        worker.drain(settings, wait_seconds=0)
+    assert len(requests) == 1

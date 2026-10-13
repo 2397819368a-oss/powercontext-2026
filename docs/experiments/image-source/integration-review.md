@@ -26,6 +26,8 @@ Rebase 解决了 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access �
 - 观察记录达到预算后继续投递已暂存 outbox，保持授权前隐私边界。
 - watcher 停止超时后终止并回收，避免监督进程因此退出；无效配置安全关闭采集。
 - 明确 Memory 协调动作的最终正文与身份要求，结构化生成拒绝空写并使用原有有限重试补全，不放宽来源和身份校验。
+- 暂存容量不足时保留读取位置，投递后自动续读；兼容仍在库中的旧容量错误记录，保留授权时期检查和未投递材料。
+- 在投递分页之前筛选项目授权，关闭项目的积压不会占据其他项目的投递页；每次发送前重新核对授权。
 
 实际 Open Code Review 外部审查超时，24 个条目完成、9 个失败，其余未完成。返回的停止超时和异常配置问题已修复。delegate 文件筛选、规则及补查清单已建立，完整补审和修复后复审仍待完成；不能称为外部全量通过。
 
@@ -44,6 +46,7 @@ Rebase 解决了 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access �
 | 官方 Atomic Memory 迁移 | 31 条旧 entry 导入后 ready；原有 70 条 Source 的身份、payload、journal_position 和五个资产摘要保持不变，integrity_check 为 ok |
 | Ruff、Linux 目标 ty、契约、锁文件、wheel | 通过；提交前文档及最后回归另见实施记录 |
 | 召回权重契约与图片集成回归 | 顺序联合回归 402 项通过；同步并行机制并修复终止测试时序后，两 worker 的图片/采集/配置/召回回归 117 项通过，两组存在重叠 |
+| 客户端队列恢复及 ZCode 验收协议回归 | 五个队列场景在修复前失败、修复后通过；客户端/诊断/CLI/ZCode 离线联合回归两 worker 133 项通过，包含授权边界与延迟写入负例 |
 | GitHub CI（90902943） | 32 项成功、1 项按 workflow 条件跳过，含 Python 3.11–3.14、E2E、Desktop、网站及 License；新基线提交的结果独立核查 |
 | 更广兼容测试 | 231 通过、3 跳过、2 个 CLI 失败；两个失败在同版本 upstream 基线上复现 |
 

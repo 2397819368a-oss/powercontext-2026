@@ -786,3 +786,21 @@ Access/Atomic Memory 与 ZCode 协议、宿主联合回归 85 项通过。完整
 执行 uv run --no-sync python -m pytest -n 2 -q 的图片采集、生命周期、诊断、向导、CLI、召回权重、证据/恢复和并发审计集合，117 项通过（95.23 秒）。根与 e2e/bub 的 uv lock --check、API/JS/Desktop 生成检查通过；完整非类型 prek 和 Linux 目标 ty 通过，提交前再核查这四个已修改文件。Windows 原生全库 ty 的既有 POSIX 限制保留。
 
 同一草稿 PR 使用精确 force-with-lease 更新，要求远端仍为 90902943，公开说明改为当前基线和独立的新 CI 状态。推送和 GitHub head/可合并状态回读保存在忽略目录 .powercontext/image-source-experiment/pr1956-conflicts-20261013/；旧 head 的 32 项成功不充当新 head 的完成结果。后续以新提交的 CI 为准，继续独立的真实 Atomic Memory/新桌面召回、配对恢复与完整复审；本轮不标记 ready。
+
+## 2026-10-13：修复附件队列审查意见并完成新提交 CI
+
+本轮目标：修复 PR #1956 两条附件队列恢复意见，先用回归复现缓存满后停止读取、关闭项目占据投递页的失败，再实现有界且遵守原授权的恢复；读取 controlled-cli 的实际失败证据，修复根因；更新同一草稿并等待新 head 的全部 CI 结束。用户已明确授权修复、推送和核查全绿，不进行合并或标记 ready。
+
+前置状态：实验 worktree 干净，分支/PR head 为 f71748a6，GitHub 确认 MERGEABLE。当前 CI 共 37 项，35 成功、controlled-cli 失败、installed-package 按条件跳过。失败为第二组 ZCode 受控验收 late_write_not_observed_as_unknown，具体原因以原始日志及 artifact 为准；先保留分支快照和忽略目录中的证据。两条意见对应客户端缓存/调度，不改变服务端 Source 身份、图片协议、默认关闭和停用期间不补采的边界。
+
+### 已实施的修复与本地证据
+
+- 建立 codex/backup-pr1956-before-queue-fix-20261013。真实 CI 日志与两组验收 artifact 存放在忽略目录 .powercontext/image-source-experiment/pr1956-queue-ci-20261013/。
+- 增加三个容量恢复场景和两个跨项目投递场景，正确的宿主表示 fixture 下五例在旧代码失败。容量不足保持 watching 并停止本轮追加暂存，先让投递释放空间；读取旧 image_outbox_full 错误游标，且清理不移除仍可恢复的游标。容量不变、游标/字节同事务和正式摄取幂等键保持生效。
+- Outbox.pending 接收原有 worker 授权规则作为 predicate，在最多 128 条任务元数据上判定后才分页读取最多八个附件 BLOB；发送前保留第二次授权检查。关闭/更换地址的项目保留积压，其他启用项目可以前进。旧暂存材料重新授权后可投递，关闭期间的未暂存消息不会回读；Outbox 仍为版本 2。
+- ZCode 的失败 artifact 显示 Server 已接受且 gate 已释放，但读取时 capture 仍为 running。验收提前释放响应，把 CLI 返回当成 Hook 已完成。改为在原总预算和 10 秒观察预算内保持响应 gate，等 Hook 记录进入终态后再释放；未知结果、唯一 Source、精确接收身份和只读诊断断言保留。
+- 两个确定性的协议场景通过脚本加载 HEAD 的原函数复现提前释放错误；新回归既验证 CLI 返回后的异步状态，也验证 failed 不能冒充 unknown。直接场景不建立真实宿主证明，新 head 的两组实际 CLI 验收继续由 CI 执行。
+- 两个修改文件集合的 26 项测试通过；扩大为 Codex 采集/投递/观察/生命周期、诊断、CLI、ZCode 协议/宿主及 evaluation 离线集合，执行 uv run --no-sync python -m pytest -n 2 -q，133 项通过。集合有重叠，不累计宣称独立总数。
+- Ruff、1260 文件格式检查、Linux 目标全库 ty、根 lock check、ZCode pin check 和差异检查通过。当前代码索引 query_code 返回 code_disabled，未更改 Scope 或启动索引，继续使用本地源码证据。没有操作真实 Desktop、现有实验服务或私有模型配置。
+
+提交前执行全量非类型 prek；原生 Windows 全库 ty 的既有 POSIX 限制仍通过独立 Linux 目标检查区分。推送同一草稿后以实际新 head 的完整 CI 判断结果，最终检查清单写入该忽略目录的 ci-verified.json；旧 head 的成功结果不计入新 head。本次队列与 CI 修复不替代真实 Atomic Memory/新桌面召回、配对恢复及最终完整复审。

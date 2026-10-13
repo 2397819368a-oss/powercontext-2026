@@ -104,7 +104,9 @@ class Outbox:
             connection.execute(
                 """
                 DELETE FROM jobs WHERE id IN (
-                    SELECT id FROM jobs WHERE state IN ('done','idle','error') AND NOT EXISTS (
+                    SELECT id FROM jobs WHERE
+                        (state IN ('done','idle') OR (state='error' AND coalesce(error,'')!='image_outbox_full'))
+                    AND NOT EXISTS (
                         SELECT 1 FROM attachments WHERE job_id=jobs.id AND state!='accepted'
                     ) ORDER BY created DESC LIMIT -1 OFFSET ?
                 )
@@ -122,7 +124,11 @@ class Outbox:
     def jobs(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             return [
-                dict(row) for row in connection.execute("SELECT * FROM jobs WHERE state='watching' ORDER BY created")
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM jobs WHERE state='watching' OR "
+                    "(state='error' AND error='image_outbox_full') ORDER BY created"
+                )
             ]
 
     def advance(
@@ -165,14 +171,32 @@ class Outbox:
         with self.connect() as connection:
             connection.execute("UPDATE jobs SET state=?,error=? WHERE id=?", (state, error, job_id))
 
-    def pending(self) -> list[dict[str, Any]]:
+    def pending(self, *, permitted: Callable[[dict[str, Any]], bool] | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
+            query = (
+                "SELECT attachments.*,jobs.payload AS job FROM attachments JOIN jobs ON jobs.id=job_id "
+                "WHERE attachments.state='pending' AND next_attempt<=? "
+            )
+            arguments: list[Any] = [time()]
+            if permitted is not None:
+                # Job metadata is bounded by MAX_JOBS. Filter before paging blobs
+                # so a disabled workspace cannot occupy every delivery slot.
+                eligible = []
+                for row in connection.execute("SELECT id,payload FROM jobs"):
+                    try:
+                        if permitted(json.loads(row["payload"])):
+                            eligible.append(row["id"])
+                    except (ValueError, TypeError, KeyError, OSError):
+                        continue
+                if not eligible:
+                    return []
+                query += "AND job_id IN (" + ",".join("?" for _ in eligible) + ") "
+                arguments.extend(eligible)
             return [
                 dict(row)
                 for row in connection.execute(
-                    "SELECT attachments.*,jobs.payload AS job FROM attachments JOIN jobs ON jobs.id=job_id "
-                    "WHERE attachments.state='pending' AND next_attempt<=? ORDER BY attachments.created LIMIT 8",
-                    (time(),),
+                    query + "ORDER BY attachments.created LIMIT 8",
+                    arguments,
                 )
             ]
 

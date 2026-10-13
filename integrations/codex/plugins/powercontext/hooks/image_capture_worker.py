@@ -65,6 +65,11 @@ def _read_jobs(outbox: Outbox, settings: CodexPluginSettings) -> bool:
                 outbox.finish(row["id"], state="done", error="image_consent_changed")
         except (ValueError, TypeError, KeyError, OSError, AttributeError, RecursionError) as error:
             code = str(error) if str(error).startswith("image_") and len(str(error)) < 80 else "image_read_unavailable"
+            if code == "image_outbox_full":
+                # advance() rolled back the unread record and its cursor. Yield
+                # to delivery before trying to stage any more retained bytes.
+                outbox.finish(row["id"], state="watching", error=code)
+                break
             outbox.finish(row["id"], state="error", error=code)
     return progressed
 
@@ -81,7 +86,7 @@ def _upload(row: dict[str, Any], settings: CodexPluginSettings) -> str:
 
 def _deliver(outbox: Outbox, settings: CodexPluginSettings) -> bool:
     progressed = False
-    for row in outbox.pending():
+    for row in outbox.pending(permitted=lambda job: _permitted(job, settings)):
         try:
             if not _permitted(json.loads(row["job"]), settings):
                 continue
