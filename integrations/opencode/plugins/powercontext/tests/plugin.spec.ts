@@ -228,6 +228,56 @@ describe('PowerContextPlugin', () => {
     expect(JSON.parse(String(result))).toMatchObject({ ok: true })
   })
 
+  it('forwards advisory rollover reasons through both Handoff draft tools', async () => {
+    process.env.POWERCONTEXT_OPENCODE_SCOPE_ID = 'project:test'
+    const calls: Array<{ url: string; body: any }> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body))
+      calls.push({ url, body })
+      return bindingResponse(url, body) ?? Response.json({ ok: true })
+    }))
+    const hooks = await PowerContextPlugin(pluginInput())
+    const boundarySource = { name: 'content', source_id: 'turn-1' }
+    const reasons = ['host_context_budget', 'context_quality']
+    const context = {
+      sessionID: 'session-1',
+      messageID: 'msg-1',
+      agent: 'build',
+      directory: '/tmp/project',
+      worktree: '/tmp/project',
+      abort: new AbortController().signal,
+      metadata: vi.fn(),
+      ask: vi.fn(async () => undefined),
+    }
+
+    await hooks.tool?.pc_handoff_activate?.execute({
+      boundary_source: boundarySource,
+      objective: 'Continue in a fresh session.',
+      rollover_reasons: reasons,
+    }, context)
+    await hooks.tool?.pc_handoff_prepare?.execute({
+      objective: 'Continue in a fresh session.',
+      evidence: [{ kind: 'source', source_ref: boundarySource }],
+      rollover_reasons: reasons,
+    }, context)
+
+    expect(calls.filter((call) => call.url.includes('/v1/handoff/'))).toEqual([
+      { url: 'http://127.0.0.1:8000/v1/handoff/activate', body: {
+        boundary_source: boundarySource,
+        objective: 'Continue in a fresh session.',
+        evidence: [],
+        rollover_reasons: reasons,
+        scope_id: 'project:test',
+      } },
+      { url: 'http://127.0.0.1:8000/v1/handoff/prepare', body: {
+        objective: 'Continue in a fresh session.',
+        evidence: [{ kind: 'source', source_ref: boundarySource }],
+        rollover_reasons: reasons,
+        scope_id: 'project:test',
+      } },
+    ])
+  })
+
   it('does not send secret-shaped prompts', async () => {
     process.env.POWERCONTEXT_OPENCODE_SCOPE_ID = 'project:test'
     const fetchMock = vi.fn(async () => Response.json({
