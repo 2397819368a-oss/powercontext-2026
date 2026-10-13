@@ -30,6 +30,8 @@ from powercontext.builtin.artifacts.search import (
     AdmissionCounts,
     AdmissionFloor,
     admits_fts_text,
+    analyze_fts_query,
+    analyze_text,
     fts_query_requirements,
 )
 from powercontext.builtin.artifacts.topic_memory import TopicMemorySearchHit
@@ -230,6 +232,190 @@ def test_lower_floor_admits_a_vector_candidate_the_default_rejects() -> None:
     assert admit_vector_candidates(candidates) == ()
     round_one = AdmissionFloor(lexical_coverage=0.0, lexical_min_matched_terms=1, min_semantic_similarity=0.15)
     assert admit_vector_candidates(candidates, admission=round_one) == candidates
+
+
+# ── Query normalization: function words in English and Chinese ──────────────────────────────
+
+# The entry text and the query pair reported in #1912. The first form was rejected and the form
+# with a leading 的 was admitted, because 的 is in the entry and supplied the third matching term.
+_ISSUE_1912_ENTRY = "本项目的 PowerContext Server 固定在 127.0.0.1:8000；测试写入。"  # noqa: RUF001
+_ISSUE_1912_QUESTION = "PowerContext Server 地址是什么？"  # noqa: RUF001
+
+
+def test_reported_chinese_function_word_prefix_admits_consistently() -> None:
+    """Regression test for #1912: a leading function word may not flip admission.
+
+    Analyzer v1 returns one unigram per Chinese character plus one bigram per adjacent pair, so
+    a Chinese function word is never a single term and the English whole-term filter never saw
+    it. Counting 的 as query evidence let a query cross the coverage floor only because the
+    entry also contained 的.
+    """
+
+    assert admits_fts_text(_ISSUE_1912_QUESTION, _ISSUE_1912_ENTRY) is True
+    assert admits_fts_text(f"的 {_ISSUE_1912_QUESTION}", _ISSUE_1912_ENTRY) is True
+
+
+@pytest.mark.parametrize("suffix", ["的", "了", "吗", "我的", "是的", "它们的"])
+def test_chinese_function_words_do_not_raise_the_admission_bar(suffix: str) -> None:
+    """Adding function words cannot change either side of the comparison."""
+
+    assert fts_query_requirements(f"{_ISSUE_1912_QUESTION}{suffix}") == fts_query_requirements(_ISSUE_1912_QUESTION)
+
+
+@pytest.mark.parametrize(
+    ("hanzi", "terms"),
+    [
+        ("地址", ("u_5730", "u_5740", "b_5730_5740")),
+        ("地方", ("u_5730", "u_65b9", "b_5730_65b9")),
+        ("得到", ("u_5f97", "u_5230", "b_5f97_5230")),
+        ("有效", ("u_6709", "u_6548", "b_6709_6548")),
+        ("会议", ("u_4f1a", "u_8bae", "b_4f1a_8bae")),
+        ("帮助", ("u_5e2e", "u_52a9", "b_5e2e_52a9")),
+        ("要求", ("u_8981", "u_6c42", "b_8981_6c42")),
+    ],
+)
+def test_chinese_content_characters_stay_query_evidence(hanzi: str, terms: tuple[str, ...]) -> None:
+    """Characters that also carry content must survive the function-word filter."""
+
+    analyzed = analyze_fts_query(f"PowerContext Server {hanzi}").split()
+    assert set(terms) <= set(analyzed)
+
+
+def test_chinese_bigram_drops_only_when_both_characters_are_function_words() -> None:
+    """A pair with one content character stays evidence, so 行为 and 方向 keep their compound.
+
+    Reported by @hidb4ai with real SQLite Memory search at 207a63d3: retiring every pair that
+    merely touched a listed character left 行为 with the single term ``u_884c``, and the exact
+    phrase query was then refused against an entry that contained it. 址是 keeps its pair for the
+    same reason; only the all-function pairs 是什 and 什么 leave the term list.
+    """
+
+    analyzed = set(analyze_fts_query(_ISSUE_1912_QUESTION).split())
+    assert {"u_5730", "u_5740", "b_5730_5740", "b_5740_662f"} <= analyzed
+    assert not {"b_662f_4ec0", "b_4ec0_4e48"} & analyzed
+
+
+@pytest.mark.parametrize("compound", ["行为", "方向", "并发"])
+def test_content_compound_that_contains_a_listed_character_stays_recallable(compound: str) -> None:
+    """A listed character inside a content word may not cost the compound its evidence.
+
+    Reported by @hidb4ai with real SQLite Memory search at 207a63d3: 行为, 方向 and 并发 were each
+    returned by the exact-phrase query before the boundary rule widened, and each stopped being
+    returned after it, because the unigram and the bigram of the listed character were withdrawn
+    together and one match remained against a requirement of two.
+    """
+
+    assert admits_fts_text(f"alpha beta gamma {compound}", compound) is True
+
+
+def test_mixed_boundary_bigram_keeps_one_pair_and_pins_the_shift() -> None:
+    """Inserting 的 beside content keeps one mixed pair, and that shift is deliberate.
+
+    Reported on this PR: `alpha 项目地址` keeps 8 terms and needs 2, while `alpha 的项目地址`
+    keeps 9 and needs 3, because 的项 mixes the function character with a content one. Retiring
+    that pair as well is what cost 行为, 方向 and 并发 their only evidence, so the shift is kept
+    and pinned here rather than traded for a recall failure on real compounds.
+    """
+
+    without_function_word = fts_query_requirements("alpha 项目地址")
+    with_function_word = fts_query_requirements("alpha 的项目地址")
+    assert len(without_function_word[0]) == 8
+    assert without_function_word[1] == 2
+    assert len(with_function_word[0]) == 9
+    assert with_function_word[1] == 3
+
+
+def test_polite_long_query_keeps_the_documented_coverage_rejection() -> None:
+    """A query whose extra characters carry content still fails the coverage rule.
+
+    Reported by Copilot on this PR: once the mixed pairs were removed the query kept 8 terms and
+    needed 2, so `powercontext` and `server` alone admitted it, although this pull request
+    documents it as rejected. With the pair rule restored it keeps 11 terms and needs 3, so the
+    documented rejection holds while the shorter question is still admitted.
+    """
+
+    entry = "PowerContext Server 固定 127.0.0.1"
+    assert admits_fts_text("请告诉我 PowerContext Server 地址是什么？", entry) is False  # noqa: RUF001
+    assert admits_fts_text("PowerContext Server 地址是什么？", entry) is True  # noqa: RUF001
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("么", "麼"),
+        ("谁", "誰"),
+        ("吗", "嗎"),
+        ("们", "們"),
+        ("这", "這"),
+        ("还", "還"),
+        ("请", "請"),
+        ("对", "對"),
+        ("给", "給"),
+        ("让", "讓"),
+        ("从", "從"),
+        ("于", "於"),
+        ("与", "與"),
+        ("为", "為"),
+        ("并", "並"),
+        ("过", "過"),
+    ],
+)
+def test_traditional_chinese_function_characters_share_the_simplified_threshold(
+    simplified: str, traditional: str
+) -> None:
+    """Analyzer v1 sees codepoints, so each traditional form needs its own entry in the set.
+
+    Reported on this PR: 地址是什麼 kept u_9ebc and b_4ec0_9ebc, so a traditional query could
+    still raise its own admission bar and reproduce the form-sensitive recall failure. The
+    threshold is what must match; a trailing traditional character can still add one mixed
+    bigram, exactly as its simplified counterpart does.
+    """
+
+    assert fts_query_requirements(f"PowerContext Server 地址是{traditional}") == fts_query_requirements(
+        f"PowerContext Server 地址是{simplified}"
+    )
+    trailing = fts_query_requirements(f"PowerContext Server 地址{traditional}")
+    base = fts_query_requirements("PowerContext Server 地址")
+    assert trailing[1] == base[1]
+    assert len(trailing[0]) <= len(base[0]) + 1
+
+
+@pytest.mark.parametrize("literal", ["u_7684", "b_7684_9879"])
+def test_literal_analyzer_shaped_identifier_stays_query_evidence(literal: str) -> None:
+    """A literal analyzer-shaped token is not Chinese text and keeps whole-term behavior.
+
+    Reported by @hidb4ai with real SQLite Memory search at 59530d16: stored text `alpha u_7684`
+    queried with `alpha beta gamma u_7684` returned nothing, because the filter decoded the
+    literal identifier as the character 的 and withdrew it from both MATCH retrieval and
+    admission, dropping the overlap from two terms to one against a requirement of two.
+    """
+
+    requirements = fts_query_requirements(f"alpha beta gamma {literal}")
+    assert literal in requirements[0]
+    stored = set(analyze_text(f"alpha {literal}").split())
+    assert len(stored & set(requirements[0])) >= requirements[1]
+
+
+def test_literal_identifier_survives_a_query_full_of_chinese_function_words() -> None:
+    """One query carries both readings: generated function tokens go, the literal one stays."""
+
+    analyzed = analyze_fts_query("PowerContext Server 地址是什么？ u_7684").split()  # noqa: RUF001
+    assert "u_7684" in analyzed
+    assert not {"u_662f", "u_4ec0", "u_4e48", "b_662f_4ec0", "b_4ec0_4e48"} & set(analyzed)
+
+
+def test_quoted_chinese_function_text_stays_query_evidence() -> None:
+    """Quoting a Chinese function word still asks for that word explicitly."""
+
+    assert "u_7684" in analyze_fts_query(f'PowerContext Server {_ISSUE_1912_QUESTION} "的"').split()
+
+
+def test_query_normalization_leaves_the_chinese_projection_unchanged() -> None:
+    """The filter is query-only: persisted Analyzer v1 projections keep every term."""
+
+    stored = set(analyze_text("地址是什么").split())
+    assert {"u_662f", "u_4ec0", "u_4e48", "b_662f_4ec0", "b_4ec0_4e48"} <= stored
+    assert analyze_text("的").split() == ["u_7684"]
 
 
 # ── Gate verdict order ──────────────────────────────────────────────────────────────────────

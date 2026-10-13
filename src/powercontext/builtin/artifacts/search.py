@@ -87,6 +87,90 @@ _QUERY_FUNCTION_WORDS = frozenset([
     "those",
     "please",
 ])
+# The same rule for Chinese queries, whose function words Analyzer v1 cannot return as whole
+# terms. The categories mirror the English list above: structural and aspectual particles,
+# the copula, coverbs, conjunctions and adverbs, demonstrative and personal pronouns,
+# interrogatives and sentence particles, and politeness markers. Negations are absent for the
+# same reason they are absent above. Characters that also carry content are deliberately left
+# out, because a lone character cannot tell the two uses apart: 地 and 得 are also 地址, 地方,
+# 得到 and 取得, and 有, 会, 能, 要 and 帮 appear in 有效, 会议, 功能, 要求 and 帮助.
+#
+# Analyzer v1 treats every Han ideograph alike and the term filter runs on characters rather
+# than on words, so the set has to cover the traditional writing of the same function words.
+# Codepoints, not spellings, are what reach the filter: 麼 and 么 are different characters and
+# a traditional query would otherwise keep raising its own admission bar. 著 is the one
+# traditional form left out, on the same principle as 地 and 得 above: it is also the verb in
+# 著名 and 著作, so a lone character cannot tell the particle from the content word.
+_QUERY_FUNCTION_CHARACTERS = frozenset([
+    # Aspectual and structural particles, the copula, and coverbs.
+    "的",
+    "了",
+    "着",
+    "过",
+    "過",
+    "之",
+    "是",
+    "在",
+    "从",
+    "從",
+    "向",
+    "对",
+    "對",
+    "给",
+    "給",
+    "被",
+    "把",
+    "让",
+    "讓",
+    "于",
+    "於",
+    "跟",
+    # Conjunctions and adverbs.
+    "为",
+    "為",
+    "和",
+    "与",
+    "與",
+    "或",
+    "及",
+    "并",
+    "並",
+    "也",
+    "都",
+    "就",
+    "还",
+    "還",
+    # Demonstrative, personal and interrogative pronouns.
+    "我",
+    "你",
+    "他",
+    "她",
+    "它",
+    "们",
+    "們",
+    "这",
+    "這",
+    "那",
+    "哪",
+    "此",
+    "其",
+    "什",
+    "么",
+    "麼",
+    "怎",
+    "谁",
+    "誰",
+    "何",
+    # Sentence particles and politeness markers.
+    "吗",
+    "嗎",
+    "呢",
+    "吧",
+    "啊",
+    "呀",
+    "请",
+    "請",
+])
 _QUOTED_QUERY_TEXT = re.compile(r"""(`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^']*'(?!\w))""")  # noqa: RUF001
 _EXECUTION_SENTENCE = re.compile(
     r"(?:use only (?:the )?(?:(?:context|evidence|information) (?:already )?"
@@ -267,12 +351,82 @@ def analyze_text(value: str) -> str:
     return " ".join(term for term, _start, _end in analyze_text_with_spans(value))
 
 
+def _analyzed_character(code: str) -> str:
+    """Return the character an Analyzer v1 ``u_``/``b_`` component encodes, or an empty string."""
+
+    try:
+        return chr(int(code, 16))
+    except ValueError:
+        return ""
+
+
+def _is_cjk_generated_term(normalized: str, term: str, start: int) -> bool:
+    """Return whether Analyzer v1 generated one term from CJK source text.
+
+    Analyzer v1 leaves Latin and underscore identifiers unchanged, so a literal query token such
+    as ``u_7684`` lands in the term list exactly like the token generated for the character 的.
+    The only thing that separates the two is provenance, which the span carries: ``flush_cjk``
+    emits ``u_``/``b_`` terms over CJK runs, while ``flush_word`` emits verbatim terms over
+    alphanumeric runs. A term is therefore generated from Chinese text only when it has that
+    shape *and* its source span opens on a CJK character.
+    """
+
+    return term.startswith(("u_", "b_")) and start < len(normalized) and _is_cjk(normalized[start])
+
+
+def _is_query_function_term(term: str) -> bool:
+    """Return whether one analyzed query term is a function word for admission purposes.
+
+    This is the historical whole-term rule, which applies to Latin terms. It deliberately does
+    not look at ``u_``/``b_`` terms: those are filtered by :func:`_is_cjk_function_term` only
+    when Analyzer v1 generated them from Chinese text, so a literal identifier that merely
+    looks like a Chinese token keeps its documented whole-term behavior. Anything unrecognized
+    stays evidence.
+    """
+
+    return term in _QUERY_FUNCTION_WORDS
+
+
+def _is_cjk_function_term(term: str) -> bool:
+    """Return whether one CJK-generated term is a function word for admission purposes.
+
+    Analyze Chinese terms only; call this exclusively for terms :func:`_is_cjk_generated_term`
+    accepted. Analyzer v1 does not segment Chinese: a Chinese run becomes one unigram per
+    character plus one bigram per adjacent pair, so a Chinese function word is never a single
+    term. A unigram is a function word exactly when its character is. A bigram is one only when
+    **both** of its characters are, because several listed characters also carry content — 为 in
+    行为, 向 in 方向, 并 in 并发 — and a bigram is the only evidence those two-character
+    compounds have. Retiring every pair that merely touches a listed character would leave 行为
+    with the single term ``u_884c``, and a query for the exact phrase would then be refused
+    against an entry that contains it.
+
+    The boundary this leaves is deliberate and documented: inserting a function character can
+    still contribute one mixed bigram to the denominator, so 的 raises ``required_matches`` when
+    the characters around it carry content (``项目地址`` keeps 8 terms and needs 2, ``的项目地址``
+    keeps 9 and needs 3). That is the ordinary coverage behaviour of any query that grows, which
+    the module documents above; removing it would require the segmentation this analyzer lacks.
+    """
+
+    if term.startswith("u_"):
+        return _analyzed_character(term[2:]) in _QUERY_FUNCTION_CHARACTERS
+    if term.startswith("b_"):
+        left, _, right = term[2:].partition("_")
+        return all(
+            character in _QUERY_FUNCTION_CHARACTERS
+            for character in (_analyzed_character(left), _analyzed_character(right))
+        )
+    return False
+
+
 def analyze_fts_query(value: str) -> str:
     """Extract lexical evidence terms without changing stored text or semantic queries.
 
     Recognize only standalone, generic English execution instructions accompanying other
     query content. Preserve quoted text, domain-specific directives and unknown phrasing.
-    Unquoted function words cannot supply the sole overlap during a relaxed recall-gate round.
+    Unquoted function words cannot supply the sole overlap during a relaxed recall-gate round,
+    in English or in Chinese, so a query cannot raise its own admission bar by adding them.
+    Filtering is per occurrence and decided by provenance, so a literal ``u_``/``b_`` token
+    keeps its whole-term behavior while the same string generated from Chinese text does not.
     """
 
     content: list[str] = []
@@ -285,9 +439,20 @@ def analyze_fts_query(value: str) -> str:
             sentences = re.split(r"(?<=[.!?])\s+|\n+", part)
             content.extend(sentence for sentence in sentences if not _is_execution_sentence(sentence))
     # A search consisting solely of a directive may be looking up that very policy.
-    terms = analyze_text(" ".join(content) if any(sentence.strip() for sentence in content) else value).split()
+    searched = " ".join(content) if any(sentence.strip() for sentence in content) else value
+    analyzed = analyze_text_with_spans(searched)
+    terms = [term for term, _start, _end in analyzed]
     if len(set(terms)) > _FTS_SHORT_QUERY_MAX_TERMS:
-        meaningful = [term for term in terms if term in quoted_terms or term not in _QUERY_FUNCTION_WORDS]
+        normalized = unicodedata.normalize("NFC", searched).casefold()
+        meaningful = [
+            term
+            for term, start, _end in analyzed
+            if term in quoted_terms
+            or not (
+                _is_query_function_term(term)
+                or (_is_cjk_generated_term(normalized, term, start) and _is_cjk_function_term(term))
+            )
+        ]
         if meaningful:
             terms = meaningful
     return " ".join(terms)
