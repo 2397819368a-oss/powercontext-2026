@@ -137,6 +137,8 @@ powercontext server db-migrate apply --target atomic-memory-directory --env-file
 powercontext server db-migrate verify --target atomic-memory-directory --env-file deployment.env
 ```
 
+默认迁移目标仍为已发布的五表 Artifact 结构 `p0004`。可选目录目标将含 Artifact handle 和 bootstrap receipt 的
+当前业务结构登记为 `p0005` 基线，再应用 `p0006`。
 显式迁移增加目录字段，只回填当前 Atomic 精确正文中的类型。验证成功后启动匹配的新程序；普通启动不补目录
 字段、不回填目录。其他模块保留原有初始化行为。旧 Memory 迁移成功不能单独证明这个目标就绪：未登记的归档
 对象、历史结构和向量配置仍会被拒绝。检查和验证不修复数据；中断维护保留原恢复点，并阻止业务重新启动。

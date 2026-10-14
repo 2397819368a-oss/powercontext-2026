@@ -29,6 +29,9 @@ from powercontext.http import (
     ArtifactCreated,
     ArtifactReference,
     ArtifactRevision,
+    BootstrapContext,
+    BootstrapContextRequest,
+    BootstrapDeliveryReceipt,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
     CommitHandoffRequest,
@@ -71,6 +74,7 @@ from powercontext.http import (
     PrepareHandoffRequest,
     ProposeExperienceRequest,
     ProposeSkillRequest,
+    RecordBootstrapDeliveryRequest,
     RecordTaskOutcomeRequest,
     ResolveExternalSkillRequest,
     ReviseArtifactCandidateRequest,
@@ -128,6 +132,7 @@ from powercontext.http._generated.operations import (
     LIST_MEMORY_CHANGES,
     LIST_MEMORY_ENTRIES,
     LIST_REMOTE_SKILL_TARGETS,
+    PREPARE_BOOTSTRAP_CONTEXT,
     PREPARE_CONTEXT,
     PREPARE_HANDOFF,
     PROPOSE_EXPERIENCE,
@@ -136,6 +141,7 @@ from powercontext.http._generated.operations import (
     PUBLISH_ARTIFACT,
     PUBLISH_REMOTE_SKILL,
     RECONCILE_REMOTE_SKILLS,
+    RECORD_BOOTSTRAP_DELIVERY,
     RECORD_REMOTE_SKILL_RECEIPT,
     RECORD_SKILL_USAGE,
     RECORD_TASK_OUTCOME,
@@ -523,10 +529,35 @@ def test_prepared_context_is_a_generic_typed_operation_outside_the_mcp_memory_to
         "query",
         "max_bytes",
         "assembly",
+        "bootstrap_receipt_id",
         "include_code",
     }
     assert set(schemas["PreparedContext"]["properties"]) == {"schema", "status", "content", "content_bytes"}
     assert not {"memory", "mode", "selection"} & set(schemas["PreparedContext"]["properties"])
+
+
+def test_bootstrap_context_has_typed_prepare_and_delivery_operations() -> None:
+    assert PREPARE_BOOTSTRAP_CONTEXT.path == "/v1/context/bootstrap"
+    assert PREPARE_BOOTSTRAP_CONTEXT.request_type is BootstrapContextRequest
+    assert PREPARE_BOOTSTRAP_CONTEXT.response_type is BootstrapContext
+    assert PREPARE_BOOTSTRAP_CONTEXT.success_status == 200
+    assert RECORD_BOOTSTRAP_DELIVERY.path == "/v1/context/bootstrap/receipts"
+    assert RECORD_BOOTSTRAP_DELIVERY.request_type is RecordBootstrapDeliveryRequest
+    assert RECORD_BOOTSTRAP_DELIVERY.response_type is BootstrapDeliveryReceipt
+
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    schemas = contract["components"]["schemas"]
+    assert schemas["BootstrapContextRequest"]["properties"]["enabled"]["default"] is False
+    assert schemas["BootstrapContextRequest"]["properties"]["max_bytes"]["maximum"] == 8192
+    assert schemas["BootstrapContext"]["properties"]["items"]["maxItems"] == 7
+    assert schemas["BootstrapContextLifecycle"]["enum"] == [
+        "startup",
+        "resume",
+        "clear",
+        "compact",
+        "restore",
+        "fork",
+    ]
 
 
 def test_experience_skill_and_review_operations_are_typed_and_family_routed() -> None:
@@ -831,6 +862,8 @@ def test_base_access_contract_includes_revision_history_and_tags() -> None:
         ("/v1/scopes/{scope_id}/sources", "get"): "list_sources",
         ("/v1/scopes/{scope_id}/sources/{source_type}/{source_id}", "get"): "get_source",
         ("/v1/scopes/{scope_id}/artifacts", "post"): "create_artifact",
+        ("/v1/scopes/{scope_id}/artifact-handles/{family}/{key}", "get"): "resolve_artifact_handle",
+        ("/v1/scopes/{scope_id}/artifact-handles/{family}/{key}", "put"): "bind_artifact_handle",
         ("/v1/scopes/{scope_id}/artifacts/{family}", "get"): "list_artifacts",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}", "get"): "get_artifact",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}", "put"): "replace_artifact",
@@ -847,7 +880,9 @@ def test_base_access_contract_includes_revision_history_and_tags() -> None:
     actual_operations = {
         (path, method): operation["operationId"]
         for path, path_item in paths.items()
-        if path.startswith("/v1/scopes/{scope_id}/sources") or path.startswith("/v1/scopes/{scope_id}/artifacts")
+        if path.startswith("/v1/scopes/{scope_id}/sources")
+        or path.startswith("/v1/scopes/{scope_id}/artifacts")
+        or path.startswith("/v1/scopes/{scope_id}/artifact-handles")
         for method, operation in path_item.items()
     }
     assert actual_operations == expected_operations

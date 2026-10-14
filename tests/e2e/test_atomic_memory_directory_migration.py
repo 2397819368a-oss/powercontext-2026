@@ -106,10 +106,22 @@ def test_shared_cli_initializes_directory_target_and_inspections_do_not_create_i
         ],
     )
     assert applied.exit_code == 0, applied.output
-    assert json.loads(applied.output)["revision"] == "p0005"
+    assert json.loads(applied.output)["revision"] == "p0006"
     verified = cli.invoke(create_cli([server_cli]), [*command, "verify", *options])
     assert verified.exit_code == 0, verified.output
     assert json.loads(verified.output)["server_ready"] is False
+
+    async def restart_frozen_database():
+        application = create_server_app(settings=_settings(path), scheduler_path=path.with_suffix(".scheduler.json"))
+        async with application.router.lifespan_context(application):
+            runtime = application.state.application
+            scope_id = (await runtime.scopes.default_scope()).scope_id
+            page = await runtime.atomic_memory.for_scope(scope_id).query_directory(context=_LOCAL)
+            assert page.items == ()
+
+    asyncio.run(restart_frozen_database())
+    # Native startup must not add missing upstream tables to a frozen initialized target.
+    assert _runner(path).verify().state == "ready"
 
 
 def test_actual_server_baseline_upgrades_without_changing_exact_history_or_identity(tmp_path):
@@ -118,9 +130,24 @@ def test_actual_server_baseline_upgrades_without_changing_exact_history_or_ident
     with sqlite3.connect(path) as connection:
         originals = connection.execute("SELECT * FROM pc_artifacts ORDER BY artifact_id,revision").fetchall()
         identity = connection.execute("SELECT server_id FROM pc_server_identity").fetchone()
+        family, artifact_id, revision = connection.execute(
+            "SELECT family,artifact_id,revision FROM pc_artifacts ORDER BY artifact_id LIMIT 1"
+        ).fetchone()
+        connection.execute(
+            "INSERT INTO pc_artifact_handles VALUES (?,?,?,?,?)", (scope_id, family, "saved", artifact_id, revision)
+        )
+        connection.execute(
+            "INSERT INTO pc_context_bootstrap_receipts "
+            "(receipt_id,scope_id,request_digest,integration,lifecycle,profile,state,max_bytes,"
+            "content_bytes,truncated,items,created_at) VALUES (?,?,?,'test','session_start','test',"
+            "'pending',512,0,0,X'5B5D','2026-09-28 12:00:00')",
+            ("receipt", scope_id, "digest"),
+        )
+        handles = connection.execute("SELECT * FROM pc_artifact_handles").fetchall()
+        receipts = connection.execute("SELECT * FROM pc_context_bootstrap_receipts").fetchall()
     runner = _runner(path)
     plan = runner.plan()
-    assert plan.adopt_baseline and plan.source_revision == "p0004"
+    assert plan.adopt_baseline and plan.source_revision == "p0005"
     assert plan.data_tasks == ("atomic-memory-directory-v1",)
     result = _apply(runner)
     assert result.backup_state == "completed"
@@ -128,6 +155,8 @@ def test_actual_server_baseline_upgrades_without_changing_exact_history_or_ident
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT * FROM pc_artifacts ORDER BY artifact_id,revision").fetchall() == originals
         assert connection.execute("SELECT server_id FROM pc_server_identity").fetchone() == identity
+        assert connection.execute("SELECT * FROM pc_artifact_handles").fetchall() == handles
+        assert connection.execute("SELECT * FROM pc_context_bootstrap_receipts").fetchall() == receipts
         assert connection.execute("SELECT DISTINCT content_kind FROM pc_artifact_heads").fetchall() == [("fact",)]
         generation = connection.execute("SELECT atomic_memory_directory_generation FROM pc_scopes").fetchone()[0]
         assert generation == 2
@@ -306,9 +335,17 @@ def test_unknown_business_objects_are_not_ignored_and_missing_recovery_evidence_
         _runner(path).plan()
 
 
-def test_default_acceptance_bundle_remains_four_table_scope():
-    assert production_bundle().head == "p0003"
-    assert production_bundle().data_tasks == ()
+def test_default_acceptance_bundle_keeps_released_artifact_handles_scope():
+    bundle = production_bundle()
+    assert bundle.head == "p0004"
+    assert bundle.data_tasks == ()
+    assert bundle.affected_objects == (
+        "pc_artifacts",
+        "pc_artifact_heads",
+        "pc_artifact_candidate_versions",
+        "pc_artifact_tags",
+        "pc_artifact_handles",
+    )
 
 
 def test_unsupported_sqlite_connection_options_cannot_silently_skip_managed_writer_hooks(tmp_path):

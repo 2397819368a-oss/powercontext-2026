@@ -5,10 +5,11 @@
     ],
     "p0002": [],
     "p0003": [],
-    "p0004": [
+    "p0004": [],
+    "p0005": [
       "schemas/atomic_directory_sqlite_v1.json"
     ],
-    "p0005": [
+    "p0006": [
       "schemas/atomic_directory_sqlite_v1.json",
       "tasks/atomic_directory_v1.py"
     ]
@@ -16,7 +17,8 @@
   "sqlite_baselines": {
     "e1cae089a8a565291a7a1f782cea1f6c6e1a6cdd9eab75ef0c4ca61dfda453cb": "p0001",
     "fcee685ed307ee6d02fe5e950ed4e80be75f38d19de902ccacf443f21ee8c73d": "p0003",
-    "11e8770068a5fe32dfb25681564dbbe586ba0fd0238ed01adf1b09dde8a49f22": "p0004"
+    "8cb2d41e53cde751c8d0ef4023c344ec5ec78d9e579366c1c93d17de30aa5ea4": "p0004",
+    "d93e21ab21b78a07de3ad5f15f1aba498332decfc86fd14974d7abfb9d237e84": "p0005"
   },
   "sqlite_fingerprints": {
     "p0001": [
@@ -30,17 +32,22 @@
       "fcee685ed307ee6d02fe5e950ed4e80be75f38d19de902ccacf443f21ee8c73d"
     ],
     "p0004": [
-      "11e8770068a5fe32dfb25681564dbbe586ba0fd0238ed01adf1b09dde8a49f22"
+      "f65244be963a382a62565118ff874cd775ab1ea33cf51a49881b40391e47c051",
+      "8cb2d41e53cde751c8d0ef4023c344ec5ec78d9e579366c1c93d17de30aa5ea4"
     ],
     "p0005": [
-      "535851738dc14ba0e1d4ebb29a0cfc13e39f31fc70fb0ed7a6a479a808cafdd5"
+      "d93e21ab21b78a07de3ad5f15f1aba498332decfc86fd14974d7abfb9d237e84"
+    ],
+    "p0006": [
+      "5d13c7ecb46b45851807316363868b44135faa6d86c43522c86752008149e801"
     ]
   },
   "affected_objects": [
     "pc_artifacts",
     "pc_artifact_heads",
     "pc_artifact_candidate_versions",
-    "pc_artifact_tags"
+    "pc_artifact_tags",
+    "pc_artifact_handles"
   ],
   "retained_objects": [
     "pc_retained_p0002_artifact_tags"
@@ -53,10 +60,10 @@
   "retained_revisions": {
     "pc_retained_p0002_artifact_tags": "p0003"
   },
-  "default_revision": "p0003",
+  "default_revision": "p0004",
   "targets": {
     "atomic-memory-directory": {
-      "revision": "p0005",
+      "revision": "p0006",
       "affected_objects": [
         "pc_scopes",
         "pc_artifact_heads",
@@ -69,6 +76,7 @@
         "pc_artifact_candidate_heads",
         "pc_artifact_candidate_versions",
         "pc_artifact_fts",
+        "pc_artifact_handles",
         "pc_artifact_lineage_artifacts",
         "pc_artifact_lineage_sources",
         "pc_artifact_processing_auto_wave_targets",
@@ -85,6 +93,7 @@
         "pc_atomic_memory_current",
         "pc_atomic_memory_current_fts",
         "pc_connector_checkpoints",
+        "pc_context_bootstrap_receipts",
         "pc_decision_observations",
         "pc_dream_runs",
         "pc_external_skill_registrations",
@@ -121,15 +130,15 @@
         "pc_topic_memory_work_budgets"
       ],
       "baseline_revisions": [
-        "p0004"
+        "p0005"
       ],
-      "minimum_source_revision": "p0004"
+      "minimum_source_revision": "p0005"
     }
   },
   "data_tasks": [
     {
       "name": "atomic-memory-directory-v1",
-      "revision": "p0005",
+      "revision": "p0006",
       "resource": "tasks/atomic_directory_v1.py"
     }
   ]

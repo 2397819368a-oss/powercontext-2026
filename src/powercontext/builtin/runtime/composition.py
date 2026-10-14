@@ -102,6 +102,7 @@ from powercontext.builtin.persistence.atomic_memory_readiness import (
     assert_atomic_memory_migration_ready,
     ensure_supported_atomic_memory_schema,
 )
+from powercontext.builtin.persistence.bootstrap_receipts import BootstrapReceiptRepository
 from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
 from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
 from powercontext.builtin.persistence.migrations.deployment import directory_readiness
@@ -752,6 +753,7 @@ async def open_builtin_runtime(
                 remote_skill_distribution=contexts.remote_skill_distribution(),
                 statistics_service=contexts.statistics,
                 record_service=contexts.records,
+                bootstrap_receipts=BootstrapReceiptRepository(contexts.database),
                 atomic_memory_application=contexts.atomic_memory,
                 artifact_merge_application=_artifact_merge_application(contexts, config.runtime),
                 prompt_service=contexts.prompts,

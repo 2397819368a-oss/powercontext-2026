@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-"""Expand directory metadata; explicit data tasks run under the same maintenance lock."""
+"""Frozen current SQLite business structure, not a legacy business-data converter."""
 
 import json
 from pathlib import Path
@@ -28,6 +28,20 @@ def upgrade() -> None:
     connection = op.get_bind()
     if connection.dialect.name != "sqlite":
         raise ValueError("This registered target supports only SQLite")  # noqa: TRY003
+    # The earlier five-table acceptance history is usable for empty initialization
+    # only. Existing real business layouts are explicitly adopted at p0005.
+    tables = (
+        "pc_artifact_handles",
+        "pc_artifact_tags",
+        "pc_artifact_candidate_versions",
+        "pc_artifact_heads",
+        "pc_artifacts",
+    )
+    for table in tables:
+        if connection.exec_driver_sql(f"SELECT 1 FROM {table} LIMIT 1").first() is not None:  # noqa: S608
+            raise ValueError("Nonempty acceptance layouts require a registered legacy adapter")  # noqa: TRY003
+    for table in tables:
+        connection.exec_driver_sql(f"DROP TABLE {table}")
     resource = json.loads((Path(__file__).parents[1] / "schemas/atomic_directory_sqlite_v1.json").read_text())
-    for statement in resource["sqlite_expand"]:
+    for statement in resource["sqlite_init"]:
         connection.exec_driver_sql(statement)

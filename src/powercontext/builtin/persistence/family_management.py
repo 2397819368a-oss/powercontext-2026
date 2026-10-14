@@ -475,9 +475,14 @@ class AtomicMemoryManagementWriter:
         execution_context=None,
     ) -> AtomicMemoryManagementPrepared:
         from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+        from powercontext.builtin.runtime.atomic_memory import deferred_decision_audit
 
         context = execution_context
-        async with self.application.database.transaction() as connection:
+        # Preparation only reads; flush audit after closing its policy snapshot.
+        async with (
+            deferred_decision_audit(context),
+            self.application.database.transaction() as connection,
+        ):
             plan = await self.application.service.inspect_change(
                 connection,
                 scope_id,

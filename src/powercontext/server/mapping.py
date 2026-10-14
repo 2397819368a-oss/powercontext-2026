@@ -84,6 +84,9 @@ from powercontext.builtin.runtime import (
 from powercontext.builtin.runtime import (
     ApproveArtifactCandidateRequest as RuntimeApproveArtifactCandidateRequest,
 )
+from powercontext.builtin.runtime import BootstrapContext as RuntimeBootstrapContext
+from powercontext.builtin.runtime import BootstrapContextRequest as RuntimeBootstrapContextRequest
+from powercontext.builtin.runtime import BootstrapDeliveryReceipt as RuntimeBootstrapDeliveryReceipt
 from powercontext.builtin.runtime import (
     CommitConnectorCheckpoint as RuntimeCommitConnectorCheckpoint,
 )
@@ -115,6 +118,7 @@ from powercontext.builtin.runtime import (
     ProposeExperienceRequest as RuntimeProposeExperienceRequest,
 )
 from powercontext.builtin.runtime import ProposeSkillRequest as RuntimeProposeSkillRequest
+from powercontext.builtin.runtime import RecordBootstrapDeliveryRequest as RuntimeRecordBootstrapDeliveryRequest
 from powercontext.builtin.runtime import (
     RejectArtifactCandidateRequest as RuntimeRejectArtifactCandidateRequest,
 )
@@ -161,6 +165,7 @@ from powercontext.http import (
     ArtifactCandidate,
     ArtifactCandidatePage,
     ArtifactReference,
+    BootstrapDeliveryReceipt,
     CandidateFamily,
     CandidateStatus,
     CaptureContentSourceRequest,
@@ -245,6 +250,8 @@ from powercontext.http import (
     WorkSourceKind,
     WorkSourceReceipt,
 )
+from powercontext.http import BootstrapContext as TransportBootstrapContext
+from powercontext.http import BootstrapContextRequest as TransportBootstrapContextRequest
 from powercontext.http import ConnectorBinding as HttpConnectorBinding
 from powercontext.http import (
     FailureRecord as TransportFailureRecord,
@@ -296,6 +303,7 @@ from powercontext.http import (
 from powercontext.http import (
     PreparedHandoff as TransportPreparedHandoff,
 )
+from powercontext.http import RecordBootstrapDeliveryRequest as TransportRecordBootstrapDeliveryRequest
 from powercontext.http import RepairSurface as TransportRepairSurface
 from powercontext.server.atomic_memory import record_response
 from powercontext.sources import (
@@ -651,6 +659,18 @@ def prepare_context_request(value: TransportPrepareContextRequest) -> PrepareCon
     return PrepareContextRequest.model_validate_json(value.model_dump_json(exclude={"scope_id"}, exclude_unset=True))
 
 
+def bootstrap_context_request(value: TransportBootstrapContextRequest) -> RuntimeBootstrapContextRequest:
+    return RuntimeBootstrapContextRequest.model_validate_json(
+        value.model_dump_json(exclude={"scope_id"}, exclude_unset=True)
+    )
+
+
+def record_bootstrap_delivery_request(
+    value: TransportRecordBootstrapDeliveryRequest,
+) -> RuntimeRecordBootstrapDeliveryRequest:
+    return RuntimeRecordBootstrapDeliveryRequest.model_validate_json(value.model_dump_json(exclude={"scope_id"}))
+
+
 def activate_handoff_request(value: ActivateHandoffRequest) -> ActivateHandoff:
     return ActivateHandoff(
         boundary_source=runtime_source_reference(value.boundary_source),
@@ -809,6 +829,14 @@ def prepared_context_response(value: PreparedContext) -> TransportPreparedContex
         "content": value.content,
         "content_bytes": value.content_bytes,
     })
+
+
+def bootstrap_context_response(value: RuntimeBootstrapContext) -> TransportBootstrapContext:
+    return TransportBootstrapContext.model_validate_json(value.model_dump_json(by_alias=True))
+
+
+def bootstrap_delivery_response(value: RuntimeBootstrapDeliveryReceipt) -> BootstrapDeliveryReceipt:
+    return BootstrapDeliveryReceipt.model_validate_json(value.model_dump_json())
 
 
 def entries_response(value: AtomicMemoryPage) -> ListMemoryEntriesResponse:

@@ -97,9 +97,9 @@ def directory_readiness(database: SQLiteConfig) -> bool | None:
         return None
     runner, revision = inspected
     runner.assert_business_startup_allowed()
-    if revision is None or revision in {"p0001", "p0002", "p0003"}:
+    if revision is None or revision in {"p0001", "p0002", "p0003", "p0004"}:
         return None
-    if revision not in {"p0004", "p0005"}:
+    if revision not in {"p0005", "p0006"}:
         raise MigrationError("incompatible_schema", "The schema revision is not supported by this program.")
     try:
         plan = runner.plan()
@@ -109,7 +109,7 @@ def directory_readiness(database: SQLiteConfig) -> bool | None:
         raise
     if plan.state == "recovery_required":
         raise MigrationError("recovery_required", "Complete explicit directory maintenance before business startup.")
-    return plan.state == "ready" and not make_url(database.url).query if revision == "p0005" else None
+    return plan.state == "ready" and not make_url(database.url).query if revision == "p0006" else None
 
 
 MigrationRunner = SQLiteMigrationRunner | MySQLMigrationRunner

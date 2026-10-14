@@ -144,6 +144,8 @@ powercontext server db-migrate apply --target atomic-memory-directory --env-file
 powercontext server db-migrate verify --target atomic-memory-directory --env-file deployment.env
 ```
 
+The default migration target remains the released five-table Artifact schema at `p0004`. The optional directory target
+adopts the current business baseline at `p0005`, including Artifact handles and bootstrap receipts, then applies `p0006`.
 The explicit migration adds directory metadata and backfills only exact current Atomic content. Restart the matching
 program after successful verification; normal startup does not add or backfill directory fields. Other modules retain
 their existing initialization behavior. Completing legacy Memory migration alone does not establish this target's
