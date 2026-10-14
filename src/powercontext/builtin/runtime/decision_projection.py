@@ -212,6 +212,11 @@ class KnownSecretDecisionRequestSanitizer:
         if isinstance(value, str):
             sanitized = self._sanitize_text(value)
             return sanitized, sanitized != value, _has_decision_material(sanitized)
+        if type(value) in {int, float}:
+            encoded = json.dumps(value, ensure_ascii=False)
+            if self._sanitize_text(encoded) != encoded:
+                return REDACTED, True, False
+            return value, False, True
         if isinstance(value, list):
             items = tuple(self._sanitize_json_value(item) for item in value)
             return (

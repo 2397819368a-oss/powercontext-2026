@@ -910,6 +910,115 @@ def test_hosted_redacted_withholds_when_source_evidence_values_are_entirely_reda
     asyncio.run(scenario())
 
 
+def test_hosted_redacted_sanitizes_numeric_source_evidence_values(monkeypatch) -> None:
+    secret = "87654321"  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The project uses Python 3.11.",),
+                evidence=(
+                    json.dumps(
+                        {"text": "Python 3.11 is required.", "credential": int(secret)},
+                        separators=(",", ":"),
+                    ),
+                ),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.used_fallback is False
+        assert len(backend.requests) == 1
+        projected = backend.requests[0]
+        assert secret not in projected.evidence[0]
+        assert json.loads(projected.evidence[0]) == {
+            "credential": "[REDACTED]",
+            "text": "Python 3.11 is required.",
+        }
+        assert sink.observations[0].metadata["redaction_facts"] == ["evidence_redacted"]
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_withholds_plain_numeric_known_secret_evidence(monkeypatch) -> None:
+    secret = "87654321"  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The project uses Python 3.11.",),
+                evidence=(secret,),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        observation = sink.observations[0]
+        assert observation.assessment.coverage is DecisionCoverage.UNADJUDICATED
+        assert observation.fallback_reason == "projection_material_removed"
+        assert observation.privacy_outcome == "hosted_redacted_withheld"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("nonfinite", ["NaN", "Infinity", "-Infinity"])
+def test_hosted_redacted_preserves_nonfinite_numeric_evidence_without_sanitizer_failure(nonfinite: str) -> None:
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+        evidence = f'{{"text":"Safe material remains.","measurement":{nonfinite}}}'
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The measurement was recorded.",),
+                evidence=(evidence,),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.used_fallback is False
+        assert len(backend.requests) == 1
+        assert backend.requests[0].evidence == (evidence,)
+        observation = sink.observations[0]
+        assert observation.assessment.coverage is DecisionCoverage.ADJUDICATED
+        assert observation.fallback_reason is None
+        assert observation.metadata["redaction_facts"] == []
+        assert observation.privacy_outcome == "hosted_redacted_model_called"
+
+    asyncio.run(scenario())
+
+
 def test_hosted_redacted_withholds_when_candidate_text_is_entirely_redacted() -> None:
     async def scenario() -> None:
         backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
