@@ -15,6 +15,8 @@
  */
 
 import { Failure, loadSettings, request, resolveScope } from '../shared/runtime.mjs'
+import { parseArgs } from 'node:util'
+import { queryObservations } from '../shared/observations.mjs'
 
 const checks = {}
 let settings
@@ -36,4 +38,14 @@ if (settings) {
     checks.scope = { status: 'ok', detail: 'Configured Scope is accessible.' }
   } catch (error) { checks.scope = result(error) }
 }
-process.stdout.write(JSON.stringify({ schema: 'powercontext.kimi-code.diagnostics.v1', checks }) + '\n')
+const { values } = parseArgs({ options: { cwd: { type: 'string' }, 'session-id': { type: 'string' } } })
+let runtime
+if (values.cwd) {
+  try {
+    runtime = await queryObservations({ cwd: values.cwd, session_id: values['session-id'] }, loadSettings({ credentials: false }))
+  } catch (error) {
+    runtime = { status: 'failed', code: ['invalid_state', 'runtime_capacity_exceeded', 'invalid_settings', 'invalid_session']
+      .includes(error.code ?? error.message) ? error.code ?? error.message : 'runtime_unavailable' }
+  }
+}
+process.stdout.write(JSON.stringify({ schema: 'powercontext.kimi-code.diagnostics.v1', checks, ...(runtime ? { runtime } : {}) }) + '\n')

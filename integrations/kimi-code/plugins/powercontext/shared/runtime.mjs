@@ -30,7 +30,7 @@ export class Failure extends Error {
   }
 }
 
-export function loadSettings() {
+export function loadSettings({ credentials = true } = {}) {
   let value
   try {
     const bytes = readFileSync(fileURLToPath(new URL('../powercontext.json', import.meta.url)))
@@ -46,13 +46,17 @@ export function loadSettings() {
       url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Failure('invalid_settings')
   if (typeof value.scope_id !== 'string' || !value.scope_id.trim() || [...value.scope_id].length > 256 ||
       typeof value.capture_prompts !== 'boolean' || typeof value.use_token !== 'boolean') throw new Failure('invalid_settings')
-  const token = value.use_token ? process.env[TOKEN_ENV] : undefined
-  if (value.use_token && token === undefined) throw new Failure('authentication_failed')
+  return { serverUrl: url.origin, scopeId: value.scope_id, capturePrompts: value.capture_prompts,
+    useToken: value.use_token, authorization: credentials ? authorization(value.use_token) : undefined }
+}
+
+export function authorization(useToken) {
+  const token = useToken ? process.env[TOKEN_ENV] : undefined
+  if (useToken && token === undefined) throw new Failure('authentication_failed')
   if (token !== undefined && (!token || !/^[!-~]+$/u.test(token) || token.length > 8192)) {
     throw new Failure('invalid_credentials')
   }
-  return { serverUrl: url.origin, scopeId: value.scope_id, capturePrompts: value.capture_prompts,
-    authorization: token === undefined ? undefined : 'Bearer ' + token }
+  return token === undefined ? undefined : 'Bearer ' + token
 }
 
 export async function request(settings, method, path, body, budgetSignal) {

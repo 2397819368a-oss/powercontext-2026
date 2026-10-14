@@ -141,7 +141,7 @@ harness-compose-down: ## Stop the selected isolated harness environment and remo
 
 .PHONY: contract-test
 contract-test: api-generate-check js-api-generate-check ## Verify generated API code and contract bindings.
-	@uv run python -m pytest tests/test_api_contract.py tests/test_js_operations.py
+	@uv run python -m pytest tests/test_api_contract.py tests/test_js_operations.py tests/test_desktop_contract.py
 
 .PHONY: api-generate
 api-generate: ## Generate API models and operations from OpenAPI.

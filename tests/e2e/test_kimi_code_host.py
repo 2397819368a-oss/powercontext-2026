@@ -377,12 +377,43 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
         evidence_ids = {item["source_id"] for item in revision.json()["sources"]}
         assert evidence_ids & {item["source_id"] for item in captured}
         start = len(gateway.requests)
-        invoke("What was the Kimi acceptance staging color?")
+        recall = invoke("What was the Kimi acceptance staging color?")
         assert any(
             "cobalt-731" in json.dumps(request["messages"])
             and "powercontext.kimi-code.request-binding.v1" in json.dumps(request["messages"])
             for request in gateway.requests[start:]
         )
+
+        session_id = next(
+            event["session_id"]
+            for line in recall.stdout.splitlines()
+            if line.startswith("{") and isinstance((event := json.loads(line)).get("session_id"), str)
+        )
+        history = subprocess.run(
+            [
+                node,
+                str(Path(installed.plugin_path) / "scripts/status.mjs"),
+                "--cwd",
+                str(workspace),
+                "--session-id",
+                session_id,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            timeout=5,
+        )
+        observed = json.loads(history.stdout)
+        assert observed["status"] == "observed", observed
+        assert observed["selection"] == "session"
+        assert observed["stages"]["prepare"]["state"] == "ready"
+        assert observed["stages"]["capture"]["state"] == "accepted"
+        assert observed["stages"]["injection"]["state"] == "emitted"
+        diagnostics = run_kimi_diagnostics(runtime=True, cwd=workspace)
+        assert diagnostics["runtime"].ok, diagnostics
+        assert diagnostics["runtime"].checks is not None
+        assert diagnostics["runtime"].checks["capture"] == "accepted"
 
         install_kimi_plugin(source=REPOSITORY, capture_prompts=False)
         count = len(client.get(f"/v1/scopes/{scope_id}/sources").json()["items"])
@@ -439,6 +470,7 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
                     "exact_readback": True,
                     "source_generation": True,
                     "fresh_session_injection": True,
+                    "runtime_observation": True,
                     "capture_disabled": True,
                     "wrong_token_fail_open": True,
                     "outage_fail_open": True,
