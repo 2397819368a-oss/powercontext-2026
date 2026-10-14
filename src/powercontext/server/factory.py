@@ -80,6 +80,7 @@ from powercontext.server.dashboard import mount_dashboard
 from powercontext.server.dream_access import DreamAccess
 from powercontext.server.identity import ServerIdentityRepository
 from powercontext.server.info import server_info
+from powercontext.server.logging import WorkerLogging
 from powercontext.server.mcp import mount_mcp
 from powercontext.server.metrics import CONTENT_TYPE_LATEST, HttpMetricsMiddleware, ServerMetrics
 from powercontext.server.middleware import AuthenticationMiddleware
@@ -164,7 +165,9 @@ def create_server_app(  # noqa: C901
         external_skills=resolved.external_skills,
     )
     metrics = ServerMetrics() if resolved.metrics.enabled else None
-    resolved_tracing = ServerTracing.context_only() if tracing is None else tracing
+    resolved_tracing = (
+        ServerTracing.context_only(role=resolved.runtime.artifact_processing_role) if tracing is None else tracing
+    )
     if metrics is not None:
         metrics.set_ready(False)
     readiness_probe = _ServerReadinessProbe(metrics, tracing=resolved_tracing)
@@ -232,6 +235,7 @@ def create_server_app(  # noqa: C901
                     scheduled_source_runner=scheduled_source_runner,
                     scheduled_experience_runner=scheduled_experience_runner,
                     worker_security=worker_security,
+                    worker_initializer=WorkerLogging(resolved.logging),
                     scheduled_profile_runner=_scheduled_profile_runner(
                         resolved,
                         active_access_control,

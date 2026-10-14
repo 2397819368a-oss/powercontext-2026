@@ -270,6 +270,7 @@ def test_code_tracing_exports_stale_query_as_error_without_source_text(repositor
         assert len(failed) == 1
         assert failed[0].attributes is not None
         assert failed[0].attributes["powercontext.code.reason"] == "code_changed"
+        assert failed[0].attributes["powercontext.error.category"] == "conflict"
         attributes = repr([dict(span.attributes or {}) for span in spans])
         assert "private" not in attributes
         assert str(root) not in attributes

@@ -47,7 +47,7 @@ from starlette.routing import Match
 from starlette.types import Lifespan, Scope
 from typing_extensions import override
 
-from powercontext._logging import log_safely
+from powercontext._logging import error_category, log_safely
 from powercontext.artifacts import ArtifactAddress, ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
@@ -5221,8 +5221,9 @@ def _observe_application_operation(
                 started_at=started_at,
                 error=diagnostic_error,
                 error_code=error_code,
+                status_code=response_status,
             )
-            _finish_span(span, "failure", error=diagnostic_error)
+            _finish_span(span, "failure", error=diagnostic_error, error_code=error_code, status_code=response_status)
             raise
         outcome = _application_outcome(result)
         _observe_application(app, operation, outcome, started_at)
@@ -5279,10 +5280,24 @@ def _start_application_span(app: FastAPI, operation: Operation[Any, Any]) -> Any
     )
 
 
-def _finish_span(span: Any | None, outcome: str, *, error: BaseException | None = None) -> None:
+def _finish_span(
+    span: Any | None,
+    outcome: str,
+    *,
+    error: BaseException | None = None,
+    error_code: str | None = None,
+    status_code: int | None = None,
+) -> None:
     if span is not None:
         with suppress(Exception):
-            span.finish(outcome, error=error)
+            attributes: dict[str, Any] = {}
+            if status_code is not None:
+                attributes["http.response.status_code"] = status_code
+            if error_code is not None:
+                category = error_category(error_code, status_code=status_code, outcome=outcome)
+                if category is not None:
+                    attributes["powercontext.error.category"] = category
+            span.finish(outcome, error=error, attributes=attributes or None)
 
 
 def _observe_application(
@@ -5327,6 +5342,7 @@ def _log_operation(
     started_at: float,
     error: Exception | None = None,
     error_code: str | None = None,
+    status_code: int | None = None,
 ) -> None:
     extra = {
         "event": "application.operation.completed",
@@ -5338,6 +5354,8 @@ def _log_operation(
     }
     if error_code is not None:
         extra["error_code"] = error_code
+    if status_code is not None:
+        extra["status_code"] = status_code
     log_safely(logger, level, message, exc_info=error, extra=extra)
 
 

@@ -24,8 +24,8 @@ import sys
 import time
 import traceback as traceback_module
 from collections import deque
-from collections.abc import Awaitable, Callable, Sequence
-from contextlib import nullcontext, suppress
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -46,7 +46,7 @@ if sys.platform == "win32":
 else:
     from multiprocessing.popen_spawn_posix import Popen as SpawnPopen
 
-from powercontext._logging import log_safely
+from powercontext._logging import error_category, is_inference_failure_code, log_context, log_safely
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import ArtifactProcessingLeadershipLostError
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
@@ -70,7 +70,7 @@ from powercontext.builtin.runtime.processing_contracts import (
     WorkerEntrypoint,
     processing_error_code,
 )
-from powercontext.builtin.runtime.protocols import RuntimeTracing
+from powercontext.builtin.runtime.protocols import RuntimeSpan, RuntimeTracing
 
 logger = logging.getLogger(__name__)
 _OCEANBASE_TICK_SECONDS = 1.0
@@ -204,15 +204,16 @@ def _start_owned_spawn_process(process: _OwnedSpawnProcess, owner: _SpawnStartOw
 class SpawnArtifactProcessingWorkerLauncher:
     """Launch a picklable Worker entrypoint in a fresh spawn child process."""
 
-    def __init__(self, entrypoint: WorkerEntrypoint) -> None:
+    def __init__(self, entrypoint: WorkerEntrypoint, *, initializer: Callable[[], None] | None = None) -> None:
         self._entrypoint = entrypoint
+        self._initializer = initializer
 
     async def start(self, assignment: ArtifactProcessingWorkAssignment) -> ArtifactProcessingWorkerHandle:
         context = multiprocessing.get_context("spawn")
         receiver, sender = context.Pipe(duplex=False)
         process = _OwnedSpawnProcess(
             target=_run_spawned_worker,
-            args=(sender, self._entrypoint, assignment),
+            args=(sender, self._entrypoint, assignment, self._initializer),
             name=f"powercontext-artifact-worker-{assignment.worker_id}",
             daemon=False,
         )
@@ -535,7 +536,9 @@ class ArtifactProcessingSupervisor:
 
     async def start(self) -> None:
         if self._task is None:
-            self._task = asyncio.create_task(self._run(), name=f"artifact-supervisor-{self._supervisor_group}")
+            # Control tasks inherit this context too, including lease renewal and reaping.
+            with log_context({"request_id": None}):
+                self._task = asyncio.create_task(self._run(), name=f"artifact-supervisor-{self._supervisor_group}")
             await self._started.wait()
 
     def wake(self, binding_name: str | None = None) -> None:
@@ -1010,9 +1013,14 @@ class ArtifactProcessingSupervisor:
                     "family": assignment.artifact_family,
                     "scope": assignment.scope_id,
                     "request_generation": assignment.claimed_request_generation,
+                    "worker_id": assignment.worker_id,
                     "supervisor_group": self._supervisor_group,
                     "supervisor_generation": assignment.fence.supervisor_generation,
                     "retry_delay_seconds": self._blocked_check_seconds,
+                    "operation": "process_artifact_scope",
+                    "unit": "background",
+                    "outcome": "blocked",
+                    "error_category": "blocked",
                 },
             )
         self._defer(
@@ -1038,7 +1046,7 @@ class ArtifactProcessingSupervisor:
                 "artifact_processing.worker", operation="process_artifact_scope", attributes=attributes
             )
         )
-        with background as span:
+        with log_context(_worker_log_fields(assignment)), background as span, _observe_worker_error(span):
             handle: ArtifactProcessingWorkerHandle | None = None
             try:
                 async with asyncio.timeout(binding.worker_timeout_seconds):
@@ -1049,9 +1057,12 @@ class ArtifactProcessingSupervisor:
                     ):
                         handle = await binding.launcher.start(assignment)
                     with (
-                        nullcontext()
-                        if self._tracing is None
-                        else self._tracing.stage("artifact_processing.worker.wait", attributes=attributes)
+                        (
+                            nullcontext()
+                            if self._tracing is None
+                            else self._tracing.stage("artifact_processing.worker.wait", attributes=attributes)
+                        ) as wait_span,
+                        _observe_worker_error(wait_span),
                     ):
                         completion = await handle.wait()
                     if completion.outcome is ArtifactProcessingWorkerOutcome.LEADERSHIP_LOST:
@@ -1075,10 +1086,29 @@ class ArtifactProcessingSupervisor:
                             else self._tracing.stage("artifact_processing.worker.acknowledge", attributes=attributes)
                         ):
                             await self._verify_acknowledgement(assignment)
+                        log_safely(
+                            logger,
+                            logging.INFO,
+                            "Artifact processing invocation acknowledged",
+                            extra={"event": "artifact_processing.worker.acknowledged", "outcome": "success"},
+                        )
                     elif span is not None:
                         span.set_outcome(completion.outcome.value)
                     return completion
             except BaseException as error:
+                if isinstance(error, (asyncio.CancelledError, TimeoutError)):
+                    log_safely(
+                        logger,
+                        logging.INFO if isinstance(error, asyncio.CancelledError) else logging.ERROR,
+                        "Artifact processing invocation interrupted",
+                        extra={
+                            "event": "artifact_processing.worker.interrupted",
+                            "outcome": "cancelled" if isinstance(error, asyncio.CancelledError) else "failure",
+                            "error_code": "worker_cancelled"
+                            if isinstance(error, asyncio.CancelledError)
+                            else "worker_timeout",
+                        },
+                    )
                 if span is not None:
                     span.set_attributes({"powercontext.artifact_processing.failure": _worker_failure_category(error)})
                 if handle is not None:
@@ -1284,7 +1314,7 @@ class ArtifactProcessingSupervisor:
         )
         if stage in {"supervisor", "lease_renewal", "scope_discovery"}:
             error_code = f"{stage}_failed"
-        elif error_code.startswith("model_") or error_code == "invalid_model_output":
+        elif is_inference_failure_code(error_code):
             stage = "inference"
         elif isinstance(error, TimeoutError):
             error_code = "worker_timeout"
@@ -1303,10 +1333,13 @@ class ArtifactProcessingSupervisor:
         failures: int = 0,
         delay: float = 0,
     ) -> None:
+        cancelled = isinstance(error, asyncio.CancelledError) or (
+            isinstance(error, _WorkerExecutionError) and error.failure.cancelled
+        )
         log_safely(
             logger,
-            logging.ERROR,
-            "Artifact processing failed",
+            logging.INFO if cancelled else logging.ERROR,
+            "Artifact processing cancelled" if cancelled else "Artifact processing failed",
             extra={
                 "event": "artifact_processing.failed",
                 "stage": error.failure.stage
@@ -1326,9 +1359,14 @@ class ArtifactProcessingSupervisor:
                 "traceback": error.failure.traceback if isinstance(error, _WorkerExecutionError) else "",
                 "retry_count": failures,
                 "retry_delay_seconds": delay,
-                "error_code": error.failure.error_code
+                "error_code": "worker_cancelled"
+                if cancelled
+                else error.failure.error_code
                 if isinstance(error, _WorkerExecutionError)
                 else _safe_error_attribute(error, "error_code", type(error).__name__),
+                "operation": "process_artifact_scope",
+                "unit": "background",
+                "outcome": "cancelled" if cancelled else "failure",
             },
         )
 
@@ -1399,32 +1437,132 @@ def _run_spawned_worker(
     sender: _WorkerResultSender,
     entrypoint: WorkerEntrypoint,
     assignment: ArtifactProcessingWorkAssignment,
+    initializer: Callable[[], None] | None = None,
 ) -> None:
-    try:
-        completion = entrypoint(assignment)
-        sender.send(ArtifactProcessingWorkerCompletion() if completion is None else completion)
-    except BaseException as error:
-        error_code = processing_error_code(type(error))
-        sender.send(
-            ArtifactProcessingWorkerFailure(
-                stage=_safe_error_attribute(error, "stage", "worker"),
-                error_code=(
-                    _safe_error_attribute(error, "error_code", "worker_failed")
-                    if error_code == "processing_failed"
-                    else error_code
-                ),
-                exception_type=type(error).__name__,
-                traceback=_safe_traceback(error),
-                block=error.block if isinstance(error, ArtifactProcessingBlockedError) else None,
-            )
+    with log_context(_worker_log_fields(assignment)):
+        if initializer is not None:
+            try:
+                initializer()
+            except Exception:
+                log_safely(
+                    logger,
+                    logging.WARNING,
+                    "Worker logging initialization failed; continuing processing",
+                    extra={
+                        "event": "observability.worker_logging_failed",
+                        "error_code": "logging_configuration_failed",
+                    },
+                )
+        started_at = time.perf_counter()
+        log_safely(
+            logger,
+            logging.INFO,
+            "Artifact processing worker started",
+            extra={"event": "artifact_processing.worker.started"},
         )
-    finally:
-        sender.close()
+        try:
+            completion = entrypoint(assignment)
+            sender.send(ArtifactProcessingWorkerCompletion() if completion is None else completion)
+            log_safely(
+                logger,
+                logging.INFO,
+                "Artifact processing worker returned; acknowledgement is checked by the supervisor",
+                extra={
+                    "event": "artifact_processing.worker.returned",
+                    "outcome": "success"
+                    if completion is None or completion.outcome is ArtifactProcessingWorkerOutcome.SUCCEEDED
+                    else completion.outcome.value,
+                    "duration_ms": max(time.perf_counter() - started_at, 0) * 1000,
+                },
+            )
+        except BaseException as error:
+            error_code = processing_error_code(type(error))
+            block = error.block if isinstance(error, ArtifactProcessingBlockedError) else None
+            level = logging.ERROR
+            outcome = "failure"
+            event = "artifact_processing.worker.failed"
+            message = "Artifact processing worker interrupted"
+            if block is not None:
+                level = logging.WARNING
+                outcome = "blocked"
+                event = "artifact_processing.worker.blocked"
+                message = "Artifact processing worker blocked; operator remediation required"
+            elif isinstance(error, asyncio.CancelledError):
+                level = logging.INFO
+                outcome = "cancelled"
+            log_safely(
+                logger,
+                level,
+                message,
+                extra={
+                    "event": event,
+                    "outcome": outcome,
+                    "error_code": error_code if block is None else block.error_code,
+                    "error_category": None if block is None else "blocked",
+                    "stage": None if block is None else block.stage,
+                    "exception_type": type(error).__name__,
+                    "duration_ms": max(time.perf_counter() - started_at, 0) * 1000,
+                },
+            )
+            sender.send(
+                ArtifactProcessingWorkerFailure(
+                    stage=_safe_error_attribute(error, "stage", "worker"),
+                    error_code=(
+                        _safe_error_attribute(error, "error_code", "worker_failed")
+                        if error_code == "processing_failed"
+                        else error_code
+                    ),
+                    exception_type=type(error).__name__,
+                    traceback=_safe_traceback(error),
+                    block=error.block if isinstance(error, ArtifactProcessingBlockedError) else None,
+                    cancelled=isinstance(error, asyncio.CancelledError),
+                )
+            )
+        finally:
+            sender.close()
+
+
+def _worker_log_fields(assignment: ArtifactProcessingWorkAssignment) -> dict[str, str | int | None]:
+    return {
+        "request_id": None,
+        "operation": "process_artifact_scope",
+        "unit": "background",
+        "family": assignment.artifact_family,
+        "binding": assignment.binding_name,
+        "scope": assignment.scope_id,
+        "worker_id": assignment.worker_id,
+        "request_generation": assignment.claimed_request_generation,
+        "supervisor_group": assignment.fence.supervisor_group,
+        "supervisor_generation": assignment.fence.supervisor_generation,
+    }
 
 
 def _safe_error_attribute(error: BaseException, name: str, fallback: str) -> str:
     value = getattr(error, name, None)
     return value if isinstance(value, str) and value else fallback
+
+
+@contextmanager
+def _observe_worker_error(span: RuntimeSpan | None) -> Iterator[None]:
+    """Keep child failure semantics across the worker transport wrapper."""
+
+    try:
+        yield
+    except BaseException as error:
+        if span is not None and isinstance(error, (_WorkerExecutionError, ArtifactProcessingBlockedError)):
+            with suppress(Exception):
+                outcome = "failure"
+                if isinstance(error, ArtifactProcessingBlockedError) or error.failure.block is not None:
+                    outcome = category = "blocked"
+                elif error.failure.cancelled:
+                    outcome = category = "cancelled"
+                else:
+                    code = processing_error_code(error.failure.exception_type, error.failure.error_code)
+                    category = error_category(code, outcome=outcome)
+                span.set_outcome(outcome)
+                if category is not None:
+                    span.set_attributes({"powercontext.error.category": category})
+        raise
 
 
 def _worker_failure_category(error: BaseException) -> str:
