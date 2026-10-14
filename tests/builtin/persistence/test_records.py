@@ -21,10 +21,10 @@ from pathlib import Path
 
 import pytest
 from pydantic import JsonValue, ValidationError
-from sqlalchemy import event, func, select, update
+from sqlalchemy import event, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts import ArtifactRef, StableHandle
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemory, AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import Experience
 from powercontext.builtin.artifacts.handoff import Handoff
@@ -604,6 +604,29 @@ def test_artifact_get_list_replace_use_family_models_and_opaque_etags() -> None:
                 await records.create_artifact("scope-a", "document", ArtifactWrite(content={}))
             with pytest.raises(InvalidBaseAccessRequestError):
                 await records.create_artifact("scope-a", "atomic-memory", ArtifactWrite(content={"invalid": True}))
+
+    asyncio.run(scenario())
+
+
+def test_artifact_handle_resolves_through_record_service() -> None:
+    async def scenario() -> None:
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as profile:
+            records, _, _ = _services(profile)
+            handle = StableHandle(family="profile", key="support-agent")
+            target = ArtifactRef(family="profile", artifact_id="profile-1", revision=1)
+            async with profile.database.transaction() as connection:
+                await connection.execute(
+                    insert(ARTIFACTS_TABLE).values(
+                        scope_id="scope-a",
+                        family=target.family,
+                        artifact_id=target.artifact_id,
+                        revision=target.revision,
+                        content=b"{}",
+                    )
+                )
+
+            assert await records.bind_artifact_handle("scope-a", handle, target) == target
+            assert await records.resolve_artifact_handle("scope-a", handle) == target
 
     asyncio.run(scenario())
 

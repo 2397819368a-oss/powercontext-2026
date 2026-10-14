@@ -247,6 +247,23 @@ class ArtifactReference(BaseModel):
     revision: Annotated[StrictInt, Field(ge=1)]
 
 
+class BindArtifactHandleRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    revision: Annotated[StrictInt, Field(ge=1)]
+
+
+class ArtifactHandleBinding(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    family: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[a-z0-9]+(?:-[a-z0-9]+)*$")]
+    artifact: ArtifactReference
+
+
 class ArtifactAddress(BaseModel):
     model_config = ConfigDict(
         extra="forbid",

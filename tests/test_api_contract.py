@@ -862,6 +862,8 @@ def test_base_access_contract_includes_revision_history_and_tags() -> None:
         ("/v1/scopes/{scope_id}/sources", "get"): "list_sources",
         ("/v1/scopes/{scope_id}/sources/{source_type}/{source_id}", "get"): "get_source",
         ("/v1/scopes/{scope_id}/artifacts", "post"): "create_artifact",
+        ("/v1/scopes/{scope_id}/artifact-handles/{family}/{key}", "get"): "resolve_artifact_handle",
+        ("/v1/scopes/{scope_id}/artifact-handles/{family}/{key}", "put"): "bind_artifact_handle",
         ("/v1/scopes/{scope_id}/artifacts/{family}", "get"): "list_artifacts",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}", "get"): "get_artifact",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}", "put"): "replace_artifact",
@@ -878,7 +880,9 @@ def test_base_access_contract_includes_revision_history_and_tags() -> None:
     actual_operations = {
         (path, method): operation["operationId"]
         for path, path_item in paths.items()
-        if path.startswith("/v1/scopes/{scope_id}/sources") or path.startswith("/v1/scopes/{scope_id}/artifacts")
+        if path.startswith("/v1/scopes/{scope_id}/sources")
+        or path.startswith("/v1/scopes/{scope_id}/artifacts")
+        or path.startswith("/v1/scopes/{scope_id}/artifact-handles")
         for method, operation in path_item.items()
     }
     assert actual_operations == expected_operations

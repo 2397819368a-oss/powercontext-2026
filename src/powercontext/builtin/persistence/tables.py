@@ -36,6 +36,7 @@ from sqlalchemy.dialects.mysql import BINARY, MEDIUMBLOB, MEDIUMTEXT, VARCHAR
 
 from powercontext.limits import (
     MAX_ARTIFACT_FAMILY_LENGTH,
+    MAX_ARTIFACT_HANDLE_KEY_LENGTH,
     MAX_ARTIFACT_ID_LENGTH,
     MAX_BINDING_NAME_LENGTH,
     MAX_EXTERNAL_SKILL_DESCRIPTION_LENGTH,
@@ -195,6 +196,27 @@ ARTIFACTS_TABLE = Table(
     Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
     Column("revision", Integer, primary_key=True),
     Column("content", _canonical_payload_type(), nullable=False),
+)
+
+ARTIFACT_HANDLES_TABLE = Table(
+    "pc_artifact_handles",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), primary_key=True),
+    Column("handle_key", identity_string(MAX_ARTIFACT_HANDLE_KEY_LENGTH), primary_key=True),
+    Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), nullable=False),
+    Column("revision", Integer, nullable=False),
+    ForeignKeyConstraint(
+        ("scope_id", "family", "artifact_id", "revision"),
+        (
+            "pc_artifacts.scope_id",
+            "pc_artifacts.family",
+            "pc_artifacts.artifact_id",
+            "pc_artifacts.revision",
+        ),
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint("revision > 0", name="ck_pc_artifact_handles_revision_positive"),
 )
 
 ARTIFACT_HEADS_TABLE = Table(
@@ -952,6 +974,7 @@ SHARED_TABLES = (
     SOURCE_JOURNAL_HEADS_TABLE,
     SOURCES_TABLE,
     ARTIFACTS_TABLE,
+    ARTIFACT_HANDLES_TABLE,
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_LINEAGE_SOURCES_TABLE,
     ARTIFACT_LINEAGE_ARTIFACTS_TABLE,

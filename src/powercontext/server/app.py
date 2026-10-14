@@ -48,7 +48,7 @@ from starlette.types import Lifespan, Scope
 from typing_extensions import override
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactAddress, ArtifactRef
+from powercontext.artifacts import ArtifactAddress, ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchFamilyNotFound,
@@ -401,11 +401,14 @@ from powercontext.http import (
     ArtifactCollectionItem,
     ArtifactCreated,
     ArtifactFamilyAccessCapability,
+    ArtifactHandleBinding,
     ArtifactPage,
     ArtifactReadFamily,
+    ArtifactReference,
     ArtifactRevision,
     ArtifactRevisionPage,
     BaseArtifactFamily,
+    BindArtifactHandleRequest,
     BootstrapContext,
     BootstrapContextRequest,
     BootstrapDeliveryReceipt,
@@ -655,6 +658,7 @@ from powercontext.http._generated.operations import (
     API_TITLE,
     API_VERSION,
     APPROVE_ARTIFACT_CANDIDATE,
+    BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
     CHECK_ACCESS,
     CLEAR_SCOPE_BINDING,
@@ -747,6 +751,7 @@ from powercontext.http._generated.operations import (
     REPLACE_ARTIFACT,
     REPLACE_ARTIFACT_TAGS,
     REPLACE_MEMORY_ENTRY_TAGS,
+    RESOLVE_ARTIFACT_HANDLE,
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
@@ -885,6 +890,10 @@ class _ScopedRecordApplication(Protocol):
         write: RuntimeArtifactWrite,
         /,
     ) -> RuntimeArtifactCreated: ...
+
+    async def bind_artifact_handle(self, handle: StableHandle, target: ArtifactRef, /) -> ArtifactRef: ...
+
+    async def resolve_artifact_handle(self, handle: StableHandle, /) -> ArtifactRef: ...
 
     async def get_artifact(self, family: str, artifact_id: str, /) -> RuntimeArtifactRecord: ...
 
@@ -1420,6 +1429,8 @@ def create_app(
     _add_route(app, FLUSH_PROFILE, flush_profile)
     _add_route(app, GET_SOURCE, get_source)
     _add_route(app, CREATE_ARTIFACT, create_artifact)
+    _add_route(app, BIND_ARTIFACT_HANDLE, bind_artifact_handle)
+    _add_route(app, RESOLVE_ARTIFACT_HANDLE, resolve_artifact_handle)
     _add_route(app, GET_MEMORY_ENTRY_TAGS, get_memory_entry_tags)
     _add_route(app, REPLACE_MEMORY_ENTRY_TAGS, replace_memory_entry_tags)
     _add_route(app, GET_ARTIFACT_TAGS, get_artifact_tags)
@@ -2428,6 +2439,42 @@ async def create_artifact(
     response.headers["Location"] = _artifact_location(result)
     response.headers["ETag"] = _artifact_etag(result.revision)
     return _artifact_created_response(result)
+
+
+async def bind_artifact_handle(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    family: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
+    key: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")],
+    request: BindArtifactHandleRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ArtifactHandleBinding:
+    handle = StableHandle(family=family, key=key)
+    target = ArtifactRef(family=family, artifact_id=request.artifact_id, revision=request.revision)
+    result = await application.records.for_scope(scope_id).bind_artifact_handle(handle, target)
+    return _artifact_handle_binding(handle, result)
+
+
+async def resolve_artifact_handle(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    family: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
+    key: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")],
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ArtifactHandleBinding:
+    handle = StableHandle(family=family, key=key)
+    result = await application.records.for_scope(scope_id).resolve_artifact_handle(handle)
+    return _artifact_handle_binding(handle, result)
+
+
+def _artifact_handle_binding(handle: StableHandle, target: ArtifactRef) -> ArtifactHandleBinding:
+    return ArtifactHandleBinding(
+        family=handle.family,
+        key=handle.key,
+        artifact=ArtifactReference(
+            family=target.family,
+            artifact_id=target.artifact_id,
+            revision=target.revision,
+        ),
+    )
 
 
 def _list_artifacts_query(

@@ -135,6 +135,29 @@ def test_remember_memory_survives_concurrent_write_after_authorization(tmp_path:
 
 
 @pytest.mark.parametrize("backend", ["builtin", "casbin"])
+def test_stable_handle_binding_requires_scope_admin(tmp_path: Path, backend: str) -> None:
+    async def scenario() -> None:
+        async with _server(tmp_path, backend) as (_, client, _):
+            scope = await _scope(client)
+            await _grant(client, scope, "contributor", "scope.contributor")
+            created = await client.post(
+                f"/v1/scopes/{scope}/artifacts",
+                json={"family": "profile", "content": {"content": "# Support agent"}},
+            )
+            assert created.status_code == 201, created.text
+            path = f"/v1/scopes/{scope}/artifact-handles/profile/support-agent"
+            payload = {"artifact_id": created.json()["artifact_id"], "revision": created.json()["revision"]}
+
+            denied = await client.put(path, headers={"Authorization": "Bearer contributor"}, json=payload)
+            assert denied.status_code == 403, denied.text
+
+            bound = await client.put(path, json=payload)
+            assert bound.status_code == 200, bound.text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("backend", ["builtin", "casbin"])
 @pytest.mark.parametrize("target_contributor", [False, True])
 def test_missing_subject_target_preserves_authorization(tmp_path, backend, target_contributor):
     async def scenario():

@@ -3983,6 +3983,170 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 },
             }
         },
+        "/v1/scopes/{scope_id}/artifact-handles/{family}/{key}": {
+            "get": {
+                "tags": ["artifacts"],
+                "summary": "Resolve a stable Artifact handle",
+                "description": "Resolve one scope-local handle to the exact immutable Artifact revision it names.",
+                "operationId": "resolve_artifact_handle",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[\\x21-\\x7E]+$"},
+                    },
+                    {
+                        "name": "key",
+                        "in": "path",
+                        "required": True,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                        },
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The exact Artifact revision bound to the handle.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ArtifactHandleBinding"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+            "put": {
+                "tags": ["artifacts"],
+                "summary": "Bind a stable Artifact handle",
+                "description": "Idempotently "
+                "and "
+                "permanently "
+                "bind "
+                "one "
+                "scope-local "
+                "handle "
+                "to an "
+                "exact "
+                "immutable "
+                "Artifact "
+                "revision. "
+                "A "
+                "committed "
+                "binding "
+                "cannot "
+                "be "
+                "updated, "
+                "released, "
+                "or "
+                "deleted. "
+                "Repeating "
+                "the "
+                "same "
+                "binding "
+                "succeeds, "
+                "while "
+                "binding "
+                "the "
+                "key "
+                "to "
+                "another "
+                "Artifact "
+                "revision "
+                "returns "
+                "409. "
+                "Verify "
+                "the "
+                "family, "
+                "Artifact "
+                "ID, "
+                "revision, "
+                "and "
+                "key "
+                "before "
+                "committing "
+                "the "
+                "binding; "
+                "a "
+                "mistakenly "
+                "bound "
+                "key "
+                "cannot "
+                "be "
+                "reused "
+                "in "
+                "that "
+                "Scope.",
+                "operationId": "bind_artifact_handle",
+                "x-powercontext-access": {
+                    "action": "scope.admin",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[\\x21-\\x7E]+$"},
+                    },
+                    {
+                        "name": "key",
+                        "in": "path",
+                        "required": True,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                        },
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/BindArtifactHandleRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "The existing or newly committed handle binding.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ArtifactHandleBinding"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+        },
         "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}": {
             "get": {
                 "tags": ["artifacts"],
@@ -5667,6 +5831,30 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["family", "artifact_id", "revision"],
+            },
+            "BindArtifactHandleRequest": {
+                "properties": {
+                    "artifact_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "revision": {"type": "integer", "minimum": 1.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["artifact_id", "revision"],
+            },
+            "ArtifactHandleBinding": {
+                "properties": {
+                    "family": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "key": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                    },
+                    "artifact": {"$ref": "#/components/schemas/ArtifactReference"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["family", "key", "artifact"],
             },
             "ArtifactAddress": {
                 "properties": {

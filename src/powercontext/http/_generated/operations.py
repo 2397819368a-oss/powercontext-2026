@@ -22,6 +22,7 @@ from powercontext.http._generated.models import (
     ArtifactCandidate,
     ArtifactCandidatePage,
     ArtifactCreated,
+    ArtifactHandleBinding,
     ArtifactPage,
     ArtifactPublication,
     ArtifactRevision,
@@ -35,6 +36,7 @@ from powercontext.http._generated.models import (
     AtomicMemoryRestorationRequest,
     AtomicMemoryRestorationResponse,
     AtomicMemoryStateResponse,
+    BindArtifactHandleRequest,
     BootstrapContext,
     BootstrapContextRequest,
     BootstrapDeliveryReceipt,
@@ -2880,6 +2882,55 @@ LIST_ARTIFACTS = Operation[ListArtifactsRequest, ArtifactPage](
         500: {"$ref": "#/components/responses/InternalError"},
     },
     access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+RESOLVE_ARTIFACT_HANDLE = Operation[None, ArtifactHandleBinding](
+    method="GET",
+    path="/v1/scopes/{scope_id}/artifact-handles/{family}/{key}",
+    operation_id="resolve_artifact_handle",
+    request_type=None,
+    request_location=None,
+    path_parameters=("scope_id", "family", "key"),
+    response_type=ArtifactHandleBinding,
+    success_status=200,
+    summary="Resolve a stable Artifact handle",
+    tags=("artifacts",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The exact Artifact revision bound to the handle."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+BIND_ARTIFACT_HANDLE = Operation[BindArtifactHandleRequest, ArtifactHandleBinding](
+    method="PUT",
+    path="/v1/scopes/{scope_id}/artifact-handles/{family}/{key}",
+    operation_id="bind_artifact_handle",
+    request_type=BindArtifactHandleRequest,
+    request_location="body",
+    path_parameters=("scope_id", "family", "key"),
+    response_type=ArtifactHandleBinding,
+    success_status=200,
+    summary="Bind a stable Artifact handle",
+    tags=("artifacts",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The existing or newly committed handle binding."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.admin", resource="scope", scope_id_field="scope_id", resolver="request"),
 )
 
 GET_ARTIFACT = Operation[None, ArtifactRevision](

@@ -231,6 +231,11 @@ class _ModelUsageRecorder:
         # evidence that a slice is not what this record needs: handing the repeat
         # the same slice reaches the same wall and drops a record that still owns
         # most of its budget. The budget, not the slice, is what bounds the total.
+        # On SQLite a retry after an interrupted body can hold the shared
+        # connection guard for the record's entire remaining budget, delaying a
+        # competing business write by up to the full write_timeout_seconds
+        # (at most 30 seconds) plus transaction settlement/cleanup. The guard is
+        # released between attempts; the first-attempt slice is not a retry cap.
         first_attempt = True
         while True:
             remaining = deadline - loop.time()

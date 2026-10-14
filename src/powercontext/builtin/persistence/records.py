@@ -28,8 +28,9 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import Artifact, ArtifactRef
+from powercontext.artifacts import Artifact, ArtifactRef, StableHandle
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
+from powercontext.builtin.persistence.artifact_handles import ArtifactHandleRepository
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
 from powercontext.builtin.persistence.database import AsyncDatabase
@@ -138,6 +139,7 @@ class RelationalRecordService:
         self._processing_pending = processing_pending
         self._source_processing_bindings = source_processing_bindings
         self._topic_memory_list_reader = topic_memory_list_reader
+        self._artifact_handles = ArtifactHandleRepository(database)
         self._tags = RelationalTagService(
             database,
             artifacts,
@@ -147,6 +149,26 @@ class RelationalRecordService:
             projection_hook=atomic_memory_tag_hook,
             atomic_write_authorizer=atomic_memory_tag_authorizer,
         )
+
+    async def bind_artifact_handle(
+        self,
+        scope_id: str,
+        handle: StableHandle,
+        target: ArtifactRef,
+        /,
+    ) -> ArtifactRef:
+        try:
+            return await self._artifact_handles.bind(scope_id, handle, target)
+        except RepositoryNotFoundError as error:
+            raise BaseValueNotFoundError(error.kind, error.identity) from None
+        except StoredPayloadConflictError as error:
+            raise BaseValueConflictError(error.kind, error.identity) from None
+
+    async def resolve_artifact_handle(self, scope_id: str, handle: StableHandle, /) -> ArtifactRef:
+        try:
+            return await self._artifact_handles.resolve(scope_id, handle)
+        except RepositoryNotFoundError as error:
+            raise BaseValueNotFoundError(error.kind, error.identity) from None
 
     async def get_tags(self, scope_id: str, target: TagTarget) -> ArtifactTagSet:
         return await self._tags.get(scope_id, target)
