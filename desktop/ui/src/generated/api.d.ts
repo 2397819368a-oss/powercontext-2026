@@ -1840,6 +1840,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/scopes/{scope_id}/artifact-handles/{family}/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve a stable Artifact handle
+         * @description Resolve one scope-local handle to the exact immutable Artifact revision it names.
+         */
+        get: operations["resolve_artifact_handle"];
+        /**
+         * Bind a stable Artifact handle
+         * @description Idempotently and permanently bind one scope-local handle to an exact immutable Artifact revision. A committed binding cannot be updated, released, or deleted. Repeating the same binding succeeds, while binding the key to another Artifact revision returns 409. Verify the family, Artifact ID, revision, and key before committing the binding; a mistakenly bound key cannot be reused in that Scope.
+         */
+        put: operations["bind_artifact_handle"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}": {
         parameters: {
             query?: never;
@@ -2477,6 +2501,15 @@ export interface components {
             family: string;
             artifact_id: string;
             revision: number;
+        };
+        BindArtifactHandleRequest: {
+            artifact_id: string;
+            revision: number;
+        };
+        ArtifactHandleBinding: {
+            family: string;
+            key: string;
+            artifact: components["schemas"]["ArtifactReference"];
         };
         ArtifactAddress: {
             scope_id: string;
@@ -8111,6 +8144,71 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             410: components["responses"]["CursorExpired"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    resolve_artifact_handle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                family: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The exact Artifact revision bound to the handle. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactHandleBinding"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    bind_artifact_handle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                family: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindArtifactHandleRequest"];
+            };
+        };
+        responses: {
+            /** @description The existing or newly committed handle binding. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactHandleBinding"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["InvalidRequest"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];

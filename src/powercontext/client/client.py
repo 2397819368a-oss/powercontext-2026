@@ -45,10 +45,12 @@ from powercontext.http import (
     ArtifactCandidate,
     ArtifactCandidatePage,
     ArtifactCreated,
+    ArtifactHandleBinding,
     ArtifactPage,
     ArtifactPublication,
     ArtifactRevision,
     ArtifactRevisionPage,
+    BindArtifactHandleRequest,
     BootstrapContext,
     BootstrapContextRequest,
     BootstrapDeliveryReceipt,
@@ -215,6 +217,7 @@ from powercontext.http._generated.operations import (
     ACKNOWLEDGE_HANDOFF,
     ACTIVATE_HANDOFF,
     APPROVE_ARTIFACT_CANDIDATE,
+    BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
     CHECK_ACCESS,
     CLEAR_SCOPE_BINDING,
@@ -306,6 +309,7 @@ from powercontext.http._generated.operations import (
     REPLACE_ARTIFACT,
     REPLACE_ARTIFACT_TAGS,
     REPLACE_MEMORY_ENTRY_TAGS,
+    RESOLVE_ARTIFACT_HANDLE,
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
@@ -811,6 +815,29 @@ class PowerContextClient:
                 "artifact_id": artifact_id,
                 "revision": revision,
             },
+        )
+
+    async def bind_artifact_handle(
+        self,
+        scope_id: str,
+        family: str,
+        key: str,
+        request: BindArtifactHandleRequest,
+    ) -> ArtifactHandleBinding:
+        """Idempotently bind a scope-local handle to an exact Artifact revision."""
+
+        return await self._request(
+            BIND_ARTIFACT_HANDLE,
+            request,
+            path_parameters={"scope_id": scope_id, "family": family, "key": key},
+        )
+
+    async def resolve_artifact_handle(self, scope_id: str, family: str, key: str) -> ArtifactHandleBinding:
+        """Resolve a scope-local handle to its exact Artifact revision."""
+
+        return await self._request(
+            RESOLVE_ARTIFACT_HANDLE,
+            path_parameters={"scope_id": scope_id, "family": family, "key": key},
         )
 
     async def list_artifacts(self, scope_id: str, family: str, request: ListArtifactsRequest) -> ArtifactPage:
