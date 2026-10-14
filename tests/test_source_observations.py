@@ -558,3 +558,54 @@ def test_stamped_source_rejects_incompatible_declaration_before_acceptance() -> 
         SourceDefinitionRegistry((AdapterSourceDefinition(adapter),)).materialize(source)
     registry = SourceDefinitionRegistry((AdapterSourceDefinition(adapter, memory_evidence=declaration),))
     assert registry.materialize(source) == source
+
+
+@pytest.mark.parametrize("shape", ["serialized_keys", "reordered_list"])
+def test_custom_serializers_preserve_source_ownership(shape: str) -> None:
+    from typing import Annotated
+
+    from pydantic import PlainSerializer, field_serializer
+
+    from tests.source_contract_models import _CapturedAdapter
+
+    class Child(Source):
+        model_config = ConfigDict(extra="forbid")
+        content: str
+
+    class Report(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        name: str
+        memory_evidence: str
+
+    class DictionarySource(Source):
+        items: dict[
+            Annotated[str, PlainSerializer(lambda value: value.lower(), return_type=str, when_used="json")], Child
+        ]
+
+    class ListSource(Source):
+        items: list[Child | Report]
+
+        @field_serializer("items")
+        def sorted_items(self, values):
+            return sorted(values, key=lambda item: item.name)
+
+    child = Child(name="z-child", materialization=SourceMaterialization.CAPTURED, content="Evidence")
+    report = Report(name="a-report", memory_evidence="Captured report evidence.")
+    source = (
+        DictionarySource(name="parent", materialization=SourceMaterialization.CAPTURED, items={"PRIMARY": child})
+        if shape == "serialized_keys"
+        else ListSource(name="parent", materialization=SourceMaterialization.CAPTURED, items=[child, report])
+    )
+    definition = AdapterSourceDefinition(_CapturedAdapter("custom-serializer", type(source), type(source)))
+    registry = SourceDefinitionRegistry((definition,))
+    observation = project_source_for_transport(registry, source)
+    manifest = manifest_for_definition(definition)
+    _json_schema_validator(manifest.name, manifest.source_schema).validate(observation.payload)
+    items = cast(Any, observation.payload["items"])
+    if shape == "serialized_keys":
+        assert "memory_evidence" not in items["primary"]
+    else:
+        assert items[0]["memory_evidence"] == report.memory_evidence
+        assert "memory_evidence" not in items[1]
+    # Transport-only exclusion must never strip the persisted declaration.
+    assert "memory_evidence" in source.model_dump(mode="json")

@@ -16,7 +16,14 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+)
 
 from powercontext.errors import InvalidSourceReferenceError
 from powercontext.limits import MAX_SOURCE_ID_LENGTH, MAX_SOURCE_TYPE_LENGTH, MAX_VERSION_LENGTH
@@ -110,6 +117,16 @@ class Source(BaseModel):
     materialization: SourceMaterialization
     description: str | None = None
     memory_evidence: MemoryEvidenceDeclaration = MemoryEvidenceDeclaration()
+
+    @model_serializer(mode="wrap")
+    def serialize_source(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):
+        value = handler(self)
+        if isinstance(info.context, dict) and info.context.get("source_transport_payload"):
+            for name in DECLARATION_OWNED_FIELDS:
+                field = type(self).model_fields[name]
+                key = (field.serialization_alias or field.alias or name) if info.by_alias else name
+                value.pop(key, None)
+        return value
 
     @field_validator("definition_version")
     @classmethod

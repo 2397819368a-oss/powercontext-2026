@@ -17,8 +17,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import fields, is_dataclass
-from typing import Any, Literal, cast
+from dataclasses import is_dataclass
+from typing import Any, Literal
 
 import rfc8785
 from pydantic import (
@@ -26,7 +26,6 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    RootModel,
     SerializerFunctionWrapHandler,
     TypeAdapter,
     field_validator,
@@ -250,49 +249,14 @@ def _source_input_fields(schema: Any) -> Any:
 def _normalize_default(value: Any) -> Any:
     """Serialize defaults while removing Source-owned declaration fields."""
     if isinstance(value, BaseModel):
-        return _strip_payload_metadata(value, value.model_dump(mode="json"))
+        return value.model_dump(mode="json", context={"source_transport_payload": True})
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_normalize_default(item) for item in value]
     if isinstance(value, dict):
         return {key: _normalize_default(item) for key, item in value.items()}
     if is_dataclass(value) and not isinstance(value, type):
-        return _strip_payload_metadata(value, TypeAdapter(type(value)).dump_python(value, mode="json"))
+        return TypeAdapter(type(value)).dump_python(value, mode="json", context={"source_transport_payload": True})
     return value
-
-
-def _strip_payload_metadata(original: object, encoded: Any) -> Any:  # noqa: C901
-    """Remove declaration fields after JSON encoding, including set-like containers."""
-    if isinstance(original, RootModel):
-        return _strip_payload_metadata(cast(Any, original).root, encoded)
-    if isinstance(original, Source) and isinstance(encoded, dict):
-        encoded = {key: value for key, value in encoded.items() if key not in DECLARATION_OWNED_FIELDS}
-    if isinstance(original, BaseModel) and isinstance(encoded, dict):
-        for name, field in type(original).model_fields.items():
-            key = field.serialization_alias or field.alias or name
-            if not type(original).model_config.get("serialize_by_alias"):
-                key = name
-            if key in encoded:
-                encoded[key] = _strip_payload_metadata(getattr(original, name), encoded[key])
-    elif is_dataclass(original) and not isinstance(original, type) and isinstance(encoded, dict):
-        declared_fields = getattr(type(original), "__pydantic_fields__", {})
-        config = getattr(type(original), "__pydantic_config__", {})
-        for field in fields(original):
-            declaration = declared_fields.get(field.name)
-            key = field.name
-            if declaration is not None and config.get("serialize_by_alias"):
-                key = declaration.serialization_alias or declaration.alias or field.name
-            if key in encoded:
-                encoded[key] = _strip_payload_metadata(getattr(original, field.name), encoded[key])
-    elif isinstance(original, (list, tuple, set, frozenset)) and isinstance(encoded, list):
-        for index, item in enumerate(original):
-            if index < len(encoded):
-                encoded[index] = _strip_payload_metadata(item, encoded[index])
-    elif isinstance(original, dict) and isinstance(encoded, dict):
-        for key, item in original.items():
-            encoded_key = next(iter(TypeAdapter(dict[Any, Any]).dump_python({key: None}, mode="json")))
-            if encoded_key in encoded:
-                encoded[encoded_key] = _strip_payload_metadata(item, encoded[encoded_key])
-    return encoded
 
 
 def manifest_for_definition(definition: SourceDefinition[Any, Any, Any], /) -> SourceDefinitionManifest:
@@ -345,7 +309,7 @@ def project_source_for_transport(
     # Definition-owned metadata is not part of it. Carrying it here would make a
     # generated observation fail its own schema, and would change the payload of an
     # unchanged Source, so replaying a pre-upgrade observation would conflict.
-    payload = _json_object(_strip_payload_metadata(source, source.model_dump(mode="json")))
+    payload = _json_object(source.model_dump(mode="json", context={"source_transport_payload": True}))
     projections = tuple(
         SourceProjectionValue(key=key, value=registry.project(source, key)) for key in registry.projection_keys(source)
     )
