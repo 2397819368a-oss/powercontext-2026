@@ -50,9 +50,7 @@ def discover_repo_root():
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--repo-root", type=Path, default=os.environ.get("POWERCONTEXT_PROBE_REPO_ROOT"))
-parser.add_argument(
-    "--output-dir", type=Path, default=os.environ.get("POWERCONTEXT_PROBE_OUTPUT_DIR", Path(__file__).resolve().parent)
-)
+parser.add_argument("--output-dir", type=Path, default=os.environ.get("POWERCONTEXT_PROBE_OUTPUT_DIR"))
 parser.add_argument("--tokenizer-cache", type=Path, default=os.environ.get("TIKTOKEN_CACHE_DIR"))
 args = parser.parse_args()
 ROOT = args.repo_root.resolve() if args.repo_root is not None else discover_repo_root()
@@ -60,7 +58,11 @@ if ROOT is None or not (ROOT / "src/powercontext").is_dir():
     parser.error(
         "Pass --repo-root or POWERCONTEXT_PROBE_REPO_ROOT when the repository cannot be found above the script or current directory."
     )
+if args.output_dir is None:
+    parser.error("Pass --output-dir or POWERCONTEXT_PROBE_OUTPUT_DIR under /data/codex-tmp")
 OUT = args.output_dir.resolve()
+if not OUT.is_relative_to(Path("/data/codex-tmp")):
+    parser.error("Synthetic measurements and frozen samples must remain outside the repository under /data/codex-tmp")
 OUT.mkdir(parents=True, exist_ok=True)
 if args.tokenizer_cache is not None:
     os.environ["TIKTOKEN_CACHE_DIR"] = str(args.tokenizer_cache.resolve())

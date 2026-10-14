@@ -1,780 +1,646 @@
 ---
-title: Stateless Server-Side Evidence Compilation and Token Budgets
+title: Dual-Gate Token Optimization for Memory Extraction and Context Delivery
 ---
 
-- Proposal Name: `token_budgeted_evidence_delivery`
+- Proposal Name: `token_efficient_memory_lifecycle`
 - Start Date: 2026-10-13
 - Status: Proposed
 - RFC PR: [oceanbase/powercontext#1990](https://github.com/oceanbase/powercontext/pull/1990)
 - Related Issue: [#1989](https://github.com/oceanbase/powercontext/issues/1989)
 - Related Discussion: [#1971](https://github.com/oceanbase/powercontext/discussions/1971)
-- Related RFCs: [RFC 1489](1489_prepared_context_text_assembly.md),
-  [RFC 1560](1560_recall_sufficiency_gate.md), [RFC 1809](1809-atomic-memory.md),
-  [RFC 1400](1400_source_definition_and_observation_model.md),
+- Related RFCs: [RFC 1400](1400_source_definition_and_observation_model.md),
+  [RFC 1515](1515_artifact_processing_supervisor.md), [RFC 1809](1809-atomic-memory.md),
+  [RFC 1489](1489_prepared_context_text_assembly.md), [RFC 1560](1560_recall_sufficiency_gate.md),
   [RFC 0081](0081_end_to_end_evaluation_architecture.md)
 
 # Summary
 
-Add a server-side evidence compiler to PowerContext, disabled by default. After existing `prepare_context` authorization,
-retrieval, admission, and current-state checks, construct protected groups, select representations, and allocate budgets
-across the same typed candidates. Return context through existing renderers. Callers send existing requests and consume
-existing responses, without replacing agent history, installing local readers, or extending checkpoints.
+Reduce tokens at two model-input boundaries that PowerContext already owns:
 
-The first release adds **0 database tables, 0 HTTP endpoints, and 0 MCP operations**, with no public-field additions to
-existing requests, PreparedContext, or Capabilities. `RuntimeConfig` adds deployment settings: `off / shadow / active`
-use the original path, observe candidates only, or actually adopt optimized delivery. Once enabled server-side, existing
-HTTP, SDK, and host integrations calling prepare receive results directly.
+1. **Input gate: Source is saved; memory has not been extracted.** First remove duplicate copies of the body within an
+   extraction request, then share repeated message bodies and structured snapshots within the same window. The model
+   still sees complete logical evidence, occurrence order, conditions, and sources.
+2. **Output gate: Memory is recalled; context has not been delivered.** Group duplicate fields, summaries, and table keys
+   inside the existing `prepare_context`, adopting a new representation only when the complete body is smaller and passes
+   the existing contracts.
 
-Direct savings come from five content transformations: render identical field values once, render duplicate snippets once,
-render homogeneous table keys once, omit unrelated paragraphs in limited formats, and deliver fewer low-information-gain
-candidates. The first three change representations; the last two change information coverage, with quality risks evaluated
-separately. Protected groups, conditional closure, and token guards prevent degradation; they are not independent savings mechanisms.
+Both gates are independently disabled by default and support `off / shadow / active`. The input gate reduces PowerContext's
+extraction input; the output gate reduces the historical material delivered to callers. Savings from prepare cannot stand
+in for input-gate benefits. Ordinary capture, flush/supervisor, and prepare calls follow their existing workflows. Agents
+need neither replace history nor manage new state.
 
-The innovation hypothesis uses task information requirements to constrain these transformations, jointly selecting
-representations within the same candidate pool by complete rendered costs and calibrating required conditions with
-independent counterfactual experiments. Derived plans are in-memory data for one call, not persistent graphs, run ledgers,
-or cross-request hard budgets.
+The first release adds **0 database tables, 0 columns, 0 migrations, 0 HTTP endpoints, 0 MCP operations, and 0 public
+request/response fields**. The optimizer does not rewrite original Source evidence or official Artifact content. Temporary
+representations and shared bodies exist only within the current processing window or request.
 
-Generality means independence from agent frameworks and reuse of existing context delivery entry points. It does not mean
-automatic compression of every third-party tool or entire agent history. The current MCP catalog has no `prepare_context`;
-search/get/hint retain their contracts and do not automatically receive this capability. Host input replacement is an
-optional later enhancement, not a prerequisite for first-release design, acceptance, or value evidence.
+Initial active policies are limited to complete representation transformations that have passed acceptance. Identifying
+inputs that need no memory could save an entire model request, but changes the opportunity to generate memory. This stays
+in shadow until durable facts, temporal interpretation, citations, and future question-answering quality pass separate
+acceptance before activation is considered.
 
 # Motivation
 
-## Current contracts and problems
+## Why both input and output matter
 
-- PreparedContextBuilder already limits candidates, entries, individual bodies, and total bytes, with no I/O, persistence,
-  or reranking.
-- Default JSON envelopes and explicit Markdown assembly can use prefix truncation, excluding trailing conditions and failure
-  verification content from delivery.
-- Runtime still holds complete Experience structures and Topic hits, checking current Atomic eligibility before final
-  assembly. Plan from typed candidates rather than reconstructing missing conditions from truncated PreparedContext.
-- Public PreparedContext contains only `schema/status/content/content_bytes`; inner bodies already have trust, citation,
-  and truncated contracts. Improving delivery does not require another envelope.
-- Native reads such as `get_artifact_revision` and `get_source` preserve originals and exact identities. Temporary
-  representations do not need separate original stores.
-- The current MCP allowlist excludes prepare. `prepare_handoff_hint` is a separate Handoff renderer, not the same entry point.
+Optimizing prepare alone does not reduce model input already paid for during extraction. Repeated conversation snapshots,
+log wrappers, or Source projections may first enter PowerContext's extraction model, then become official memory, and only
+later reach prepare. Measure the full lifecycle from existing raw evidence to downstream use, rather than checking only
+whether the final body became slightly shorter.
 
-Entry points: [Builder](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/builtin/runtime/prepared_context.py),
-[Runtime prepare](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/builtin/runtime/application.py),
-[public models](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/builtin/runtime/models.py),
-[MCP catalog](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/server/mcp.py).
+Concrete input opportunities exist:
 
-Existing byte limits already bound delivery. Truncation, entry limits, Topic snippets, and deduplication are not new
-contributions. The proposal must answer two new questions: can it reduce provable representation redundancy under the same
-evidence and budget, and can it preserve complete conditional groups under budget competition to improve independent task
-quality? Savings from fewer returned candidates must report coverage changes separately, without attribution to lossless compression.
+- Atomic extraction receives `content` from a materialized Source or an existing TextEvidence projection, while
+  `source_metadata` contains a complete Source dump. For Content Sources and Observations carrying payload/projections,
+  the body can appear more than once in a single extraction request. Remove duplicate representations while preserving
+  meaningful metadata.
+- A window may contain progressively growing structured conversation snapshots. An early message can appear in several
+  Sources. Each Source is reliably saved, but the extraction model need not receive the same body repeatedly.
+- Topic already projects known Source types and uses bounded fragments; Atomic already checks budgets and reduces
+  oversized windows. These are the baseline. Existing projection, fragmentation, incremental cursor consumption, and
+  capture idempotency cannot be counted as new savings.
+- Existing output count, byte, and fragment limits already bound delivery size. Additional benefits must come from less
+  repetition or separately accepted coverage changes, rather than arbitrary reductions to existing configuration.
 
-## Differentiation hypotheses
+Input implementation belongs to the existing
+[Atomic extraction](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/builtin/artifacts/atomic_memory/extraction.py),
+[Atomic window processor](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/builtin/runtime/atomic_memory_processing.py),
+and [Topic processor](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/builtin/runtime/topic_memory_processing.py).
+The output gate reuses
+[Runtime prepare](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/builtin/runtime/application.py)
+and the existing builder/renderer.
 
-| Design | New behavior | Rejection criterion |
-| --- | --- | --- |
-| Protected groups and known dependency closure | Budget applicability conditions, failure constraints, and verification fields with selected actions, without independently truncating trailing fields | No condition-quality advantage over the current fitter |
-| Joint multi-representation budgets | Compare complete rendered costs and allocate representations within existing ranks/quotas instead of a fixed truncation length per entry | No advantage over reasonably configured existing assembly |
-| Counterfactual necessity calibration | Independently test consequences of deleting conditions and release fixed policies validated on held-out tasks | Policies depend on test answers, or costs/severe errors increase |
+## Product starting point
 
-Type routing, deterministic filters, protection rules, and recovery references all have precedents. Differentiation requires
-proving effectiveness within PowerContext's official evidence and assembly contracts. This proposal claims neither an
-industry first nor semantic losslessness for free text.
+PowerContext saves raw evidence, sends that evidence to extraction models, and delivers memory to downstream models. At
+these two server boundaries it can apply one rule: send each body once while retaining distinct sources and occurrences.
+Each boundary must prove its own benefits.
 
-## Scope and constraints
+The distinguishing capability is **temporary shared representations backed by complete original evidence, with extraction,
+citations, commits, and later question answering all verifiable**. Structured snapshots can encode only their changes while
+retaining complete logical snapshots, without requiring a new original-text store or a cross-request memory cache.
 
-Initially process Atomic Memory, Experience, and Topic Memory candidates already obtained by prepare. Profile, code,
-and unsupported formats retain existing behavior; `include_code=true` requests entirely use legacy in the first release.
-Add no Source reads, candidate pools, families, retrieval modes, rerank/gate expansion rounds, or memory writes. Existing
-assembly choices for format/sections/limit/show must be preserved.
-
-Build no generic tool executor, model proxy, third-party log compression service, cross-request sessions, original vault,
-or agent history manager. Do not change native search/get record contents to manufacture savings; those operations carry
-complete-read and business-governance contracts.
+Success means lower net usage across actual generation and consumption, while preserving durable facts and task quality.
+Reconstructing a representation is an algorithm prerequisite; it does not replace acceptance of model understanding and
+final answers.
 
 # Guide-level explanation
 
-## A workflow requiring no agent modifications
+## The complete user flow
 
-An agent already asks PowerContext: “Fix order retry behavior and provide relevant history.” Requests, reception, and
-injection remain unchanged.
+A user and an Agent discuss order retry rules over several turns:
 
-1. PowerContext obtains short facts, experiences, and Topic hits through existing rules.
-2. The compiler first reduces actual content. Identical Experience action/lesson values share one complete original with
-   both roles. Snippets exactly equal to complete summary fields are not repeated; validated JSON row arrays use one header.
-   Then select relevant complete paragraphs for limited formats that have passed quality acceptance.
-3. Calculate complete token costs for legal representations and allocate budgets under existing entry, byte, and rank
-   contracts. Required fields cannot be truncated into isolated actions.
-4. Existing interfaces return the original four-field PreparedContext. Existing agents receive more compact bodies and
-   continue normal question-answering.
-5. Run paired off/active trials for the same question. Independent scoring and actual model usage establish whether
-   smaller delivery yields real benefit.
+```text
+Message m1: Read-only idempotent queries may be retried at most three times.
+Message m2: Financial operations must never retry automatically.
+Message m3: Starting next week, reduce the limit to two; all other restrictions remain unchanged.
+```
 
-For example, when both `Action` and `Lesson` contain “仅幂等查询最多重试三次，资金操作禁止自动重试,” old output repeats
-that sentence twice. New output is `Action / Lesson: 仅幂等查询最多重试三次，资金操作禁止自动重试`. The sentence appears
-once while retaining both field roles and every restriction. Reject transformations when complete output grows.
-Section 5 provides individual rules, pseudocode, and measurement.
+The host saves three structured snapshots containing `[m1]`, `[m1,m2]`, and `[m1,m2,m3]`.
 
-Agents need not learn new tools, reread material, or manage allowances. Exact native reads remain optional existing
-capabilities; successful initial delivery cannot ordinarily require rereads to understand current advice. The compiler
-cannot guarantee task success when historical material was already insufficient.
+1. All three Sources are saved as usual. Original content and metadata remain readable through the existing interfaces.
+2. The input gate encodes each message body once and separately lists the messages in each snapshot. It **does not send
+   only m3**: the model still sees the old limit, when the new limit takes effect, and the financial-operation exception,
+   along with each snapshot's independent source and occurrence order.
+3. The existing extraction model produces candidates. Existing reconciliation, authorization, write checks, and window
+   transactions continue to commit official memory.
+4. When the user later asks about retry policy, existing prepare retrieves relevant memory. The output gate presents
+   repeated expressions once while retaining conditions, citations, and format.
+5. The Agent receives the body through the existing interface and works as usual. It needs no history replacement,
+   supplementary reading protocol, or decoding tool.
 
 ```mermaid
 flowchart TD
-    A[Agent submits a question] --> B[Find relevant memories and experiences<br/>Check read permissions and current eligibility]
-    B --> C[Generate a body using the existing method]
-    C --> D{Token-saving mode}
-    D -->|off| O[Return the original body]
-    D -->|shadow or active| E[Show identical field values and repeated<br/>summary text only once]
-    E --> F[Replace repeated field names across rows<br/>with one header]
-    F --> G[Select paragraphs and records relevant to the question<br/>Only for formats that passed evaluation]
-    G --> H[Keep known conditions, exceptions,<br/>and verification content for selected material]
-    H --> I[Generate a new body in the existing format<br/>Include existing citations and notices]
-    I --> J[Count tokens and bytes in the complete new body]
-    J --> K{Is it shorter, are known conditions intact,<br/>and does it meet size limits?}
-    K -->|No| O
-    K -->|Yes| L{Is the mode active?}
-    L -->|No: shadow| O
-    L -->|Yes| N[Return the new body]
-    O --> P[Agent uses the returned context normally]
-    N --> P
+    A[Agent submits conversation or tool records as usual] --> B[Save complete Source content and metadata]
+    B --> C[Select the existing processing window<br/>Check eligibility and read permissions]
+    C --> D{Input mode}
+    D -->|off| E[Send original evidence to extraction model]
+    D -->|shadow or active| F[Encode identical body copies once<br/>Share repeated message bodies<br/>Retain each occurrence's source and order]
+    F --> G{Complete logical evidence is reconstructable<br/>Request is smaller and fits the stage budget?}
+    G -->|no or shadow| E
+    G -->|yes and active| H[Send compact evidence to the same extraction model]
+    E --> I[Existing candidate validation and reconciliation]
+    H --> I
+    I --> J[Existing window commit checks<br/>Save Memory and advance cursor]
+    J --> K[User query: recall memory under existing rules]
+    K --> L{Output mode}
+    L -->|off| M[Return original body to Agent]
+    L -->|shadow or active| N[Present repeated fields and summaries once<br/>Replace repeated table keys with one header]
+    N --> O{Complete body is smaller<br/>Conditions, citations, and size checks pass?}
+    O -->|no or shadow| M
+    O -->|yes and active| P[Return compact body to Agent]
 ```
 
-The saving actions are concrete: avoid repeating text, replace repeated field names with a header, and deliver fewer
-unrelated paragraphs or low-contribution records in validated formats. Leave inputs unchanged when no rule applies.
-Shadow records the comparison between bodies but still returns the original body.
+The server checks whether complete logical evidence can be reconstructed. The model receives directly readable shared
+bodies and occurrence records. This does not guarantee correct model understanding; that requires independent evaluation.
+Unknown ordinary text is not parsed as structured conversation.
 
-The checks cover known conditions and body size; they do not establish that every implicit condition has been identified.
-Task quality is validated separately offline: answer the same question using original and new bodies, then compare results
-and actual usage. This is not an online step performed for every request.
+## Switches and rollback
 
-## Deployment switch
+| Input mode | Output mode | Actual behavior |
+| --- | --- | --- |
+| off | off | Existing extraction and delivery |
+| active | off | Change extraction input only; validate the input gate independently |
+| off | active | Existing memory generation; change prepare body only |
+| active | active | Both gates operate; validate their combined effect |
 
-These proposed settings are not supported by the current release:
+Shadow on either side only computes plans and records safe measurements; that side still runs its legacy path. Input
+shadow makes no second extraction-model call, generates no second Memory, and never advances the cursor based on a
+candidate no-op decision.
+
+Proposed input configuration:
 
 ```bash
-export POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE=off
-export POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE=shadow
-export POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE=active
+export POWERCONTEXT_SERVER_RUNTIME_MEMORY_INPUT_OPTIMIZATION_MODE=off
 ```
 
-`off` is the default. `shadow` calculates candidates only on the server, with actual bodies, origins, and existing statistics
-identical to baseline. `active` returns optimized bodies when contract/gain checks pass, otherwise falling back to the old path.
+The output gate retains the proposed `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE`. Input defaults to off and does
+not inherit output active, avoiding unexpected changes to durable memory when a deployment enables output optimization.
+Configuration is read at startup; changes require a restart. No request-level parameters are added.
 
-This is a server deployment switch, requiring neither request modes nor caller upgrades. Use existing settings loading
-at startup and restart server processes after environment-variable changes; the first release promises no hot reconfiguration.
-For client-specific gradual rollout, use separate controlled deployments and existing routing without new business fields.
-
-Disabling restores original assembly for subsequent requests. Servers cannot recall bodies already stored in agent history.
-Underlying interfaces remain available; disabling neither deletes official evidence nor invalidates existing citations.
+Turning output off restores the original body for subsequent prepare calls. Turning input off changes only subsequent
+extraction; **already consumed Sources are not automatically re-extracted**. Retaining raw Sources does not restore omitted
+Memory. Projection rebuild and Artifact restore do not replay Sources either. Lossless representation is the first-release
+input boundary; lossy input requires an explicit recovery and renewed acceptance process first.
 
 # Reference-level explanation
 
-## 1. Changes and ownership
+## 1. Ownership and change inventory
 
-| Area | First-release changes |
+| Item | Change |
 | --- | --- |
-| Database | 0 new tables, 0 new columns, 0 new indexes, 0 migrations |
-| HTTP/MCP operation | 0 additions; existing prepare entry points unchanged, MCP catalog not expanded |
-| Request/response models | 0 new fields; existing PreparedContext status/schema contracts |
-| RuntimeConfig | Deployment settings for mode, token targets, and tokenizer profiles |
-| Runtime | One stateless planning/pure-rendering pass after existing candidate acquisition |
-| Host SDK | No new readers, state channels, history hooks, or checkpoints required |
-| Statistics/evaluation | Existing trace/log sinks and evaluation artifacts record comparisons; no new business statistics tables |
+| Source capture / GET | Preserve original content, metadata, identity, idempotency, and readback contracts |
+| Database | Add no tables, columns, indexes, or migrations; store no shared-body library or feature ledger |
+| HTTP / MCP / SDK | Add no operations or public fields; retain caller workflows |
+| RuntimeConfig | Add input mode; retain output mode, target, and tokenizer configuration |
+| Atomic / Topic processing | Produce temporary model-input views after authorization, before request encoding and stage budget checks |
+| Existing extraction output / publisher | Retain evidence IDs, source mapping, candidate validation, original-window revalidation, and transaction commits |
+| prepare | Select compact representations after existing recall admission and current availability checks, before the first truncation |
+| Logs / evaluation | Reuse existing trace, usage reporters, and external artifacts; add no business statistics tables |
 
-Domain rules remain in Runtime; HTTP, SDK, and MCP do not implement separate compression logic. The compiler handles only
-Runtime-authorized/admitted typed candidates, without database queries, network access, model calls, or persistence.
-Reuse cohesive helpers in existing builders/renderers rather than a new composition root, contributor registry, or parallel
-context service.
+The domain layer retains complete original evidence; generators send only the selected temporary view. Shared references
+must not be written into authoritative Sources, and worksets must not present compressed objects as original evidence.
+HTTP, MCP, and host adapters do not implement their own gate rules.
 
-## 2. Modes and deployment configuration
+This does not intercept every model request. Input encoding is enabled only for specified built-in Atomic/Topic stages;
+a general generator must not acquire trimming branches that guess behavior by operation. Output schemas and business
+evidence IDs remain unchanged. Built-in model-input encoding and its instructions may be versioned. Custom Prompts and
+injected pipelines without declared support for the encoding use legacy by default and require separate acceptance.
 
-Proposed settings:
+Use explicit **private typed model-input views and dedicated built-in generator bindings**. Existing generic generators
+check the input type and serialize the original typed object directly. Topic content is a string and extra fields are
+forbidden; a blocks/refs dictionary cannot be inserted into that DTO. Retain original Atomic/Topic logical input and construct
+a separate private input type carrying the encoding version, body blocks, and original evidence occurrence records. Only
+built-in stages bind this type and instructions explaining the shared representation at the factory. Outputs retain the
+original candidate/proposal schemas.
 
-| Runtime field | Default | Meaning |
+Each plan explicitly selects legacy typed input with the original generator, or a compact typed view with its corresponding
+built-in generator. Budgets, stage fit, and actual sending share the selected type's deterministic serialization, including
+its instructions/schemas. Record a digest of the final serialization to verify that the measured representation becomes
+the actual request. Do not measure compact input while passing the original object to TypeAdapter, or substitute an
+unmeasured string after budget checks. Model results are still validated against original IDs; subsequent worksets, lineage,
+and publishers use original logical evidence. Changes remain within private inference input and built-in bindings, without
+expanding public APIs or the generic generator's domain responsibilities.
+
+## 2. Integration with existing processing budgets
+
+Input retains the Atomic input limit, Topic stage budgets, existing window limits, fragments, and output reserves. It does
+not add one small input cap overriding every stage. Output `token_optimization_target_tokens` still applies only to prepare
+bodies. Measurement profiles may reuse `token_optimization_tokenizer`, without assuming it matches the provider tokenizer.
+
+Initially, fix the windows and candidates selected by legacy before comparing representations. A smaller compact input does
+not expand windows, historical candidates, or Scope. Topic window selection, batch fit, fixed prompt/schema costs, and
+final sending must use one consistent measurement contract. Do not replace input after a budget check with a different,
+unmeasured request, or treat a smaller data body as proof that the complete request, including schemas, instructions, and
+retries, is smaller.
+
+For each supported stage, construct legacy and candidate inputs and measure them with fixed instructions, input/output
+schemas, and sharing instructions. Encoder errors, unsupported formats, failed complete reconstruction, candidates that
+are not smaller, or violations of existing stage budgets use the original path. If that path is still oversized, follow
+existing window reduction / failure contracts. Dropping trailing Sources cannot be reported as successful processing.
+
+No mandatory online LLM call is added to decide whether input is worth remembering. If model-based trimming is introduced
+later, every added call and failure cost belongs in total input usage; a reduction in the main extraction request alone
+is insufficient.
+
+## 3. Input I1: encode one body per evidence item
+
+Target explicit duplication in Atomic input:
+
+```text
+Original logical input:
+  evidence_id = source:41
+  content = {source_id: s1, content: Body A, metadata: Original business metadata}
+  source_metadata = {Other original fields, content: The same Body A, metadata: The same business metadata}
+
+Temporary model input:
+  evidence_id = source:41
+  Body A: appears once
+  Original content.content and source_metadata.content both refer to this body
+  Identical content.metadata and source_metadata.metadata may share their complete subtree
+  All other fields and field roles: fully retained
+```
+
+This removes copies within the same request while retaining SourceRefs, times, metadata, and original records. Requirements:
+
+1. Handle only known Source/projection paths. Identify duplicates by complete original strings or JSON subtrees with strict
+   type equality.
+2. Represent known duplicate paths with explicit references local to this request. Retain paths and roles; matching
+   sentences inside a body must not be interpreted as system markers.
+3. Retain effective times, recorded times, entities, roles, quantities, conditions, states, and unknown metadata fields.
+   Unsupported schemas/projections retain original input; do not delete fields based on names or keywords.
+4. The server verifies that expanding the view reproduces the original typed logical input. Scalar types, list order,
+   multiplicity, and every source ID remain unchanged.
+5. Domain evidence and native Source GET remain unchanged. Required instructions, paths, and references count toward tokens;
+   short bodies may offer no benefit.
+
+Replacing `source_metadata` with a tiny field allowlist cannot manufacture savings. Group proven duplicate copies first;
+lossy field selection requires separate consideration. Topic's existing standard projection is an independent baseline and
+is not counted again as an I1 benefit.
+The example corresponds to native ContentCapture. For Observations, validate actual TextEvidence and payload/projection
+paths subtree by subtree; do not assume that complete content equals a payload.
+
+## 4. Input I2: share repeated bodies, retain complete snapshots
+
+I2 separates **how many copies of a body are encoded** from **how many logical occurrences exist**. Sharing is limited to
+the same authorized window and stage input. It never crosses Scope, scans the full collection or history, or builds a
+cross-request dictionary.
+
+Illustrative candidate representation for validated structured message snapshots:
+
+```text
+Body blocks:
+  b1 = {role: user, text: Read-only idempotent queries may be retried at most three times.}
+  b2 = {role: user, text: Financial operations must never retry automatically.}
+  b3 = {role: user, text: Starting next week, reduce the limit to two; all other restrictions remain unchanged.}
+
+Evidence occurrence records:
+  source:41 = [b1]         + This Source's own times and metadata
+  source:42 = [b1,b2]      + This Source's own times and metadata
+  source:43 = [b1,b2,b3]   + This Source's own times and metadata
+```
+
+Every Source remains fully reconstructable within this request. The model cites `source:41/42/43`, never b1 or a fabricated
+duplicate group. The third snapshot retains the context behind “all other restrictions remain unchanged”; it is not reduced
+to a tail containing only b3.
+
+Rules and boundaries:
+
+- Initially support explicitly versioned structured message/record sequences or completely identical long fields. Unknown
+  prose, nested formats, unclear record boundaries, and excessively deep objects retain original input. Token similarity
+  cannot establish that two facts are identical.
+- Block equality preserves complete content, types, and internal roles. Different numbers, versions, negation, tool results,
+  and exit codes must not be shared as one value.
+- Occurrence records retain original order and multiplicity. `[b1,b1]` in one Source cannot become `[b1]`; repeated table rows
+  cannot become one row.
+- A snapshot's event/effective/recorded times, journal position, and independent conditions remain separate. The same body at
+  two times remains two occurrences of evidence. Text duplication cannot justify skipping a new Source or assigning every
+  fact the latest timestamp among all supporting Sources.
+- Input block references must have distinct types, be acyclic and fully bound, and never bind across scopes. Reconstruction
+  checks make no network, model, or database reads. Text resembling `b1` inside a body is not a structured reference.
+- Planners bound scanned characters, depth, block counts, reference counts, and CPU. Exceeding a limit falls back to legacy.
+  Adoption requires a smaller complete request.
+
+This is **fully reconstructable incremental encoding within a window**. It does not extract only a new tail across windows
+or rebrand existing incremental cursor consumption. The main extraction stage still sees complete logical evidence, so no
+new persistent fingerprints of previously remembered facts are needed.
+
+Atomic extract and Topic probe are the initial insertion points. Topic global/evolve/temporary requests that include the
+same original evidence may reuse the rules independently within each request. Reporting only probe reductions must not
+hide growth from later expansion, reduction, or retries. Reconciliation retains its existing historical facts and conflict
+conditions; the input gate does not remove historical comparison material.
+
+## 5. Input I3: skip a request only when no memory information is established
+
+I3 is an independent admission policy. Its benefits must not be combined with I1/I2 representation savings. It attempts to
+avoid entire extract/probe requests and subsequent empty operations, but an inference that no useful memory will be
+produced can cause lasting information loss.
+
+Initially I3 is shadow-only: compute `would_noop` for a fixed complete window, perform original extraction, then compare the
+decision with independent facts offline. It makes no second model call and never advances the cursor early because of
+`would_noop`.
+
+Future active eligibility must be reviewed separately by family, built-in profile, Prompt, and format. An initial candidate
+could cover isolated greetings/filler explicitly excluded by built-in Atomic rules, provided the **entire window** matches
+complete rules, with no unknown metadata, context dependencies, or other event content. Topic does not automatically inherit
+Atomic rules; custom Prompts are not automatically enabled.
+
+Short messages, few keywords, similar existing Memory, or low model confidence cannot justify skipping input. Preserve or
+fall back for inputs such as:
+
+```text
+“OK”                      May confirm a previous proposal
+“No”                      May reject a previous decision
+“Change it to Friday”     Changes a planned time
+“It failed”               Changes task state
+“Do not retry automatically” Is a negative constraint, not disposable low-information text
+```
+
+Local duplication and similarity to current memory do not prove a no-op. Without explicit recovery/re-extraction and
+independent held-out acceptance, I3 remains in shadow. Uncertain content must never default to worthless merely to produce
+large savings.
+
+## 6. Evidence identity, commits, and cursors
+
+The server continues assigning Atomic `source:{journal_position}` IDs and Topic opaque evidence IDs within windows. Keep
+the original `evidence_id → StoredSource/SourceRef` mapping. Only bodies are shared; logical evidence identities are neither
+merged nor renumbered by optimization.
+
+Extraction output may cite only original evidence IDs actually supplied in that stage. The server resolves these IDs to
+exact SourceRefs; it does not automatically add every Source containing a shared block to every fact's lineage. Sharing a
+body does not prove that all sources support the same fact. A valid ID does not prove semantic support either; support is
+scored independently.
+
+Each publisher retains its own existing commit checks and the **complete original window**. Sources not delivered to the
+model must not disappear from revalidation:
+
+- Atomic revalidates the window, generation eligibility, Source authorization, cursor generation, and relevant Artifact
+  read set, retaining the optional processing invocation guard before the original transaction commit.
+- Topic retains Worker fencing, complete-window revalidation, cursor CAS, and optional commit_authorizer. This does not
+  claim that Topic already performs Atomic-style complete Artifact read-set revalidation.
+
+| Case | Candidate/request handling | Cursor |
 | --- | --- | --- |
-| `token_optimization_mode` | `off` | `off / shadow / active` |
-| `token_optimization_target_tokens` | `1800` | Planning target for one prepared body; cannot override request.max_bytes |
-| `token_optimization_tokenizer` | `o200k_base` | Registered deterministic profile; initially cl100k_base/o200k_base |
+| I1/I2 validation failure or unknown format | Extract using original input | Existing success/failure contract |
+| shadow | Original input, model, and writes | Existing contract; no advancement based on candidate plans |
+| Successful extraction with empty candidates | Commit existing empty workset / empty operations | Advance only after the original transaction succeeds |
+| Future approved I3 whole-window no-op | Reuse the existing empty-result publisher; still revalidate the complete window | Advance only after the original transaction succeeds |
+| Model timeout, invalid output, budget or commit failure | Existing failure/window reduction/conflict retry contract | Never report false success or skip failed Sources |
 
-Token targets are policy settings, not request hard allowances, provider complete-input ceilings, or entire-task budgets.
-Successful optimization satisfies both targets and original byte/format contracts. Otherwise return legacy and explicitly
-record unmet targets, without labeling success.
+Public processing counts still describe the original window/eligible Sources, rather than unique body blocks. Model evidence
+counts, shared-block counts, and no-op diagnostics belong only in internal traces, preserving the API's `source_count`
+meaning.
 
-Off executes no compiler, dedicated tokenizer, or additional candidate calculation. Shadow produces internal diagnostics
-only; CPU/memory overhead is not free savings. Active permits new representations across the entire instance. Models cannot
-select modes, policy versions, tokenizers, or Scopes. Existing gate/Memory compaction settings retain their meanings and
-cannot substitute for this switch.
+On window conflict retries, recheck the plan against the window, input, policy, and Prompt. Initially there is no persistent
+extraction cache or cross-request reuse of old model output. Source retention, switching modes, and policy updates do not
+implicitly roll back consumed cursors.
 
-Unavailable policy/tokenizer dependencies explicitly record fallback in shadow/active and use legacy, without blocking
-ordinary prepare. Runtime configuration validation still rejects invalid enums/values; configuration errors cannot silently
-map to an enabled deployment.
+## 7. Output: reduce delivery bodies inside existing prepare
 
-## 3. Typed snapshots and exact sources
+The output gate operates on bounded typed candidates after existing authorization, retrieval, admission, and Atomic current
+availability checks, before the first truncation. Legacy and candidate representations share the same snapshot. Optimization
+neither reruns retrieval, fetches complete Sources, nor accesses evaluation answers.
 
-Planning occurs in `ScopedContextApplication` after existing gates, authorization, and Atomic current-eligibility filtering,
-but before the first truncation. The same bounded candidate snapshot generates both legacy and candidates. Shadow cannot
-repeat retrieval, add Source originals, or inspect task answers.
+| Rule | What is actually removed | Initial boundary |
+| --- | --- | --- |
+| O1 Experience identical-value grouping | Copies of complete, character-identical values in different fields | Retain all roles and distinct values; never group failure across roles |
+| O2 Topic exact deduplication | Snippet copies identical to the complete summary field | Self-contained instructions retain role meaning; no semantic merge or fuzzy substring substitution |
+| O3 Tabulate homogeneous rows | Field names repeated across rows | Retain columns, types, order, duplicate rows, and numbers; fall back for unknown formats |
+| O4 Task-relevant complete paragraphs | Paragraphs unrelated to the current question | Lossy; qualify separately by format, condition relationships, and held-out quality |
+| O5 Deliver fewer candidates with little new information | Candidate coverage | Lossy; report origins / information coverage changes separately from lossless compression |
 
-Artifacts use native Scope, family, artifact_id, and revision identities. Content digests provide integrity rather than
-replacing business identities. Identical text across Scopes/revisions is not merged. Origins contain only actually delivered
-exact sources and are empty when nothing is delivered.
-
-Current candidates are not always originals: Topic hits lack complete detail/offsets; Atomic text lacks conditional graphs;
-Experience fields are largely free text. The compiler cannot present retrieval snippets as originals, summaries as all
-conditions, or invent Source revisions.
-
-Original domain services own authorization/lifecycle checks. The compiler neither expands reference Scopes/search families
-nor bypasses current Atomic eligibility. Existing Runtime read contracts govern concurrent state changes; no additional
-atomic cross-object snapshots or immediate revocation of already delivered content are promised.
-
-## 4. Protected groups and known dependencies
-
-A derived group includes native sources, complete field sets, representation policy versions, and known associations,
-existing only within the current call.
+O1 example:
 
 ```text
-Experience group:
-  situation
-  action
-  outcome
-  lesson
-  failure.signature / repair_surface / verification (when present)
-
-A compact action representation cannot remove conditions or verification content in this group unless proven redundant.
+Action / Lesson: Only idempotent queries may be retried at most three times; financial operations must never retry automatically.
 ```
 
-Initial closure is structural protection, not free-text semantic parsing:
+This retains both roles and complete conditions while removing a second copy of the same sentence. Lesson remains present.
+The rule does not infer implicit dependencies in arbitrary free text. Experience situation/action/outcome/lesson and failure
+verification are protected as complete groups; Atomic text is not split into sentences. A Topic hit is not the complete
+detail and cannot be claimed to contain every hidden condition.
 
-- Experience: complete situation/action/outcome/lesson and every failure field form protected groups. Do not remove outcome/
-  lesson because keywords do not match. Repeated expressions within fields use verified deterministic rules only.
-- Atomic Memory: deliver short text in full. No native structure identifies implicit conditions, so do not split isolated sentences.
-- Topic hits: representation reduction protects titles, complete summaries, and nonduplicate snippets. Task projections
-  select complete relevant/protected paragraphs only in verified limited formats, explicitly marking lossy excerpts.
-  Hidden detail is absent from input; complete dependencies cannot be claimed.
-- Profile, code, unknown prose: preserve legacy initially without high-risk pruning policies.
+O3 must reconstruct every column and value under its supported input contract. Reject missing fields, duplicate JSON keys,
+non-finite numbers, and unsupported nesting. Headers, JSON cell escaping, instructions, and citations all count toward cost.
+Reconstructable structure still requires testing for model misinterpretation.
 
-Plan cycles/shared conditions only when input actually provides trusted relationships; do not infer missing ones automatically.
-Add no relationship tables or Artifact writes initially. Scope diagnostics use `known_dependencies_only`.
+Adopt only when the complete new body's tokens and UTF-8 bytes are both smaller and it meets existing `request.max_bytes`,
+assembly format/sections/limit/show, and the deployment target. Unmet targets, no reduction, unsupported inputs, incompatible
+protected groups, and internal errors fall back to legacy. Fallback does not establish that legacy prefix truncation
+protects conditions and must not be reported as successful optimization.
 
-Simple vocabularies cannot reliably identify free-text negation, versions, and cross-paragraph exceptions. Preserve complete
-groups outside formats accepted through independent quality tests. Overlarge closures do not receive a second ordinary
-prefix-cut. Use the old path
-and record `protected_group_unfit`, without claiming legacy satisfies closure guarantees.
+Initial active candidates are O1/O2/O3. O4/O5 retain empty allowlists or remain in shadow until they pass independent
+eligibility thresholds. Output retains existing `schema/status/content/content_bytes`, trust, citation, escaping, and
+truncated contracts; native GET remains unchanged. Profile, include_code, and unknown formats initially use the original path.
 
-## 5. Five transformations that directly reduce tokens
+## 8. Coverage and resource limits
 
-### 5.1 Where savings come from
+| Existing flow | Input | Output |
+| --- | --- | --- |
+| capture Source → Atomic/Topic processing | Apply at supported server input stages | Apply when queries call prepare |
+| Manually created Memory / Artifact | No extraction; no input benefit | Apply when queries call prepare |
+| HTTP / SDK prepare / existing recall hook | This call does not generate Memory | Same Runtime rules; no Agent changes |
+| MCP search/get/hint | Input can operate independently when another path generates Memory | Current catalog has no prepare; native reads are not automatically compressed |
+| Third-party tool history / arbitrary external model requests | Outside server-owned input boundaries | Outside prepare delivery boundaries |
 
-| Transformation | Content no longer repeated/delivered | Information change | Release conditions |
+Build no tool executor, model proxy, original-text vault, persistent dictionary, cross-request allowance, or Agent checkpoint.
+Actual extraction and prepare are both server-controlled and can roll out independently without host input replacement.
+
+Processing windows and stage inputs are bounded. Sharing plans, full reconstruction checks, and tokenizing both
+representations have separate CPU/memory limits. Do not scan complete Scopes or revision history, or search other Sources
+for duplicates. I1/I2 add no database reads or writes. If I3 avoids subsequent stages, report actual I/O changes separately;
+do not combine them with a blanket promise of no additional I/O within the same window.
+
+## 9. Measurement: generation through consumption, beyond one ratio
+
+Record complete original/candidate requests, final adoption, and actual model observations separately:
+
+- Input: mode, family/stage, policy/Prompt/encoding versions, window range, original evidence counts, shared blocks and
+  occurrences, rules and fallback reasons; complete request tokens/bytes, model attempts, provider input/output/cache,
+  and fragment/reduction/retry counts.
+- Generation overhead: reconciliation, related recall, embedding/indexing, and any new classification/summarization/recovery
+  calls. Count all actual work, rather than only extractor or probe costs.
+- Output: complete body tokens/bytes, actual origins, condition/information coverage, fallback, and actual Reader
+  input/output/cache.
+- Quality: independent durable facts, temporal/conditional correctness, evidence support, valid output formats, and final
+  task scores.
+
+For one extraction followed by K uses:
+
+```text
+Total model usage = one complete memory-generation flow + K actual query flows
+```
+
+Fix K before the experiment and report generation and per-query costs separately. Do not select the most favorable reuse
+count after observing results. Record embeddings separately in their own billing units rather than indiscriminately adding
+them to generation tokens. Evaluation Judge costs are reported separately from product online benefits.
+
+Provider `prompt_tokens` already includes cached tokens; do not add them twice. Missing actual usage remains unknown.
+Preselected failures stay in quality denominators; cost comparisons use only same-condition pairs with complete accounting
+and disclose missing coverage. Random output variation cannot be directly attributed to input optimization. Calculate
+monetary savings only with verified pricing contracts; profile tokens are not actual bills.
+
+The existing Source→context recall estimator is neither the input legacy→compact nor output legacy→compact metric. Do not
+expand its denominator to inflate benefits. Default traces retain no original text, user messages, complete Prompts, or new
+Source copies. Complete evidence is retained only in controlled external evaluation directories.
+
+## 10. Evaluation: two generated snapshots, four consumption combinations
+
+### 10.1 Four arms and attribution
+
+| Arm | Memory generation | prepare delivery | Purpose |
 | --- | --- | --- | --- |
-| R1 Experience identical-value grouping | Long field values repeated verbatim across roles | All distinct values/roles retained; body representation changes | Fixed-format round-trip/consumer acceptance and complete token guards |
-| R2 Exact Topic deduplication | Snippet copies exactly equal to summaries | Matching roles retained; body appears once | Complete-field equality initially; no semantic merging |
-| R3 Homogeneous rows as tables | Repeated per-row keys and structural symbols | All columns, values, types, row order, and multiplicities retained | Supported flat homogeneous structures round-trip |
-| R4 Task-relevant excerpts | Complete unrelated paragraphs in limited formats | Lossy; not all material delivered | Independent held-out quality thresholds; unknown formats fall back |
-| R5 Fewer low-marginal-gain candidates | Complete candidates adding little information in the same pool | Reduced source/information coverage | Report coverage changes separately; pass independent task acceptance |
-
-Smaller budgets, condition protection, references, and token measurements do not automatically save anything. Only changes
-to bodies or delivered sets in the table can reduce input. Recalling tens of thousands of original-store tokens into a few
-thousand is not this feature's incremental benefit.
-
-The first three retain distinct values and explicit roles but still require validation that models interpret new
-representations correctly. Structural round trips alone cannot establish unchanged task quality. The last two deliberately
-deliver less material and require lossy-policy evaluation, separate from same-origins lossless results.
-
-### 5.2 R1: Write identical Experience field values once
-
-Original representation:
-
-```text
-Situation: 服务出现瞬时错误。
-Action: 仅幂等查询最多重试三次，资金操作禁止自动重试。
-Outcome: 查询恢复成功，验证没有重复副作用。
-Lesson: 仅幂等查询最多重试三次，资金操作禁止自动重试。
-```
-
-Candidate representation:
-
-```text
-Situation: 服务出现瞬时错误。
-Action / Lesson: 仅幂等查询最多重试三次，资金操作禁止自动重试。
-Outcome: 查询恢复成功，验证没有重复副作用。
-```
-
-The duplicate complete value is removed, not the Lesson role. Rules:
-
-1. Compare complete original field strings for exact equality, preserving numbers, versions, negation, case, whitespace,
-   and multiplicities.
-2. Group equal values and render all roles in first-occurrence order with one complete value.
-3. Retain complete `failure` paths/distinct values unchanged; initially do not merge across failure roles.
-4. Do not deduplicate actions/lines inside a field; multiplicity may carry meaning.
-5. Return the original when fields are all distinct or the complete new representation is not shorter.
-
-```python
-groups = group_exact_values(
-    ordered_fields=("situation", "action", "outcome", "lesson")
-)
-for group in groups:
-    emit(all_original_roles(group), one_complete_original_value(group))
-emit_complete_failure_block()
-```
-
-Native Experience GETs, values, revisions/digests remain unchanged. This is directly readable representation within existing
-item.content, without requiring agent alias decoders.
-
-### 5.3 R2: Do not repeat already covered Topic snippets
-
-Original bodies already contain both summaries and query-specific snippets:
-
-```text
-Title: 订单重试规则
-Summary: 仅幂等查询最多重试三次，资金操作禁止自动重试。
-Snippet: 仅幂等查询最多重试三次，资金操作禁止自动重试。
-```
-
-Exact-deduplication candidate:
-
-```text
-Title: 订单重试规则
-Summary: 仅幂等查询最多重试三次，资金操作禁止自动重试。
-Snippet: 与 Summary 全文相同。
-```
-
-Initially try only complete-field, byte-for-byte equality between a Topic's snippet and summary. Notices explicitly identify
-complete text, retaining the matching snippet's location. Even exact substrings cannot be replaced by vague containment
-notices: summaries mentioning three retries in an old version and five in a new one require identifying the actual match.
-Future substring support requires self-contained precise match ranges in the body. R2/R3 combinations on the same fields
-revalidate role associations and are not composed when associations cannot be retained. Partial overlap, semantic similarity,
-and identical text across Scopes/revisions do not qualify. Official Topic data remains unchanged; existing snippet retrieval
-is not a new algorithm. Notices cost tokens and can make short snippets longer, requiring rejection.
-
-### 5.4 R3: Replace repeated JSON keys with one header
-
-Process only complete, validated flat homogeneous JSON row arrays in supported fields. For example, a Topic summary may
-contain a complete list. Do not add arbitrary third-party tool logs to prepare or rewrite complete Atomic text.
-
-```json
-[
-  {"path":"a.py","status":"fail","line":7},
-  {"path":"b.py","status":"fail","line":11},
-  {"path":"c.py","status":"pass","line":19}
-]
-```
-
-Candidate body:
-
-```text
-完整表格，字段、类型、行序及重复行保留：
-path | status | line
-"a.py" | "fail" | 7
-"b.py" | "fail" | 11
-"c.py" | "pass" | 19
-```
-
-Savings grow with row counts by eliminating repeated path/status/line keys. For few rows, header explanations may offset
-savings; complete guards still apply.
-
-Admission requires identical field sets/order and supported scalar values. Reliably escape strings; preserve original
-numeric lexemes instead of first converting to floats, distinguishing string/number/boolean/null. Missing fields, duplicate
-object keys, nested values, mixed structures, uncertain escaping, or failed round trips fall back. Schemas, row order,
-duplicate rows, values, and types must be recoverable; only after round-trip acceptance evaluate actual model readability.
-
-Tables occupy original content strings, without changes to JSON item/citation or official GET schemas. They are not new
-transport protocols.
-
-### 5.5 R4: Deliver relevant complete paragraphs for the question
-
-This is the principal potential gain for large bodies and is explicitly lossy. For the question “What restricts order
-retries?”, a current Topic summary may contain independent “Retry rules,” “Interface themes,” and “Monitoring dashboards”
-groups. Old output includes all three; candidates include only retry groups and global constraints/exceptions/versions/
-failure-verification paragraphs explicitly identified by the format, marking other groups undelivered.
-
-Implementation:
-
-1. Enable only format parsers validated on held-out tasks. Separate headings/groups and explicit protection relationships;
-   do not infer semantics from arbitrary prose.
-2. Use deterministic term matching against original queries and existing hits/snippets to select relevant groups, without
-   synchronous LLM calls whose costs are ignored.
-3. Select complete paragraphs/groups and retain format-global protected paragraphs/known dependencies. Send summary/snippet
-   repetition to R2.
-4. Retain originals for incomplete relationships, unparseable cross-paragraph references, or unsupported formats.
-5. Set `truncated=true` and mark bodies as task-relevant excerpts with some material undelivered; separate policy omissions in traces.
-6. Do not fetch details absent from candidates or expand retrieval. Topic hits lack original offsets; do not invent range recovery protocols.
-
-Fixed-format relationships are known structures, not proof that all implicit conditions were identified. Negation vocabularies
-are detection signals, not safety proofs. Only after shadow screening, held-out non-inferiority, and severe-error acceptance
-may fixed-version policies become active for corresponding formats. Before acceptance, gains are experimental candidates,
-not released savings.
-
-### 5.6 R5: Stop spending tokens on low-information-gain candidates
-
-R1–R4 optimize individual candidates; R5 chooses which candidates in the same pool to deliver. For example, the first two
-of three hits may cover only known retry limits while the third adds a financial-operation exception. Under tight budgets,
-prioritize newly required constraints instead of simply the top two ranks.
-
-This is evidence selection, not treating distinct Artifacts as the same object. Retain input identities separately and
-exclude unselected objects from origins. Compute marginal coverage only for validated formats with defined information
-requirements/contributions. Unknown Atomic prose is not semantically deduplicated; conflicts, different versions, or
-independent corroborating sources cannot be dropped because strings are similar.
-
-```text
-marginal(candidate) = query information requirements supported by the current format
-                      − requirements covered by delivered evidence
-```
-
-Original ranks break ties; render selections in original order without expanding family/section/count limits. Do not
-combine raw scores across families, rerun retrieval, or add reranker calls. Runtime owns selection rules rather than hosts
-inventing them. Report coverage changes/condition gaps separately and release after paired task evaluation.
-
-This can reduce total body sizes but may omit implicit requirements. Record it explicitly as selection_changed, never
-as lossless deduplication.
-
-### 5.7 Per-rule gains and attribution
-
-For every rule, retain complete baseline/candidate body tokens/bytes and report actual acceptance rates, fallback reasons,
-and applicable-input proportions. Separate three classes: same-origins representation reduction, same-origins lossy excerpts,
-and selection_changed. Combine rules in fixed R1/R2/R3→R4→R5 order and record incremental changes without crediting overlapping
-removals twice.
-
-```text
-Incremental savings at one step = previous complete body tokens − current complete body tokens
-Final savings                  = complete legacy body tokens − complete final body tokens
-```
-
-Actual model input includes trust, citations, labels, and hints; per-rule gains are counted after complete wrapping by
-original renderers. Reject shorter raw bodies that become longer after wrapping. Inputs without matching rules retain
-baseline; selectively reporting positive samples cannot establish average savings.
-
-### 5.8 Reproducible offline mechanism measurements
-
-These are actual tokenizer counts for synthetic samples, not implemented product behavior, real agent results, or billing
-savings. Baselines use the existing PreparedContextBuilder, asserting equality with complete baseline
-bodies. Candidates use experimental transformations wrapped by original JSON/Markdown renderers. No sample triggers existing
-2000-byte entry or 32768-byte total truncation, excluding gains from the old fitter. Using tiktoken 0.13.0, the table reports
-complete o200k_base content, including trust, citations, labels, escaping, and omission notices. Examples retain the original
-Chinese synthetic text verbatim so body bytes and token measurements remain reproducible.
-
-| Synthetic positive sample | JSON tokens | Markdown tokens | Information boundary |
-| --- | --- | --- | --- |
-| R1: Identical Action/Lesson; failure separately complete | 416→341, 18.03% | 436→360, 17.43% | Same origins; distinct values/roles retained |
-| R2: Identical complete summary/snippet | 271→202, 25.46% | 289→220, 23.88% | Same origins; match explicitly refers to complete text |
-| R3: One set of column names for 8 homogeneous JSON rows | 522→343, 34.29% | 366→298, 18.58% | Same origins; row order/duplicates/values/types retained |
-| R4: Retry/protection groups retained, omitting color/report/layout paragraphs | 322→230, 28.57% | 334→242, 27.54% | Lossy excerpts; no proof of unchanged task quality |
-| R5: Select one of two same-body candidates in the pool | 316→195, 38.29% | 343→208, 39.36% | Origins decrease from 2 to 1; coverage changes |
-
-Every rule also has a negative control: distinct fields, snippets adding conditions, all paragraphs required, candidates
-with independent constraints, or JSON rows missing fields. All 5 negative samples remain byte-for-byte unchanged under
-both renderers, with 0 savings. The 20 results also record cl100k_base, complete bytes, source identities, and body digests.
-Synthetic source objects retain identical digests before/after. No native GET, database, Server, Reader, or Judge executed.
-
-These experimental transformations are offline feasibility/measurement probes. In particular, R4/R5 use preconstructed
-candidate excerpts/selections, not an automatic planner correctly determining what can be omitted. R1/R2/R3 structural
-retention also does not establish equivalent real-model understanding. Release still requires complete acceptance in
-section 13. Table averages cannot represent average savings across actual material distributions.
-
-Reproduction materials: [script](https://github.com/hidb4ai/powercontext/blob/codex/rfc-token-budgeted-evidence-delivery/docs/rfc-assets/token-budgeted-evidence-delivery/probe.py),
-[complete synthetic inputs](https://github.com/hidb4ai/powercontext/blob/codex/rfc-token-budgeted-evidence-delivery/docs/rfc-assets/token-budgeted-evidence-delivery/samples.json),
-[complete measurements](https://github.com/hidb4ai/powercontext/blob/codex/rfc-token-budgeted-evidence-delivery/docs/rfc-assets/token-budgeted-evidence-delivery/results.json).
-Run in Python 3.11+ with builtin dependencies and tiktoken 0.13.0 installed. Offline environments use TIKTOKEN_CACHE_DIR
-or --tokenizer-cache to provide existing vocabulary caches. Write results under /data/codex-tmp, keeping generated files
-out of documentation directories.
-
-```bash
-python3 docs/rfc-assets/token-budgeted-evidence-delivery/probe.py \
-  --repo-root . \
-  --output-dir /data/codex-tmp/powercontext-token-mechanism-recheck
-```
-
-## 6. Joint budgets and selection algorithms
-
-### 6.1 Boundaries
-
-Bodies simultaneously satisfy original `max_bytes`, individual/total entry limits, assembly, and deployment token targets.
-Tokenize complete `content`, including trust, formatting, citations, and hints. `content_bytes` remains actual UTF-8 bytes.
-Fix `cl100k_base`/`o200k_base` implementations/vocabulary versions; unknown/unavailable profiles do not use bytes/4 as exact counts.
-
-### 6.2 Bounded planning
-
-1. Freeze candidate ranks, family/Scope interleaving, and original quotas; generate the legacy baseline.
-2. Build protected groups from typed candidates. Retain at most 4 nondominated representations per candidate: complete,
-   R1–R3 representation reduction, validated R4 excerpts, and legacy. Rules are not unlimited Cartesian products;
-   unknown formats generate no lossy representations.
-3. Compare complete rendered token/byte costs within the same object; different families' raw scores are not common utility.
-4. First reduce actual consumption with shorter representations of the same selected objects. Formats allowing R5 then
-   compare marginal coverage. Representations violating protections are ineligible; original ranks break ties, retaining
-   count/section contracts.
-5. Prefer comparing plans with identical origins. When saved allowance reaches later candidates in the same pool, report
-   added coverage separately rather than counting it as compression of the same material.
-6. Recheck final complete rendered tokens/bytes, references, protected fields, status, and escaping.
-7. Return baseline with diagnostics for no legal plan, unknown formats, larger-than-baseline results, or unmet targets.
-
-Initially use bounded beam planning rather than arbitrary combination enumeration. Extend legal representations in original
-candidate order, retaining at most 32 states per round satisfying complete byte/token constraints. Compare validated coverage,
-rank deviations, and complete cost. With R5 disabled, lock the same selected object set and compare representations only.
-Each step actually renders/tokenizes; summing fragment tokens cannot assume BPE additivity. Revalidate final output and
-return legacy on state/time limits. Each candidate has at most 4 plans, retaining existing candidate/family/output limits.
-
-Shorter output is a necessary gain check, not sufficient quality evidence. Fewer candidates yielding smaller bodies do not
-bypass complete task acceptance. Fallback for groups that do not fit is not closure success; empty responses cannot
-masquerade as dramatic savings.
-
-### 6.3 Costs and objectives
-
-Servers can establish prepare-body tokens/bytes only. Complete independent question-answering task costs include actual
-input, output, caching, auxiliary calls, additional reads, and failures/retries. Existing agents also carry other history;
-no task-wide hard limit or universal savings percentage is promised.
-
-For fixed inputs, use `legacy_text_tokens / active_text_tokens` to measure delivery changes, reporting same-origins and
-coverage-expanded results separately. The goal is non-inferior quality and lower actual workflow net cost, without an
-unvalidated claim that complete agent costs must fall by 20%.
-
-## 7. Existing responses and body compatibility
-
-The outer PreparedContext remains unchanged:
-
-```json
-{
-  "schema": "powercontext.prepared-context.v1",
-  "status": "ready",
-  "content": "Example context",
-  "content_bytes": 15
-}
-```
-
-This example illustrates field shape, not actual inner renderer output. Actual content_bytes counts UTF-8 content. Empty
-still requires content=null and content_bytes=0; ready retains nonempty/byte invariants.
-
-Defaults retain original BEGIN/END, trust/items, citation/content/truncated. Explicit assembly retains original format/
-sections/show, labels, and identity escaping. Unchanged outer fields do not authorize arbitrary inner machine-readable shapes.
-
-Atomic bodies retain original hit.text before compilation; default JSON with `truncated=false` decodes to equivalent original
-text. Markdown retains existing newline normalization and control-character visualization without promising original-byte
-round trips. Excerpts cannot masquerade as complete originals. Deterministic structural reordering retaining all values is
-not automatically truncation. Any representation deleting distinct body content honestly marks incompleteness under its
-family's existing semantics. Native Source/Artifact GET
-still returns original content, digests, ETags, and states; compact projections are not written back to official records.
-
-Existing omissions track byte-budget truncation/drops. Policy projections use separate internal traces rather than being
-conflated with budget shortages. Deployment settings require no old schema/operation generated-file changes, while
-implementation still runs contract regressions.
-
-## 8. Original reads and stateless recovery
-
-Initially issue no run_id, temporary evidence_id, delivery_id, or new reread tools. Official originals remain in existing
-immutable revisions and are available through existing `get_artifact_revision`, `get_source`, and related contracts,
-with original authentication and family-specific resolvers.
-
-Compiled references retain native citations. Agents need not parse new range protocols, and automatic rereads are not
-guaranteed for every client. Representations must directly support normal context delivery; returning inventories alone
-while waiting for new tools is not a general active result.
-
-Future range reads must distinguish native Source/Artifact digests from locally rendered text digests. Reserialized JSON
-is not remote original bytes. Establish this need separately; initially add no interfaces, locator stores, or original copies.
-
-## 9. Statelessness, caching, and restarts
-
-Planners consume one typed snapshot, configuration, and query, returning context, actual origins, and internal diagnostics.
-They allocate no cross-request allowance, persist no idempotency ledger, create no sessions, and depend on no agent threads/checkpoints.
-
-The first release needs no persistent cache. If repeated compilation becomes a measured CPU bottleneck, use bounded
-in-process derived caches keyed by source identities/content digests, policies/tokenizers, formats, and every representation-
-affecting field. Authorization/current eligibility are checked under existing contracts before cache use; cached results
-are not read authorization.
-
-Restarts simply replan, without feature-run recovery. Disabled modes do not execute feature algorithms; official storage
-stays unchanged. Feature original stores/ledgers cannot be hidden as JSON in Source/Memory/Statistics/configuration tables.
-
-## 10. General coverage and optional host enhancements
-
-| Integration | First-release result |
-| --- | --- |
-| Existing HTTP prepare | Existing requests/responses; server activation directly yields optimized bodies |
-| Python SDK prepare | Existing methods/types; no new client call logic |
-| Host recall hooks already using prepare | Existing injection logic, with only received bodies changing |
-| MCP search/get/hint | Existing contract regressions; no current prepare operation, so no automatic compiler entry |
-| Arbitrary third-party tool logs/entire agent history | Outside initial control |
-
-LangGraph is not a special prerequisite. Its existing recall is one HTTP prepare consumer among others. The first release
-requires no `llm_input_messages`, `messages`, tools-schema, or checkpointer changes. Other prepare integrations benefit
-similarly without separate compiler rules.
-
-Host-controlled input views, tool proxies, and model proxies may further reduce repeated history, but add integration/
-deployment capabilities. Evaluate adaptation cost, original recovery, and authorization separately; they are not implicit
-prerequisites for server compilation. Without interception points, servers cannot delete bodies from external history.
-
-## 11. Work and resource costs
-
-Retain existing per-family candidate limits, with at most 4 representations per candidate and bounded derived group counts,
-text totals, and computation time. Scan no whole Scopes, Sources, or historical revisions; do not read Topic details for
-compilation or write synchronous new state.
-
-Legacy/candidates may share basic rendering work. Measure extra compilation, tokenization, and validation in shadow/active
-separately. Cover languages, sizes, formats, cold/warm tokenizers, concurrent prepare, unfit closures, and fallback rates.
-
-Measure CPU, memory, p50/p95/p99, throughput, errors, render/tokenize counts, returned network body sizes, and database
-queries/I/O. Smaller server bodies may reduce response traffic but do not establish fewer database candidate reads.
-No-op/off retains the original overhead boundary.
-
-## 12. Observability and actual benefits
-
-The existing recall estimator compares full Sources traced from selected origins against final PreparedContext. This is a
-Source→context measure, not this feature's legacy→compiled comparison. Do not rename/reuse it or expand undelivered origins
-to inflate denominators.
-
-Record feature diagnostics through existing trace/log sinks or evaluation artifacts:
-
-- Modes, fixed policy/tokenizer versions, formats, targets, and fallback reasons.
-- Complete legacy/active body tokens/bytes, matching actual origins, protected-group coverage, policy projections, and budget omissions.
-- CPU/latency/memory, shadow overhead, and coverage-expanded results.
-- Observed actual model requests, provider usage/caching, and independent task scores.
-
-Distinguish prepared, emitted, model-request-observed, and task-verified. Without actual input observation, do not claim
-model adoption. Missing usage is unknown, not zero. Defaults retain no complete prompts, user messages, hidden reasoning,
-or extra Source copies.
-
-Gates use original probes for admission; compact output cannot masquerade as greater sufficiency. Observe final delivery
-separately. Recall effort probes and final active bodies are not the same cost figure.
-
-## 13. Evaluation and existing repository infrastructure
-
-### 13.1 Contracts and switches
-
-- Off retains original bodies, origins, request/response models, and existing statistics, without dedicated planners/tokenizers.
-- Shadow returns byte-for-byte equivalent baseline, calculating candidates internally without repeated retrieval.
-- Active validates trust, escape, citation, truncated, byte ceilings, and four-field readback for default JSON/explicit Markdown.
-- Trailing negation, versions, and Experience failure/verification in the same complete candidates avoid secondary truncation.
-- Unsupported formats/Profile/include_code, oversized closures, unavailable dependencies, and internal failures explicitly
-  fall back without bypassing authorization.
-- HTTP, SDK, and actual existing host calls share Runtime results. MCP tests cover only actually exposed operations retaining contracts.
-- Current states/source identities, identical text across Scopes, subsequent active→off requests, and server restarts remain correct.
-- Original GETs, ETags, digests, and search/get field contents remain unaffected by compact representations.
-
-Recording HTTP verifies interfaces; recording models or saved actual Reader messages verify adoption. Real-model/provider
-usage and external backend acceptance are reported separately. Initial loops require neither complete agent-history
-replacement nor checkpoint adaptations.
-
-### 13.2 Algorithm ablations and static Readers
-
-| Arm | Changed factor |
-| --- | --- |
-| A | Old default builder, reasonable budgets |
-| B | Reasonably configured existing assembly, identical families/counts/budgets |
-| C | Same candidates/origins; R1/R2/R3 separately and combined |
-| D | C plus R4 lossy excerpts, constrained by protected groups/known closure |
-| E | D plus joint budgets/R5 selection, reporting coverage changes separately |
-| F | E plus independent counterfactual-calibrated policies |
-| External control | Comparable competitor mechanisms at identical material/delivery boundaries; support differences reported separately |
-
-First replay the same authorized typed candidates to isolate representation/condition quality; then run actual prepare→Reader→
-independent scoring and record added coverage from the same pool. Treatments do not expand retrieval, receive extra Sources,
-or change models/Judges/downstream budgets.
+| I0O0 | Input off | Output off | Current complete-flow baseline |
+| I1O0 | Input active | Output off | Isolate extraction losses and benefits |
+| I0O1 | Reuse the I0 generated snapshot | Output active | Isolate delivery losses and benefits |
+| I1O1 | Reuse the I1 generated snapshot | Output active | Combined effects and interaction |
+
+Generate Memory once with input off and once with input active. Use each exact Artifact revision snapshot for both output
+modes, with background writes stopped. Output active must not trigger another stochastic extraction. Changing source material
+beforehand and then reporting shorter output is not compression of the same evidence.
+
+Fix original Source content, order, metadata, profile, Prompt/model, windows/history/budgets, retrieval, questions, Readers/
+Judges, timeouts, and retries. Artifact IDs may differ between input arms; compare independent facts and original Source
+identities. Output pairs within one input arm must use exactly the same revisions. Repeated batches regenerate two isolated
+snapshots and alternate execution order.
+
+Report I1O0−I0O0, I0O1−I0O0, I1O1−I0O0, and interaction; do not directly add independent percentages from both gates. Durable
+quality in I1O0 must pass before assessing the combined case. Output optimization cannot hide facts already lost at input.
+
+### 10.2 Reuse existing repository capabilities
+
+| Existing tool | Reuse | Required additions or limits |
+| --- | --- | --- |
+| LongMemEval-V2 | Frozen data, prepare-consuming arm, Reader/scoring, messages/hashes, replay | Current insertion writes prepared Memory; add actual capture→processing→durable readback |
+| Atomic supervisor E2E | Completion checks, lineage, restart, original Source readback, failure handling | Recording models cannot establish real-model extraction quality |
+| configured-service A/B harness from [implementation PR #1991](https://github.com/oceanbase/powercontext/pull/1991) | Actual TCP HTTP, isolated databases, per-attempt usage, body hashes | Reusable source must be introduced; static Reader experiments with manually written Topic prove output only, not actual extraction |
+| work-continuity | Independent rubrics for omitted/stale facts and next actions | Current synthetic recordings are not native Agent execution |
+| SWE-bench Pro / Bub | Independent patch/task acceptance, isolation, alternating pairs | Split whole-PowerContext OFF/ON into two-gate treatments and establish actual input paths |
 
 [LongMemEval-V2](https://github.com/oceanbase/powercontext/blob/master/evaluation/memory/longmemeval_v2/README.md)
-already has a `query-time-compact-v1` arm calling public prepare and sending actual content to a static Reader, well suited
-to this initial server-side design. Default `current-memory-fts-v1` does not call prepare; default runs cannot establish
-compiler effectiveness. New treatment identities/manifests freeze modes/policy versions, database revision snapshots,
-queries, `recall_fts_weight` / `recall_vector_weight`, and Readers/Judges without new product protocols to confirm active.
+`query-time-compact-v1` calls public prepare and suits output evaluation. In the existing insertion path, the harness captures
+Sources, creates deterministic projections, and directly remembers Memory. It bypasses actual extraction and cannot validate
+the input gate.
 
-Existing prepare_worker records body tokens/bytes and complete messages/prompt digests. Reader provider usage measures
-actual input/output/caching. Report `memory_context_was_truncated` if downstream truncation recurs; harness pruning is not
-compiler savings. Build fixed counterexamples for conditions, exceptions, versions, and trailing Experience failures;
-aggregate memory scores cannot replace them.
+A real input experiment uses existing capture, flush/supervisor, and public Artifact/source readback:
 
-An initial 20 tasks are smoke/screening only. Expanded experiments freeze held-out sets, preregister non-inferiority margins,
-and report paired differences/confidence intervals. Release active only with no additional severe conditional errors, lower
-net tokens/cost across complete question-answering, and acceptable latency.
+```text
+Freeze original material and independent gold labels
+→ Capture through the existing API
+→ Wait for actual processing to complete through the target Source watermark
+→ Verify commits and citations through list/get/lineage
+→ Stop writes and freeze Artifact revisions
+→ Call prepare in both output modes
+→ Save actual complete Reader messages and usage
+→ Independently score, read back after restart, and replay offline
+```
 
-### 13.3 Tasks and performance
+Retain Topic's existing fragmentation, historical candidate limits, and reduction, and Atomic's existing input budget with
+identical configuration. Report any further Reader truncation by the harness as `memory_context_was_truncated`, never as
+output-gate savings. Missing values and transport failures in existing aggregate usage need per-attempt unknown records;
+unaccounted calls must not be treated as zero.
 
-[Bub/Harbor](https://github.com/oceanbase/powercontext/blob/master/e2e/bub/README.md)
-provides fixed tasks, isolation, alternating order, and paired statistics. Existing whole-PowerContext OFF/ON is not a
-feature treatment. Only integrations actually calling prepare validate the compiler; unused harness paths are not evidence.
+### 10.3 Fixed counterexamples and independent quality
 
-Synthetic [Work continuity](https://github.com/oceanbase/powercontext/blob/master/evaluation/coding/work_continuity/README.md)
-fixtures may reuse local scoring; independent patch acceptance in [SWE-bench Pro](https://github.com/oceanbase/powercontext/blob/master/evaluation/coding/swebench_pro/README.md)
-may support later task validation. Neither replaces current actual prepared-body input observation.
+Annotate independent gold labels from original material first: facts to remember, conditions, effective times, exceptions,
+and supporting evidence ranges. Off extraction output is not the gold standard. Freeze material, rule eligibility, and
+Reader subsets before outputs. Gold labels never enter the encoder, extraction input, or retrieval query.
 
-The [Performance directory](https://github.com/oceanbase/powercontext/blob/master/evaluation/performance/README.md)
-has no directly reusable load-test suite. Add pure compiler/public prepare workloads for 1 KiB/20 KiB/over-limit candidates,
-cold/warm behavior, formats, concurrent requests, and fallback. The compiler itself adds no I/O, and candidate counts remain
-unchanged. Database queries in same-origins isolation arms should match baseline. Changes to final origins in coverage-expanded
-arms may add full Source reads by the existing recall estimator; measure incremental queries/I/O separately. Additional
-algorithm costs are bounded CPU/tokenization/rendering, without vault, Scope quota, CAS, or TTL tests.
+Cover at least:
 
-### 13.4 Necessity thresholds for tables and interfaces
+- Repeated wrappers, no redundancy, unknown formats, nested structures, mixed languages, and otherwise identical tables
+  differing in one number/unit/version.
+- Shared prefixes of growing snapshots, repeated messages, and repeated table rows; preserve counts, order, roles, and
+  complete context.
+- Trailing negation, financial-operation exceptions, version constraints, premises/conclusions across fragments,
+  unfinished progress, and failure verification.
+- Late-arriving old evidence, future-effective decisions, and identical bodies at different times/from different Sources;
+  do not overwrite newer effective facts incorrectly.
+- Identical text in different Scopes, valid IDs with incorrect semantic support, and distinct facts that must not
+  automatically receive the union of all Source citations.
+- Brief confirmations, negations, corrections, and time/state changes; I3 must not classify them as information-free.
+- Questions revealed only after extraction, verifying that input has retained facts needed beyond a known current question.
+- Invalid JSON/structured output, timeouts, missing provider usage, budget-driven window reduction, commit conflicts,
+  authorization changes, and window changes.
 
-Initially add no persistence or business operations. Later minimal changes require actual needs, insufficient existing
-contracts, and complete cost/benefit evidence together. For example:
+Acceptance uses public exact GET to verify cited Source content and metadata, and checks semantic support against independent
+evidence ranges, rather than merely testing membership in an allowed ID set. Compare durable-fact recall/precision, severe
+conditional errors, temporal interpretation, citation correctness, and final task/format success. Coding profiles need retain
+expensive decisions, constraints, and progress required by their contracts; they need not remember code facts that are
+cheap to retrieve again.
 
-- If full-object reads become demonstrated bottlenecks, first evaluate ranges on existing read interfaces.
-- If hard shared cross-request allowances become necessary, first evaluate existing scheduling/state ownership.
-- If MCP must consume new assembled context, identify current catalog gaps and necessary operation extensions explicitly.
-- For third-party tools/entire history compression, establish proxy/host integration boundaries rather than presenting
-  them as zero-adaptation existing service capabilities.
+### 10.4 Durability, cost, and load thresholds
 
-Do not prebuild feature tables, hide blobs in Source/Memory/configuration tables, or expand protocols for hypothetical
-future use. If caller-specific switching becomes necessary, evaluate minimal opt-in fields on existing requests rather
-than presupposing new endpoints.
+I1/I2 first pass reconstruction equivalence, then real-model quality. Keep every preselected failure in denominators. If
+output is wrapped in Markdown fences or repeats two objects, score it as failure under the preregistered contract; correct
+internal values do not justify relaxing scoring after the fact.
 
-## 14. Implementation order, exit criteria, and rollback
+Release eligibility requires:
 
-1. Fix actual prepare baselines/reasonable assembly controls, server-default off/shadow, and zero protocol/database changes.
-2. Implement R1 identical-value grouping, R2 exact snippet deduplication, R3 supported-format tables, original renderers,
-   and complete token guards. Measure positive and nonredundant/heterogeneous negative cases; condition protection is
-   validation rather than a savings metric.
-3. Start R4/R5 in shadow, then complete format-limited parsers, counterfactual condition samples, and A/B/C/D/E ablations.
-   Add corresponding policies to active allowlists only after independent quality/cost thresholds pass; reuse query-time-compact
-   Readers for independent tasks.
-4. Gradually enable active after quality/cost/performance pass; then evaluate F, MCP coverage, or optional host enhancements.
+1. Unchanged Source content, metadata, identity, and digests. Durable Memory and citations remain usable through GET/search/
+   prepare after shutdown and restart. Model/commit failures never skip the Source cursor.
+2. No additional severe conditional, temporal, identity, or citation errors. Durable facts and final tasks meet
+   preregistered non-inferiority margins and paired confidence intervals. Small smoke sets screen for problems; they do not
+   establish non-inferiority.
+3. Lower actual net provider usage across complete generation and query flows. Include shared-encoding instructions, every
+   stage, retries, fallback, and unknown coverage, rather than reporting one body's profile ratio.
+   If critical counts are missing, the full cohort's net cost is indeterminate; the subset with complete usage alone cannot
+   pass rollout thresholds.
+4. Separate measurements of input CPU/memory, extraction-stage p50/p95/p99, window throughput/queueing, and actual
+   HTTP/OceanBase prepare load. Report shadow overhead, no-op, and fallback rates separately. Pure algorithm CPU throughput
+   does not establish service capacity.
 
-No advantage over existing assembly, mostly falling-back protected groups, or gains principally from delivering less material
-cannot establish compiler effectiveness. If smaller bodies increase actual question-answering costs, return to off.
-Only demonstrated new bottlenecks justify interfaces/storage extensions.
+I3 and other lossy input policies must also pass durable-fact/future-question tests for incorrect no-ops and deliver an
+explicit recovery plan. Replaying retained Sources completely in an isolated Scope proves recoverability in evaluation;
+it does not establish production recovery support. Stay in shadow until these thresholds pass.
+
+Data downloads, frozen fixtures, gold labels, databases, raw model answers, CSVs, logs, reports, and intermediate snapshots
+remain outside the repository, for example under `/data/codex-tmp/`. Keep reusable harness source and instructions in the
+repository; do not commit run results or embed measurement attachments in the RFC.
+
+## 11. Implementation order and exit criteria
+
+1. **P0: actual input baseline, I1, and output O1/O2/O3.** Fix both switches and per-stage accounting; address Atomic's known
+   duplicate copies first. Establish actual Source→Memory→prepare→Reader experiments across all four cells. Every active
+   rule still requires its own eligibility.
+2. **P1: complete snapshot sharing in I2.** Start with explicitly versioned structured message formats. Verify complete
+   window reconstruction, time, sources, and model understanding, then cover Topic's multiple stages. Do not guess unknown
+   formats; extracting only a new tail across windows is outside this phase.
+3. **P1 shadow: I3 no-op.** Freeze rules by family/profile/format, measure misclassification and potential request savings,
+   and propose active only after durable quality and recovery thresholds pass. Output O4/O5 likewise require separate lossy
+   eligibility.
+4. **Rollout:** Enable one side first, then both. Expand after actual net cost, durable quality, and tail latency pass.
+   Output allowlists never automatically become input rules. Keep off when fewer representation tokens increase failures,
+   retries, or total cost.
+
+Stop a rule if natural material has little repetition, dictionary instructions consume the savings, shared views cause
+model misinterpretation, or it offers no improvement over reasonable existing budgets. Do not remove difficult cases,
+expand candidates, or prebuild fingerprint tables to manufacture large benefits. New interfaces/storage require separate
+evidence that existing contracts cannot support the need.
 
 # Drawbacks
 
-Control covers only PowerContext delivery bodies, not third-party tool history retained by external agents. Existing max_bytes
-already limits context; savings opportunities need measurement. Complete short Atomic facts/protected groups may offer no reduction.
+Input is more sensitive than output: one extraction error can affect many future queries. Disabling input does not
+implicitly repair omissions from consumed Sources. Even reconstructable representations can change model understanding and
+need end-to-end acceptance. I1 hit rates depend on Source types; I2 depends on actual repetition. I3 risks misclassification.
+Savings cannot be promised for every user.
 
-Free-text conditional structure is limited, so initially many unknown cases fall back. Dual representations/rendering/
-tokenization add CPU/latency. Active affects every prepare caller on the instance and requires controlled rollout. Identical
-interfaces do not guarantee arbitrary body rewrites remain compatible; original inner formats require validation.
+Shared encoding, dual-representation measurement, and validation add bounded CPU/memory costs. Format instructions may
+consume any benefit on small inputs. Existing budgets already reduce delivery and stage work; incremental opportunities
+need actual measurement. Neither gate controls existing external Agent history or arbitrary third-party model requests.
 
 # Rationale and alternatives
 
-| Alternative | Advantages | Tradeoff |
-| --- | --- | --- |
-| Lower max_bytes/configure assembly | Existing general configuration, lowest cost | Strong baseline; build no compiler if sufficient |
-| Stateless server compiler | Current prepare users need no agent modifications | Controls its own delivery only; accept that product boundary |
-| Host input replacement | Reduces repeated multi-turn history | Requires adaptation; optional enhancement rather than initial prerequisite |
-| Headroom-style model proxy | Covers actual model requests | Proxy deployment/configuration adds product boundaries |
-| Context Mode-style execution/indexing | Controls more tool results | Outside the first release's no-executor/no-original-store scope |
-| New compress API | Arbitrary external text | Requires caller changes/expanded scope; #1023 describes related tradeoffs |
-| Central vault/ledger | Cross-host recovery/hard budgets | Unnecessary for current single-call compilation |
-
-Prove effects at delivery boundaries PowerContext already owns, distinguishing framework independence from control over
-all agent costs.
+| Choice | Tradeoff |
+| --- | --- |
+| Optimize prepare only | Serves existing consumers directly, but does not reduce extraction costs already incurred |
+| Discard data before capture | May reduce storage, but loses complete evidence and replay foundations; rejected |
+| Summarize/classify with a cheaper model first | May reduce the main request while adding model costs and failure modes; a separate experiment rather than a mandatory path |
+| Reduce existing window/stage budgets | Strong baseline; may increase requests or lose coverage and cannot be presented as new compression |
+| Complete shared representations within one window | Add no persistent state and retain every occurrence/source; validate model understanding |
+| Cross-window cache of only new facts | Requires dependency, time, invalidation, and recovery protocols; excluded initially |
+| Host or model proxy | May cover more external input, but adds integration/deployment boundaries; not a prerequisite for the two-gate flow |
 
 # Prior art
 
-This proposal reuses existing context assembly, recall admission, exact citations, and original-reading contracts.
-Stateless representation planning sits between typed candidates and the final renderer, while official records,
-transport models, and caller delivery retain their existing boundaries.
+Reuse existing Source journals, standard evidence projections, windows/budgets, candidate citations, transactional publishers,
+prepare renderers, and actual model usage. The new behavior constructs fully reconstructable temporary representations of
+the same logical evidence and qualifies generation and delivery boundaries separately.
 
 # Unresolved questions
 
-Before accepting this RFC, confirm:
+Before acceptance and implementation, determine:
 
-1. R1/R2/R3 hit rates in actual typed samples, per-rule savings/wrapping costs, and sufficient gains over existing assembly.
-2. Initial verifiable R4/R5 formats, complete protected-paragraph relationships, compatible samples, severe conditional
-   error definitions, and held-out quality thresholds.
-3. Default token targets/tokenizer dependencies, deployment fallback/rollout, and final performance thresholds.
-4. Expanded independent task families, non-inferiority margins, and actual model/provider-usage observation coverage.
-5. Whether deployment-level switches meet initial needs, and clear product documentation of current MCP coverage limits.
-
-Explicitly add no database migrations, HTTP/MCP operations, public request/response fields, local readers, checkpoint state,
-or third-party execution proxies. Any extension first meets necessity thresholds in section 13.4.
+1. Initial I1 Source types and duplicate paths, unknown fields to retain completely, and built-in Prompt compatibility criteria.
+2. Initial I2 structured snapshot schemas, directly readable encoding, scan/block limits, actual repetition, and improvement
+   over reasonably configured original input.
+3. Independent I3 family/profile rules, misclassification definitions, and production recovery thresholds. Remain shadow-only
+   until resolved.
+4. Per-stage input provider usage/unknown coverage, durable-fact non-inferiority margins, net usage, and p95/throughput thresholds.
+5. Existing output-rule eligibility, held-out future questions, repeated four-cell batches, and reuse count K fixed in advance.
 
 # Future possibilities
 
-After initial thresholds pass, explore automatic dependency recognition, independent counterfactual calibration, more
-native delivery entry points, and MCP assembled-context capabilities. Host views/generic proxies independently establish
-additional value without promises of zero adaptation or crediting their gains to this compiler. Future needs provide
-compatibility, cost, quality, and necessity evidence, not implicit dependencies of the first-release design.
+Prove the cost and quality of the current two gates before exploring cross-window incremental extraction, semantic
+necessity judgments, more input formats, or new delivery entry points. Any capability requiring persistent fingerprints,
+re-extraction, or additional scoped reads needs a separate design for compatibility, authorization, recovery, and storage
+necessity. None is a hidden prerequisite for the first release.
