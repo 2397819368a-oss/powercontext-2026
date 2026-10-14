@@ -272,6 +272,39 @@ test('a later attempt stays latest when an earlier capture completes afterward',
   assert.equal((await f.status()).stages.capture.source_position, 2)
 })
 
+test('overflowed history stays readable and concurrent Hooks recover without deleting unfinished or unowned files', async t => {
+  const f = await fixture(t)
+  await f.invoke()
+  const directory = join(f.home, 'powercontext/runtime')
+  const [name] = await readdir(directory)
+  const value = JSON.parse(await readFile(join(directory, name), 'utf8'))
+  let incomplete, oldest
+  // Persist the 65-record state left by concurrent admissions below the retention threshold.
+  for (let index = 0; index < 64; index++) {
+    const copy = { ...value, attempt_id: randomUUID(), started_at: value.started_at - index - 1,
+      completed_at: index === 63 ? null : value.completed_at }
+    const path = join(directory, `attempt-${copy.attempt_id}.json`)
+    await writeFile(path, JSON.stringify(copy))
+    if (index === 63) incomplete = path
+    if (index === 62) oldest = path
+  }
+  const unfinished = await readFile(incomplete, 'utf8')
+  await writeFile(join(directory, 'unrelated.txt'), 'Keep me.')
+  const before = (await readdir(directory)).sort()
+  assert.equal((await f.status()).status, 'observed')
+  assert.deepEqual((await readdir(directory)).sort(), before)
+  const results = await Promise.all([f.invoke(), f.invoke()])
+  for (const result of results) {
+    assert.equal(result.stderr, '')
+    assert.match(result.output.message, /Historical context/)
+  }
+  assert.equal((await f.status()).status, 'observed')
+  assert.equal(await readFile(incomplete, 'utf8'), unfinished)
+  assert.equal(await readFile(join(directory, 'unrelated.txt'), 'utf8'), 'Keep me.')
+  assert.equal(await readFile(join(directory, name), 'utf8'), JSON.stringify(value))
+  await assert.rejects(readFile(oldest), { code: 'ENOENT' })
+})
+
 test('retention preserves unowned files and incomplete attempts; capacity failures stay bounded', async t => {
   const f = await fixture(t)
   await f.invoke()
@@ -290,7 +323,7 @@ test('retention preserves unowned files and incomplete attempts; capacity failur
   const retained = await Promise.all((await readdir(directory)).filter(name => name.endsWith('.json'))
     .map(async name => JSON.parse(await readFile(join(directory, name), 'utf8'))))
   assert.ok(retained.some(item => item.completed_at === null))
-  for (let index = 0; index < 65; index++) await writeFile(join(directory, `attempt-${randomUUID()}.json`), '{}')
+  for (let index = 0; index < 128; index++) await writeFile(join(directory, `attempt-${randomUUID()}.json`), '{}')
   const failure = await f.status()
   assert.equal(failure.code, 'runtime_capacity_exceeded')
   const result = await f.invoke()

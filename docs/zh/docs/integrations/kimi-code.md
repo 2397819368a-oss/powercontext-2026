@@ -75,7 +75,7 @@ powercontext doctor kimi-code --runtime --cwd /path/to/workspace --session-id <K
 
 未找到对应历史显示 `not_observed`，配置改变后显示 `configuration_mismatch`；超过五分钟标 `stale`，未写入完成标记的尝试标 `incomplete`。这些结果不会使其他正常的安装/连接诊断失败。存在记录也不证明当前窗口加载了插件；不带 session-id 的查询只选择工作区历史。损坏、容量超限或不可读的观测存储单独报失败。
 
-观测保存在 `<Kimi home>/powercontext/runtime`，按工作区、会话和配置指纹隔离；配置指纹覆盖 endpoint、Scope、采集偏好与鉴权模式，不包含 token。每次提交使用独立文件，旧请求晚完成不会覆盖较新的尝试；记录不包含提示词、上下文正文、回答、原始工作区路径、session ID、endpoint 或凭据。插件更新保留这些记录。每次写入只枚举有界目录；到达 64 条记录时保留最近 32 条已完成记录及未完成尝试，最多检查 128 个目录项、单条最多读取 4 KiB。未知文件不清理；存储故障使观测降级，现有 prepare/capture 继续。
+观测保存在 `<Kimi home>/powercontext/runtime`，按工作区、会话和配置指纹隔离；配置指纹覆盖 endpoint、Scope、采集偏好与鉴权模式，不包含 token。每次提交使用独立文件，旧请求晚完成不会覆盖较新的尝试；记录不包含提示词、上下文正文、回答、原始工作区路径、session ID、endpoint 或凭据。插件更新保留这些记录。每次写入只枚举有界目录；到达 64 条记录时保留最近 32 条已完成记录及未完成尝试。并发写入可能暂时超过该保留阈值；扫描预算内历史仍可查询，下次写入会清理已完成记录。最多检查 128 个目录项、单条最多读取 4 KiB。未知文件不清理；存储故障使观测降级，现有 prepare/capture 继续。
 
 只读查询脚本无需 Server 或运行时 token，也不会整理、删除记录：
 

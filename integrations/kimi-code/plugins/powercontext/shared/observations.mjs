@@ -15,7 +15,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, opendir, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, open, opendir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { MAX_CONTEXT_BYTES } from './runtime.mjs'
@@ -33,6 +33,8 @@ const STAGE_STATES = { scope: ['resolved', 'failed', 'skipped', 'not_observed'],
   injection: ['emitted', 'skipped', 'not_observed'] }
 // The Python doctor must also be able to represent persisted timestamps.
 const MAX_TIMESTAMP = 253402300800000
+// Retention is a soft threshold: concurrent admissions can exceed it. The separate
+// directory scan budget leaves bounded room to read and prune that overflow.
 const LIMIT = 64
 const STALE_MS = 300000
 const hash = value => createHash('sha256').update(value).digest('hex')
@@ -81,7 +83,6 @@ async function names() {
     for await (const entry of await opendir(directory())) {
       if (++count > LIMIT * 2) throw new Error('runtime_capacity_exceeded')
       if (FILE.test(entry.name)) result.push(entry.name)
-      if (result.length > LIMIT) throw new Error('runtime_capacity_exceeded')
     }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
@@ -143,7 +144,7 @@ export function startObservation(input, settings, onFailure) {
     if (existing.length >= LIMIT) {
       const completed = (await records()).filter(item => item.completed_at !== null)
       for (const item of completed.slice(32)) {
-        await unlink(join(directory(), `attempt-${item.attempt_id}.json`)).catch(error => { if (error.code !== 'ENOENT') throw error })
+        await rm(join(directory(), `attempt-${item.attempt_id}.json`), { force: true })
       }
       if ((await names()).length >= LIMIT) throw new Error('runtime_capacity_exceeded')
     }
