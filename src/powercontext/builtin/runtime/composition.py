@@ -58,6 +58,11 @@ from powercontext.builtin.artifacts.memory import (
     MemoryReranker,
     MemoryWriteGate,
 )
+from powercontext.builtin.artifacts.memory.input_encoding import (
+    MEMORY_INPUT_ENCODING_INSTRUCTIONS,
+    MemoryInputOptimizer,
+    SharedMemoryInput,
+)
 from powercontext.builtin.artifacts.memory.reranking import MemoryRerankText
 from powercontext.builtin.artifacts.merge import ArtifactMergeService
 from powercontext.builtin.artifacts.merge_restoration import ArtifactMergePreviewSigner
@@ -1360,6 +1365,38 @@ async def _generation_pipelines(
             name="atomic_memory_extraction",
             prompt_key="atomic_memory.extract",
         )
+        from powercontext.builtin.runtime.prepared_tokens import load_prepared_token_counter
+
+        memory_input_optimizer = (
+            None
+            if runtime.memory_input_optimization_mode == "off"
+            else MemoryInputOptimizer(
+                UsageReportingStructuredGenerator(memory_generator),
+                UsageReportingStructuredGenerator(
+                    PydanticAIStructuredGenerator(
+                        model=generation_model,
+                        instructions=(
+                            f"{atomic_memory_extraction_instructions(runtime.memory_extraction_profile)}\n"
+                            f"{MEMORY_INPUT_ENCODING_INSTRUCTIONS}"
+                        ),
+                        input_type=SharedMemoryInput,
+                        output_type=AtomicMemoryExtractionOutput,
+                        limits=generation_limits,
+                        model_settings=generation_request_settings,
+                        name="atomic_memory_shared_extraction",
+                    )
+                ),
+                family="atomic",
+                stage="atomic_memory.extract",
+                mode=runtime.memory_input_optimization_mode,
+                instructions=atomic_memory_extraction_instructions(runtime.memory_extraction_profile),
+                input_type=AtomicMemoryExtractionInput,
+                output_type=AtomicMemoryExtractionOutput,
+                estimator=character_token_estimator(),
+                counter=load_prepared_token_counter(runtime.token_optimization_tokenizer),
+                input_tokens_limit=runtime.atomic_memory_input_tokens_limit,
+            )
+        )
         memory_reconciler = PydanticAIStructuredGenerator(
             model=generation_model,
             instructions=ATOMIC_MEMORY_RECONCILIATION_INSTRUCTIONS,
@@ -1415,6 +1452,7 @@ async def _generation_pipelines(
             reconciler=UsageReportingStructuredGenerator(memory_reconciler),
             estimator=character_token_estimator(),
             extraction_instructions=atomic_memory_extraction_instructions(runtime.memory_extraction_profile),
+            input_optimizer=memory_input_optimizer,
         )
         generated_incubation = LLMExperienceCandidatePipeline(UsageReportingStructuredGenerator(experience_generator))
         generated_experience = LLMExperienceGenerator(UsageReportingStructuredGenerator(explicit_experience_generator))

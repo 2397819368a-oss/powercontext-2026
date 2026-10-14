@@ -231,7 +231,11 @@ from powercontext.builtin.runtime.prepared_context import (
     PreparedMemoryCandidates,
     PreparedProfileCandidate,
 )
-from powercontext.builtin.runtime.prepared_optimization import OptimizationResult, PreparedTokenOptimizer
+from powercontext.builtin.runtime.prepared_optimization import (
+    POLICY_VERSION,
+    OptimizationResult,
+    PreparedTokenOptimizer,
+)
 from powercontext.builtin.runtime.prepared_tokens import load_prepared_token_counter
 from powercontext.builtin.runtime.protocols import (
     BuiltinTriggers,
@@ -1128,6 +1132,7 @@ class ScopedContextApplication:
             optimization = OptimizationResult(legacy, fallback_reason="internal_error")
         attributes: dict[str, TraceAttribute] = {
             "mode": self._runtime.token_optimization_mode,
+            "policy_version": POLICY_VERSION,
             "applied": optimization.build is not legacy,
             "reason": optimization.fallback_reason or "smaller",
             "selection_changed": optimization.selection_changed,
@@ -1136,10 +1141,20 @@ class ScopedContextApplication:
             "target_tokens": self._runtime.token_optimization_target_tokens,
             "duration_ms": (perf_counter() - started) * 1000,
         }
-        if optimization.baseline_tokens is not None:
-            attributes["baseline_tokens"] = optimization.baseline_tokens
-        if optimization.proposed_tokens is not None:
-            attributes["proposed_tokens"] = optimization.proposed_tokens
+        for key in (
+            "baseline_tokens",
+            "proposed_tokens",
+            "baseline_bytes",
+            "proposed_bytes",
+            "legacy_tokens",
+            "legacy_bytes",
+        ):
+            value = getattr(optimization, key)
+            if value is not None:
+                attributes[key] = value
+        if optimization.proposed is not None:
+            attributes["legacy_delivered_count"] = len(legacy.origins)
+            attributes["proposed_delivered_count"] = len(optimization.proposed.origins)
         if optimizer.counter is not None:
             attributes["tokenizer_id"] = optimizer.counter.profile.estimator_id
             attributes["tokenizer_version"] = optimizer.counter.profile.version

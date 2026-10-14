@@ -111,6 +111,7 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_RUNTIME_SCOPE_CACHE_SIZE` | `128` | Inactive scope compositions retained by the Runtime; in-flight scopes are never evicted |
 | `POWERCONTEXT_SERVER_RUNTIME_SOURCE_WINDOW_LIMIT` | `100` | Maximum Source journal positions per activation; Memory reduces its window after generation timeouts |
 | `POWERCONTEXT_SERVER_RUNTIME_CONTEXT_ASSEMBLY_MAX_ENTRIES` | `8` | Maximum sum of explicit `assembly.sections[].limit`; positive integer. Per-family limits still apply. |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_INPUT_OPTIMIZATION_MODE` | `off` | Independent extraction-input mode: `off` keeps original inputs, `shadow` measures without changing them, and `active` adopts validated, smaller shared representations |
 | `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE` | `off` | Prepared-context optimization: `off` keeps the original path, `shadow` compares candidates but returns the original body, and `active` adopts validated, smaller bodies |
 | `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_TARGET_TOKENS` | `1800` | Positive integer target for one complete prepared body, including trust, citations, and formatting; request byte limits still apply |
 | `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_TOKENIZER` | `o200k_base` | Exact counting profile: `cl100k_base` or `o200k_base` |
@@ -196,9 +197,42 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | unset | Experience automatic admission interval; unset preserves accepted work and stops new automatic admission |
 | `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` | automatic local project targets | JSON override containing the host identity and explicit Agent Skill targets |
 
-Token optimization applies to existing `prepare_context` calls; it does not compress native search/get records,
+Memory-input optimization runs after original Sources are saved and authorized, before supported built-in Atomic and
+Topic extraction requests. It shares exact duplicate bodies within one request while preserving complete logical
+evidence, Source identities, timestamps, metadata, order, and occurrences. It does not change stored Sources, output
+schemas, evidence IDs, publication transactions, or cursors. Unsupported formats, custom Prompts, unavailable local
+tokenizers, invalid encodings, and representations that do not reduce the complete request retain the original input.
+The same selected typed representation is budgeted and sent to the model. Existing processing windows and stage
+budgets remain in force; compaction does not enlarge windows or skip Sources.
+
+The input and output modes are independent and default to `off`. Input `shadow` still performs the original extraction,
+without a second model call or a second Memory. Skipping apparently non-memorable input is shadow-only: it does not
+skip extraction or advance a cursor. Restart the Server after changing either mode. Disabling input optimization
+affects future processing only; it does not replay consumed Sources or restore missing memories. Manually written
+Memory bypasses extraction and cannot demonstrate input-side savings.
+
+For complete-message snapshot sharing, submit a canonical JSON string as the existing capture `content`:
+
+```python
+json.dumps(
+    {
+        "format": "powercontext.messages.v1",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "Only read-only queries may retry.", "time": "2026-10-01"}
+        ],
+    },
+    ensure_ascii=False,
+    separators=(",", ":"),
+)
+```
+
+This format preserves every complete snapshot, message occurrence, and unknown field. Plain text and unknown snapshot
+formats are not split or treated as new-tail messages; only supported exact whole-field sharing can apply. The
+shared blocks and references exist for one authorized model request and are never persisted.
+
+Output token optimization applies to existing `prepare_context` calls; it does not compress native search/get records,
 third-party tool output, or the Agent's existing history. It preserves current retrieval, authorization, and public
-request/response fields. The target is a planning goal, not a full model-input or task-billing limit. Unsupported content,
+request/response fields. Its target is a planning goal, not an extraction budget or full model-input/task-billing limit. Unsupported content,
 unavailable tokenizer dependencies or vocabulary caches, unmet constraints, and optimization errors retain the original
 prepared body. `off` skips the optimizer and its tokenizer. Restart the Server after changing deployment settings;
 already-delivered context remains in the caller's history.

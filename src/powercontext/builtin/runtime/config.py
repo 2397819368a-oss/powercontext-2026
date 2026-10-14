@@ -152,6 +152,7 @@ class RuntimeConfig(BaseModel):
     scope_cache_size: int = Field(default=DEFAULT_SCOPE_CACHE_SIZE, ge=1)
     source_window_limit: int = Field(default=100, ge=1)
     context_assembly_max_entries: int = Field(default=8, ge=1)
+    memory_input_optimization_mode: Literal["off", "shadow", "active"] = Field(default="off")
     token_optimization_mode: Literal["off", "shadow", "active"] = Field(default="off")
     token_optimization_target_tokens: int = Field(default=1800, ge=1)
     token_optimization_tokenizer: Literal["cl100k_base", "o200k_base"] = Field(default="o200k_base")

@@ -1,4 +1,39 @@
-# Prepared-context token optimization: configured-service experiment
+# Token optimization: configured-service experiments
+
+The input and output gates have separate experiments. The runners below seed already prepared Artifacts and
+measure output representation and Reader use; they do not measure extraction savings. To evaluate the complete
+lifecycle, capture original Sources and generate memories before pairing output modes. Keep the two gates
+independently configured:
+
+```bash
+export POWERCONTEXT_SERVER_RUNTIME_MEMORY_INPUT_OPTIMIZATION_MODE=off
+export POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE=off
+```
+
+For each fixed source corpus, generate one isolated snapshot with input `off` and another with input `active`.
+Freeze exact Artifact revisions after public capture and completed processing, stop background writers, and
+reuse each snapshot for output `off` and `active`. This gives I0O0, I1O0, I0O1, and I1O1 without repeating random
+extraction for an output comparison. Pin Sources, metadata, order, Prompt/profile/model, budgets, retrieval,
+Reader instructions, retry limits, questions, and the number of queries per generated snapshot before running.
+Use source-derived independent facts and future questions; an off-generated Memory is not a reference answer.
+
+Audit every actual provider request, including extraction, reconciliation, embedding, retries, and Reader use.
+Keep generation and query usage separate, report cache as part of input usage, and retain failed attempts and
+unknown counts. Record startup probes and evaluation Judge calls separately. Compare the complete generation
+plus the preselected number of queries; a shorter prepared body alone cannot establish net lifecycle savings.
+Verify stored Source bodies and metadata, lineage support, exact revisions, and restart readback. Native Atomic
+text is an expected output negative control when no representation rule applies.
+
+Complete-snapshot input sharing recognizes canonical `powercontext.messages.v1` content; unknown prose is
+never guessed into incremental tails. See the [configuration guide](../../docs/en/docs/operate/configuration.md)
+for the format and rollout controls. I3 request skipping and lossy output selection remain shadow-only.
+
+Corpora, transformation scripts, frozen questions and references, model responses, attempt ledgers, database
+snapshots, reports, and load results belong under `/data/codex-tmp/`. Do not check them into this directory.
+Small real-service runs screen concrete regressions and measure observed cost; they do not prove statistical
+noninferiority or production capacity.
+
+## Output-only configured-service experiment
 
 This opt-in experiment exercises a real loopback HTTP Server, a newly created OceanBase database using the selected
 configuration's account, and the configured OpenAI-compatible generation service. It does not connect an agent host

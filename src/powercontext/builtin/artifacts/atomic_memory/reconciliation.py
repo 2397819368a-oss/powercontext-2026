@@ -44,6 +44,10 @@ their effective/event dates and conditions. Artifact publication time does not d
 Citing Artifact evidence does not by itself consume that published identity.
 Choose create to retain an independent proposal without consuming related items; it continues to later batches.
 Choose revise to absorb the proposal into one related identity, returning full final kind/text and evidence_ids.
+Revise requires exactly one distinct published original_ref across the proposal and its single selected target.
+A candidate item_id with empty original_refs is unpublished; its item_id is not a published identity. When both
+the proposal and selected target have empty original_refs, use merge, never revise. Use merge whenever the combined
+items have zero or multiple published identities. Do not treat similar text as proof of a published identity.
 Choose merge to combine the proposal and one or more related items, returning full final kind/text and evidence_ids.
 Multiple existing original_refs require merge; multiple unpublished candidates can merge without creating history.
 Choose noop with one target_id when that item already expresses the proposal, without changing the target content.

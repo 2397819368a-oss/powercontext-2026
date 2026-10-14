@@ -410,7 +410,10 @@ class AtomicMemorySourceWindowProcessor:
             prompt_refs,
             generation_sources=eligible,
         )
-        candidates = await pipeline.extract(extraction_input)
+        # The legacy window/budget and authorization are already fixed. Only the
+        # model view changes; workset and publication retain the original evidence.
+        input_plan = None if pipeline.input_optimizer is None else pipeline.input_optimizer.plan(extraction_input)
+        candidates = await pipeline.extract(extraction_input, plan=input_plan)
         for ref in prompt_refs:
             artifacts[(ref.family, ref.artifact_id, ref.revision)] = ref
         by_id = {item.evidence_id: item for item in evidence}

@@ -159,7 +159,13 @@ def _assert_smaller(
     assert result.fallback_reason is None
     assert counter.estimate(delivered) < counter.estimate(_content(legacy))
     assert result.baseline_tokens == counter.estimate(_content(legacy))
+    assert result.baseline_bytes == legacy.context.content_bytes
     assert result.proposed_tokens == counter.estimate(delivered)
+    assert result.proposed_bytes == len(delivered.encode("utf-8"))
+    assert result.legacy_tokens == counter.estimate(_content(legacy))
+    assert result.legacy_bytes == legacy.context.content_bytes
+    assert result.proposed_bytes is not None and result.baseline_bytes is not None
+    assert result.proposed_bytes < result.baseline_bytes
     assert result.build.context.content_bytes == len(delivered.encode("utf-8")) <= request.max_bytes
     assert result.build.origins == legacy.origins
     assert not result.selection_changed
@@ -449,7 +455,7 @@ def test_shadow_measures_saving_but_returns_original(counter: TokenEstimator, ma
     assert result.proposed_tokens == counter.estimate(_content(result.proposed))
 
 
-def test_markdown_keeps_original_rank_when_an_earlier_entry_was_dropped(counter: TokenEstimator) -> None:
+def test_unfit_original_candidate_cannot_be_skipped_by_the_complete_snapshot(counter: TokenEstimator) -> None:
     shared = "Retry confirmed idempotent reads at most three times with jitter. " * 2
     source = ExperienceContent(situation=shared, action=shared, outcome=shared, lesson=shared)
     request = _request(True, max_bytes=1200)
@@ -459,13 +465,123 @@ def test_markdown_keeps_original_rank_when_an_earlier_entry_was_dropped(counter:
         experiences=(PreparedExperienceCandidates("current", (_experience(source, "🙂" * 128), _experience(source))),),
     )
 
-    _assert_smaller(counter, request, legacy, result)
+    assert result.build == legacy
+    assert result.fallback_reason == "protected_group_unfit"
+    assert result.proposed is None
     assert len(result.build.origins) == 1
     assert legacy.omissions.dropped_items == 1
     assert "Recall rank: 2" in _content(result.build)
     assert "Recall rank: 1" not in _content(result.build)
     assert "Confidence: unknown (not assessed)" in _content(result.build)
     assert result.build.omissions.dropped_items == legacy.omissions.dropped_items
+
+
+@pytest.mark.parametrize("markdown", [False, True])
+def test_complete_baseline_is_measured_before_legacy_truncation(counter: TokenEstimator, markdown: bool) -> None:
+    shared = "Retry only confirmed idempotent reads at most three times; never retry financial operations. " * 9
+    source = ExperienceContent.model_validate({
+        "situation": shared,
+        "action": shared,
+        "outcome": shared,
+        "lesson": shared,
+        "failure": {
+            "signature": {"recall_cue": "Payment retry"},
+            "repair_surface": "acceptance_check",
+            "verification": {
+                "condition": "No automatic payment retries.",
+                "check_subject": "Confirm no duplicate payment",
+            },
+        },
+    })
+    request = _request(markdown)
+    legacy, result = _optimize(
+        counter, request, experiences=(PreparedExperienceCandidates("current", (_experience(source),)),)
+    )
+
+    assert legacy.omissions.truncated_items == 1
+    assert "Confirm no duplicate payment" not in _content(legacy)
+    assert result.fallback_reason is None
+    assert result.baseline_tokens is not None and result.legacy_tokens is not None
+    assert result.baseline_tokens > result.legacy_tokens
+    assert result.baseline_bytes is not None and result.legacy_bytes is not None
+    assert result.baseline_bytes > result.legacy_bytes
+    assert result.proposed_tokens == counter.estimate(_content(result.build)) < result.legacy_tokens
+    assert result.proposed_bytes == result.build.context.content_bytes < result.legacy_bytes
+    assert result.build.origins == legacy.origins
+    assert result.build.omissions.truncated_items == 0
+    assert shared in _body(result.build, markdown)
+    assert "Verification check: Confirm no duplicate payment" in _body(result.build, markdown)
+
+
+@pytest.mark.parametrize("markdown", [False, True])
+def test_lower_token_cost_cannot_adopt_a_larger_utf8_representation(markdown: bool) -> None:
+    counter = TokenEstimator(
+        TokenEstimatorProfile(estimator_id="test:independent-cost", version="1"),
+        lambda text: 10 if "Identical to the complete Summary above." in text else 100,
+    )
+    legacy, result = _optimize(counter, _request(markdown), topics=(_topic("Retry.", snippet="Retry."),))
+
+    assert result.build == legacy
+    assert result.fallback_reason == "not_smaller_bytes"
+    assert result.proposed is not None
+    assert result.proposed_tokens is not None and result.baseline_tokens is not None
+    assert result.proposed_tokens < result.baseline_tokens
+    assert result.proposed_bytes is not None and result.baseline_bytes is not None
+    assert result.proposed_bytes > result.baseline_bytes
+
+
+def test_complete_gain_cannot_increase_the_actual_legacy_delivery_cost() -> None:
+    counter = TokenEstimator(
+        TokenEstimatorProfile(estimator_id="test:delivery-cost", version="1"),
+        lambda text: 5 if "…" in text else 10 if "Situation / Action / Outcome / Lesson:" in text else 100,
+    )
+    shared = "Retry only confirmed idempotent reads; never retry financial operations. " * 9
+    source = ExperienceContent(situation=shared, action=shared, outcome=shared, lesson=shared)
+    legacy, result = _optimize(
+        counter, _request(False), experiences=(PreparedExperienceCandidates("current", (_experience(source),)),)
+    )
+
+    assert legacy.omissions.truncated_items == 1
+    assert result.build == legacy
+    assert result.fallback_reason == "delivery_increased"
+    assert result.proposed is not None
+    assert result.proposed_tokens is not None and result.baseline_tokens is not None
+    assert result.legacy_tokens is not None
+    assert result.legacy_tokens < result.proposed_tokens < result.baseline_tokens
+    assert result.proposed_bytes is not None and result.legacy_bytes is not None
+    assert result.proposed_bytes < result.legacy_bytes
+
+
+@pytest.mark.parametrize("markdown", [False, True])
+def test_original_entry_and_section_limits_bound_the_complete_plan(counter: TokenEstimator, markdown: bool) -> None:
+    shared = "Only confirmed idempotent reads qualify; never retry financial operations. " * 3
+    source = ExperienceContent(situation=shared, action=shared, outcome=shared, lesson=shared)
+    hits = (
+        *(_memory(f"memory-{index}", f"Retry constraint {index}") for index in range(7)),
+        _memory("outside-limit", "This evidence lies beyond the original delivery limit. " * 100),
+    )
+    request = (
+        PrepareContextRequest(
+            query="retry",
+            max_bytes=32768,
+            assembly=ContextAssembly.model_validate({
+                "sections": [{"family": "memory", "limit": 1}, {"family": "experience", "limit": 1}],
+            }),
+        )
+        if markdown
+        else _request(False)
+    )
+    legacy, result = _optimize(
+        counter,
+        request,
+        memory=(PreparedMemoryCandidates("current", hits),),
+        experiences=(PreparedExperienceCandidates("current", (_experience(source),)),),
+    )
+
+    _assert_smaller(counter, request, legacy, result)
+    assert len(result.build.origins) == (2 if markdown else 8)
+    assert "lies beyond the original delivery limit" not in _content(result.build)
+    assert "Situation / Action / Outcome / Lesson:" in _content(result.build)
 
 
 @pytest.mark.parametrize("markdown", [False, True])

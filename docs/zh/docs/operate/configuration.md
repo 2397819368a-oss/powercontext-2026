@@ -102,6 +102,7 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_RUNTIME_SCOPE_CACHE_SIZE` | `128` | Runtime 保留的非活动 scope composition 数量；进行中的 scope 不会被驱逐 |
 | `POWERCONTEXT_SERVER_RUNTIME_SOURCE_WINDOW_LIMIT` | `100` | 每次处理的 Source 日志位置上限；Memory 在生成超时后会缩小窗口 |
 | `POWERCONTEXT_SERVER_RUNTIME_CONTEXT_ASSEMBLY_MAX_ENTRIES` | `8` | 显式 `assembly.sections[].limit` 之和的上限；正整数，各类别单独上限仍适用 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_INPUT_OPTIMIZATION_MODE` | `off` | 独立的提取输入模式：`off` 沿用原输入，`shadow` 计量但不改变输入，`active` 采用可完整还原且更短的共享表示 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE` | `off` | PreparedContext 优化模式：`off` 沿用原路径，`shadow` 比较候选但返回原正文，`active` 采用通过校验且更短的正文 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_TARGET_TOKENS` | `1800` | 单次完整准备正文的正整数 Token 目标，包含 trust、引用及格式；请求的字节上限仍适用 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_TOKENIZER` | `o200k_base` | 精确计数 profile：`cl100k_base` 或 `o200k_base` |
@@ -187,8 +188,36 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | 未设置 | Experience 自动准入间隔；未设置时保留已接受工作，停止新的自动准入 |
 | `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` | 自动生成本机项目 target | 覆盖默认值的 host identity 和显式 Agent Skill targets JSON object |
 
-Token 优化作用于现有 `prepare_context` 调用，不压缩原生 search/get 记录、第三方工具输出或 Agent 已有历史。
-检索、授权和公开请求响应字段沿用当前合同。Token 目标是规划目标，不是完整模型输入或任务账单的硬上限。
+入口优化在原 Source 保存和授权之后、支持的内置 Atomic 与 Topic 提取请求之前执行。同一请求内严格相等的
+正文只编码一次，完整逻辑证据、Source 身份、时间、metadata、顺序及每次出现仍保留。原 Source、提取输出
+schema、evidence ID、提交事务与游标不变。不支持的格式、自定义 Prompt、本地 tokenizer 不可用、编码无效
+或完整请求未变小，都沿用原输入。预算检查与实际发送使用同一份选定的 typed 表示，原窗口和阶段预算继续
+生效，不因紧凑表示扩大窗口或跳过 Source。
+
+入口与出口独立默认 `off`。入口 `shadow` 仍执行原提取，不增加第二次模型调用或第二份 Memory。识别无记忆
+信息只计算 shadow 判断，不跳过提取、不推进游标。任一模式修改后需要重启 Server。关闭入口只影响后续
+处理，不会重放已消费 Source 或补回遗漏的 Memory。手工写入 Memory 不经过提取，不能证明入口收益。
+
+完整消息快照共享支持在原 capture 的 `content` 中提交规范 JSON 字符串：
+
+```python
+json.dumps(
+    {
+        "format": "powercontext.messages.v1",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "只有只读查询可以重试。", "time": "2026-10-01"}
+        ],
+    },
+    ensure_ascii=False,
+    separators=(",", ":"),
+)
+```
+
+每个完整快照、每次消息出现及未知字段均保留。普通文本和未知快照格式不被拆分或解释为新增尾部，只能
+应用受支持的整字段精确共享。正文块和引用仅存在于同一个已授权模型请求内，不持久化。
+
+出口 Token 优化作用于现有 `prepare_context` 调用，不压缩原生 search/get 记录、第三方工具输出或 Agent 已有历史。
+检索、授权和公开请求响应字段沿用当前合同。出口 Token 目标是规划目标，不是提取预算、完整模型输入或任务账单的硬上限。
 内容不支持、tokenizer 依赖或词表缓存不可用、约束未满足、优化发生错误时，返回原准备正文。`off` 不执行优化器或
 专项 tokenizer。修改部署配置后重启 Server；已经交付的上下文仍保留在调用方历史中。
 

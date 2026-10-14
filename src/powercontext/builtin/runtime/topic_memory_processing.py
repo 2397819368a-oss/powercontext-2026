@@ -34,6 +34,11 @@ from typing_extensions import override
 
 from powercontext._logging import log_safely
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.memory.input_encoding import (
+    MEMORY_INPUT_ENCODING_INSTRUCTIONS,
+    MemoryInputOptimizer,
+    SharedMemoryInput,
+)
 from powercontext.builtin.artifacts.prompt.service import current_prompt
 from powercontext.builtin.artifacts.search import analyze_text
 from powercontext.builtin.artifacts.topic_memory import (
@@ -1649,6 +1654,13 @@ async def _open_topic_memory_processor(spec: TopicMemoryWorkerSpec, scope_id: st
 
         fixed_prompts: dict[str, str] = {}
         prompt_refs: dict[str, ArtifactRef] = {}
+        from powercontext.builtin.runtime.prepared_tokens import load_prepared_token_counter
+
+        input_counter = (
+            None
+            if config.runtime.memory_input_optimization_mode == "off"
+            else load_prepared_token_counter(config.runtime.token_optimization_tokenizer)
+        )
 
         def stage(
             input_type: type[BaseModel],
@@ -1680,6 +1692,45 @@ async def _open_topic_memory_processor(spec: TopicMemoryWorkerSpec, scope_id: st
                 budget=budget,
                 fixed_prompt=fixed_prompt,
             )
+            if config.runtime.memory_input_optimization_mode != "off" and stage_name in {
+                "probe",
+                "global",
+                "evolve",
+                "temporary",
+            }:
+                shared_instructions = f"{selected_instructions}\n{MEMORY_INPUT_ENCODING_INSTRUCTIONS}"
+                shared = BudgetedTopicMemoryGenerator(
+                    PydanticAIStructuredGenerator(
+                        model=model,
+                        instructions=shared_instructions,
+                        input_type=SharedMemoryInput,
+                        output_type=output_type,
+                        limits=limits,
+                        model_settings=settings,
+                        name=f"{name}_shared",
+                    ),
+                    estimator=contexts.token_estimator,
+                    budget=budget,
+                    fixed_prompt=topic_memory_stage_fixed_prompt(shared_instructions, SharedMemoryInput, output_type),
+                )
+                # Selection/fragmentation still use the legacy fixed request.
+                # Each selected private input is checked again by its own bound
+                # generator, using the same serialization actually sent.
+                return UsageReportingStructuredGenerator(
+                    MemoryInputOptimizer(
+                        bounded,
+                        shared,
+                        family="topic",
+                        stage=prompt_key,
+                        mode=config.runtime.memory_input_optimization_mode,
+                        instructions=selected_instructions,
+                        input_type=input_type,
+                        output_type=output_type,
+                        estimator=contexts.token_estimator,
+                        counter=input_counter,
+                        input_tokens_limit=budget.input_tokens_limit,
+                    )
+                )
             return UsageReportingStructuredGenerator(bounded)
 
         stages = TopicMemoryStageSet(

@@ -16,7 +16,7 @@
 
 No retrieval, model call, persistence, or tokenizer initialization occurs here.
 Lossy formats remain shadow-only until independent held-out acceptance promotes
-their fixed policy. Exact citations and the legacy-selected set remain distinct
+their fixed policy. Exact citations and the admitted candidate set remain distinct
 from representation changes.
 """
 
@@ -39,6 +39,7 @@ from powercontext.builtin.runtime.models import PrepareContextRequest, PreparedC
 from powercontext.builtin.runtime.prepared_context import (
     PreparedContextBuild,
     PreparedContextBuilder,
+    PreparedContextOmissions,
     PreparedExperienceCandidates,
     PreparedMemoryCandidates,
     PreparedProfileCandidate,
@@ -55,7 +56,7 @@ from powercontext.builtin.runtime.prepared_excerpts import (
 )
 from powercontext.builtin.runtime.prepared_text import _body_chunks, render_context_text
 
-POLICY_VERSION = "prepared-evidence-v1"
+POLICY_VERSION = "prepared-evidence-v2"
 # A parser is not evidence of unchanged task quality. Promotion requires a
 # frozen, independently scored calibration and held-out experiment.
 ACTIVE_LOSSY_POLICIES: frozenset[str] = frozenset()
@@ -72,6 +73,10 @@ class OptimizationResult:
     proposed: PreparedContextBuild | None = None
     baseline_tokens: int | None = None
     proposed_tokens: int | None = None
+    baseline_bytes: int | None = None
+    proposed_bytes: int | None = None
+    legacy_tokens: int | None = None
+    legacy_bytes: int | None = None
     rules: tuple[str, ...] = ()
     fallback_reason: str | None = None
     selection_changed: bool = False
@@ -124,8 +129,9 @@ class PreparedTokenOptimizer:
         if legacy.context.content is None or not legacy.origins:
             return OptimizationResult(legacy, fallback_reason="empty")
         deadline = perf_counter() + _MAX_PLANNING_SECONDS
-        baseline_tokens = self.counter.estimate(legacy.context.content)
-        snapshot = _snapshot(
+        legacy_tokens = self.counter.estimate(legacy.context.content)
+        legacy_bytes = legacy.context.content_bytes
+        selected = _snapshot(
             builder,
             request,
             current_scope_id,
@@ -134,10 +140,21 @@ class PreparedTokenOptimizer:
             experience_candidates,
             profile_candidates,
         )
-        by_origin = {_origin_key(evidence.entry.origin): evidence for evidence in snapshot}
-        selected = tuple(by_origin[_origin_key(origin)] for origin in legacy.origins)
+        # Compare complete representations of the same bounded candidates. The
+        # legacy delivery may already have truncated or dropped an entry; neither
+        # outcome is a representation saving and neither can define this plan.
+        complete = _render_plan(tuple(_Variant(item.entry) for item in selected), selected, request)
+        baseline_tokens = self.counter.estimate(complete)
+        baseline_bytes = len(complete.encode("utf-8"))
+        comparison = OptimizationResult(
+            legacy,
+            baseline_tokens=baseline_tokens,
+            baseline_bytes=baseline_bytes,
+            legacy_tokens=legacy_tokens,
+            legacy_bytes=legacy_bytes,
+        )
         if any(evidence.entry.kind == "profile" for evidence in selected):
-            return OptimizationResult(legacy, baseline_tokens=baseline_tokens, fallback_reason="profile")
+            return replace(comparison, fallback_reason="profile")
         allow_excerpts = self.mode == "shadow" or TOPIC_EXCERPT_POLICY_VERSION in ACTIVE_LOSSY_POLICIES
         variants = tuple(
             _variants(evidence, request.query, allow_excerpts, markdown=request.assembly is not None)
@@ -148,7 +165,7 @@ class PreparedTokenOptimizer:
                 self.counter, variants, selected, request, deadline, allow_selection=self.mode == "shadow"
             )
         except _PlanningError as error:
-            return OptimizationResult(legacy, baseline_tokens=baseline_tokens, fallback_reason=error.reason)
+            return replace(comparison, fallback_reason=error.reason)
         selection_changed = False
         # R5 is an explicitly lossy, shadow-only experiment. Coverage is never an
         # identity; positive provenance vetoes and exact Scope/revision partitions
@@ -161,21 +178,39 @@ class PreparedTokenOptimizer:
                 selection_changed = True
         content = _render_plan(best, selected, request)
         if perf_counter() > deadline:
-            return OptimizationResult(legacy, baseline_tokens=baseline_tokens, fallback_reason="planning_limit")
+            return replace(comparison, fallback_reason="planning_limit")
         rules = tuple(dict.fromkeys(rule for variant in best for rule in variant.rules))
         if selection_changed:
             rules = (*rules, "R5")
-        reason = "target_unmet" if tokens > self.target_tokens else "not_smaller" if tokens >= baseline_tokens else None
-        proposed = PreparedContextBuild(
-            context=PreparedContext(status="ready", content=content, content_bytes=len(content.encode("utf-8"))),
-            origins=tuple(evidence.entry.origin for evidence in selected),
-            omissions=replace(legacy.omissions, truncated_items=sum(variant.entry.truncated for variant in best)),
+        content_bytes = len(content.encode("utf-8"))
+        proposed_origins = tuple(evidence.entry.origin for evidence in selected)
+        reason = (
+            "target_unmet"
+            if tokens > self.target_tokens
+            else "not_smaller"
+            if tokens >= baseline_tokens
+            else "not_smaller_bytes"
+            if content_bytes >= baseline_bytes
+            else "delivery_increased"
+            if tokens > legacy_tokens or content_bytes > legacy_bytes
+            else "selection_changed"
+            if self.mode == "active"
+            and not {_origin_key(origin) for origin in legacy.origins}.issubset(
+                _origin_key(origin) for origin in proposed_origins
+            )
+            else None
         )
-        return OptimizationResult(
+        proposed = PreparedContextBuild(
+            context=PreparedContext(status="ready", content=content, content_bytes=content_bytes),
+            origins=proposed_origins,
+            omissions=PreparedContextOmissions(truncated_items=sum(variant.entry.truncated for variant in best)),
+        )
+        return replace(
+            comparison,
             build=proposed if self.mode == "active" and reason is None else legacy,
             proposed=proposed,
-            baseline_tokens=baseline_tokens,
             proposed_tokens=tokens,
+            proposed_bytes=content_bytes,
             rules=rules,
             fallback_reason=reason,
             selection_changed=selection_changed,
@@ -310,7 +345,8 @@ def _snapshot(
             _interleave_groups(experience_groups)[: builder.experience_entry_limit],
         )
         return tuple(
-            _Evidence(entry, index + 1, sources.get(_origin_key(entry.origin))) for index, entry in enumerate(entries)
+            _Evidence(entry, index + 1, sources.get(_origin_key(entry.origin)))
+            for index, entry in enumerate(entries[: builder.entry_limit])
         )
     result: list[_Evidence] = []
     for section in request.assembly.sections:
@@ -335,12 +371,15 @@ def _snapshot(
         seen: set[_OriginKey] = set()
         rank = 0
         for entry in entries:
+            if rank >= section.limit:
+                break
             key = _origin_key(entry.origin)
             if key in seen or not entry.content.strip():
                 continue
             seen.add(key)
             rank += 1
-            result.append(_Evidence(entry, rank, sources.get(key)))
+            normalized = replace(entry, content="".join(_body_chunks(entry.content)))
+            result.append(_Evidence(normalized, rank, sources.get(key)))
     return tuple(result)
 
 

@@ -63,6 +63,31 @@ def test_token_optimization_defaults_to_the_original_prepare_path() -> None:
     assert config.token_optimization_tokenizer == "o200k_base"  # noqa: S105
 
 
+def test_enabling_output_optimization_does_not_enable_memory_input_optimization() -> None:
+    config = RuntimeConfig(token_optimization_mode="active")  # noqa: S106 - deployment mode, not a credential
+
+    assert config.memory_input_optimization_mode == "off"
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "active"])
+def test_memory_input_mode_loads_independently_from_server_environment(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_MEMORY_INPUT_OPTIMIZATION_MODE", mode)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE", "off")
+
+    runtime = ServerSettings().runtime
+
+    assert runtime.memory_input_optimization_mode == mode
+    assert runtime.token_optimization_mode == "off"  # noqa: S105
+
+
+@pytest.mark.parametrize("value", ["enabled", "", True, 1, None])
+def test_memory_input_mode_rejects_invalid_deployment_configuration(value: object) -> None:
+    with pytest.raises(ValidationError, match="memory_input_optimization_mode"):
+        RuntimeConfig.model_validate({"memory_input_optimization_mode": value})
+
+
 @pytest.mark.parametrize("mode", ["off", "shadow", "active"])
 def test_token_optimization_modes_load_from_the_server_environment(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_TOKEN_OPTIMIZATION_MODE", mode)

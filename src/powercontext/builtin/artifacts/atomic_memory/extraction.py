@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+from powercontext.builtin.artifacts.memory.input_encoding import MemoryInputOptimizer, MemoryInputPlan
 from powercontext.builtin.artifacts.memory.prompts import MemoryExtractionProfile
 from powercontext.builtin.inference import InvalidInferenceOutputError, StructuredGenerator, TokenEstimator
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
@@ -104,9 +105,16 @@ class AtomicMemoryGenerationPipeline:
     reconciler: StructuredGenerator[AtomicMemoryReconciliationInput, AtomicMemoryReconciliationOutput]
     estimator: TokenEstimator
     extraction_instructions: str = atomic_memory_extraction_instructions(MemoryExtractionProfile.CODING)
+    input_optimizer: MemoryInputOptimizer[AtomicMemoryExtractionInput, AtomicMemoryExtractionOutput] | None = None
 
-    async def extract(self, value: AtomicMemoryExtractionInput) -> tuple[AtomicMemoryCandidate, ...]:
-        result = await self.extractor.generate(value)
+    async def extract(
+        self, value: AtomicMemoryExtractionInput, *, plan: MemoryInputPlan[AtomicMemoryExtractionInput] | None = None
+    ) -> tuple[AtomicMemoryCandidate, ...]:
+        result = (
+            await self.input_optimizer.generate_plan(plan)
+            if self.input_optimizer is not None and plan is not None
+            else await self.extractor.generate(value)
+        )
         output = AtomicMemoryExtractionOutput.model_validate(result.output)
         supplied = {item.evidence_id for item in value.evidence}
         for candidate in output.candidates:
