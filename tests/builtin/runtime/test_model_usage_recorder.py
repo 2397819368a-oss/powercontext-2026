@@ -395,7 +395,14 @@ def test_a_repeat_after_an_expiry_gets_the_rest_of_the_budget(tmp_path: Path, mo
                     yield connection
 
             monkeypatch.setattr(AsyncDatabase, "statistics_transaction", transaction)
-            recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=1.0)
+            # Observe persistence after the full one-second write budget; the
+            # default best-effort flush can return while the retry is pending.
+            recorder = _ModelUsageRecorder(
+                database,
+                StatisticsRepository(),
+                write_timeout_seconds=1.0,
+                flush_timeout_seconds=2.0,
+            )
             try:
                 _offer(recorder)
                 await recorder.flush()
