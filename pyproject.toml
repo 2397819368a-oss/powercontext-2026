@@ -226,6 +226,7 @@ markers = [
     "real_e2e: uses real Codex, external model providers, and the configured database",
     "zcode_host_acceptance: uses an explicitly configured real ZCode CLI and isolated real PowerContext Server",
     "zcode_live_model: opt-in ZCode host acceptance using live host and Generation models",
+    "cross_host_acceptance: opt-in actual Pi RPC to ZCode CLI with isolated SQLite and controlled inference",
 ]
 
 [tool.ruff]

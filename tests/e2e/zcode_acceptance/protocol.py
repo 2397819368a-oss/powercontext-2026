@@ -136,9 +136,11 @@ class ObserveServer:
     def __init__(self, app: ASGIApp, evidence: WireEvidence) -> None:
         self.app = app
         self.evidence = evidence
+        self.event_loop: asyncio.AbstractEventLoop | None = None
         self.capture_response_gate: CaptureResponseGate | None = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:  # noqa: C901
+        self.event_loop = asyncio.get_running_loop()
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -220,7 +222,7 @@ class HostModelFixture:
                 (
                     item["function"]["name"]
                     for item in body.get("tools", [])
-                    if item["function"]["name"].endswith("__" + operation)
+                    if item["function"]["name"] == operation or item["function"]["name"].endswith("__" + operation)
                 ),
                 None,
             )

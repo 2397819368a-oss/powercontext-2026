@@ -111,7 +111,7 @@ class RestartableServer:
         server = self.server
         self.thread = threading.Thread(target=lambda: server.run(sockets=[listener]), daemon=True)
         self.thread.start()
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 45
         while not self.server.started and self.thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert self.server.started, "server_restart_failed"
