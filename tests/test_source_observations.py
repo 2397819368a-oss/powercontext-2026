@@ -447,7 +447,20 @@ def test_remote_schema_references_are_rejected_without_network_access(monkeypatc
         )
 
 
-@pytest.mark.parametrize("shape", ["dataclass", "pydantic_dataclass", "integer_keys", "alias", "set", "frozenset"])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "dataclass",
+        "pydantic_dataclass",
+        "aliased_dataclass",
+        "integer_keys",
+        "boolean_keys",
+        "enum_keys",
+        "alias",
+        "set",
+        "frozenset",
+    ],
+)
 def test_serialized_nested_sources_satisfy_manifest(shape: str) -> None:
     from pydantic.dataclasses import dataclass as pydantic_dataclass
 
@@ -467,10 +480,26 @@ def test_serialized_nested_sources_satisfy_manifest(shape: str) -> None:
         model_config = ConfigDict(serialize_by_alias=True)
         child: Child = Field(alias="captured")
 
+    from enum import Enum
+
+    class KeyEnum(Enum):
+        PRIMARY = "primary"
+
+    @pydantic_dataclass(config=ConfigDict(serialize_by_alias=True))
+    class AliasedDataclass:
+        child: Child = Field(alias="item")
+
+    from pydantic.dataclasses import rebuild_dataclass
+
+    rebuild_dataclass(AliasedDataclass, _types_namespace={"Child": Child})
+
     annotation, value = {
         "dataclass": (Wrapper, Wrapper),
         "pydantic_dataclass": (PydanticWrapper, PydanticWrapper),
         "integer_keys": (dict[int, Child], lambda child: {1: child}),
+        "boolean_keys": (dict[bool, Child], lambda child: {True: child}),
+        "enum_keys": (dict[KeyEnum, Child], lambda child: {KeyEnum.PRIMARY: child}),
+        "aliased_dataclass": (AliasedDataclass, lambda child: AliasedDataclass(item=child)),
         "alias": (AliasedWrapper, lambda child: AliasedWrapper(captured=child)),
         "set": (set[Child], lambda child: {child}),
         "frozenset": (frozenset[Child], lambda child: frozenset({child})),

@@ -274,16 +274,22 @@ def _strip_payload_metadata(original: object, encoded: Any) -> Any:  # noqa: C90
             if key in encoded:
                 encoded[key] = _strip_payload_metadata(getattr(original, name), encoded[key])
     elif is_dataclass(original) and not isinstance(original, type) and isinstance(encoded, dict):
+        declared_fields = getattr(type(original), "__pydantic_fields__", {})
+        config = getattr(type(original), "__pydantic_config__", {})
         for field in fields(original):
-            if field.name in encoded:
-                encoded[field.name] = _strip_payload_metadata(getattr(original, field.name), encoded[field.name])
+            declaration = declared_fields.get(field.name)
+            key = field.name
+            if declaration is not None and config.get("serialize_by_alias"):
+                key = declaration.serialization_alias or declaration.alias or field.name
+            if key in encoded:
+                encoded[key] = _strip_payload_metadata(getattr(original, field.name), encoded[key])
     elif isinstance(original, (list, tuple, set, frozenset)) and isinstance(encoded, list):
         for index, item in enumerate(original):
             if index < len(encoded):
                 encoded[index] = _strip_payload_metadata(item, encoded[index])
     elif isinstance(original, dict) and isinstance(encoded, dict):
         for key, item in original.items():
-            encoded_key = str(key) if not isinstance(key, str) else key
+            encoded_key = next(iter(TypeAdapter(dict[Any, Any]).dump_python({key: None}, mode="json")))
             if encoded_key in encoded:
                 encoded[encoded_key] = _strip_payload_metadata(item, encoded[encoded_key])
     return encoded
