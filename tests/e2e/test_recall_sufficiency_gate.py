@@ -118,6 +118,7 @@ class _RecallRoundLog:
             admission: Any,
             reuse: Any,
             topic_reuse: Any,
+            excluded_memory: Any,
         ) -> Any:
             log.calls.append({"families": set(families), "admission": admission})
             if log.empty_from is not None and len(log.calls) >= log.empty_from:
@@ -131,6 +132,7 @@ class _RecallRoundLog:
                 admission=admission,
                 reuse=reuse,
                 topic_reuse=topic_reuse,
+                excluded_memory=excluded_memory,
             )
             log.calls[-1]["memory_recoverable"] = result.memory_recoverable
             log.calls[-1]["memory_texts"] = tuple(hit.text for group in result.memory for hit in group.hits)
@@ -894,6 +896,7 @@ def test_memory_head_change_during_expansion_fails_open_to_round_zero(tmp_path, 
             admission: Any,
             reuse: Any,
             topic_reuse: Any,
+            excluded_memory: Any,
         ) -> Any:
             nonlocal calls
             calls += 1
@@ -907,6 +910,7 @@ def test_memory_head_change_during_expansion_fails_open_to_round_zero(tmp_path, 
                     admission=admission,
                     reuse=reuse,
                     topic_reuse=topic_reuse,
+                    excluded_memory=excluded_memory,
                 )
             raise AtomicMemoryConflictError("Memory changed while expanding retrieval")  # noqa: TRY003
 
@@ -992,6 +996,7 @@ def test_later_round_failure_preserves_committed_expansion(tmp_path, monkeypatch
             admission: Any,
             reuse: Any,
             topic_reuse: Any,
+            excluded_memory: Any,
         ) -> Any:
             nonlocal calls
             calls += 1
@@ -1006,6 +1011,7 @@ def test_later_round_failure_preserves_committed_expansion(tmp_path, monkeypatch
                 admission=admission,
                 reuse=reuse,
                 topic_reuse=topic_reuse,
+                excluded_memory=excluded_memory,
             )
             if calls == 2:
                 return _RecallRoundOutcome(
