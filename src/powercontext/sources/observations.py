@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import fields, is_dataclass
 from typing import Any, Literal, cast
 
 import rfc8785
@@ -228,7 +229,7 @@ class _SourceInputSchema(GenerateJsonSchema):
 
     @override
     def encode_default(self, dft: Any) -> Any:
-        if isinstance(dft, (BaseModel, list, tuple, set, frozenset, dict)):
+        if isinstance(dft, (BaseModel, list, tuple, set, frozenset, dict)) or is_dataclass(dft):
             dft = _normalize_default(dft)
         return super().encode_default(dft)
 
@@ -246,38 +247,6 @@ def _source_input_fields(schema: Any) -> Any:
     return schema
 
 
-def _payload_exclusions(value: object) -> dict[Any, Any]:
-    """Exclude metadata by model ownership while retaining captured fields."""
-
-    if isinstance(value, BaseModel):
-        excluded: dict[Any, Any] = dict.fromkeys(DECLARATION_OWNED_FIELDS, True) if isinstance(value, Source) else {}
-        if isinstance(value, RootModel):
-            return _payload_exclusions(cast(Any, value).root)
-        for name in type(value).model_fields:
-            if name not in excluded and (nested := _payload_exclusions(getattr(value, name))):
-                excluded[name] = nested
-        return excluded
-    if isinstance(value, (list, tuple, set, frozenset)):
-        nested = {index: child for index, item in enumerate(value) if (child := _payload_exclusions(item))}
-        if isinstance(value, (set, frozenset)) and nested:
-            return {"__all__": next(iter(nested.values()))}
-        return nested
-    try:
-        from dataclasses import fields, is_dataclass
-
-        if is_dataclass(value) and not isinstance(value, type):
-            return {
-                field.name: nested
-                for field in fields(value)
-                if (nested := _payload_exclusions(getattr(value, field.name)))
-            }
-    except TypeError:
-        pass
-    if isinstance(value, dict):
-        return {key: nested for key, item in value.items() if (nested := _payload_exclusions(item))}
-    return {}
-
-
 def _normalize_default(value: Any) -> Any:
     """Serialize defaults while removing Source-owned declaration fields."""
     if isinstance(value, BaseModel):
@@ -286,6 +255,8 @@ def _normalize_default(value: Any) -> Any:
         return [_normalize_default(item) for item in value]
     if isinstance(value, dict):
         return {key: _normalize_default(item) for key, item in value.items()}
+    if is_dataclass(value) and not isinstance(value, type):
+        return _strip_payload_metadata(value, TypeAdapter(type(value)).dump_python(value, mode="json"))
     return value
 
 
@@ -296,17 +267,25 @@ def _strip_payload_metadata(original: object, encoded: Any) -> Any:  # noqa: C90
     if isinstance(original, Source) and isinstance(encoded, dict):
         encoded = {key: value for key, value in encoded.items() if key not in DECLARATION_OWNED_FIELDS}
     if isinstance(original, BaseModel) and isinstance(encoded, dict):
-        for name in type(original).model_fields:
-            if name in encoded:
-                encoded[name] = _strip_payload_metadata(getattr(original, name), encoded[name])
+        for name, field in type(original).model_fields.items():
+            key = field.serialization_alias or field.alias or name
+            if not type(original).model_config.get("serialize_by_alias"):
+                key = name
+            if key in encoded:
+                encoded[key] = _strip_payload_metadata(getattr(original, name), encoded[key])
+    elif is_dataclass(original) and not isinstance(original, type) and isinstance(encoded, dict):
+        for field in fields(original):
+            if field.name in encoded:
+                encoded[field.name] = _strip_payload_metadata(getattr(original, field.name), encoded[field.name])
     elif isinstance(original, (list, tuple, set, frozenset)) and isinstance(encoded, list):
         for index, item in enumerate(original):
             if index < len(encoded):
                 encoded[index] = _strip_payload_metadata(item, encoded[index])
     elif isinstance(original, dict) and isinstance(encoded, dict):
         for key, item in original.items():
-            if key in encoded:
-                encoded[key] = _strip_payload_metadata(item, encoded[key])
+            encoded_key = str(key) if not isinstance(key, str) else key
+            if encoded_key in encoded:
+                encoded[encoded_key] = _strip_payload_metadata(item, encoded[encoded_key])
     return encoded
 
 

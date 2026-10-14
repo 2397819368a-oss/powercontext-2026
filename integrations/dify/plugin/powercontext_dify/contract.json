@@ -2879,6 +2879,13 @@
           },
           "assembly": {
             "$ref": "#/components/schemas/ContextAssembly"
+          },
+          "bootstrap_receipt_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[\\x21-\\x7E]+$",
+            "description": "Optional exact receipt for the last successfully injected bootstrap package. Only fully delivered Atomic Memory revisions from an injected same-Scope receipt are removed before candidate limiting and sufficiency assessment; Artifacts whose bootstrap bodies were truncated remain eligible."
           }
         }
       },

@@ -49,6 +49,8 @@ def _column_budget(column) -> int:
         return column.type.length
     if isinstance(column.type, Integer):
         return 4
+    if isinstance(column.type, DateTime):
+        return 8
     if isinstance(column.type, Date):
         return 3
     if isinstance(column.type, DateTime):

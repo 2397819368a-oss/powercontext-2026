@@ -416,12 +416,12 @@ def test_subject_second_source_failure_rolls_back_new_scope_and_binding(monkeypa
             original = ctx.repositories.sources.add
             writes = 0
 
-            async def fail_second(connection, scope_id, source):
+            async def fail_second(connection, scope_id, source, **kwargs):
                 nonlocal writes
                 writes += 1
                 if writes == 2:
                     raise OSError("simulated storage failure")  # noqa: TRY003
-                return await original(connection, scope_id, source)
+                return await original(connection, scope_id, source, **kwargs)
 
             monkeypatch.setattr(ctx.repositories.sources, "add", fail_second)
             with pytest.raises(OSError):
@@ -477,5 +477,64 @@ def test_failed_generation_owner_write_preserves_window():
             result = await ctx.profiles.flush(sid)
             assert result.status == "updated" and result.previous_cursor == 0
             assert result.artifact is not None and result.artifact.revision == 1
+
+    asyncio.run(run())
+
+
+def test_fresh_lineage_sources_apply_declarations_and_replay():
+    from dataclasses import replace
+    from typing import Any, cast
+
+    from powercontext.builtin.artifacts.skill import SkillContent, build_instruction_skill_package
+    from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
+    from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY
+    from powercontext.sources import (
+        MemoryEvidenceAuthority,
+        MemoryEvidenceDeclaration,
+        MemoryEvidenceVerification,
+        SourceDefinitionRegistry,
+    )
+
+    async def run():
+        declaration = MemoryEvidenceDeclaration(
+            authority=MemoryEvidenceAuthority.SYSTEM_ATTESTED,
+            verification=MemoryEvidenceVerification.VERIFIED,
+            declaration_version="fresh-writer-v1",
+        )
+        registry = SourceDefinitionRegistry(
+            tuple(
+                replace(cast(Any, definition), memory_evidence=declaration)
+                for definition in BUILTIN_SOURCE_REGISTRY.definitions
+            )
+        )
+        index = SQLiteAtomicMemoryIndex(None)
+        async with SQLiteProfile.open(SQLiteConfig(), tables=(*BUILTIN_TABLES, *index.tables)) as db:
+            ctx = RelationalContexts(database=db.database, source_registry=registry, atomic_memory_index=index)
+            sid = await scope(ctx, "User")
+            created = await ctx.records.create_artifact(sid, "profile", ArtifactWrite(content={"content": "# Manual"}))
+            record = await ctx.records.get_artifact(sid, "profile", created.artifact_id)
+            await ctx.records.replace_artifact(
+                sid,
+                "profile",
+                created.artifact_id,
+                f'"revision:{record.revision}"',
+                ArtifactWrite(content={"content": "# Updated"}),
+            )
+            await ctx.records.create_atomic_memories(sid, ({"kind": "preference", "text": "Prefers Chinese"},))
+            package = build_instruction_skill_package(
+                SkillContent(
+                    name="release-check",
+                    description="Verify release",
+                    instructions="Verify the release.",
+                    validation=("Report passes",),
+                )
+            )
+            await ctx.upload_skill_package(sid, package.archive_bytes, None, None)
+            context = await ctx.get(sid)
+            sources = await context.sources.list()
+            assert len(sources) == 4
+            for source in sources:
+                assert source.memory_evidence == declaration
+                assert await context.sources.add(source) == source
 
     asyncio.run(run())

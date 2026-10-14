@@ -219,7 +219,7 @@ class SourceDefinitionRegistry:
         definition = self.definition_for_source(source)
         stamped = source.model_copy(update={"memory_evidence": definition_memory_evidence(definition)})
         try:
-            type(stamped).model_validate(stamped.model_dump(mode="python"))
+            type(stamped).model_validate_json(stamped.model_dump_json(by_alias=True))
         except (TypeError, ValueError) as error:
             raise InvalidSourceResultError(definition.name, "materialize", type(source), type(source)) from error
         return stamped

@@ -1219,7 +1219,7 @@ class RelationalContexts:
         )
         async with self.database.transaction() as connection:
             await self.repositories.skill_packages.add(connection, scope, package)
-            stored = await self.repositories.sources.add(connection, scope, source)
+            stored = await self.repositories.sources.add(connection, scope, source, apply_definition=True)
             artifacts = () if target is None else (target,)
             return (
                 await self
@@ -1253,7 +1253,7 @@ class RelationalContexts:
                 raise ValueError("usage package digest does not match the Skill Revision")  # noqa: TRY003
             if observation.task_source is not None:
                 await self.repositories.sources.get(connection, scope, observation.task_source)
-            stored = await self.repositories.sources.add(connection, scope, source)
+            stored = await self.repositories.sources.add(connection, scope, source, apply_definition=True)
             return SourceReceipt(source_ref=stored.ref, sequence=stored.journal_position)
 
     def external_skills(self, scope_id: str, /) -> ExternalSkillRegistryService:
@@ -1321,7 +1321,9 @@ class RelationalContexts:
         )
         async with self.database.transaction() as connection:
             await self.repositories.skill_packages.add(connection, scope, capture.package)
-            stored, created = await self.repositories.sources.add_with_status(connection, scope, source)
+            stored, created = await self.repositories.sources.add_with_status(
+                connection, scope, source, apply_definition=True
+            )
             if created:
                 await self.repositories.processing_pending.raise_source(
                     connection,

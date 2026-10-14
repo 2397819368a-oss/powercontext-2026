@@ -18,13 +18,13 @@ import asyncio
 import hashlib
 import json
 import urllib.request
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 import rfc8785
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from referencing.exceptions import Unresolvable
 
 from powercontext.builtin.runtime.relational import _json_schema_validator, _validate_source_observation
@@ -445,3 +445,87 @@ def test_remote_schema_references_are_rejected_without_network_access(monkeypatc
             fingerprint=f"sha256:{'0' * 64}",
             source_schema={"$dynamicRef": "https://example.invalid/schema"},
         )
+
+
+@pytest.mark.parametrize("shape", ["dataclass", "pydantic_dataclass", "integer_keys", "alias", "set", "frozenset"])
+def test_serialized_nested_sources_satisfy_manifest(shape: str) -> None:
+    from pydantic.dataclasses import dataclass as pydantic_dataclass
+
+    class Child(Source):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        content: str
+
+    @dataclass
+    class Wrapper:
+        child: Child
+
+    @pydantic_dataclass
+    class PydanticWrapper:
+        child: Child
+
+    class AliasedWrapper(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=True)
+        child: Child = Field(alias="captured")
+
+    annotation, value = {
+        "dataclass": (Wrapper, Wrapper),
+        "pydantic_dataclass": (PydanticWrapper, PydanticWrapper),
+        "integer_keys": (dict[int, Child], lambda child: {1: child}),
+        "alias": (AliasedWrapper, lambda child: AliasedWrapper(captured=child)),
+        "set": (set[Child], lambda child: {child}),
+        "frozenset": (frozenset[Child], lambda child: frozenset({child})),
+    }[shape]
+    from pydantic import create_model
+
+    parent = create_model("ContainerSource", __base__=Source, captured=(annotation, ...))
+    child = Child(name="child", materialization=SourceMaterialization.CAPTURED, content="evidence")
+    source = parent.model_validate({
+        "name": "parent",
+        "materialization": SourceMaterialization.CAPTURED,
+        "captured": value(child),
+    })
+    from tests.source_contract_models import _CapturedAdapter
+
+    definition = AdapterSourceDefinition(_CapturedAdapter("nested-shape", parent, parent))
+    registry = SourceDefinitionRegistry((definition,))
+    stamped = registry.materialize(source)
+    observation = project_source_for_transport(registry, stamped)
+    manifest = manifest_for_definition(definition)
+    _json_schema_validator(manifest.name, manifest.source_schema).validate(observation.payload)
+    assert "memory_evidence" not in json.dumps(observation.payload)
+
+
+def test_stamped_source_validation_preserves_aliases() -> None:
+    class AliasedSource(Source):
+        content: str = Field(alias="body")
+
+    from tests.source_contract_models import _CapturedAdapter
+
+    definition = AdapterSourceDefinition(_CapturedAdapter("aliased", AliasedSource, AliasedSource))
+    registry = SourceDefinitionRegistry((definition,))
+    source = AliasedSource(name="aliased", materialization=SourceMaterialization.CAPTURED, body="evidence")
+    assert registry.materialize(source) == source
+
+
+def test_stamped_source_rejects_incompatible_declaration_before_acceptance() -> None:
+    from pydantic import model_validator
+
+    from powercontext.errors import InvalidSourceResultError
+    from tests.source_contract_models import _CapturedAdapter
+
+    class VerifiedSource(Source):
+        @model_validator(mode="after")
+        def require_verified(self):
+            if self.memory_evidence.verification is not MemoryEvidenceVerification.VERIFIED:
+                raise ValueError("verified evidence required")  # noqa: TRY003
+            return self
+
+    declaration = MemoryEvidenceDeclaration(verification=MemoryEvidenceVerification.VERIFIED)
+    source = VerifiedSource(
+        name="verified", materialization=SourceMaterialization.CAPTURED, memory_evidence=declaration
+    )
+    adapter = _CapturedAdapter("verified", VerifiedSource, VerifiedSource)
+    with pytest.raises(InvalidSourceResultError):
+        SourceDefinitionRegistry((AdapterSourceDefinition(adapter),)).materialize(source)
+    registry = SourceDefinitionRegistry((AdapterSourceDefinition(adapter, memory_evidence=declaration),))
+    assert registry.materialize(source) == source
