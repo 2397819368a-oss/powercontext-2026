@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -801,6 +802,71 @@ def test_default_projection_sanitizer_withholds_a_provider_prefixed_secret() -> 
     assert benign.is_permitted is True
     assert benign.request is not None
     assert benign.request.subject == "risk-assessment-planning"
+
+
+def test_hosted_redacted_sanitizes_candidate_values_before_json_encoding(monkeypatch) -> None:
+    secret = 'synthetic-quote"line\nback\\slash-1987'  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(
+            _request(
+                candidates=(f"Rotate {secret} before release.",),
+                evidence=("The credential rotation policy is current.",),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.used_fallback is False
+        assert len(backend.requests) == 1
+        projected = backend.requests[0]
+        assert secret not in projected.subject
+        assert json.loads(projected.subject) == [{"candidate": 1, "text": "Rotate [REDACTED] before release."}]
+        assert sink.observations[0].metadata["redaction_facts"] == ["subject_redacted"]
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_withholds_when_candidate_text_is_entirely_redacted() -> None:
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("sk-reviewsynthetic1987abcdef",),
+                evidence=("Safe evidence remains available.",),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        observation = sink.observations[0]
+        assert observation.assessment.coverage is DecisionCoverage.UNADJUDICATED
+        assert observation.assessment.used_fallback is True
+        assert observation.fallback_reason == "projection_material_removed"
+        assert observation.privacy_outcome == "hosted_redacted_withheld"
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

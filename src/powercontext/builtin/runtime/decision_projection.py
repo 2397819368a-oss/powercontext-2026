@@ -21,6 +21,7 @@ never changes the authoritative object that produced the request.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -149,13 +150,11 @@ class KnownSecretDecisionRequestSanitizer:
         self._known_secrets = tuple(sorted(known_secret_values(codex_home=codex_home), key=len, reverse=True))
 
     def sanitize(self, request: DecisionRequest, /) -> DecisionRequestProjection:
-        subject = self._sanitize_text(request.subject)
+        subject, subject_has_material = self._sanitize_subject(request.subject)
         evidence = tuple(self._sanitize_text(item) for item in request.evidence)
         subject_changed = subject != request.subject
         evidence_changed = evidence != request.evidence
-        if not _has_decision_material(subject) or (
-            evidence and not any(_has_decision_material(item) for item in evidence)
-        ):
+        if not subject_has_material or (evidence and not any(_has_decision_material(item) for item in evidence)):
             return DecisionRequestProjection.withheld(DecisionProjectionReason.MATERIAL_REMOVED)
         facts = tuple(
             fact
@@ -178,6 +177,22 @@ class KnownSecretDecisionRequestSanitizer:
     def _sanitize_text(self, value: str) -> str:
         value = redact_known_secrets(value, secrets=self._known_secrets)
         return _PROVIDER_SECRET_RE.sub(REDACTED, value)
+
+    def _sanitize_subject(self, value: str) -> tuple[str, bool]:
+        candidates = _candidate_subject_items(value)
+        if candidates is None:
+            sanitized = self._sanitize_text(value)
+            return sanitized, _has_decision_material(sanitized)
+        sanitized_candidates: list[dict[str, int | str]] = []
+        has_material = True
+        for candidate, text in candidates:
+            sanitized_text = self._sanitize_text(text)
+            sanitized_candidates.append({"candidate": candidate, "text": sanitized_text})
+            has_material = has_material and _has_decision_material(sanitized_text)
+        return (
+            json.dumps(sanitized_candidates, ensure_ascii=False, separators=(",", ":")),
+            has_material,
+        )
 
 
 RedactingDecisionRequestSanitizer = KnownSecretDecisionRequestSanitizer
@@ -225,6 +240,27 @@ def _validate_projection(projection: DecisionRequestProjection, original: Decisi
 
 def _has_decision_material(value: str) -> bool:
     return bool(value.replace(REDACTED, "").replace("<redacted>", "").strip())
+
+
+def _candidate_subject_items(value: str) -> list[tuple[int, str]] | None:
+    """Decode the exact Memory gate subject envelope without treating it as decision material."""
+
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    candidates: list[tuple[int, str]] = []
+    for index, item in enumerate(parsed, start=1):
+        if not isinstance(item, dict) or set(item) != {"candidate", "text"}:
+            return None
+        candidate = item.get("candidate")
+        text = item.get("text")
+        if type(candidate) is not int or candidate != index or not isinstance(text, str):
+            return None
+        candidates.append((candidate, text))
+    return candidates
 
 
 __all__ = [
