@@ -837,6 +837,79 @@ def test_hosted_redacted_sanitizes_candidate_values_before_json_encoding(monkeyp
     asyncio.run(scenario())
 
 
+def test_hosted_redacted_sanitizes_source_evidence_values_before_json_encoding(monkeypatch) -> None:
+    secret = 'synthetic-quote"line\nback\\slash-evidence-1987'  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+        serialized_evidence = json.dumps(
+            {"text": f"Python 3.11 is required. Password: {secret}"},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The project uses Python 3.11.",),
+                evidence=(serialized_evidence,),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.used_fallback is False
+        assert len(backend.requests) == 1
+        projected = backend.requests[0]
+        assert secret not in projected.evidence[0]
+        assert json.loads(projected.evidence[0]) == {"text": "Python 3.11 is required. Password: [REDACTED]"}
+        assert sink.observations[0].metadata["redaction_facts"] == ["evidence_redacted"]
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_withholds_when_source_evidence_values_are_entirely_redacted(monkeypatch) -> None:
+    secret = 'synthetic-quote"line\nback\\slash-evidence-1987'  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The project uses Python 3.11.",),
+                evidence=(json.dumps({"text": secret}, ensure_ascii=False, separators=(",", ":")),),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        observation = sink.observations[0]
+        assert observation.assessment.coverage is DecisionCoverage.UNADJUDICATED
+        assert observation.fallback_reason == "projection_material_removed"
+        assert observation.privacy_outcome == "hosted_redacted_withheld"
+
+    asyncio.run(scenario())
+
+
 def test_hosted_redacted_withholds_when_candidate_text_is_entirely_redacted() -> None:
     async def scenario() -> None:
         backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))

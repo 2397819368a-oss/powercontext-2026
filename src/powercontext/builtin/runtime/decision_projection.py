@@ -151,10 +151,11 @@ class KnownSecretDecisionRequestSanitizer:
 
     def sanitize(self, request: DecisionRequest, /) -> DecisionRequestProjection:
         subject, subject_has_material = self._sanitize_subject(request.subject)
-        evidence = tuple(self._sanitize_text(item) for item in request.evidence)
+        evidence_projection = tuple(self._sanitize_evidence(item) for item in request.evidence)
+        evidence = tuple(item for item, _ in evidence_projection)
         subject_changed = subject != request.subject
         evidence_changed = evidence != request.evidence
-        if not subject_has_material or (evidence and not any(_has_decision_material(item) for item in evidence)):
+        if not subject_has_material or (evidence and not any(has_material for _, has_material in evidence_projection)):
             return DecisionRequestProjection.withheld(DecisionProjectionReason.MATERIAL_REMOVED)
         facts = tuple(
             fact
@@ -193,6 +194,47 @@ class KnownSecretDecisionRequestSanitizer:
             json.dumps(sanitized_candidates, ensure_ascii=False, separators=(",", ":")),
             has_material,
         )
+
+    def _sanitize_evidence(self, value: str) -> tuple[str, bool]:
+        """Sanitize JSON evidence values before encoding can hide literal secrets."""
+
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            sanitized = self._sanitize_text(value)
+            return sanitized, _has_decision_material(sanitized)
+        sanitized, changed, has_material = self._sanitize_json_value(decoded)
+        if not changed:
+            return value, has_material
+        return json.dumps(sanitized, ensure_ascii=False, sort_keys=True, separators=(",", ":")), has_material
+
+    def _sanitize_json_value(self, value: object) -> tuple[object, bool, bool]:
+        if isinstance(value, str):
+            sanitized = self._sanitize_text(value)
+            return sanitized, sanitized != value, _has_decision_material(sanitized)
+        if isinstance(value, list):
+            items = tuple(self._sanitize_json_value(item) for item in value)
+            return (
+                [item for item, _, _ in items],
+                any(changed for _, changed, _ in items),
+                any(has_material for _, _, has_material in items),
+            )
+        if isinstance(value, dict):
+            sanitized: dict[str, object] = {}
+            changed = False
+            has_material = False
+            for key, item in cast(dict[str, object], value).items():
+                sanitized_key = self._sanitize_text(key)
+                if sanitized_key in sanitized:
+                    raise InvalidDecisionProjectionError(  # noqa: TRY003
+                        "decision projection evidence keys collide after sanitization"
+                    )
+                sanitized_item, item_changed, item_has_material = self._sanitize_json_value(item)
+                sanitized[sanitized_key] = sanitized_item
+                changed = changed or sanitized_key != key or item_changed
+                has_material = has_material or item_has_material
+            return sanitized, changed, has_material
+        return value, False, value is not None
 
 
 RedactingDecisionRequestSanitizer = KnownSecretDecisionRequestSanitizer
