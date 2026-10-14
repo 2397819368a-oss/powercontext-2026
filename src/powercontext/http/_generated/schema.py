@@ -1181,6 +1181,92 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "x-powercontext-scope-mode": "current",
             }
         },
+        "/v1/context/bootstrap": {
+            "post": {
+                "tags": ["context"],
+                "summary": "Prepare bounded context for an Agent lifecycle boundary",
+                "description": "Prepare an opt-in, deterministic "
+                "bootstrap package without "
+                "manufacturing a query. Only "
+                "explicitly curated active Atomic "
+                "Memory Artifacts and one "
+                "caller-selected exact committed "
+                "Handoff are eligible. Returned "
+                "historical text is untrusted data "
+                "and grants no authority. A ready "
+                "receipt remains pending until the "
+                "host records delivery. Reusing one "
+                "stable event identity with different "
+                "package-shaping fields is rejected "
+                "with 422.",
+                "operationId": "prepare_bootstrap_context",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/BootstrapContextRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "A bounded package ready for host injection, or a normal empty/skipped result.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BootstrapContext"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "x-powercontext-scope-mode": "current",
+            }
+        },
+        "/v1/context/bootstrap/receipts": {
+            "post": {
+                "tags": ["context"],
+                "summary": "Record a bootstrap delivery outcome",
+                "description": "Atomically claim one "
+                "pending content-free "
+                "receipt as injected or "
+                "failed. A second injected "
+                "claim is rejected with 422, "
+                "so concurrent lifecycle "
+                "hooks cannot both inject "
+                "the same package. A "
+                "terminal outcome never "
+                "changes.",
+                "operationId": "record_bootstrap_delivery",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/RecordBootstrapDeliveryRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Current durable delivery state.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/BootstrapDeliveryReceipt"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "x-powercontext-scope-mode": "current",
+            }
+        },
         "/v1/work/contracts/create": {
             "post": {
                 "tags": ["work"],
@@ -3897,6 +3983,170 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 },
             }
         },
+        "/v1/scopes/{scope_id}/artifact-handles/{family}/{key}": {
+            "get": {
+                "tags": ["artifacts"],
+                "summary": "Resolve a stable Artifact handle",
+                "description": "Resolve one scope-local handle to the exact immutable Artifact revision it names.",
+                "operationId": "resolve_artifact_handle",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[\\x21-\\x7E]+$"},
+                    },
+                    {
+                        "name": "key",
+                        "in": "path",
+                        "required": True,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                        },
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The exact Artifact revision bound to the handle.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ArtifactHandleBinding"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+            "put": {
+                "tags": ["artifacts"],
+                "summary": "Bind a stable Artifact handle",
+                "description": "Idempotently "
+                "and "
+                "permanently "
+                "bind "
+                "one "
+                "scope-local "
+                "handle "
+                "to an "
+                "exact "
+                "immutable "
+                "Artifact "
+                "revision. "
+                "A "
+                "committed "
+                "binding "
+                "cannot "
+                "be "
+                "updated, "
+                "released, "
+                "or "
+                "deleted. "
+                "Repeating "
+                "the "
+                "same "
+                "binding "
+                "succeeds, "
+                "while "
+                "binding "
+                "the "
+                "key "
+                "to "
+                "another "
+                "Artifact "
+                "revision "
+                "returns "
+                "409. "
+                "Verify "
+                "the "
+                "family, "
+                "Artifact "
+                "ID, "
+                "revision, "
+                "and "
+                "key "
+                "before "
+                "committing "
+                "the "
+                "binding; "
+                "a "
+                "mistakenly "
+                "bound "
+                "key "
+                "cannot "
+                "be "
+                "reused "
+                "in "
+                "that "
+                "Scope.",
+                "operationId": "bind_artifact_handle",
+                "x-powercontext-access": {
+                    "action": "scope.admin",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[\\x21-\\x7E]+$"},
+                    },
+                    {
+                        "name": "key",
+                        "in": "path",
+                        "required": True,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                        },
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/BindArtifactHandleRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "The existing or newly committed handle binding.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ArtifactHandleBinding"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+        },
         "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}": {
             "get": {
                 "tags": ["artifacts"],
@@ -5581,6 +5831,30 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["family", "artifact_id", "revision"],
+            },
+            "BindArtifactHandleRequest": {
+                "properties": {
+                    "artifact_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "revision": {"type": "integer", "minimum": 1.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["artifact_id", "revision"],
+            },
+            "ArtifactHandleBinding": {
+                "properties": {
+                    "family": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "key": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                    },
+                    "artifact": {"$ref": "#/components/schemas/ArtifactReference"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["family", "key", "artifact"],
             },
             "ArtifactAddress": {
                 "properties": {
@@ -7664,6 +7938,59 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "type": "object",
                 "required": ["schema", "status", "content", "content_bytes"],
             },
+            "BootstrapContextItem": {
+                "properties": {
+                    "kind": {"$ref": "#/components/schemas/BootstrapContextItemKind"},
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "artifact": {"$ref": "#/components/schemas/ArtifactReference"},
+                    "content_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+                    "truncated": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["kind", "scope_id", "artifact", "content_digest", "truncated"],
+            },
+            "BootstrapDeliveryReceipt": {
+                "properties": {
+                    "receipt_id": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "state": {"$ref": "#/components/schemas/BootstrapReceiptState"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["receipt_id", "state"],
+            },
+            "BootstrapContext": {
+                "properties": {
+                    "schema": {"$ref": "#/components/schemas/BootstrapContextSchema"},
+                    "status": {"$ref": "#/components/schemas/BootstrapContextStatus"},
+                    "reason": {"allOf": [{"$ref": "#/components/schemas/BootstrapSkipReason"}], "nullable": True},
+                    "profile": {"$ref": "#/components/schemas/BootstrapContextProfile"},
+                    "content": {"type": "string", "nullable": True},
+                    "content_bytes": {"type": "integer", "minimum": 0.0},
+                    "package_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "nullable": True},
+                    "items": {
+                        "items": {"$ref": "#/components/schemas/BootstrapContextItem"},
+                        "type": "array",
+                        "maxItems": 7,
+                    },
+                    "truncated": {"type": "boolean"},
+                    "receipt": {"$ref": "#/components/schemas/BootstrapDeliveryReceipt"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "schema",
+                    "status",
+                    "reason",
+                    "profile",
+                    "content",
+                    "content_bytes",
+                    "package_digest",
+                    "items",
+                    "truncated",
+                    "receipt",
+                ],
+            },
             "EntryChange": {
                 "properties": {
                     "op": {"$ref": "#/components/schemas/EntryChangeOperation"},
@@ -9084,10 +9411,116 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "default": False,
                     },
                     "assembly": {"$ref": "#/components/schemas/ContextAssembly"},
+                    "bootstrap_receipt_id": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[\\x21-\\x7E]+$",
+                        "description": "Optional "
+                        "exact "
+                        "receipt "
+                        "for "
+                        "the "
+                        "last "
+                        "successfully "
+                        "injected "
+                        "bootstrap "
+                        "package. "
+                        "Only "
+                        "fully "
+                        "delivered "
+                        "Atomic "
+                        "Memory "
+                        "revisions "
+                        "from "
+                        "an "
+                        "injected "
+                        "same-Scope "
+                        "receipt "
+                        "are "
+                        "removed "
+                        "before "
+                        "candidate "
+                        "limiting "
+                        "and "
+                        "sufficiency "
+                        "assessment; "
+                        "Artifacts "
+                        "whose "
+                        "bootstrap "
+                        "bodies "
+                        "were "
+                        "truncated "
+                        "remain "
+                        "eligible.",
+                    },
                 },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["scope_id", "query"],
+            },
+            "BootstrapContextRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "enabled": {"type": "boolean", "default": False},
+                    "profile": {
+                        "allOf": [{"$ref": "#/components/schemas/BootstrapContextProfile"}],
+                        "default": "powercontext.scope-bootstrap.v1",
+                    },
+                    "lifecycle": {"$ref": "#/components/schemas/BootstrapContextLifecycle"},
+                    "integration": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "event_id": {
+                        "type": "string",
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "pattern": "^[\\x20-\\x7E]+$",
+                        "description": "Optional "
+                        "stable "
+                        "host "
+                        "event "
+                        "identity, "
+                        "persisted "
+                        "only "
+                        "as "
+                        "a "
+                        "digest. "
+                        "Within "
+                        "the "
+                        "same "
+                        "Scope, "
+                        "integration, "
+                        "and "
+                        "lifecycle, "
+                        "retries "
+                        "must "
+                        "keep "
+                        "the "
+                        "profile, "
+                        "max_bytes, "
+                        "and "
+                        "exact "
+                        "Handoff "
+                        "unchanged.",
+                    },
+                    "max_bytes": {"type": "integer", "maximum": 8192.0, "minimum": 512.0, "default": 4096},
+                    "handoff": {
+                        "$ref": "#/components/schemas/ArtifactReference",
+                        "description": "Optional exact committed Handoff Revision in the current Scope.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "lifecycle", "integration"],
+            },
+            "RecordBootstrapDeliveryRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "receipt_id": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "outcome": {"type": "string", "enum": ["injected", "failed"]},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "receipt_id", "outcome"],
             },
             "ContextAssemblySection": {
                 "properties": {
@@ -10593,6 +11026,19 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "CandidateStatus": {"type": "string", "enum": ["pending", "approved", "rejected"]},
             "PreparedContextSchema": {"type": "string", "enum": ["powercontext.prepared-context.v1"]},
             "PreparedContextStatus": {"type": "string", "enum": ["ready", "empty"]},
+            "BootstrapContextSchema": {"type": "string", "enum": ["powercontext.bootstrap-context.v1"]},
+            "BootstrapContextProfile": {"type": "string", "enum": ["powercontext.scope-bootstrap.v1"]},
+            "BootstrapContextLifecycle": {
+                "type": "string",
+                "enum": ["startup", "resume", "clear", "compact", "restore", "fork"],
+            },
+            "BootstrapContextStatus": {"type": "string", "enum": ["ready", "empty", "skipped"]},
+            "BootstrapContextItemKind": {"type": "string", "enum": ["atomic-memory", "handoff"]},
+            "BootstrapReceiptState": {"type": "string", "enum": ["pending", "injected", "skipped", "failed"]},
+            "BootstrapSkipReason": {
+                "type": "string",
+                "enum": ["disabled", "no_eligible_context", "already_delivered", "preparation_failed"],
+            },
             "EntryChangeOperation": {
                 "type": "string",
                 "enum": ["add", "revise", "deactivate", "reactivate", "compact"],

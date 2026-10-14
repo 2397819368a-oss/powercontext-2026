@@ -251,7 +251,8 @@ collation，但不会包含数据库 URL 或凭据。
    后代记录之前。
    源数据库早于三张 Skill 生命周期表（`pc_skill_packages`、`pc_agent_skill_targets` 和
    `pc_skill_publications`）、Profile 表、`pc_topic_memory_work_budgets`、`pc_recall_effort_daily`、
-   `pc_receipt_migration_review` 或 `pc_decision_observations` 时，应从对应层删除缺失的表。
+   `pc_receipt_migration_review`、`pc_context_bootstrap_receipts` 或 `pc_decision_observations` 时，应从对应层
+   删除缺失的表。
    如果存在 work-budget 表，必须与 Cursor 一起恢复，保留已消耗的失败额度，避免迁移后重置累计成本。
 
    第 1 层包含父表和无外键的表：
@@ -266,7 +267,7 @@ collation，但不会包含数据库 URL 或凭据。
 
    ```bash
    obloader <connection-options> -D <new-database> --csv \
-     --table 'pc_dream_runs,pc_scope_context_references,pc_scope_external_references,pc_scope_creation_requests,pc_scope_settings,pc_scope_bindings,pc_artifact_heads,pc_artifact_lineage_sources,pc_artifact_lineage_artifacts,pc_artifact_publications,pc_artifact_candidate_versions,pc_topic_memory_revision_publications,pc_memory_entry_versions' \
+     --table 'pc_dream_runs,pc_context_bootstrap_receipts,pc_scope_context_references,pc_scope_external_references,pc_scope_creation_requests,pc_scope_settings,pc_scope_bindings,pc_artifact_handles,pc_artifact_heads,pc_artifact_lineage_sources,pc_artifact_lineage_artifacts,pc_artifact_publications,pc_artifact_candidate_versions,pc_topic_memory_revision_publications,pc_memory_entry_versions' \
      -f <export-directory>
    ```
 

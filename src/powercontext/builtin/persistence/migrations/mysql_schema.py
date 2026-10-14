@@ -14,7 +14,7 @@
 
 """Recognize the frozen MySQL layouts without importing application metadata.
 
-Only the reviewed linear p0001--p0003 history is supported. DDL recovery accepts
+Only the reviewed linear p0001--p0004 history is supported. DDL recovery accepts
 an exact prefix of the next revision, never an arbitrary collection of objects.
 The caller owns maintenance evidence, backup, the pinned database lock and the
 version row; this module never writes or stamps a revision.
@@ -35,10 +35,20 @@ from .bundle import MigrationBundle
 from .models import MigrationError, digest
 
 _LEXEME = re.compile(r"\s+|`(?:``|[^`])*`|'(?:''|\\.|[^'\\])*'|[A-Za-z_][A-Za-z_0-9$]*|[0-9]+|>=|<=|<>|!=|[(),.=<>+-]")
-_REVISIONS = ("p0001", "p0002", "p0003")
+_REVISIONS = ("p0001", "p0002", "p0003", "p0004")
 _CITATION_TABLES = ("pc_artifacts", "pc_artifact_candidate_versions")
 _FAMILY_CHECK = "ck_pc_artifact_tags_family"
 _CONTROL_TABLE = "pc_schema_revision"
+_ARTIFACT_HANDLES_DDL = """CREATE TABLE pc_artifact_handles (
+	scope_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+	family VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+	handle_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+	artifact_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+	revision INTEGER NOT NULL,
+	PRIMARY KEY (scope_id, family, handle_key),
+	FOREIGN KEY(scope_id, family, artifact_id, revision) REFERENCES pc_artifacts (scope_id, family, artifact_id, revision) ON DELETE RESTRICT,
+	CONSTRAINT ck_pc_artifact_handles_revision_positive CHECK (revision > 0)
+)"""
 _PHYSICAL_VALUES = frozenset({
     "row_format",
     "compression",
@@ -145,6 +155,7 @@ class MySQLSchema:
             "p0001": tuple(baseline),
             "p0002": tuple(f"ALTER TABLE {table} ADD COLUMN memory_citations MEDIUMBLOB" for table in _CITATION_TABLES),
             "p0003": (f"ALTER TABLE pc_artifact_tags DROP CHECK {_FAMILY_CHECK}",),
+            "p0004": (_ARTIFACT_HANDLES_DDL,),
         }
         inventory = _empty_inventory()
         self._prefixes: dict[str, list[dict[str, Any]]] = {}
@@ -159,7 +170,7 @@ class MySQLSchema:
         frozen_current = _empty_inventory()
         for statement in current:
             _apply_statement(frozen_current, statement)
-        if frozen_current != self._schemas["p0003"]:
+        if frozen_current != self._schemas["p0004"]:
             raise MigrationError("invalid_bundle", "Frozen MySQL layouts disagree with the registered revision steps.")
 
     @staticmethod
