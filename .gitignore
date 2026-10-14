@@ -274,5 +274,12 @@ integrations/pi/plugins/powercontext/*.tgz
 # Local acceptance databases and redacted run artifacts
 .artifacts/
 
+# Token-optimization datasets and run artifacts are kept outside the checkout.
+/evaluation/token_optimization/RESULTS.md
+/evaluation/token_optimization/results.csv
+/evaluation/token_optimization/results/
+/evaluation/token_optimization/artifacts/
+/evaluation/token_optimization/datasets/
+
 # pnpm package store is a local cache, never committed.
 .pnpm-store/

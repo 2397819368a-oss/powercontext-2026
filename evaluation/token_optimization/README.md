@@ -67,6 +67,10 @@ The program suppresses infrastructure logs and prints only safe summary fields. 
 database URLs, passwords, Bearer tokens, raw error bodies or configured secret headers. All live artifacts stay under
 `/data/codex-tmp`; do not commit them.
 
+Keep downloaded corpora, frozen run fixtures, databases, raw answers, reports, CSV files, logs, and intermediate
+snapshots outside the repository. The checkout contains reusable harness source and instructions only; published
+run results belong in the external artifact directory. The runners enforce external output paths.
+
 For an independently frozen R4 qualification, `qualify calibration` plans five questions and `qualify heldout`
 plans six other questions. Both default to zero model calls:
 
@@ -125,3 +129,83 @@ attempts; lower tokenizer counts do not establish lower provider input, lower to
 Run `python -m evaluation.token_optimization.report /data/codex-tmp/.../run-...` to produce `report.json` from the
 recorded live answers. It reports all attempts, usage coverage, paired quality regressions, origin changes, negative
 control changes and actual text/model token totals; it does not assert that active output must be shorter.
+
+## Independent external corpora
+
+`corpus prepare` accepts an externally frozen JSON list of cases. Each case has a stable `case_id`, `dataset`, original
+`question`, complete `documents`, independent scoring-only `gold`, and a preselected `reader_selected` boolean. A
+document has `family: "topic-memory"` and existing `content` fields `title`, `summary`, and `detail`. An optional
+`compact_control.documents` supplies a separately labeled reasonable serialization of the same complete material.
+Keep input manifests, licensed datasets, selection scripts, and scoring programs outside this checkout.
+
+```bash
+python -m evaluation.token_optimization.corpus prepare \
+  --fixture-file /data/codex-tmp/.../frozen-cases/cases.json \
+  --env-file "$PWD/.env" --repo-root "$PWD" \
+  --output-dir /data/codex-tmp/.../runs \
+  --tokenizer-cache /data/codex-tmp/.../tokenizer-cache
+```
+
+Preparation creates an isolated evaluation-owned database, ingests every published document unit, and freezes ordinary
+off/active HTTP output. It makes zero Reader calls. Compact controls use off mode and separate Scope/Artifact identities;
+their costs and retrieval behavior must be reported separately. The existing eight-entry Topic section limit applies:
+ingesting all documents does not imply that every unit is selected or delivered. Do not filter material by the gold
+answer, reference SQL, supporting-paragraph annotations, or measured compression success.
+
+`corpus read --snapshot-dir /data/codex-tmp/.../corpus-prepare-...` explicitly calls the configured Reader for every
+preselected observation, including no-op and failed preparations. It consumes the exact frozen prompts without further
+database work, so it can run separately from HTTP load. Preserve the independent selection count and all attempts;
+raw usage and latency are durably written before any answer scoring. Score outside the checkout with the appropriate
+upstream normalization, units/scales and numeric rules rather than the documentation workload's strict Python equality.
+
+For example, WikiSQL can use actual read-only complete `SELECT *` row mappings with independent reference SQL executed
+only for scoring. Retain a matched header/rows serialization as a compact control. TAT-QA should retain its original
+two-dimensional table and all published paragraph units, without inventing repeated keys to manufacture gains.
+These are compiler-specific QA adaptations and not official benchmark leaderboard submissions. Record dataset
+revisions, download hashes, transformation rules, licenses, unsupported input counts and exact case-selection seeds in
+the external manifest. Run-output reports and CSV files are not repository deliverables.
+
+The separate `load` module measures real loopback TCP HTTP preparation backed by the configured OceanBase, using a
+previously frozen evaluation-owned snapshot. It makes **zero Reader calls** and measures neither answer quality nor
+provider token usage. Run it against an independent corpus snapshot rather than treating synthetic compiler CPU
+measurements as service capacity:
+
+```bash
+python -m evaluation.token_optimization.load \
+  --snapshot-dir /data/codex-tmp/.../independent-corpus-snapshot \
+  --repo-root "$PWD" --env-file "$PWD/.env" \
+  --output-dir /data/codex-tmp/powercontext-token-1991-followup-20261014 \
+  --tokenizer-cache /data/codex-tmp/powercontext-token-strategy-20261012/tokenizer-cache \
+  --concurrency 1 4 8 --requests 100
+```
+
+The default measures 600 warm requests: 100 per mode/concurrency combination. Each cell uses a new Server runtime,
+records its first unprimed preparation wave, traverses the corpus once to warm preparation, and then measures the
+closed-loop batch. First-wave sample counts are only 1/4/8 and cannot establish tail behavior. OceanBase caches are
+never flushed; "unprimed" describes the Server's first preparation requests, not a cold database. Client connection
+setup remains included in the measured POST latency. Report p50/p95/p99 with sample counts, errors, requests/sec,
+response text token counts, content variability and paired citation origins. Complete JSON decoding is inside the
+timer; token counting is outside it. No internal database query count is claimed.
+An evaluation-process SQLAlchemy listener aggregates emitted SELECT/INSERT/UPDATE/DELETE and FTS MATCH statement
+counts per measurement window. It records no SQL text or parameters and does not count native pool ping or database
+internal work. It is removed when the harness exits and changes no runtime endpoint or database schema.
+
+`manifest.json` and `snapshots.json` must identify a retained `pc_token_ab_<32hex>` database. Each snapshot contains
+`scope_id`, `artifact`, `readback_sha256`, `material`, and `query`/`question`. An optional `request_payload` supplies
+the exact existing preparation request, including assembly limits for multiple candidates; its Scope must match.
+For multi-candidate tasks, include `artifacts: [{artifact, readback_sha256}, ...]` for every frozen revision. Exact
+public reads are checked before and after every cell, and both modes use the same request and snapshot hashes.
+For larger corpora, `--snapshot-checks experiment` verifies all exact readback hashes and latest revisions at the
+experiment's start and end, and all latest revisions after every cell. Those checks stay outside the latency and SQL
+measurement windows. Set `--requests` high enough to traverse every independent case; 150 cases need at least 150
+measured requests per cell (use 300 for two complete traversals). Optional snapshot `dataset` labels produce separate
+response latency, error and text-token aggregates; optimizer and SQL diagnostics remain whole-window aggregates.
+Optional `prepared_content_sha256: {"off": "...", "active": "..."}` records pre-frozen HTTP preparation body hashes.
+Every successful observation is checked against its mode's hash; missing references remain explicitly unmeasured.
+The literal citation parser supports the existing Markdown renderer; unknown or JSON bodies are marked unmeasured
+for origin comparison rather than counted as unchanged.
+The manifest records warm, warmup and first-wave request boundaries and preserves the source files outside Git.
+The runtime's content-free diagnostics are collected with a thread-safe handler over a whole measurement window;
+they are never attributed to an individual concurrent request using a shared last-event variable. All measurements,
+response fingerprints, manifests, downloaded corpora and intermediate files remain under `/data/codex-tmp` and must
+not be committed to the repository.
