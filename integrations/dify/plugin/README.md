@@ -26,7 +26,7 @@ Configure exactly one of `scope_id` and `binding_external_id`. Every call resolv
 
 All users and conversations using one credential share its Scope. This is a fixed application/team boundary, not automatic personal or conversation isolation. Use distinct credential configurations and Server policies, or distinct deployments, when different access boundaries are needed. Paths, usernames and hashes are not Scope IDs. Provision bindings before use; the plugin never creates a Scope or falls back to Default.
 
-The model cannot supply the top-level Scope, URL, token, binding, context assembly, or byte budget. Nested exact references and Handoff objects keep their original identities, and the Server validates their access relationships.
+The model cannot supply the top-level Scope, URL, token, binding, context assembly, byte budget, or a host-owned bootstrap receipt. Nested exact references and Handoff objects keep their original identities, and the Server validates their access relationships.
 
 ## Tools
 

@@ -43,10 +43,15 @@ from powercontext.http import (
     ActivateHandoffRequest,
     ApproveCandidateRequest,
     ArtifactCreated,
+    ArtifactHandleBinding,
     ArtifactPage,
     ArtifactPublication,
     ArtifactRevision,
     ArtifactRevisionPage,
+    BindArtifactHandleRequest,
+    BootstrapContext,
+    BootstrapContextRequest,
+    BootstrapDeliveryReceipt,
     Candidate,
     CandidateHistory,
     CandidatePage,
@@ -147,6 +152,7 @@ from powercontext.http import (
     ReadinessResponse,
     ReconcileRemoteSkillsRequest,
     ReconcileRemoteSkillsResponse,
+    RecordBootstrapDeliveryRequest,
     RecordRemoteSkillReceiptRequest,
     RecordSkillUsageRequest,
     RecordTaskOutcomeRequest,
@@ -212,6 +218,7 @@ from powercontext.http._generated.operations import (
     ACKNOWLEDGE_HANDOFF,
     ACTIVATE_HANDOFF,
     APPROVE_CANDIDATE,
+    BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
     CHECK_ACCESS,
     CLEAR_SCOPE_BINDING,
@@ -279,6 +286,7 @@ from powercontext.http._generated.operations import (
     LIST_REMOTE_SKILL_TARGETS,
     LIST_SCOPES,
     LIST_SOURCES,
+    PREPARE_BOOTSTRAP_CONTEXT,
     PREPARE_CONTEXT,
     PREPARE_HANDOFF,
     PREPARE_HANDOFF_HINT,
@@ -291,6 +299,7 @@ from powercontext.http._generated.operations import (
     QUERY_ARTIFACT_TAGS,
     QUERY_CODE,
     RECONCILE_REMOTE_SKILLS,
+    RECORD_BOOTSTRAP_DELIVERY,
     RECORD_REMOTE_SKILL_RECEIPT,
     RECORD_SKILL_USAGE,
     RECORD_TASK_OUTCOME,
@@ -302,6 +311,7 @@ from powercontext.http._generated.operations import (
     REPLACE_ARTIFACT,
     REPLACE_ARTIFACT_TAGS,
     REPLACE_MEMORY_ENTRY_TAGS,
+    RESOLVE_ARTIFACT_HANDLE,
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
@@ -811,6 +821,29 @@ class PowerContextClient:
             },
         )
 
+    async def bind_artifact_handle(
+        self,
+        scope_id: str,
+        family: str,
+        key: str,
+        request: BindArtifactHandleRequest,
+    ) -> ArtifactHandleBinding:
+        """Idempotently bind a scope-local handle to an exact Artifact revision."""
+
+        return await self._request(
+            BIND_ARTIFACT_HANDLE,
+            request,
+            path_parameters={"scope_id": scope_id, "family": family, "key": key},
+        )
+
+    async def resolve_artifact_handle(self, scope_id: str, family: str, key: str) -> ArtifactHandleBinding:
+        """Resolve a scope-local handle to its exact Artifact revision."""
+
+        return await self._request(
+            RESOLVE_ARTIFACT_HANDLE,
+            path_parameters={"scope_id": scope_id, "family": family, "key": key},
+        )
+
     async def list_artifacts(self, scope_id: str, family: str, request: ListArtifactsRequest) -> ArtifactPage:
         """List current Artifact heads for one family."""
 
@@ -995,6 +1028,19 @@ class PowerContextClient:
         """Prepare final bounded context for one Agent turn."""
 
         return await self._request(PREPARE_CONTEXT, request)
+
+    async def prepare_bootstrap_context(self, request: BootstrapContextRequest) -> BootstrapContext:
+        """Prepare curated bounded context for one Agent lifecycle boundary."""
+
+        return await self._request(PREPARE_BOOTSTRAP_CONTEXT, request)
+
+    async def record_bootstrap_delivery(
+        self,
+        request: RecordBootstrapDeliveryRequest,
+    ) -> BootstrapDeliveryReceipt:
+        """Finalize one content-free bootstrap delivery receipt."""
+
+        return await self._request(RECORD_BOOTSTRAP_DELIVERY, request)
 
     async def prepare_handoff(self, request: PrepareHandoffRequest) -> HandoffDraft:
         """Generate one inspectable Handoff Draft from exact evidence."""
