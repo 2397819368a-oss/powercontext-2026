@@ -186,7 +186,7 @@ Principal，并注入 Authorization Provider。HTTP 与 MCP 使用同一个策�
 | Atomic Memory | `/v1/atomic-memory/*`、`/v1/scopes/{scope_id}/artifacts/*`（`family=atomic-memory`） | 检索、管理列表、状态、合并、遗忘和恢复；创建、读取、修订正文及查询历史 |
 | Memory 兼容入口 | `/v1/memory/*` | 保留 flush、remember、search、list 和旧身份读取；旧集合修改返回明确的不支持错误 |
 | Topic Memory | `/v1/topic-memory/*`、`/v1/scopes/{scope_id}/artifacts/*`（`family=topic-memory`） | 请求后台处理、检索和展开主题；创建、读取、修订正文及查询历史 |
-| Profile | `/v1/profile/flush`、`/v1/scopes/{scope_id}/profile-policy`、`/v1/scopes/{scope_id}/artifacts/*`（`family=profile`） | 处理画像生成、配置生成策略、读写画像及查询历史 |
+| Profile | `/v1/profile/*`、`/v1/scopes/{scope_id}/profile-policy`、`/v1/scopes/{scope_id}/artifacts/*`（`family=profile`） | 处理画像生成、配置生成策略、读写画像及查询历史 |
 | Experience 与 Skill | `/v1/experience/*`、`/v1/skill/*`、`/v1/skills/*` | propose、review、打包、治理、分发并读取 managed Skill Revision |
 | 审核 | `/v1/artifact-candidates/*` | 列出、检查、修订、批准或拒绝 pending Candidate |
 | 外部 Skill | `/v1/external-skills/*` | 扫描已配置 target，解析或导入 package |

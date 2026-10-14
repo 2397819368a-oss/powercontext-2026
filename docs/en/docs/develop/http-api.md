@@ -205,7 +205,7 @@ use the same policy enforcement point; MCP tool visibility is not permission.
 | Atomic Memory | `/v1/atomic-memory/*`, `/v1/scopes/{scope_id}/artifacts/*` (`family=atomic-memory`) | Search, list, inspect state, merge, forget, and restore; create, read, and revise content and inspect history |
 | Memory compatibility | `/v1/memory/*` | Flush, remember, search, list, and legacy identity reads; legacy collection mutations return an explicit unsupported error |
 | Topic Memory | `/v1/topic-memory/*`, `/v1/scopes/{scope_id}/artifacts/*` (`family=topic-memory`) | Request background processing, search, and expand topics; create, read, and revise content and inspect history |
-| Profile | `/v1/profile/flush`, `/v1/scopes/{scope_id}/profile-policy`, `/v1/scopes/{scope_id}/artifacts/*` (`family=profile`) | Process Profile generation, configure generation policy, read and write Profiles, and inspect history |
+| Profile | `/v1/profile/*`, `/v1/scopes/{scope_id}/profile-policy`, `/v1/scopes/{scope_id}/artifacts/*` (`family=profile`) | Process Profile generation, configure generation policy, read and write Profiles, and inspect history |
 | Experience and Skill | `/v1/experience/*`, `/v1/skill/*`, `/v1/skills/*` | Propose, review, package, govern, distribute, and read managed Skill revisions |
 | Review | `/v1/artifact-candidates/*` | List, inspect, revise, approve, or reject pending Candidates |
 | External Skills | `/v1/external-skills/*` | Scan configured targets and resolve or import packages |
