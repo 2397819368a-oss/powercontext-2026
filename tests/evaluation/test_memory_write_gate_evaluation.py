@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -318,3 +319,48 @@ def test_uncommitted_candidate_reference_is_incomplete() -> None:
     dataset = Dataset(dataset_id="remote", split="calibration", cases=(case,))
     result = asyncio.run(evaluate_dataset(dataset, AuthorizedClientResolver(cast(PowerContextClient, object()))))
     assert result[0].status is EvaluationStatus.UNSUPPORTED_REFERENCE
+
+
+@pytest.mark.parametrize("split", ["calibration", "held_out"])
+def test_no_call_cli_reports_local_preflight_hold_without_model_configuration(
+    tmp_path: Path, split: str, monkeypatch
+) -> None:
+    from evaluation.memory.write_gate.cli import main
+
+    calibration, held_out, _ = _datasets()
+    for dataset in (calibration, held_out):
+        (tmp_path / f"{dataset.split}.json").write_text(dataset.model_dump_json(), encoding="utf-8")
+
+    async def resolve(self, case):
+        candidate = "x" * 4000 if case.case_id == f"{split}-0" else "candidate"
+        return ResolvedCase(candidate=candidate, evidence=("evidence",))
+
+    monkeypatch.setattr(AuthorizedClientResolver, "resolve", resolve)
+    monkeypatch.setenv("POWERCONTEXT_CLIENT_API_TOKEN", "unit-test-token")
+    output = tmp_path / "coverage.json"
+    assert (
+        main([
+            "--backend",
+            "no_call",
+            "--calibration",
+            str(tmp_path / "calibration.json"),
+            "--held-out",
+            str(tmp_path / "held_out.json"),
+            "--server-url",
+            "http://localhost:8000",
+            "--output",
+            str(output),
+        ])
+        == 0
+    )
+    value = json.loads(output.read_text())
+    assert value["phase"] == "input_coverage_audit"
+    assert value["selected_configuration"] is None
+    assert value["selected_policy_version"] is None
+    row = value["cases"][split][0]
+    assert row["coverage"] == "adjudicated"
+    assert row["used_fallback"] is False
+    assert row["outcome"] is None
+    assert set(row["actions"].values()) == {"hold"}
+    assert all(item["requests"] == 0 for rows in value["cases"].values() for item in rows)
+    assert "x" * 4000 not in output.read_text()
