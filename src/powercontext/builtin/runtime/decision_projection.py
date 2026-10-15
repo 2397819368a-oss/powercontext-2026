@@ -64,6 +64,33 @@ class InvalidDecisionProjectionError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class _JsonNumber:
+    """A decoded JSON number paired with its original lexical representation."""
+
+    encoded: str
+    value: int | float
+
+
+@dataclass(frozen=True, slots=True)
+class _JsonObject:
+    """A decoded JSON object that retains duplicate keys for safety checks."""
+
+    pairs: tuple[tuple[str, object], ...]
+
+
+def _decode_json_integer(value: str) -> _JsonNumber:
+    return _JsonNumber(value, int(value))
+
+
+def _decode_json_float(value: str) -> _JsonNumber:
+    return _JsonNumber(value, float(value))
+
+
+def _decode_json_object(pairs: list[tuple[str, object]]) -> _JsonObject:
+    return _JsonObject(tuple(pairs))
+
+
+@dataclass(frozen=True, slots=True)
 class DecisionRequestProjection:
     """The only two outcomes a decision request sanitizer may produce.
 
@@ -199,24 +226,32 @@ class KnownSecretDecisionRequestSanitizer:
         """Sanitize JSON evidence values before encoding can hide literal secrets."""
 
         try:
-            decoded = json.loads(value)
+            decoded = json.loads(
+                value,
+                parse_int=_decode_json_integer,
+                parse_float=_decode_json_float,
+                parse_constant=_decode_json_float,
+                object_pairs_hook=_decode_json_object,
+            )
         except (json.JSONDecodeError, TypeError):
             sanitized = self._sanitize_text(value)
             return sanitized, _has_decision_material(sanitized)
         sanitized, changed, has_material = self._sanitize_json_value(decoded)
-        if not changed:
-            return value, has_material
-        return json.dumps(sanitized, ensure_ascii=False, sort_keys=True, separators=(",", ":")), has_material
+        projected = (
+            json.dumps(sanitized, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if changed else value
+        )
+        if self._sanitize_text(projected) != projected:
+            return REDACTED, False
+        return projected, has_material
 
     def _sanitize_json_value(self, value: object) -> tuple[object, bool, bool]:
+        if isinstance(value, _JsonNumber):
+            if self._sanitize_text(value.encoded) != value.encoded:
+                return REDACTED, True, False
+            return value.value, False, True
         if isinstance(value, str):
             sanitized = self._sanitize_text(value)
             return sanitized, sanitized != value, _has_decision_material(sanitized)
-        if type(value) in {int, float}:
-            encoded = json.dumps(value, ensure_ascii=False)
-            if self._sanitize_text(encoded) != encoded:
-                return REDACTED, True, False
-            return value, False, True
         if isinstance(value, list):
             items = tuple(self._sanitize_json_value(item) for item in value)
             return (
@@ -224,11 +259,15 @@ class KnownSecretDecisionRequestSanitizer:
                 any(changed for _, changed, _ in items),
                 any(has_material for _, _, has_material in items),
             )
-        if isinstance(value, dict):
+        if isinstance(value, _JsonObject):
             sanitized: dict[str, object] = {}
+            original_keys: set[str] = set()
             changed = False
             has_material = False
-            for key, item in cast(dict[str, object], value).items():
+            for key, item in value.pairs:
+                if key in original_keys:
+                    return REDACTED, True, False
+                original_keys.add(key)
                 sanitized_key = self._sanitize_text(key)
                 if sanitized_key in sanitized:
                     raise InvalidDecisionProjectionError(  # noqa: TRY003

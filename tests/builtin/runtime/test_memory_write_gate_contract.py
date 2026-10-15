@@ -985,6 +985,148 @@ def test_hosted_redacted_withholds_plain_numeric_known_secret_evidence(monkeypat
     asyncio.run(scenario())
 
 
+def test_hosted_redacted_sanitizes_the_original_numeric_evidence_representation(monkeypatch) -> None:
+    secret = "1234567.50"  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+        evidence = f'{{"text":"Safe material remains.","credential":{secret}}}'
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The project records one measurement.",),
+                evidence=(evidence,),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.used_fallback is False
+        assert len(backend.requests) == 1
+        projected = backend.requests[0]
+        assert secret not in projected.evidence[0]
+        assert json.loads(projected.evidence[0]) == {
+            "credential": "[REDACTED]",
+            "text": "Safe material remains.",
+        }
+        assert sink.observations[0].metadata["redaction_facts"] == ["evidence_redacted"]
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_withholds_plain_known_secret_before_numeric_normalization(monkeypatch) -> None:
+    secret = "1234567.50"  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The project records one measurement.",),
+                evidence=(secret,),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        observation = sink.observations[0]
+        assert observation.assessment.coverage is DecisionCoverage.UNADJUDICATED
+        assert observation.fallback_reason == "projection_material_removed"
+        assert observation.privacy_outcome == "hosted_redacted_withheld"
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_withholds_when_json_decoding_hides_a_raw_known_secret(monkeypatch) -> None:
+    secret = "1234567.50"  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+        evidence = f'{{"a":{secret},"a":"safe"}}'
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The project records one measurement.",),
+                evidence=(evidence,),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        observation = sink.observations[0]
+        assert observation.assessment.coverage is DecisionCoverage.UNADJUDICATED
+        assert observation.fallback_reason == "projection_material_removed"
+        assert observation.privacy_outcome == "hosted_redacted_withheld"
+
+    asyncio.run(scenario())
+
+
+def test_hosted_redacted_withholds_when_duplicate_key_hides_an_escaped_known_secret(monkeypatch) -> None:
+    secret = 'synthetic-quote"line\nback\\slash-1987'  # noqa: S105 - synthetic redaction sentinel.
+    monkeypatch.setenv("REVIEW_PASSWORD", secret)
+
+    async def scenario() -> None:
+        backend = _RemoteRecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        sink = _RecordingObservationSink()
+        gate = build_memory_write_gate(
+            backend,
+            enabled=True,
+            privacy_boundary=DecisionPrivacyBoundary.HOSTED_REDACTED,
+            decision_request_sanitizer=KnownSecretDecisionRequestSanitizer(),
+        )
+        assert isinstance(gate, DecisionMemoryWriteGate)
+        evidence = f'{{"a":{json.dumps(secret)},"a":"safe"}}'
+        assert secret not in evidence
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("The project records one measurement.",),
+                evidence=(evidence,),
+                observation_sink=sink,
+            )
+        )
+
+        assert assessment.verdict is MemoryWriteVerdict.ACCEPT
+        assert assessment.used_fallback is True
+        assert backend.requests == []
+        observation = sink.observations[0]
+        assert observation.assessment.coverage is DecisionCoverage.UNADJUDICATED
+        assert observation.fallback_reason == "projection_material_removed"
+        assert observation.privacy_outcome == "hosted_redacted_withheld"
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("nonfinite", ["NaN", "Infinity", "-Infinity"])
 def test_hosted_redacted_preserves_nonfinite_numeric_evidence_without_sanitizer_failure(nonfinite: str) -> None:
     async def scenario() -> None:
