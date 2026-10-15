@@ -34,6 +34,8 @@ Scope
 └── Topic Memory      # extracted in the background from eligible Sources
 ```
 
+*The Dashboard screenshots below use synthetic demonstration records.*
+
 ### Memory — decisions and constraints that outlive a session
 
 Memory is a revisioned artifact family for reusable decisions, constraints, facts, state, and next steps. Entries can be
@@ -42,6 +44,8 @@ no model at all; extraction from captured Sources needs a configured generation 
 
 > "Don't refactor the old auth module — mobile is still using it."
 > Context this expensive shouldn't depend on someone repeating it in every session.
+
+![Dashboard showing active decisions and constraints for one Scope with their Artifact and Source references](docs/assets/readme-dashboard-memories.png)
 
 ### Handoff — the current state, not the whole transcript
 
@@ -56,6 +60,8 @@ durable Revision only when the user wants a milestone. The receiver resolves the
 a Task Outcome preserves the final status and checks as Source evidence. The
 [Handoff Report](https://powercontext.oceanbase.io/en/docs/workflows/use-handoff-report/) projects the latest Revision in
 each selected Scope — read-only, and it never rewrites Memory.
+
+![Dashboard showing a committed Handoff Revision with recorded progress, next action, and linked source evidence](docs/assets/readme-dashboard-handoff.png)
 
 ### Experience — what worked, reviewed before it is reused
 
@@ -102,34 +108,6 @@ host-local projection.
 | Review before reuse | n/a | no | no | Review Inbox |
 | Bounded recall for one turn | no | partial | no | `PreparedContext` byte budget |
 | Inspectable outside the Agent | no | no | yes | yes |
-
-## How a task keeps moving
-
-PowerContext does not make the next Agent read a better transcript. It leaves behind small, inspectable records for the
-next person to verify against the live workspace. The screenshots below are the local Dashboard running with synthetic
-demonstration records.
-
-### 1. Keep the decisions that would otherwise be repeated
-
-When a decision or constraint must outlive the turn that produced it, save it as Memory. The next session can search or
-prepare bounded context from active entries, while a human can inspect its exact Artifact Revision and Source reference.
-Retiring an entry removes it from active recall without rewriting its history.
-
-![Dashboard showing active decisions and constraints for one Scope with their Artifact and Source references](docs/assets/readme-dashboard-memories.png)
-
-### 2. Hand over an inspected boundary, not a transcript dump
-
-At a real transfer point, a Handoff records the objective, current progress, omissions, and next action with its Source
-evidence. A Prepared Handoff is only a temporary transfer; committing it creates the durable Revision that the receiver
-can resolve, acknowledge, and check before continuing.
-
-![Dashboard showing a committed Handoff Revision with recorded progress, next action, and linked source evidence](docs/assets/readme-dashboard-handoff.png)
-
-### 3. Reuse an outcome only after a decision
-
-When a useful approach emerges, it can become an Experience or Skill candidate in that Scope's Review Inbox. Candidate
-content remains separate from retrieved context until a review decision creates an immutable Revision. A Skill still
-needs an explicit export before an Agent host can discover it.
 
 ## Proof it works
 

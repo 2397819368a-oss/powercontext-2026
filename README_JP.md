@@ -29,12 +29,16 @@ Scope
 └── Topic Memory      # 対象となる Source からバックグラウンドで抽出
 ```
 
+*以下 2 枚の Dashboard 画面は合成のデモ記録を使用しています。*
+
 ### Memory — セッションを超えて残る判断と制約
 
 Memory は、再利用可能な判断・制約・事実・状態・次の手順を保持するリビジョン付き Artifact ファミリです。エントリは active と inactive を取り、退役させても履歴は削除されず、アクティブな想起対象から外れるだけです。明示的な Memory の書き込みにモデルは不要です。取得済み Source からの抽出には、生成パイプラインの設定が必要です。
 
 > 「古い auth モジュールはリファクタリングしないで。モバイル側がまだ使っているから。」
 > これほど価値のある文脈を、毎セッション誰かが言い直すことに依存させるべきではありません。
+
+![1 つの Scope のアクティブな判断と制約、および対応する Artifact と Source 参照を示す Dashboard](docs/assets/readme-dashboard-memories.png)
 
 ### Handoff — 全文ではなく現在の状態
 
@@ -45,6 +49,8 @@ Work Contract → Prepared Handoff → Acknowledgement → Task Outcome
 ```
 
 `handoff_current_work` は検査済みの境界を取り込み、一時的な Prepared Handoff を返します。コミットして永続的なリビジョンになるのは、マイルストーンとして残したいとユーザーが判断した場合だけです。受け手は Handoff を解決して Acknowledgement を記録し、Task Outcome が最終状態とチェック内容を Source の根拠として保存します。[Handoff Report](https://powercontext.oceanbase.io/en/docs/workflows/use-handoff-report/) は、選択した各 Scope の最新 Handoff リビジョンを投影して閲覧・エクスポートできます。読み取り専用で、Memory を書き換えることはありません。
+
+![記録済みの進捗、次の行動、関連 Source の根拠を含むコミット済み Handoff Revision を示す Dashboard](docs/assets/readme-dashboard-handoff.png)
 
 ### Experience — レビューを経て再利用される知見
 
@@ -75,26 +81,6 @@ Experience は、状況・行動・観察された結果・再利用可能な教
 | 再利用前のレビュー | 該当なし | いいえ | いいえ | レビュー受信トレイ |
 | 1 ターンの想起に予算 | いいえ | 一部 | いいえ | `PreparedContext` のバイト予算 |
 | Agent の外から検査可能 | いいえ | いいえ | はい | はい |
-
-## 1 つのタスクをどう継続するか
-
-PowerContext は、次の Agent によりよい会話ログを読ませるものではありません。次の担当者が実際のワークスペースと照合できる、小さく検査可能な作業記録を残します。以下の画面は、合成のデモ記録を使ってローカルで動かした Dashboard です。
-
-### 1. 毎回説明し直す判断を残す
-
-判断や制約を、そのターンを越えて残す必要がある場合は Memory として保存します。次のセッションはアクティブな項目を検索するか、そこから境界つきのコンテキストを準備できます。人は正確な Artifact Revision と Source 参照も確認できます。項目を退役してもアクティブな想起から外れるだけで、履歴は書き換わりません。
-
-![1 つの Scope のアクティブな判断と制約、および対応する Artifact と Source 参照を示す Dashboard](docs/assets/readme-dashboard-memories.png)
-
-### 2. 会話の丸ごとの転送ではなく、確認済みの境界を引き継ぐ
-
-実際の引き継ぎ時には、Handoff が Source の根拠とともに目標、現在の進捗、未対応項目、次の行動を記録します。Prepared Handoff は一時的な転送にすぎません。コミットして初めて永続的な Revision になり、受け手は解決・確認し、現在の状態を確認してから続行できます。
-
-![記録済みの進捗、次の行動、関連 Source の根拠を含むコミット済み Handoff Revision を示す Dashboard](docs/assets/readme-dashboard-handoff.png)
-
-### 3. 成果を再利用する前にも決定を通す
-
-有効な手法が再利用に値する場合、その Scope の Review Inbox に Experience または Skill の候補として入れられます。候補内容は、レビューの決定によって不変の Revision が作成されるまで、想起されるコンテキストとは分離されています。Skill は Agent ホストが発見する前に明示的なエクスポートも必要です。
 
 ## 効果の検証
 

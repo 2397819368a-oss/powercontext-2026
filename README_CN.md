@@ -29,6 +29,8 @@ Scope
 └── Topic Memory      # 由符合条件的 Source 后台提取
 ```
 
+*下面两张 Dashboard 截图使用的是合成演示记录。*
+
 ### Memory —— 活得比会话更久的决定与约束
 
 Memory 是一个带版本的 Artifact 家族，存放可以复用的决定、约束、事实、状态和下一步。条目可以是 active 或
@@ -37,6 +39,8 @@ Source 中提取，才需要配置生成流水线。
 
 > "别重构老的 auth 模块 —— 移动端还在用。"
 > 这么贵的上下文，不应该依赖有人每个会话都重讲一遍。
+
+![Dashboard 展示一个 Scope 中活跃的决定和约束，以及对应的 Artifact 与 Source 引用](docs/assets/readme-dashboard-memories-zh.png)
 
 ### Handoff —— 当前状态，不是整段对话记录
 
@@ -47,6 +51,8 @@ Handoff 用一个四步循环记录工作接续：
 ```
 
 `handoff_current_work` 抓取一个已经检查过的边界，返回一份临时的 Prepared Handoff。只有在你希望留下里程碑时，提交它才会生成持久的 Revision。接收方解析这份 Handoff 并记录确认回执；任务结果则作为 Source 证据保存最终状态与检查项。[Handoff Report](https://powercontext.oceanbase.io/zh/docs/workflows/use-handoff-report/) 会把每个选定 Scope 中最新的一份 Handoff Revision 投影出来供查看与导出——只读，且从不改写 Memory。
+
+![Dashboard 展示一份已提交的 Handoff Revision，其中包含已记录的进展、下一步和关联的 Source 证据](docs/assets/readme-dashboard-handoff-zh.png)
 
 ### Experience —— 有用的做法，评审后再复用
 
@@ -77,26 +83,6 @@ Experience 记录一个场景、一次动作、观察到的结果，以及可复
 | 复用前经过评审 | 不适用 | 否 | 否 | 评审收件箱 |
 | 单轮召回有预算约束 | 否 | 部分 | 否 | `PreparedContext` 字节预算 |
 | 可以在 Agent 之外查看 | 否 | 否 | 是 | 是 |
-
-## 一个任务如何持续下去
-
-PowerContext 不是让下一个 Agent 读一份更好的聊天记录，而是留下小而可检查的工作记录，让下一个人结合实时工作区继续判断。下面的截图来自本地运行的 Dashboard，使用的是合成演示记录。
-
-### 1. 留下那些否则必须反复讲的决定
-
-当一个决定或约束需要跨越产生它的那一轮会话时，把它保存为 Memory。下一个会话可以检索活跃条目，或从中准备有边界的上下文；人也可以查看精确的 Artifact Revision 与 Source 引用。将条目退役只会让它退出主动召回，不会改写历史。
-
-![Dashboard 展示一个 Scope 中活跃的决定和约束，以及对应的 Artifact 与 Source 引用](docs/assets/readme-dashboard-memories.png)
-
-### 2. 交接已经检查过的边界，而不是倾倒整段对话
-
-在真正需要交接时，Handoff 会带着 Source 证据记录目标、当前进展、遗漏项和下一步。Prepared Handoff 只是临时转交；只有提交后才形成持久 Revision，接收方可以解析、确认并结合当前状态检查后再继续。
-
-![Dashboard 展示一份已提交的 Handoff Revision，其中包含已记录的进展、下一步和关联的 Source 证据](docs/assets/readme-dashboard-handoff.png)
-
-### 3. 有结果的做法，也要先经过一次决定才能复用
-
-当一个有效做法值得复用时，它可以进入该 Scope 的 Review Inbox，成为 Experience 或 Skill 候选。候选内容在一次评审决定生成不可变 Revision 之前，不会进入被召回的上下文。Skill 还必须显式导出，Agent 宿主才能发现它。
 
 ## 效果怎么样
 
