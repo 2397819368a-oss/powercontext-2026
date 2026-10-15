@@ -95,19 +95,24 @@ For authorized re-evaluation with an existing local-only `DecisionModel`, use th
 
 ```python
 from evaluation.memory.write_gate.dataset import load_dataset
-from evaluation.memory.write_gate.resolver import AuthorizedClientResolver
-from evaluation.memory.write_gate.runner import evaluate_dataset
+from evaluation.memory.write_gate.resolver import AuthorizedClientResolver, SplitCheckedResolver
 
 
-async def reevaluate(manifest_path, client, local_model):
-    dataset, _ = load_dataset(manifest_path)
-    return await evaluate_dataset(dataset, AuthorizedClientResolver(client), model=local_model)
+def prepare_private_evaluation(calibration_path, held_out_path, client):
+    calibration, _ = load_dataset(calibration_path)
+    held_out, _ = load_dataset(held_out_path)
+    resolver = SplitCheckedResolver(calibration, held_out, AuthorizedClientResolver(client))
+    return calibration, held_out, resolver
 ```
 
 The caller supplies a configured `PowerContextClient` and local-only model. The Runtime privacy boundary still applies.
-Run calibration before choosing a configuration, then evaluate a separate held-out manifest and pass both result
-sets to `report(..., selected_configuration=...)`. Input labels are used only for scoring. Controlled models in tests
-verify program behavior; they do not measure model quality.
+Share this resolver between both splits: it compares each authorized candidate/evidence projection before scoring,
+retaining only hashes and performing no additional reads. Missing, unauthorized or unsupported inputs remain separate
+coverage results.
+Use `evaluate_dataset(dataset, resolver, model=local_model)` from `runner` to run calibration before choosing a
+configuration, then evaluate held-out and pass both result sets to `report(..., selected_configuration=...)`.
+Input labels are used only for scoring. Controlled models in tests verify program behavior; they do not measure
+model quality.
 
 ## Read the measurements
 
