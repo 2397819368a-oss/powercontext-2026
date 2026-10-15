@@ -79,6 +79,8 @@ The state is `idle`, `pending`, or `blocked`. A block contains its exact `block_
 attempt/request/token counters, terminal `error_code`, `last_error_code`, and UTC `blocked_at`. An active third attempt
 remains pending because it can still finish. For legacy budgets, `blocked_at` is the first observation time and an
 unknown last error is null.
+When a legacy budget has no per-attempt audit record, its range remains the stored cumulative frontier coverage;
+the final attempt's selected range cannot be reconstructed from that budget.
 
 Correct the cause, then copy the returned block ID into `BLOCK_ID`. A Scope administrator can explicitly grant one
 new bounded allowance and request processing:

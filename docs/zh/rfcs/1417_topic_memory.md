@@ -668,7 +668,8 @@ metadata 重新检查出错时保留已知终止状态、等待间隔和日志�
 `pc_topic_memory_work_attempts` 为每次尝试保留一条 metadata 记录，包含准确的执行 owner、已尝试范围、target、额度
 快照及最后错误类别。首次观察到终止时记录稳定 block ID 和 `blocked_at`；retry 保存重试时间及接受的请求 generation，
 不覆盖原诊断。记录不含 Source 或模型原文。正常启动会创建新增表，不修改旧预算表。旧记录使用首次观察时间，缺失的
-历史错误类别为 null，不推测原始失败时间。查询使用索引身份，写入仅作用于一个 frontier；正常每个窗口额度最多产生
+历史错误类别为 null，不推测原始失败时间。没有逐次审计记录的旧范围保留预算的累计覆盖范围，不推测最后一次尝试的
+实际终点。查询使用索引身份，写入仅作用于一个 frontier；正常每个窗口额度最多产生
 三条尝试记录，显式接受的 retry 可再申请相同的有限额度。记录保留用于审计。
 
 `pc_topic_memory_work_budgets` 保存 frontier、尝试过的最远终点、不透明 attempt ID、尝试次数、预留请求/token 与有界

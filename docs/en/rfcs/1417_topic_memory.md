@@ -761,6 +761,8 @@ target, usage snapshot and last error category. A terminal observation adds a st
 records its timestamp and accepted request generation without replacing the original diagnostics. Records contain no
 Source/model text. The additive table is created on supported database startup without altering the budget schema.
 Legacy rows receive an observation time and nullable historical error; no original failure timestamp is inferred.
+Without a per-attempt audit record, a legacy range preserves the budget's cumulative coverage rather than inferring
+the final attempt's selected end.
 Lookups use indexed identities and writes touch one frontier. Normal processing adds at most three attempt records
 per window allowance; explicitly accepted retries add another bounded allowance. Records are retained for audit.
 
