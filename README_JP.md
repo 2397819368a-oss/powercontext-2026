@@ -76,6 +76,26 @@ Experience は、状況・行動・観察された結果・再利用可能な教
 | 1 ターンの想起に予算 | いいえ | 一部 | いいえ | `PreparedContext` のバイト予算 |
 | Agent の外から検査可能 | いいえ | いいえ | はい | はい |
 
+## 1 つのタスクをどう継続するか
+
+PowerContext は、次の Agent によりよい会話ログを読ませるものではありません。次の担当者が実際のワークスペースと照合できる、小さく検査可能な作業記録を残します。以下の画面は、合成のデモ記録を使ってローカルで動かした Dashboard です。
+
+### 1. 毎回説明し直す判断を残す
+
+判断や制約を、そのターンを越えて残す必要がある場合は Memory として保存します。次のセッションはアクティブな項目を検索するか、そこから境界つきのコンテキストを準備できます。人は正確な Artifact Revision と Source 参照も確認できます。項目を退役してもアクティブな想起から外れるだけで、履歴は書き換わりません。
+
+![1 つの Scope にあるアクティブな判断と制約、および正確な Atomic Memory 参照を示す Dashboard](docs/assets/readme-dashboard-memories.png)
+
+### 2. 会話の丸ごとの転送ではなく、確認済みの境界を引き継ぐ
+
+実際の引き継ぎ時には、Handoff が Source の根拠とともに目標、現在の進捗、未対応項目、次の行動を記録します。Prepared Handoff は一時的な転送にすぎません。コミットして初めて永続的な Revision になり、受け手は解決・確認し、現在の状態を確認してから続行できます。
+
+![記録済みの進捗、次の行動、関連 Source の根拠を含むコミット済み Handoff Revision を示す Dashboard](docs/assets/readme-dashboard-handoff.png)
+
+### 3. 成果を再利用する前にも決定を通す
+
+有効な手法が再利用に値する場合、その Scope の Review Inbox に Experience または Skill の候補として入れられます。モデルは提案できますが、自身の出力を直接昇格できません。承認で不変の Revision が作られ、Skill は Agent ホストが発見する前に明示的なエクスポートも必要です。
+
 ## 効果の検証
 
 ![LoCoMo と SWE-bench Pro における PowerContext の結果をまとめた比較図](docs/assets/readme-benchmark-summary.svg)

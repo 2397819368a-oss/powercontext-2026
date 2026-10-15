@@ -78,6 +78,26 @@ Experience 记录一个场景、一次动作、观察到的结果，以及可复
 | 单轮召回有预算约束 | 否 | 部分 | 否 | `PreparedContext` 字节预算 |
 | 可以在 Agent 之外查看 | 否 | 否 | 是 | 是 |
 
+## 一个任务如何持续下去
+
+PowerContext 不是让下一个 Agent 读一份更好的聊天记录，而是留下小而可检查的工作记录，让下一个人结合实时工作区继续判断。下面的截图来自本地运行的 Dashboard，使用的是合成演示记录。
+
+### 1. 留下那些否则必须反复讲的决定
+
+当一个决定或约束需要跨越产生它的那一轮会话时，把它保存为 Memory。下一个会话可以检索活跃条目，或从中准备有边界的上下文；人也可以查看精确的 Artifact Revision 与 Source 引用。将条目退役只会让它退出主动召回，不会改写历史。
+
+![Dashboard 展示一个 Scope 中活跃的决定和约束，以及精确的 Atomic Memory 引用](docs/assets/readme-dashboard-memories.png)
+
+### 2. 交接已经检查过的边界，而不是倾倒整段对话
+
+在真正需要交接时，Handoff 会带着 Source 证据记录目标、当前进展、遗漏项和下一步。Prepared Handoff 只是临时转交；只有提交后才形成持久 Revision，接收方可以解析、确认并结合当前状态检查后再继续。
+
+![Dashboard 展示一份已提交的 Handoff Revision，其中包含已记录的进展、下一步和关联的 Source 证据](docs/assets/readme-dashboard-handoff.png)
+
+### 3. 有结果的做法，也要先经过一次决定才能复用
+
+当一个有效做法值得复用时，它可以进入该 Scope 的 Review Inbox，成为 Experience 或 Skill 候选。模型可以提出它，但不能把自己的输出直接升级：通过才会生成不可变 Revision；Skill 还必须显式导出，Agent 宿主才能发现它。
+
 ## 效果怎么样
 
 ![PowerContext 在 LoCoMo 和 SWE-bench Pro 上的紧凑对比图](docs/assets/readme-benchmark-summary.svg)

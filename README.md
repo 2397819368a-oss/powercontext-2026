@@ -103,6 +103,34 @@ host-local projection.
 | Bounded recall for one turn | no | partial | no | `PreparedContext` byte budget |
 | Inspectable outside the Agent | no | no | yes | yes |
 
+## How a task keeps moving
+
+PowerContext does not make the next Agent read a better transcript. It leaves behind small, inspectable records for the
+next person to verify against the live workspace. The screenshots below are the local Dashboard running with synthetic
+demonstration records.
+
+### 1. Keep the decisions that would otherwise be repeated
+
+When a decision or constraint must outlive the turn that produced it, save it as Memory. The next session can search or
+prepare bounded context from active entries, while a human can inspect its exact Artifact Revision and Source reference.
+Retiring an entry removes it from active recall without rewriting its history.
+
+![Dashboard showing one Scope's active decisions and constraints with exact Atomic Memory references](docs/assets/readme-dashboard-memories.png)
+
+### 2. Hand over an inspected boundary, not a transcript dump
+
+At a real transfer point, a Handoff records the objective, current progress, omissions, and next action with its Source
+evidence. A Prepared Handoff is only a temporary transfer; committing it creates the durable Revision that the receiver
+can resolve, acknowledge, and check before continuing.
+
+![Dashboard showing a committed Handoff Revision with recorded progress, next action, and linked source evidence](docs/assets/readme-dashboard-handoff.png)
+
+### 3. Reuse an outcome only after a decision
+
+When a useful approach emerges, it can become an Experience or Skill candidate in that Scope's Review Inbox. A model may
+propose it, but it cannot promote its own output: approval creates an immutable Revision, and a Skill still needs an
+explicit export before an Agent host can discover it.
+
 ## Proof it works
 
 ![Compact comparison of PowerContext results on LoCoMo and SWE-bench Pro](docs/assets/readme-benchmark-summary.svg)
