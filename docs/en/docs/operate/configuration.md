@@ -315,6 +315,9 @@ failures, and timeouts. Unacknowledged counts reflect the latest discovery; coun
 
 The `extraction` object in `GET /v1/capabilities` separates configuration, background execution, and local observations.
 Reading this snapshot does not query the database or call a model, and does not produce an overall health verdict.
+`powercontext capabilities` prints the same facts. Missing diagnostics print `unavailable`, a null supervisor role
+prints `absent`, and unknown values print `unknown`. Success and failure times are historical observations, not a
+current health verdict. `--json` returns the Server payload unchanged.
 
 - `configuration` is `configured` when a local extraction model or custom pipeline is assembled, or a local Memory
   worker is registered. It is `unconfigured` when none is available. Registration does not verify credentials or

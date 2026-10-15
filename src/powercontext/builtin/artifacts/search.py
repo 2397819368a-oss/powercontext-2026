@@ -91,9 +91,13 @@ _QUOTED_QUERY_TEXT = re.compile(r"""(`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’
 _EXECUTION_SENTENCE = re.compile(
     r"(?:use only (?:the )?(?:(?:context|evidence|information) (?:already )?"
     r"(?:supplied|provided|available)(?: to you)?|(?:supplied|provided|available) (?:context|evidence|information))"
-    r"|answer (?:concisely|briefly)(?: using (?:the )?(?:available|supplied|provided) evidence)?"
+    r"|answer (?:concisely|briefly)(?: using (?:the )?(?:available|supplied|provided) evidence"
+    r"| and (?:cite|identify) (?:the )?(?:artifact|source|evidence) references?"
+    r" from (?:the )?(?:available|supplied|provided) context)?"
     r"|if (?:the )?(?:facts|evidence|information) (?:are|is) (?:absent|missing|unavailable), "
-    r"(?:say|answer|respond with) unknown)"
+    r"(?:say|answer|respond with) unknown"
+    r"|if no (?:reliable )?(?:context|evidence|information) is (?:present|available), "
+    r"(?:say so|(?:say|answer|respond with) unknown))"
 )
 _EXECUTION_ACTION = re.compile(
     r"(?:(?:call|invoke|use) (?:any |external |available )?tools"

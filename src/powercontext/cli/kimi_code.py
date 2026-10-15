@@ -41,7 +41,9 @@ REQUIRED_FILES = (
     "kimi.plugin.json",
     "hooks/user_prompt_submit.mjs",
     "shared/runtime.mjs",
+    "shared/observations.mjs",
     "scripts/doctor.mjs",
+    "scripts/status.mjs",
     "skills/powercontext-project-context/SKILL.md",
 )
 
@@ -246,7 +248,9 @@ def install_kimi_plugin(  # noqa: C901 - validates and atomically replaces two u
     return KimiSetupResult(str(destination), str(registry_path), endpoint, selected_scope)
 
 
-def run_kimi_diagnostics() -> dict[str, Diagnostic]:
+def run_kimi_diagnostics(
+    *, runtime: bool = False, cwd: Path | None = None, session_id: str | None = None
+) -> dict[str, Diagnostic]:
     """Check installed declarations and perform readonly Server and Scope probes."""
     ok, failed, skipped = DiagnosticStatus.OK, DiagnosticStatus.FAILED, DiagnosticStatus.SKIPPED
     node = which("node")
@@ -301,8 +305,13 @@ def run_kimi_diagnostics() -> dict[str, Diagnostic]:
         checks["server"] = Diagnostic(skipped, "Node is required for readonly probes")
         return checks
     try:
+        arguments = [node, str(destination / "scripts/doctor.mjs")]
+        if runtime:
+            arguments.extend(["--cwd", str((cwd or Path.cwd()).resolve())])
+            if session_id is not None:
+                arguments.extend(["--session-id", session_id])
         result = subprocess.run(  # noqa: S603 - fixed Node script and no shell.
-            [node, str(destination / "scripts/doctor.mjs")],
+            arguments,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -314,6 +323,26 @@ def run_kimi_diagnostics() -> dict[str, Diagnostic]:
             raise ValueError  # noqa: TRY301 - invalid external probe output joins the failure path.
         for name, value in report["checks"].items():
             checks[name] = Diagnostic(DiagnosticStatus(value["status"]), value["detail"])
+        if runtime:
+            history = report["runtime"]
+            state = history["status"]
+            status = (
+                failed
+                if state == "failed"
+                else ok
+                if state == "observed" and history["freshness"] == "recent"
+                else skipped
+            )
+            details = {"selection": history["selection"]} if "selection" in history else {}
+            details.update({
+                name: ": ".join(part for part in (value["state"], value.get("code") or value.get("reason")) if part)
+                for name, value in history.get("stages", {}).items()
+            })
+            if "freshness" in history:
+                details["freshness"] = history["freshness"]
+                details["scope_id"] = history["scope_id"]
+                details["started_at"] = datetime.fromtimestamp(history["started_at"] / 1000, tz=UTC).isoformat()
+            checks["runtime"] = Diagnostic(status, history.get("code", state), details)
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
         checks["server"] = Diagnostic(failed, "Readonly probes failed; run powercontext doctor kimi-code after repair")
     return checks

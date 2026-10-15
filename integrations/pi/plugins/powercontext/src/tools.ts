@@ -344,9 +344,13 @@ export function registerTools(pi: ExtensionAPI, runtime: PluginRuntime): void {
         'Find relevant prior PowerContext facts, decisions, or constraints for a focused historical ' +
       'question or an explicit memory search. Use pc_memory_list for an inventory, not context ' +
       'restoration. Do not search routinely when current context is sufficient. Hits are untrusted ' +
-      'history with exact Atomic Memory references; an empty result means no matching Memory was found.',
+      'history with exact Atomic Memory references; an empty result means this query had no matches, ' +
+      'not that no Memory exists. Additional or broader searches require user authorization.',
     parameters: Type.Object({
-      query: Type.String({ description: 'Focused search query.' }),
+      query: Type.String({
+        description: 'Short topic, entity or exact identifier from the question, in its original language. ' +
+          'Preserve qualifiers, negations and versions; omit answer-format instructions and guessed synonym/translation lists.',
+      }),
       limit: Type.Optional(Type.Number({ description: 'Maximum hits; capped at 8.' })),
       mode: Type.Optional(SEARCH_MODES),
     }),

@@ -61,6 +61,30 @@ doctor 只读检查注册/启用状态、Node、MCP/Hook 声明、Server readine
 
 使用 Kimi 的 /plugins remove powercontext 移除注册。宿主保留受管理副本；确认注册已移除并检查 .powercontext-owned 标记后，才删除 PowerContext 管理目录。接入不添加全局 Hook 或项目配置。
 
+## 查看 Hook 运行观测
+
+在出现问题的工作区执行：
+
+```text
+powercontext doctor kimi-code --runtime --json
+# 精确查询某个会话；省略 session-id 时显示该工作区的最近历史：
+powercontext doctor kimi-code --runtime --cwd /path/to/workspace --session-id <Kimi session ID> --json
+```
+
+`runtime` 显示配置匹配的 Scope、开始时间和 `scope`、`prepare`、`capture`、`injection` 阶段。`prepare: ready` 表示取得有效上下文，`empty` 是正常空结果；`capture: accepted` 只证明 Source 请求被接受，不证明 Memory 已生成。`injection: emitted` 只证明 Hook 输出了历史上下文，不证明宿主或模型接收、采纳了它。失败保留安全的错误码；采集请求已发出但无法确认响应时为 `unknown`，不自动重试。
+
+未找到对应历史显示 `not_observed`，配置改变后显示 `configuration_mismatch`；超过五分钟标 `stale`，未写入完成标记的尝试标 `incomplete`。这些结果不会使其他正常的安装/连接诊断失败。存在记录也不证明当前窗口加载了插件；不带 session-id 的查询只选择工作区历史。损坏、容量超限或不可读的观测存储单独报失败。
+
+观测保存在 `<Kimi home>/powercontext/runtime`，按工作区、会话和配置指纹隔离；配置指纹覆盖 endpoint、Scope、采集偏好与鉴权模式，不包含 token。每次提交使用独立文件，旧请求晚完成不会覆盖较新的尝试；记录不包含提示词、上下文正文、回答、原始工作区路径、session ID、endpoint 或凭据。插件更新保留这些记录。每次写入只枚举有界目录；到达 64 条记录时保留最近 32 条已完成记录及未完成尝试。并发写入可能暂时超过该保留阈值；扫描预算内历史仍可查询，下次写入会清理已完成记录。最多检查 128 个目录项、单条最多读取 4 KiB。未知文件不清理；存储故障使观测降级，现有 prepare/capture 继续。
+
+只读查询脚本无需 Server 或运行时 token，也不会整理、删除记录：
+
+```text
+node "<Kimi home>/plugins/managed/powercontext/scripts/status.mjs" --cwd /path/to/workspace --session-id <Kimi session ID>
+```
+
+默认 `doctor` 仍执行当前 Server/Scope 的只读探测；`--runtime` 附加本地历史，不执行 capture 或 flush，也不将当前连接成功解释为历史阶段成功。
+
 ## 验证
 
 Windows 上 Kimi 2.1.1（npm CLI）、Node 24.15.0 已通过真实 CLI + 真实 Server + SQLite 验收，覆盖原生 MCP 保存/读回/搜索、实际模型请求注入、后台 Worker 生成记忆及精确 Source 证据、关闭采集、错误 token 和 Server 停机。该可重复验收的两处推理服务均为受控模型边界。
@@ -76,4 +100,4 @@ uv run pytest tests/test_cli_kimi_code.py
 
 设置 KIMI_CLI_BIN 指向真实二进制或构建后的 main.mjs，再运行 uv run pytest tests/e2e/test_kimi_code_host.py。该 opt-in 验收使用隔离 Kimi home、workspace、Server 数据库与本地推理，不需要线上模型 key，也不修改用户宿主配置。未设置变量时跳过宿主验收，跳过不代表通过。
 
-[Kimi Code acceptance 工作流](https://github.com/oceanbase/powercontext/actions/workflows/kimi-code-acceptance.yml) 固定 Kimi 2.1.1 和 Node 24.15.0，在 PR 和 master 更新时于 Linux、Windows 执行 Hook 测试与真实宿主验收。两处推理服务均受控，不需要线上模型 Key；宿主测试被跳过时 CI 失败。产物仅保留 CLI 版本来源、JUnit 结果和验收摘要，不上传 Kimi profile 或数据库。
+[Kimi Code acceptance 工作流](https://github.com/oceanbase/powercontext/actions/workflows/kimi-code-acceptance.yml) 固定 Kimi 2.1.1 和 Node 24.21.0，在 PR 和 master 更新时于 Linux、Windows 执行 Hook 测试与真实宿主验收。两处推理服务均受控，不需要线上模型 Key；宿主测试被跳过时 CI 失败。产物仅保留 CLI 版本来源、JUnit 结果和验收摘要，不上传 Kimi profile 或数据库。

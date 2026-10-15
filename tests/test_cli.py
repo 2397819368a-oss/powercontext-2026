@@ -38,6 +38,7 @@ from powercontext.client.skill_receiver import ReceiverSyncResult, RemoteSkillRe
 from powercontext.http import (
     ArtifactPage,
     ArtifactReference,
+    CandidateHistory,
     EnrollRemoteSkillTargetRequest,
     ExperienceArtifact,
     ExperienceProposal,
@@ -1630,3 +1631,52 @@ def test_client_skill_export_uses_configured_authentication(
     assert received_tokens == ["secret-token"]
     assert "Exported skill-123@1 for codex" in result.output
     assert (destination / "SKILL.md").is_file()
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_candidate_history_cli_prints_returned_versions(monkeypatch, json_output, empty):
+    history = CandidateHistory.model_validate({
+        "versions": []
+        if empty
+        else [
+            {
+                "candidate_id": "candidate-history",
+                "version": version,
+                "candidate_kind": "artifact",
+                "family": "experience",
+                "status": "pending" if version == 1 else "rejected",
+                "proposal": {
+                    "situation": "Retry",
+                    "action": "Check key",
+                    "outcome": "No duplicate",
+                    "lesson": f"Lesson {version}",
+                },
+                "source_refs": [],
+                "artifact_refs": [],
+                "target": None,
+                "reason": "Review correction",
+                "result_artifact": None,
+                "decision_reason": None if version == 1 else "Insufficient evidence",
+            }
+            for version in (1, 2)
+        ]
+    })
+
+    class HistoryClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get_candidate_history(self, request):
+            assert request.scope_id == "project"
+            assert request.candidate_id == "candidate-history"
+            return history
+
+    monkeypatch.setattr(client_cli, "PowerContextClient", lambda *_args, **_kwargs: HistoryClient())
+    arguments = ["candidate", "history", "candidate-history", "--scope-id", "project"]
+    result = CliRunner().invoke(create_cli([]), (["--json"] if json_output else []) + arguments)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == history.model_dump(mode="json")

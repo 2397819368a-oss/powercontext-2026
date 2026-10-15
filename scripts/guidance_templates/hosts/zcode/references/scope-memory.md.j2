@@ -50,6 +50,8 @@ unavailable in remote-workspace mode. Never infer resolution origin from the ord
 
 ## Memory reads and writes
 
+{% include "text-search-policy.md.j2" %}
+
 - Use `search_memory` with a focused query, `mode: "auto"`, and at most eight results.
   Current hits contain `memory.artifact`, text, state, and `state_version`; they do not contain legacy entry citations.
 - Use `list_atomic_memories` for requested inventories, explicit state filters, and `next_cursor` pagination.

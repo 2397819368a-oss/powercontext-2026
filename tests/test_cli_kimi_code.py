@@ -20,11 +20,12 @@ import json
 from pathlib import Path
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from powercontext.cli import kimi_code
 from powercontext.cli.app import create_cli
-from powercontext.cli.system import SetupError, setup_app
+from powercontext.cli.system import SetupError, doctor_app, setup_app
 
 REPOSITORY = Path(__file__).parents[1]
 
@@ -40,6 +41,27 @@ def kimi_home(tmp_path, monkeypatch):
 
 def install(**options):
     return kimi_code.install_kimi_plugin(source=REPOSITORY, scope_id="scope-中文", **options)
+
+
+def test_runtime_history_survives_setup_and_doctor_reports_missing_history(kimi_home):
+    install()
+    history = kimi_home / "powercontext/runtime"
+    history.mkdir(parents=True)
+    preserved = history / "unrelated.txt"
+    preserved.write_text("Preserve local state.", encoding="utf-8")
+    install()
+    assert preserved.read_text(encoding="utf-8") == "Preserve local state."
+    report = kimi_code.run_kimi_diagnostics(runtime=True, cwd=REPOSITORY, session_id="new-session")
+    assert report["runtime"].status.value == "skipped"
+    assert report["runtime"].detail == "not_observed"
+    assert report["runtime"].checks == {"selection": "session"}
+
+
+def test_doctor_runtime_option_requires_explicit_selection(kimi_home):
+    install()
+    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "kimi-code", "--session-id", "session"])
+    assert result.exit_code != 0
+    assert "require --runtime" in unstyle(result.output)
 
 
 def test_cli_installs_repeatably_and_preserves_configuration(kimi_home):
