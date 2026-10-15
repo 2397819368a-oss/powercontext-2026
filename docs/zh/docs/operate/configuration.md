@@ -278,6 +278,8 @@ Supervisor 实例重建而重置。
 
 `GET /v1/capabilities` 的 `extraction` 对象分别返回配置、后台执行状态和本地观察记录。
 读取快照不查询数据库、不调用模型，也不生成整个管道的健康结论。
+`powercontext capabilities` 会打印同样的事实。缺少诊断时输出 `unavailable`，Supervisor 角色为空时输出 `absent`，未知值输出
+`unknown`。成功和失败时间是历史观察，不是当前健康结论。`--json` 仍原样返回 Server 响应。
 
 - `configuration` 在本地已装配提取模型、自定义管道或已注册本地 Memory worker 时为 `configured`，
   均不可用时为 `unconfigured`。注册不验证凭证或连通性；外部执行返回 `unknown`。

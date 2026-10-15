@@ -88,6 +88,7 @@ from powercontext.http import (
     ExperienceProposal,
     ExternalSkillImportMode,
     ExternalSkillResolution,
+    ExtractionStatus,
     FamilyCount,
     GeneratedCandidateResponse,
     GenerateExperienceRequest,
@@ -1743,15 +1744,7 @@ def _print_human_response(response: _ClientResponse) -> None:
         return
     match response:
         case Capabilities():
-            typer.echo(f"Source types: {_items(response.source_types)}")
-            typer.echo(f"Artifact families: {_items(response.artifact_families)}")
-            typer.echo(f"Memory extraction: {'enabled' if response.memory_extraction else 'disabled'}")
-            typer.echo(f"Experience generation: {'enabled' if response.experience_generation else 'disabled'}")
-            typer.echo(f"Managed Skill generation: {'enabled' if response.managed_skill_generation else 'disabled'}")
-            typer.echo(f"External Skill Registry: {'enabled' if response.external_skill_registry else 'disabled'}")
-            typer.echo(f"Handoff generation: {'enabled' if response.handoff_generation else 'disabled'}")
-            typer.echo(f"Search modes: {_items(response.search_modes)}")
-            typer.echo(f"Context versions: {_items(response.context_versions)}")
+            _print_capabilities(response)
         case ReadinessResponse():
             typer.echo(f"Status: {response.status}")
             for name, status in sorted(response.checks.items()):
@@ -1762,6 +1755,58 @@ def _print_human_response(response: _ClientResponse) -> None:
             _print_stats(response)
         case ArtifactPage():
             _print_artifact_page(response)
+
+
+def _print_capabilities(response: Capabilities) -> None:
+    """Print Server capabilities, including extraction facts already in the response."""
+
+    typer.echo(f"Source types: {_items(response.source_types)}")
+    typer.echo(f"Artifact families: {_items(response.artifact_families)}")
+    typer.echo(f"Memory extraction: {'enabled' if response.memory_extraction else 'disabled'}")
+    _print_extraction_diagnostics(response.extraction)
+    typer.echo(f"Experience generation: {'enabled' if response.experience_generation else 'disabled'}")
+    typer.echo(f"Managed Skill generation: {'enabled' if response.managed_skill_generation else 'disabled'}")
+    typer.echo(f"External Skill Registry: {'enabled' if response.external_skill_registry else 'disabled'}")
+    typer.echo(f"Handoff generation: {'enabled' if response.handoff_generation else 'disabled'}")
+    typer.echo(f"Search modes: {_items(response.search_modes)}")
+    typer.echo(f"Context versions: {_items(response.context_versions)}")
+
+
+def _print_extraction_diagnostics(status: ExtractionStatus | None) -> None:
+    """Print extraction configuration, background state, and historical observations.
+
+    A missing status is unavailable. Unknown fields stay unknown. Success and failure
+    records are evidence from the observation window, not a current health verdict.
+    """
+
+    if status is None:
+        typer.echo("Extraction diagnostics: unavailable")
+        return
+    background = status.background
+    role = "absent" if background.role is None else background.role.value
+    if background.automatic_processing_enabled is None:
+        automatic_processing = "unknown"
+    elif background.automatic_processing_enabled:
+        automatic_processing = "enabled"
+    else:
+        automatic_processing = "disabled"
+    observation = status.observation
+    typer.echo(f"Extraction configuration: {status.configuration.value}")
+    typer.echo(
+        "Extraction background: "
+        f"location={background.location.value}, "
+        f"role={role}, "
+        f"state={background.state.value}, "
+        f"automatic processing={automatic_processing}"
+    )
+    typer.echo(f"Extraction observation: {observation.status.value} since {observation.since.isoformat()}")
+    if observation.last_success_at is not None:
+        typer.echo(f"Extraction last success: {observation.last_success_at.isoformat()}")
+    if observation.last_failure is not None:
+        failure = observation.last_failure
+        typer.echo(
+            f"Extraction last failure: {failure.code} at {failure.stage.value}, {failure.occurred_at.isoformat()}"
+        )
 
 
 def _print_remote_response(
