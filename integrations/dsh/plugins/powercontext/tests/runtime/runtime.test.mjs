@@ -51,6 +51,8 @@ test('documented setup installs the matched plugin, diagnoses the running host a
       assert.ok(Object.hasOwn(MCP_OPERATIONS, tool.name), `plugin catalog is missing ${tool.name}`)
       assert.equal(MCP_OPERATIONS[tool.name].readOnly, tool.annotations?.readOnlyHint === true)
     }
+    const activate = wireTools.find(tool => tool.name === 'activate_handoff')
+    assert.ok(activate.inputSchema.properties.rollover_reasons, 'native Handoff must retain advisory rollover reasons')
     assert.ok(catalog.has('mcp__powercontext__prepare_handoff_hint'))
     const system = request.messages.filter(message => message.role === 'system')
     const routing = request.messages.find(message => JSON.stringify(message).includes('PowerContext host Scope routing'))
@@ -141,15 +143,16 @@ test('documented setup installs the matched plugin, diagnoses the running host a
   } finally { await env.close() }
 })
 
-test('real DSH rejects secret native writes including nested Handoff content before approval or MCP dispatch', { timeout: 120000 }, async () => {
+test('real DSH rejects secret native writes including nested work, candidate and Handoff content before approval or MCP dispatch', { timeout: 120000 }, async () => {
   const env = await environment()
   try {
     const { instance } = env.harness({ capturePrompts: false })
     for (const operation of ['remember_memory', 'replace_artifact', 'capture_content_source',
-      'handoff_current_work', 'activate_handoff', 'finalize_handoff', 'commit_handoff']) {
+      'handoff_current_work', 'activate_handoff', 'finalize_handoff', 'commit_handoff',
+      'create_work_contract', 'record_task_outcome', 'propose_experience', 'propose_skill', 'revise_artifact_candidate']) {
       assert.ok((await instance.run(`RUN_PC_SECRET:${operation}`)).finalResponse)
       const input = env.modelRequests.filter(request => request.stream).at(-1)
-      assert.match(input.messages.find(message => message.role === 'tool').content, /secret_rejected/)
+      assert.match(input.messages.find(message => message.role === 'tool').content, /secret_rejected/, operation)
       assert.ok(!env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === operation))
     }
     assert.ok(!env.calls.some(call => call.path === '/v1/sources/content'))

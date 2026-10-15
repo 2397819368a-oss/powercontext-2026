@@ -93,6 +93,26 @@ function secretArguments(operation, scopeId) {
     case 'capture_content_source': return { scope_id: scopeId, source_id: source.source_id, content: text }
     case 'replace_artifact': return { scope_id: scopeId, family: 'atomic-memory', artifact_id: 'secret-fixture',
       'If-Match': '"revision:1"', content: { schema: 'powercontext.atomic-memory.v1', kind: 'decision', text } }
+    case 'create_work_contract': return { scope_id: scopeId, source_id: source.source_id, contract: {
+      schema: 'powercontext.work-contract.v1', trust: 'untrusted_input', objective: text, facts: [],
+      in_scope: ['Review the deployment'], exclusions: [], completion_criteria: ['Run tests'],
+      authorization_notes: [], open_questions: [],
+    } }
+    case 'record_task_outcome': return { scope_id: scopeId, source_id: source.source_id, outcome: {
+      schema: 'powercontext.task-outcome.v1', trust: 'untrusted_observation', objective: 'Review the deployment',
+      status: 'blocked', summary: 'Review incomplete', observations: [{ text: 'Check the deployment', basis: 'declared', evidence: [] }],
+      checks: [{ name: 'Deployment check', status: 'failed', details: text, basis: 'declared', evidence: [] }],
+      produced_artifacts: [], remaining_work: [],
+    } }
+    case 'propose_experience': return { scope_id: scopeId, source_refs: [source], artifact_refs: [], proposal: {
+      situation: 'Reviewing a deployment', action: 'Ran tests', outcome: 'Tests passed', lesson: text,
+    } }
+    case 'propose_skill': return { scope_id: scopeId, source_refs: [source], artifact_refs: [], proposal: {
+      name: 'deployment-review', description: 'Review a deployment', instructions: 'Run tests', validation: ['Tests pass'],
+      metadata: { note: text },
+    } }
+    case 'revise_artifact_candidate': return { scope_id: scopeId, candidate_id: 'secret-fixture', expected_version: 1,
+      source_refs: [source], artifact_refs: [], proposal: { content: text } }
     default: return { scope_id: scopeId, text, kind: 'decision' }
   }
 }
@@ -149,7 +169,7 @@ export async function environment({ realModel, fullCatalog = false } = {}) {
     }
     const skillMatch = JSON.stringify(body.messages).match(/LOAD_PC_SKILL:(powercontext-(?:memory|handoff|review))/)
     const getScope = JSON.stringify(body.messages).includes('RUN_PC_GET_SCOPE')
-    const secretWrite = JSON.stringify(body.messages).match(/RUN_PC_SECRET:(remember_memory|replace_artifact|capture_content_source|handoff_current_work|activate_handoff|finalize_handoff|commit_handoff)/)?.[1]
+    const secretWrite = JSON.stringify(body.messages).match(/RUN_PC_SECRET:([a-z_]+)/)?.[1]
     const needsTool = (skillMatch || getScope || secretWrite || JSON.stringify(body.messages).includes('RUN_PC_SEARCH'))
       && !body.messages.some(message => message.role === 'tool')
     const content = JSON.stringify(body.messages).includes(CANARY) ? CANARY : 'Task completed.'

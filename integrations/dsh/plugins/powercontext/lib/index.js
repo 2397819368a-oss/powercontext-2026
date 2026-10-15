@@ -2590,8 +2590,23 @@ const PAYLOAD_WRITES = new Set([
 	"change_atomic_memory_lifecycle"
 ]);
 const CONTENT_FIELDS = new Map([
+	["create_scope", [
+		"title",
+		"summary",
+		"external_references"
+	]],
+	["create_work_contract", ["contract"]],
+	["record_task_outcome", ["outcome"]],
+	["propose_experience", ["proposal", "reason"]],
+	["propose_skill", ["proposal", "reason"]],
+	["revise_artifact_candidate", ["proposal", "reason"]],
+	["generate_experience", ["reason"]],
+	["generate_skill", ["reason"]],
+	["reject_artifact_candidate", ["reason"]],
+	["import_external_skill", ["reason"]],
 	["merge_atomic_memories", ["content"]],
 	["handoff_current_work", ["handoff"]],
+	["acknowledge_handoff", ["prepared", "message"]],
 	["activate_handoff", ["objective"]],
 	["prepare_handoff", ["objective"]],
 	["finalize_handoff", ["draft"]],

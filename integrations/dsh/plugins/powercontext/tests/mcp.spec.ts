@@ -143,6 +143,25 @@ describe('PowerContext MCP bridge', () => {
     ['change_atomic_memory_lifecycle', { target: { artifact: { artifact_id: 'api_key=FAKE_REVIEW_MARKER' } } }],
     ['capture_content_source', { content: 'api_key=FAKE_REVIEW_MARKER' }],
     ['capture_content_source', { content: 'Safe Source content', metadata: { note: 'api_key=FAKE_METADATA_MARKER' } }],
+    ['create_work_contract', { contract: { objective: 'api_key=FAKE_REVIEW_CANARY' } }],
+    ['create_work_contract', { contract: { facts: [{ text: 'api_key=FAKE_REVIEW_CANARY', evidence: [] }] } }],
+    ['record_task_outcome', { outcome: { checks: [{ details: 'api_key=FAKE_REVIEW_CANARY' }] } }],
+    ['record_task_outcome', { outcome: { remaining_work: ['api_key=FAKE_REVIEW_CANARY'] } }],
+    ['propose_experience', { proposal: { lesson: 'api_key=FAKE_REVIEW_CANARY' } }],
+    ['propose_experience', { reason: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['propose_skill', { proposal: { metadata: { note: 'api_key=FAKE_REVIEW_CANARY' } } }],
+    ['propose_skill', { reason: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['revise_artifact_candidate', { proposal: { instructions: 'api_key=FAKE_REVIEW_CANARY' } }],
+    ['revise_artifact_candidate', { proposal: { content: 'api_key=FAKE_REVIEW_CANARY' } }],
+    ['revise_artifact_candidate', { reason: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['generate_experience', { reason: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['generate_skill', { reason: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['reject_artifact_candidate', { reason: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['import_external_skill', { reason: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['acknowledge_handoff', { message: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['acknowledge_handoff', { prepared: { content: { state: [{ text: 'api_key=FAKE_REVIEW_CANARY' }] } } }],
+    ['create_scope', { summary: 'api_key=FAKE_REVIEW_CANARY' }],
+    ['create_scope', { external_references: [{ kind: 'issue', value: 'api_key=FAKE_REVIEW_CANARY' }] }],
   ])(
     'rejects secret content in %s before Scope resolution or approval', async (operation, content) => {
       const resolveScope = vi.fn(async () => 'scope-a')
@@ -153,6 +172,7 @@ describe('PowerContext MCP bridge', () => {
         signal: new AbortController().signal,
       }, next)
       expect(result).toMatchObject({ kind: 'deny', reason: expect.stringContaining('secret_rejected') })
+      expect((result as { reason: string }).reason).not.toContain('FAKE_REVIEW_CANARY')
       expect(resolveScope).not.toHaveBeenCalled()
       expect(next).not.toHaveBeenCalled()
     },
@@ -198,6 +218,21 @@ describe('PowerContext MCP bridge', () => {
       signal: new AbortController().signal,
     }, async () => ({ kind: 'allow' }))
     expect(result).toEqual({ kind: 'allow' })
+  })
+
+  it.each([
+    ['create_work_contract', { contract: { objective: 'Verify the deployment', facts: [] } }],
+    ['record_task_outcome', { outcome: { summary: 'Deployment verified', checks: [] } }],
+    ['propose_experience', { proposal: { lesson: 'Verify before deploying' }, reason: 'Document the result' }],
+    ['propose_skill', { proposal: { instructions: 'Verify before deploying', validation: ['Run tests'] } }],
+    ['revise_artifact_candidate', { proposal: { content: 'Verify before deploying' }, reason: null }],
+  ])('keeps ordinary caller-authored content in %s subject to write approval', async (operation, content) => {
+    const result = await policyHook()({
+      name: `mcp__powercontext__${operation}`,
+      arguments: { scope_id: 'scope-a', ...content },
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'allow' }))
+    expect(result).toMatchObject({ kind: 'ask' })
   })
 
   it.each(Object.entries(MCP_OPERATIONS))('applies the MCP annotation approval boundary for %s', async (operation, metadata) => {
