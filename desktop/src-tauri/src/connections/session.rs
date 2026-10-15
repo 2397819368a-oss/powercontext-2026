@@ -114,7 +114,7 @@ pub struct WriteRecord {
     pub operation_id: String,
     pub context: MemoryContext,
     pub status: WriteStatus,
-    pub artifact: Option<ArtifactReference>,
+    pub references: Vec<ArtifactReference>,
     pub error: Option<ApiFailure>,
 }
 #[derive(Clone, Serialize, TS)]
@@ -635,7 +635,7 @@ impl ConnectionManager {
             operation_id: uuid::Uuid::new_v4().to_string(),
             context,
             status: WriteStatus::Pending,
-            artifact: None,
+            references: vec![],
             error: None,
         };
         {
@@ -654,8 +654,11 @@ impl ConnectionManager {
         let result = match response {
             Ok(value) => {
                 record.status = WriteStatus::Succeeded;
-                record.artifact =
-                    (value.records.len() == 1).then(|| value.records[0].artifact.clone());
+                record.references = value
+                    .records
+                    .iter()
+                    .map(|record| record.artifact.clone())
+                    .collect();
                 Some(value)
             }
             Err(error) => {

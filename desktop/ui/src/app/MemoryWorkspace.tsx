@@ -455,7 +455,12 @@ export function MemoryWorkspace(props: Props) {
               {entry.source_refs.length ? (
                 <ul>
                   {entry.source_refs.map((source) => (
-                    <li key={source.source_id}>
+                    <li
+                      key={JSON.stringify([
+                        source.source_type,
+                        source.source_id,
+                      ])}
+                    >
                       {source.source_type} <code>{source.source_id}</code>
                     </li>
                   ))}

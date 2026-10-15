@@ -49,6 +49,8 @@ from powercontext.builtin.runtime.scheduler import (
 )
 from powercontext.builtin.scope import ScopeDescriptor, ScopeDraft
 from powercontext.builtin.sources import SourceCursor
+from powercontext.server.context import bind_request_id, current_request_id, reset_request_id
+from powercontext.server.logging import OperationalContextFilter
 from powercontext.server.tracing import ServerTracing
 from tests.e2e.dream_support import atomic_memory_pipeline
 
@@ -543,3 +545,43 @@ def test_scheduler_requires_file_storage_and_one_live_owner(tmp_path) -> None:
         await second.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("family", ["memory", "experience"])
+def test_scheduler_activation_drops_finished_startup_request(tmp_path, caplog, family) -> None:
+    context_filter = OperationalContextFilter()
+    caplog.handler.addFilter(context_filter)
+    caplog.set_level(logging.INFO, logger="powercontext.builtin.runtime.application")
+
+    async def scenario() -> None:
+        tracing, exporter = _tracing()
+        triggers = _ScheduledTriggers(source_count=1)
+        incubation = _ScheduledExperience()
+        runtime = _runtime(triggers, experience_incubator=incubation, tracing=tracing)
+        token = bind_request_id("finished-startup-request")
+        try:
+            runtime.start_scheduler(
+                tmp_path / "request-context.db",
+                0.02 if family == "memory" else None,
+                experience_schedule_seconds=0.02 if family == "experience" else None,
+            )
+        finally:
+            reset_request_id(token)
+        assert current_request_id() is None
+        try:
+            dispatched = triggers.dispatched if family == "memory" else incubation.dispatched
+            await asyncio.wait_for(dispatched.wait(), timeout=3)
+            records = [r for r in caplog.records if getattr(r, "event", None) == "background.operation.completed"]
+            assert records
+            assert all(r.outcome == "success" for r in records)
+            assert all(r.request_id is None for r in records)
+            roots = [s for s in exporter.get_finished_spans() if s.name.startswith("scheduled.")]
+            assert roots and all(s.parent is None for s in roots)
+            assert all(r.trace_id == format(roots[0].context.trace_id, "032x") for r in records)
+        finally:
+            await runtime.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        caplog.handler.removeFilter(context_filter)

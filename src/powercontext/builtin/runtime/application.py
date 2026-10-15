@@ -605,9 +605,11 @@ class ScopedRecordApplication:
         async with self._runtime._scope_operation(self.scope_id):
             return await self._runtime._records().resolve_artifact_handle(self.scope_id, handle)
 
-    async def get_artifact(self, family: str, artifact_id: str, /) -> ArtifactRecord:
+    async def get_artifact(self, family: str, artifact_id: str, /, *, execution_context: Any = None) -> ArtifactRecord:
         async with self._runtime._scope_operation(self.scope_id):
-            return await self._runtime._records().get_artifact(self.scope_id, family, artifact_id)
+            return await self._runtime._records().get_artifact(
+                self.scope_id, family, artifact_id, execution_context=execution_context
+            )
 
     async def get_artifact_revision(
         self,
@@ -615,6 +617,8 @@ class ScopedRecordApplication:
         artifact_id: str,
         revision: int,
         /,
+        *,
+        execution_context: Any = None,
     ) -> ArtifactRecord:
         async with self._runtime._scope_operation(self.scope_id):
             return await self._runtime._records().get_artifact_revision(
@@ -622,6 +626,7 @@ class ScopedRecordApplication:
                 family,
                 artifact_id,
                 revision,
+                execution_context=execution_context,
             )
 
     async def list_artifact_revisions(

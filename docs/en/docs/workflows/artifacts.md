@@ -61,9 +61,9 @@ reads.
 ## Search relevant current heads
 
 Use `POST /v1/scopes/{scope_id}/artifacts/{family}/search` for relevance search within one Scope. The built-in route
-supports Experience, managed Skill, and Topic Memory. Results contain complete content and exact revisions; optional
+supports Experience, managed Skill, Topic Memory, and Atomic Memory. Results contain complete content and exact revisions; optional
 scores belong to the search response. See [Search Artifacts](search-artifacts.md) for Family support, admission,
-thresholds, and failure behavior, and [Fusion algorithms and parameters](search-fusion.md) for Topic RRF controls.
+thresholds, and failure behavior, and [Fusion algorithms and parameters](search-fusion.md) for Topic and Atomic RRF controls.
 
 ## Change content through its workflow
 

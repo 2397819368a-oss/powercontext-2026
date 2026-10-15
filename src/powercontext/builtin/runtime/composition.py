@@ -151,7 +151,7 @@ from powercontext.builtin.runtime.artifact_processing import (
 )
 from powercontext.builtin.runtime.artifact_search import ArtifactSearchService
 from powercontext.builtin.runtime.atomic_memory_processing import AtomicMemoryProcessingConfig
-from powercontext.builtin.runtime.atomic_memory_search import AtomicMemoryArtifactSearcher
+from powercontext.builtin.runtime.atomic_memory_search import AtomicArtifactSearcher
 from powercontext.builtin.runtime.config import BuiltinConfig, ExternalSkillsConfig, InferenceConfig, RuntimeConfig
 from powercontext.builtin.runtime.decision_model import (
     DECISION_INSTRUCTIONS,
@@ -449,6 +449,7 @@ async def open_builtin_runtime(
     tracing: RuntimeTracing | None = None,
     artifact_processing_bindings: Sequence[ArtifactProcessingBinding] = (),
     worker_security: dict[str, Any] | None = None,
+    worker_initializer: Callable[[], None] | None = None,
     scheduled_source_runner: ScheduledSourceRunner | None = None,
     scheduled_experience_runner: ScheduledExperienceRunner | None = None,
     scheduled_profile_runner: Any = None,
@@ -462,6 +463,10 @@ async def open_builtin_runtime(
     Recall efforts use the scoped relational statistics recorder by default.
     An explicit ``recall_effort_sink`` replaces that recorder rather than adding
     a second observation. A disabled gate invokes neither recorder nor sink.
+
+    ``worker_initializer`` is an optional picklable bootstrap for automatically
+    composed spawn workers. Custom bindings own their launchers and initialization.
+    The default does not configure process logging.
     """
 
     async with AsyncExitStack() as resources:
@@ -622,6 +627,7 @@ async def open_builtin_runtime(
             },
             injected_memory_write_gate=memory_write_gate,
             worker_security=worker_security,
+            worker_initializer=worker_initializer,
             source_registry=configured_source_registry,
         )
         log_safely(
@@ -660,9 +666,6 @@ async def open_builtin_runtime(
         topic_memory_processing_available = _topic_memory_processing_available(config, processing_bindings)
         artifact_search = ArtifactSearchService(known_families=contexts.repositories.artifacts.families)
         artifact_search.register(
-            AtomicMemoryArtifactSearcher(contexts.atomic_memory), embedding_purpose=ModelUsagePurpose.MEMORY_RECALL
-        )
-        artifact_search.register(
             ExperienceArtifactSearcher(contexts.database, contexts.repositories.artifacts, contexts.experience_index)
         )
         artifact_search.register(
@@ -677,6 +680,10 @@ async def open_builtin_runtime(
             capabilities=contexts.topic_memory_index.capabilities,
         )
         artifact_search.register(topic_memory_searcher, embedding_purpose=ModelUsagePurpose.TOPIC_MEMORY_RECALL)
+        artifact_search.register(
+            AtomicArtifactSearcher(application=contexts.atomic_memory),
+            embedding_purpose=ModelUsagePurpose.MEMORY_RECALL,
+        )
         runtime = await resources.enter_async_context(
             BuiltinRuntime(
                 code_service=await resources.enter_async_context(open_code_service(config.code, config.database)),
@@ -826,6 +833,7 @@ def _artifact_processing_bindings(  # noqa: C901 - validate and assemble one reg
     injected_pipelines: Mapping[str, object | None] | None = None,
     injected_memory_write_gate: MemoryWriteGate | None = None,
     worker_security: dict[str, Any] | None = None,
+    worker_initializer: Callable[[], None] | None = None,
     source_registry: SourceDefinitionRegistry = BUILTIN_SOURCE_REGISTRY,
 ) -> tuple[ArtifactProcessingBinding, ...]:
     configured = list(bindings)
@@ -901,7 +909,7 @@ def _artifact_processing_bindings(  # noqa: C901 - validate and assemble one reg
             ArtifactProcessingBinding(
                 binding_name=binding,
                 artifact_family=family,
-                launcher=SpawnArtifactProcessingWorkerLauncher(entrypoint),
+                launcher=SpawnArtifactProcessingWorkerLauncher(entrypoint, initializer=worker_initializer),
                 max_workers=getattr(config.runtime, f"{prefix}_max_workers"),
                 worker_timeout_seconds=getattr(config.runtime, f"{prefix}_worker_timeout_seconds"),
                 automatic_processing_interval=None if interval is None else timedelta(seconds=float(interval)),

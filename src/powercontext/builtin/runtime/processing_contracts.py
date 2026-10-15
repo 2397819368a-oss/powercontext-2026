@@ -71,13 +71,17 @@ class ArtifactProcessingBlockedError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ArtifactProcessingWorkerFailure:
-    """Sanitized metadata safe to return across a child process boundary."""
+    """Sanitized metadata safe to return across a child process boundary.
+
+    The child records cancellation independently of the diagnostic exception type.
+    """
 
     stage: str
     error_code: str
     exception_type: str
     traceback: str
     block: ArtifactProcessingBlock | None = None
+    cancelled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

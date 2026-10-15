@@ -764,8 +764,8 @@ def test_server_command_layers_partial_cli_overrides_over_environment_settings(
     run_server = Mock()
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
     monkeypatch.setenv("POWERCONTEXT_SERVER_ALLOW_UNAUTHENTICATED_NON_LOOPBACK", "true")
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
@@ -804,8 +804,8 @@ def test_server_command_layers_process_environment_over_env_file(
 
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
 
     result = CliRunner().invoke(
         create_cli([server_app]),
@@ -895,8 +895,8 @@ def test_server_command_uses_discovered_models_for_inference_notice(
         monkeypatch.delenv(name, raising=False)
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", Mock())
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
 
     result = CliRunner().invoke(create_cli([server_app]), ["server", "run"])
 
@@ -1071,14 +1071,15 @@ def test_server_command_rejects_an_unauthenticated_non_loopback_host_override(
     run_server = Mock()
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
     monkeypatch.delenv("POWERCONTEXT_SERVER_AUTH_ENABLED", raising=False)
     monkeypatch.delenv("POWERCONTEXT_SERVER_AUTH_TOKEN", raising=False)
 
     result = CliRunner().invoke(
         create_cli([server_app]),
-        ["server", "run", "--host", "0.0.0.0"],  # noqa: S104 - exercises the non-loopback guard.
+        # --no-env-file: a repo-root .env must not supply the credentials this guard rejects.
+        ["server", "run", "--host", "0.0.0.0", "--no-env-file"],  # noqa: S104 - exercises the non-loopback guard.
     )
 
     assert result.exit_code == 2  # typer.BadParameter, not an unhandled traceback.
@@ -1096,12 +1097,13 @@ def test_server_command_reports_a_friendly_error_when_auth_lacks_a_token(
     run_server = Mock()
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
     monkeypatch.setenv("POWERCONTEXT_SERVER_ACCESS_MODE", "enforced")
     monkeypatch.delenv("POWERCONTEXT_SERVER_AUTH_TOKEN", raising=False)
 
-    result = CliRunner().invoke(create_cli([server_app]), ["server", "run"])
+    # --no-env-file: a repo-root .env must not supply the token this guard rejects.
+    result = CliRunner().invoke(create_cli([server_app]), ["server", "run", "--no-env-file"])
 
     assert result.exit_code == 2  # typer.BadParameter, not an unhandled traceback.
     run_server.assert_not_called()
@@ -1119,8 +1121,8 @@ def test_server_command_lets_a_loopback_override_repair_an_unsafe_environment_ho
     run_server = Mock()
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
     monkeypatch.setenv("POWERCONTEXT_SERVER_HTTP_HOST", "0.0.0.0")  # noqa: S104 - unsafe env value the CLI repairs.
 
     result = CliRunner().invoke(
@@ -1139,8 +1141,8 @@ def test_server_command_does_not_load_client_settings(monkeypatch: pytest.Monkey
     monkeypatch.setenv("POWERCONTEXT_CLIENT_SERVER_URL", "not-a-url")
     monkeypatch.setenv("POWERCONTEXT_SERVER_ACCESS_MODE", "disabled")
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
 
     result = CliRunner().invoke(create_cli([server_app]), ["server", "run", "--no-env-file"])
 

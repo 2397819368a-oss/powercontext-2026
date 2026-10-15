@@ -200,7 +200,7 @@ Topic Memory retains their evidence for Topics selected by a positive-weight cha
 Scaling both values equally has no effect. Setting one value to `0` excludes that channel from hybrid fusion, but a
 higher weight cannot restore a candidate rejected before fusion. A zero weight does not disable that channel's
 retrieval or admission work: vector embeddings may still be generated, and retrieval/admission counts still include
-the zero-weight channel. A Topic Artifact search request that supplies its own `fusion` parameters replaces the
+the zero-weight channel. A Topic or Atomic Memory Artifact search request that supplies its own `fusion` parameters replaces the
 deployment recall weights entirely. The deployment weights apply only when the request does not specify `fusion`
 parameters. After normalization, each non-zero channel weight must be at least the smallest normal IEEE 754 binary64
 value (`2.2250738585072014e-308`); smaller values are rejected at startup. Only an explicit `0` disables a channel's

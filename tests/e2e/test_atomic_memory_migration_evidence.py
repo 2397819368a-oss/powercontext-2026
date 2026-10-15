@@ -36,6 +36,7 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryGenerationPipeline,
 )
 from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
+    AtomicMemoryArtifactEvidence,
     AtomicMemoryReconciliationContent,
     AtomicMemoryReconciliationOutput,
 )
@@ -495,6 +496,10 @@ def test_source_flush_supplies_the_migrated_related_entry_current_content(migrat
             candidate_pipeline=pipeline,
         ) as contexts:
             context = await contexts.get(SCOPE)
+            memory = contexts.atomic_memory.for_scope(SCOPE)
+            original = await memory.get(_atomic("alpha", 2).artifact_id)
+            async with contexts.database.transaction() as connection:
+                imported = await _imported_snapshot(connection)
             await contexts.records.capture_source(SCOPE, "content", "migration-trigger", "Recheck task A and C.", {})
             await context.triggers.flush(limit=20)
             observed = []
@@ -505,8 +510,20 @@ def test_source_flush_supplies_the_migrated_related_entry_current_content(migrat
                         observed.append(tuple(evidence[key] for key in related.evidence_ids))
             assert observed, "The public flush must compare the imported alpha identity."
             for (published,) in observed:
+                assert isinstance(published, AtomicMemoryArtifactEvidence)
                 assert published.artifact_ref == _atomic("alpha", 2)
+                assert published.content.kind == original.artifact.content.kind
                 assert published.content.text == "Tasks A and C were completed."
+            assert await memory.get(original.ref.artifact_id) == original
+            assert (
+                await memory.get(original.ref.artifact_id, revision=original.ref.revision)
+            ).artifact == original.artifact
+            async with contexts.database.transaction() as connection:
+                resolved = await _resolver(contexts).resolve(connection, artifacts=(original.ref,))
+                assert _projected_sources(resolved) == (A, C)
+                assert EA in _projected_artifacts(resolved)
+                assert EB not in _projected_artifacts(resolved)
+                assert await _imported_snapshot(connection) == imported
 
     asyncio.run(scenario())
 

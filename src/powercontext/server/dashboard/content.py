@@ -65,7 +65,12 @@ async def load_notes(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -
         if searching:
             result = await api.read(
                 "/v1/memory/search",
-                {"scope_id": ctx["scope"], "query": ctx["search_query"], "mode": ctx["search_mode"], "limit": 50},
+                {
+                    "scope_id": ctx["scope"],
+                    "query": ctx["search_query"],
+                    "mode": ctx["search_mode"],
+                    "limit": 50,
+                },
             )
         else:
             result = await api.read(
