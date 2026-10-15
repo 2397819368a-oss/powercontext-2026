@@ -206,10 +206,10 @@ model or API key.
 
 ## Connect your Agent
 
-Codex is `official`; other hosts and Python Agent frameworks are `community`; Bub is `evaluation` only. These tags
-describe PowerContext integration maintenance and use. See the
-[capability matrix](https://powercontext.oceanbase.io/en/docs/integrations/capabilities/) for supported features and
-availability.
+Codex is `official`; other maintained hosts and Python Agent frameworks are `community`; Bub is `evaluation` only.
+These tags describe PowerContext integration maintenance and use. The
+[capability matrix](https://powercontext.oceanbase.io/en/docs/integrations/capabilities/) records which hosts are
+qualified, along with their supported features and availability.
 
 <table>
 <tr>

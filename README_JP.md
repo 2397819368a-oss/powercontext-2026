@@ -157,7 +157,7 @@ pip install "powercontext[cli]==1.3.0"
 
 ## Agent と接続する
 
-Codex は `official`、他のホストと Python Agent フレームワークは `community`、Bub は評価専用の `evaluation` です。これらは PowerContext 連携のメンテナンス主体と用途を示すタグです。対応機能と利用可能なバージョンは[機能一覧](https://powercontext.oceanbase.io/en/docs/integrations/capabilities/)を参照してください。
+Codex は `official`、他のメンテナンス対象ホストと Python Agent フレームワークは `community`、Bub は評価専用の `evaluation` です。これらは PowerContext 連携のメンテナンス主体と用途を示すタグです。どのホストが資格を満たしているか、対応機能と利用可能なバージョンは[機能一覧](https://powercontext.oceanbase.io/en/docs/integrations/capabilities/)に記載されています。
 
 <table>
 <tr>

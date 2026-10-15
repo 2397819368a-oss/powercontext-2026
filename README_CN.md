@@ -160,7 +160,7 @@ pip install "powercontext[cli]==1.3.0"
 
 ## 接入你的 Agent
 
-Codex 标为 `official`，其他宿主及 Python Agent 框架标为 `community`，Bub 标为 `evaluation`，仅用于评测。这些标签表示 PowerContext 集成的维护归属和用途，具体功能及可用状态见[能力矩阵](https://powercontext.oceanbase.io/zh/docs/integrations/capabilities/)。
+Codex 标为 `official`，其他受维护的宿主及 Python Agent 框架标为 `community`，Bub 标为 `evaluation`，仅用于评测。这些标签表示 PowerContext 集成的维护归属和用途；哪些宿主已通过资格验证、各自支持哪些功能，以[能力矩阵](https://powercontext.oceanbase.io/zh/docs/integrations/capabilities/)为准。
 
 <table>
 <tr>
