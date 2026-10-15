@@ -38,9 +38,10 @@ Scope
 
 ### Memory — decisions and constraints that outlive a session
 
-Memory is a revisioned artifact family for reusable decisions, constraints, facts, state, and next steps. Entries can be
-active or inactive: retiring one drops it from active recall without deleting its history. Explicit Memory writes need
-no model at all; extraction from captured Sources needs a configured generation pipeline.
+Memory is a revisioned Artifact family for reusable decisions, constraints, facts, state, and next steps. An entry is
+`active`, `forgotten`, `merged`, or `retired`. Forgetting one through `POST /v1/atomic-memory/lifecycle` takes it out of
+active recall while its content and history stay available and restorable, without advancing the content revision.
+Explicit Memory writes need no model at all; extraction from captured Sources needs a configured generation pipeline.
 
 > "Don't refactor the old auth module — mobile is still using it."
 > Context this expensive shouldn't depend on someone repeating it in every session.

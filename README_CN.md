@@ -33,9 +33,10 @@ Scope
 
 ### Memory —— 活得比会话更久的决定与约束
 
-Memory 是一个带版本的 Artifact 家族，存放可以复用的决定、约束、事实、状态和下一步。条目可以是 active 或
-inactive：退役一条只是把它从主动召回里移出，不会删掉它的历史。显式写入 Memory 完全不需要模型；从已捕获的
-Source 中提取，才需要配置生成流水线。
+Memory 是一个带版本的 Artifact 家族，存放可以复用的决定、约束、事实、状态和下一步。条目状态为 `active`、
+`forgotten`、`merged` 或 `retired`。通过 `POST /v1/atomic-memory/lifecycle` 遗忘一条，会把它移出主动召回，但内容
+和历史仍然可用、可恢复，且不会推进内容 revision。显式写入 Memory 完全不需要模型；从已捕获的 Source 中提取，
+才需要配置生成流水线。
 
 > "别重构老的 auth 模块 —— 移动端还在用。"
 > 这么贵的上下文，不应该依赖有人每个会话都重讲一遍。
