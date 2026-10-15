@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -27,8 +28,9 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, TypeVar
 
+import httpx
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_ai.models import infer_model
 from pydantic_ai.settings import ModelSettings
 
@@ -41,7 +43,10 @@ from powercontext.builtin.artifacts.atomic_memory.models import (
 )
 from powercontext.builtin.artifacts.atomic_memory.reconciliation import ATOMIC_MEMORY_RECONCILIATION_INSTRUCTIONS
 from powercontext.builtin.artifacts.memory import (
+    JEV_MEMORY_RERANK_POLICY,
     MEMORY_RERANK_INSTRUCTIONS_VERSION,
+    JevMemoryReranker,
+    JevRerankConfig,
     MemoryRerankMode,
 )
 from powercontext.builtin.inference.errors import InferenceTimeoutError, InferenceUnavailableError
@@ -144,6 +149,16 @@ def load_settings(env_file: Path) -> ServerSettings:
     return ServerSettings()
 
 
+def _jev_config() -> JevRerankConfig:
+    """Use dedicated credentials and an explicit version for the hosted scorer."""
+
+    return JevRerankConfig(
+        endpoint=os.environ.get("JEV_ENDPOINT", "https://api.typesafe.ai/v1/systemone"),
+        model=os.environ.get("JEV_MODEL", ""),
+        api_key=SecretStr(os.environ.get("JEV_API_KEY", "")),
+    )
+
+
 def public_configuration(settings: ServerSettings) -> dict[str, Any]:
     """Return only benchmark-relevant non-secret configuration."""
 
@@ -174,6 +189,7 @@ def prepare_run(
     output_directory: Path,
     top_k: int,
     answer_k: int | None = None,
+    answer_max_bytes: int | None = None,
     rerank_mode: MemoryRerankMode = MemoryRerankMode.NONE,
     answer_source_content: bool = False,
     answer_inference_aware: bool = False,
@@ -191,6 +207,8 @@ def prepare_run(
         raise ValueError("top_k must be between 1 and 50")  # noqa: TRY003
     if selected_answer_k < 1 or selected_answer_k > top_k:
         raise ValueError("answer_k must be between 1 and top_k")  # noqa: TRY003
+    if answer_max_bytes is not None and answer_max_bytes < 1:
+        raise ValueError("answer_max_bytes must be positive")  # noqa: TRY003
     answer_instructions_version = answer_policy_version(
         source_content=answer_source_content,
         inference_aware=answer_inference_aware,
@@ -205,6 +223,7 @@ def prepare_run(
         conversation_limit=conversation_limit,
         question_limit=question_limit,
     )
+    jev_config = _jev_config() if rerank_mode is MemoryRerankMode.JEV else None
     manifest = {
         "schema": "powercontext.benchmark.locomo.run.v8",
         "run_id": normalized_run_id,
@@ -219,8 +238,56 @@ def prepare_run(
         "top_k": top_k,
         "candidate_k": top_k,
         "answer_k": selected_answer_k,
+        **({"answer_max_bytes": answer_max_bytes} if answer_max_bytes is not None else {}),
         "rerank_mode": rerank_mode.value,
-        "rerank_instructions": (MEMORY_RERANK_INSTRUCTIONS_VERSION if rerank_mode is MemoryRerankMode.LLM else None),
+        **({"quality_regression_tolerance": 0.0} if answer_max_bytes is not None else {}),
+        "rerank_instructions": (
+            MEMORY_RERANK_INSTRUCTIONS_VERSION
+            if rerank_mode is MemoryRerankMode.LLM
+            else f"{JEV_MEMORY_RERANK_POLICY}:{jev_config.model}"
+            if jev_config is not None
+            else None
+        ),
+        **(
+            {"jev_endpoint_sha256": hashlib.sha256(jev_config.endpoint.encode()).hexdigest()}
+            if jev_config is not None
+            else {}
+        ),
+        **(
+            {
+                "comparison_inference_sha256": hashlib.sha256(
+                    json.dumps(
+                        {
+                            "generation_base_url": str(settings.inference.generation_base_url),
+                            "generation_model_settings": settings.inference.generation_model_settings,
+                            "embedding_base_url": str(settings.inference.embedding_base_url),
+                            "recall_fts_weight": settings.runtime.recall_fts_weight,
+                            "recall_vector_weight": settings.runtime.recall_vector_weight,
+                        },
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "comparison_reranker": {
+                    "model": (
+                        jev_config.model
+                        if jev_config is not None
+                        else settings.inference.rerank_model or settings.inference.generation_model
+                        if rerank_mode is MemoryRerankMode.LLM
+                        else None
+                    ),
+                    "endpoint_sha256": hashlib.sha256(
+                        (
+                            jev_config.endpoint
+                            if jev_config is not None
+                            else str(settings.inference.rerank_base_url or settings.inference.generation_base_url)
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                },
+            }
+            if answer_max_bytes is not None
+            else {}
+        ),
         "answer_source_content": answer_source_content,
         **({"answer_inference_aware": True} if answer_inference_aware else {}),
         **({"answer_unknown_fallback_inference": True} if answer_unknown_fallback_inference else {}),
@@ -394,6 +461,7 @@ async def evaluate_dataset(  # noqa: C901
     output_directory: Path,
     top_k: int = 30,
     answer_k: int | None = None,
+    answer_max_bytes: int | None = None,
     rerank_mode: MemoryRerankMode = MemoryRerankMode.NONE,
     answer_source_content: bool = False,
     answer_inference_aware: bool = False,
@@ -414,6 +482,8 @@ async def evaluate_dataset(  # noqa: C901
     selected_answer_k = top_k if answer_k is None else answer_k
     if selected_answer_k < 1 or selected_answer_k > top_k:
         raise ValueError("answer_k must be between 1 and top_k")  # noqa: TRY003
+    if answer_max_bytes is not None and answer_max_bytes < 1:
+        raise ValueError("answer_max_bytes must be positive")  # noqa: TRY003
     if concurrency < 1:
         raise ValueError("evaluation concurrency must be positive")  # noqa: TRY003
     if operation_retries < 1:
@@ -466,7 +536,11 @@ async def evaluate_dataset(  # noqa: C901
         conversation_by_id = {conversation.sample_id: conversation for conversation in dataset.conversations}
         semaphore = asyncio.Semaphore(concurrency)
         async with AsyncExitStack() as resources:
-            runtime = await resources.enter_async_context(open_builtin_runtime(config))
+            jev_reranker = None
+            if rerank_mode is MemoryRerankMode.JEV:
+                jev_client = await resources.enter_async_context(httpx.AsyncClient())
+                jev_reranker = JevMemoryReranker(_jev_config(), jev_client)
+            runtime = await resources.enter_async_context(open_builtin_runtime(config, memory_reranker=jev_reranker))
             # Read the ingested projections this run scores against before the answer and judge
             # clients exist, so a database that cannot answer for the run fails on its own terms.
             artifact_sources = await _artifact_source_maps(runtime, scope_ids)
@@ -513,6 +587,7 @@ async def evaluate_dataset(  # noqa: C901
                         scope=scope_ids[question.sample_id],
                         top_k=top_k,
                         answer_k=selected_answer_k,
+                        answer_max_bytes=answer_max_bytes,
                         rerank_mode=rerank_mode,
                         answer_source_content=answer_source_content,
                         operation_retries=operation_retries,
@@ -544,6 +619,7 @@ async def evaluate_dataset(  # noqa: C901
         "top_k": top_k,
         "candidate_k": top_k,
         "answer_k": selected_answer_k,
+        **({"answer_max_bytes": answer_max_bytes} if answer_max_bytes is not None else {}),
         "rerank_mode": rerank_mode.value,
         "answer_source_content": answer_source_content,
         **({"answer_inference_aware": True} if answer_inference_aware else {}),
@@ -601,6 +677,7 @@ def prepare_rejudge(
         "top_k",
         "candidate_k",
         "answer_k",
+        "answer_max_bytes",
         "rerank_mode",
         "rerank_instructions",
         "answer_source_content",
@@ -937,6 +1014,7 @@ async def _evaluate_question(
     scope: str,
     top_k: int,
     answer_k: int,
+    answer_max_bytes: int | None = None,
     rerank_mode: MemoryRerankMode,
     answer_source_content: bool,
     operation_retries: int,
@@ -948,7 +1026,7 @@ async def _evaluate_question(
         result, search_retries = await _retry_transient(
             lambda: runtime.atomic_memory.for_scope(scope).search(
                 question.question,
-                limit=answer_k if rerank_mode is MemoryRerankMode.LLM else top_k,
+                limit=answer_k if rerank_mode is not MemoryRerankMode.NONE else top_k,
                 mode="hybrid",
             ),
             attempts=operation_retries,
@@ -967,6 +1045,20 @@ async def _evaluate_question(
             )
             for rank, hit in enumerate(candidate_hits, start=1)
         )
+        candidate_digest = hashlib.sha256(
+            json.dumps(
+                [
+                    {
+                        "artifact": hit.hit.artifact_ref.model_dump(mode="json"),
+                        "state_version": hit.hit.state_version,
+                        "text": hit.text,
+                    }
+                    for hit in candidate_hits
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
         selected_hits = result.hits if result.rerank is not None else result.hits[:answer_k]
         memories = tuple(
             _retrieved_memory(
@@ -980,16 +1072,17 @@ async def _evaluate_question(
         )
         rerank_latency = 0.0 if result.rerank is None else result.rerank.latency_ms
         search_latency = max(search_and_rerank_latency - rerank_latency, 0.0)
-        rerank_metadata = _rerank_metadata(rerank_mode, result.rerank, len(candidates), len(memories))
         rerank_usage = _empty_usage() if result.rerank is None else result.rerank.usage.model_dump(mode="json")
-        source_sessions = _answer_source_sessions(conversation, memories) if answer_source_content else ()
-        answer_input = AnswerInput(
-            speaker_a=conversation.speaker_a,
-            speaker_b=conversation.speaker_b,
+        answer_input = _bounded_answer_input(
+            conversation=conversation,
             question=question.question,
             memories=memories,
-            source_sessions=source_sessions,
+            source_content=answer_source_content,
+            max_bytes=answer_max_bytes,
         )
+        memories = answer_input.memories
+        source_sessions = answer_input.source_sessions
+        rerank_metadata = _rerank_metadata(rerank_mode, result.rerank, len(candidates), len(memories))
         phase = "answer"
         answer_started = perf_counter()
         answer_result, answer_retries = await _retry_transient(
@@ -1053,11 +1146,13 @@ async def _evaluate_question(
             "generation_calls": result.generation_calls,
             "embedding_calls": result.embedding_calls,
             "candidate_hits": [memory.model_dump(mode="json") for memory in candidates],
+            "candidate_digest": candidate_digest,
             "hits": [memory.model_dump(mode="json") for memory in memories],
             "rerank": rerank_metadata,
             "answer_context": {
                 "source_content": answer_source_content,
                 "source_ids": [source.source_id for source in source_sessions],
+                "utf8_bytes": len(answer_input.model_dump_json().encode("utf-8")),
             },
             **(
                 {
@@ -1294,6 +1389,31 @@ async def _artifact_source_maps(runtime, scope_ids: Mapping[str, str]):
             await _lineage_source_ids(application, record.ref, cache)
         mappings[sample_id] = cache
     return mappings
+
+
+def _bounded_answer_input(
+    *,
+    conversation: LoCoMoConversation,
+    question: str,
+    memories: tuple[RetrievedMemory, ...],
+    source_content: bool,
+    max_bytes: int | None,
+) -> AnswerInput:
+    """Fit the exact payload by dropping the lowest ranked hit and its Source text."""
+
+    while True:
+        value = AnswerInput(
+            speaker_a=conversation.speaker_a,
+            speaker_b=conversation.speaker_b,
+            question=question,
+            memories=memories,
+            source_sessions=_answer_source_sessions(conversation, memories) if source_content else (),
+        )
+        if max_bytes is None or len(value.model_dump_json().encode("utf-8")) <= max_bytes:
+            return value
+        if not memories:
+            raise ValueError("answer metadata exceeds answer_max_bytes")  # noqa: TRY003
+        memories = memories[:-1]
 
 
 def _runtime_config(
