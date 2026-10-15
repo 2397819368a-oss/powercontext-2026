@@ -5,7 +5,7 @@ description: 支持用户开发和使用自定义 Source 插件，扩展数据�
 
 - Proposal Name: `source_plugin_framework`
 - Start Date: 2026-10-14
-- RFC PR: 尚未分配
+- RFC PR: [oceanbase/powercontext#2012](https://github.com/oceanbase/powercontext/pull/2012)
 
 # 概要
 

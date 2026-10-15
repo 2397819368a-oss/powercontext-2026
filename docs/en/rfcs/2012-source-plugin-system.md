@@ -5,7 +5,7 @@ description: Develop and use custom Source plugins to extend data types, Project
 
 - Proposal Name: `source_plugin_framework`
 - Start Date: 2026-10-14
-- RFC PR: Not assigned
+- RFC PR: [oceanbase/powercontext#2012](https://github.com/oceanbase/powercontext/pull/2012)
 
 # Summary
 
