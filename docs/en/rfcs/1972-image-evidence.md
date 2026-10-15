@@ -1,5 +1,5 @@
 ---
-title: Image evidence and Artifact integration
+title: Image evidence and shared media contracts
 ---
 
 - Proposal Name: `image_evidence_artifact_integration`
@@ -19,7 +19,9 @@ immutable, Scope-owned Source backed by a managed asset. Interpret the image asy
 interpretation in a new `image-analysis` Artifact family using existing revisions, lineage, authorization and read
 contracts. Publish a deterministic text-evidence Source for each successful interpretation revision so existing
 Source-driven Atomic Memory processing can consume it. Reuse the Artifact Processing Supervisor and propose three
-image-domain tables instead of the experimental implementation's seven service-side tables.
+shared media tables for immutable assets, processing requests and capacity. Images are the first supported media type;
+the persistence contracts allow later media handlers to reuse these responsibilities without copying a table set per
+modality. This replaces the experimental implementation's seven service-side tables.
 
 This RFC proposes architecture and acceptance requirements. It does not release the experimental API or approve its
 implementation. Automatic local-model provisioning is a separate future capability.
@@ -101,7 +103,7 @@ RFC descriptions of future capabilities are not evidence that the baseline imple
 | Provenance | Source/Artifact lineage and publication records | Original Source → exact analysis revision → text publication → Memory |
 | Model input for Memory | Source-only extraction and named text evidence | Deterministic interpretation-publication Definition; raw images excluded from text extraction |
 | Memory fact ordering | New evidence exposes its journal position; recalled Memory supplies exact kind/text and Artifact reference | Separate consumption position from original evidence order; provide and preserve statement-specific ordering support on both sides of reconciliation |
-| Scheduling | Scope invocation intents, independent Family budgets, leadership/fencing | Image-analysis binding and worker; image request progress remains domain-owned |
+| Scheduling | Scope invocation intents, independent Family budgets, leadership/fencing | Image-analysis binding and worker; per-input progress uses the shared media request contract |
 | Inspection | Generic Source/Artifact reads and Dashboard evidence traversal | Image/analysis renderers and authorized asset read |
 | Inference | Configured generation roles and usage reporting | Explicit vision role, actual multimodal input, validated output and request budget |
 
@@ -131,9 +133,58 @@ Recommend the third option. An image-analysis Artifact is not an Atomic Memory: 
 information that is uncertain, obsolete or not worth remembering. Reusing Memory, Profile or an unrelated Family would
 mix their domain rules. Registering a new Family reuses storage and infrastructure, not another Family's meaning.
 
-The image domain owns format validation, binary asset durability, the vision profile, bounded provider requests and
-analysis publication. Transport/host adapters translate submissions. They do not define alternative authorization,
-Source identity, Memory governance or another scheduler.
+The media service owns asset durability, request identity/progress and capacity transactions. The image handler owns
+format validation, the vision profile, bounded provider requests and analysis publication. Transport/host adapters
+translate submissions. They do not define alternative authorization, Source identity, Memory governance or another
+scheduler.
+
+## Shared media boundary
+
+Shared storage covers immutable captured media and requests to derive evidence from them. It is not a replacement for
+all binary repositories, Artifact domain workflows or the Supervisor. Use existing Definition, Family and processing
+binding mechanisms to select an explicitly registered handler; this proposal does not add a plugin discovery system.
+
+| Shared media contract | Handler-owned contract |
+| --- | --- |
+| Scoped byte identity, digest verification, durable storage and authorized reads | Accepted formats, decoding, dimensions/duration limits and typed media metadata |
+| Pinned request input/profile, replay, claim/state transitions and bounded attempts | Processing purpose, provider input/output schema, model compatibility and output validation |
+| Capacity accounting and transactional acceptance/completion | Modality-specific admission limits and publication through its Source Definition and Artifact Family |
+| Exact original and result references in receipts | Interpretation/transcription meaning, uncertainty, evidence locators and text-evidence projection |
+
+`image.original`, `image.interpretation` and `image-analysis` retain their image-specific schemas. Sharing rows does not
+require audio transcripts or video analyses to use those schemas. Future handlers may register their own Definitions
+and Families while reusing the same persistence contracts. Their declared text evidence must retain exact result
+versions and original evidence ordering, including the delayed-processing rules below.
+
+Requests identify a stable `processing_kind` as well as their scoped original Source. At most one nonterminal request
+is allowed for `(Scope, original Source, processing_kind)`. The initial image handler has one interpretation kind,
+preserving one active interpretation per original image. Model/profile revisions are pinned request inputs, not new
+processing kinds that bypass this exclusion. Distinct future purposes, such as transcription and visual analysis of
+one video, can have distinct kinds. Replaying or superseding work must check its kind and exact request/state.
+
+The shared lifecycle initially covers one immutable original input and one final Artifact publication, with optional
+bounded context. Multi-stage decoding, chunk scheduling and dependency graphs require their own design if needed;
+shared names do not promise that every future workflow fits unchanged. Media handlers retain separate Supervisor
+bindings and budgets so a future long-running modality does not occupy the image worker pool.
+
+### Audio transcription design walkthrough
+
+This walkthrough checks the extension boundary; audio ingestion is not part of the initial release:
+
+1. An authorized audio handler validates a supported recording and its duration/size limits. Its Source Definition
+   records the exact capture and typed provenance; bytes use the shared scoped asset identity.
+2. Acceptance writes the original Source, an audio-transcription request with a pinned profile and the applicable
+   media capacity counters in one transaction. A distinct capture of identical bytes still has its own Source.
+3. An audio processing binding uses the existing Supervisor and shared request lifecycle. The handler owns speech
+   model input, transcript validation and any speaker/time-span representation.
+4. Success publishes an exact transcript Artifact revision and deterministic text Source, then records completion and
+   wakes Memory processing atomically. Memory retains original recording/evidence order rather than completion time.
+5. Reads and retries use the common asset/request surfaces with audio authorization and typed schemas. No separate
+   audio asset, request or capacity table is needed for this single-input workflow.
+
+Audio capture consent, supported models, retention limits, evidence time-span semantics and actual host/backend
+qualification remain separate release requirements. In the initial image release, unregistered media types or
+processing kinds are rejected before asset/Source/request writes; changing a MIME label cannot enable another handler.
 
 ## Exact evidence and publication
 
@@ -159,9 +210,10 @@ profile and operational metadata; neither embedded image instructions nor accomp
 policy. Analysis timestamps are not fact effective dates.
 
 The first success creates revision 1. A reparse appends a revision using the existing optimistic head precondition.
-Only one nonterminal request per original image is admitted at a time. Image-analysis writes are owned by the image
-domain; generic content replacement is unsupported in the initial release. A stale head or lost fence prevents the
-whole publication. It cannot overwrite a newer interpretation or publish a text Source without its Artifact revision.
+Only one nonterminal request per original image and interpretation kind is admitted at a time. Image-analysis writes
+are owned by the image domain; generic content replacement is unsupported in the initial release. A stale head or lost
+fence prevents the whole publication. It cannot overwrite a newer interpretation or publish a text Source without its
+Artifact revision.
 
 For each committed revision, publish one `image.interpretation` Source containing the exact scoped `ArtifactRef`,
 original Source reference, validated text snapshot, projection version and content digest. The snapshot is a derived
@@ -189,6 +241,9 @@ must not forge a retained asset descriptor, acceptance receipt or interpretation
 boundary validates the asset's exact Scope/state and the referenced Artifact revision/digest before committing them.
 
 ## Memory ordering across delayed interpretation
+
+These are shared requirements for delayed derived evidence, exercised here through images. Future media handlers
+must supply the same validated original-evidence basis rather than invent a modality-specific ordering policy.
 
 Consider three journal positions in one Scope, with no explicit event/effective dates or Source recording times:
 
@@ -268,15 +323,15 @@ evidence leaves the affected basis unknown. Rebuilds cannot use the current head
 to fill historical gaps. Recovered support is a derived resolution result, not a rewrite of the immutable historical
 revision; a later Memory revision can persist the support it actually uses.
 
-Comparable explicit fact/recording times still take precedence. If a conflicting incoming image has no such ordering
-and either side lacks a usable original anchor, automatic reconciliation preserves the existing current assertion
+Comparable explicit fact/recording times still take precedence. If conflicting incoming derived evidence has no such
+ordering and either side lacks a usable original anchor, automatic reconciliation preserves the existing current assertion
 instead of deciding by interpretation arrival, Artifact revision number or the latest lineage timestamp. It must not
 publish a second contradictory current assertion as a workaround. Independent facts can still proceed; this adds
 neither a conflict-approval queue nor a rewind of consumed Source positions. Existing explicit Memory correction and
 restoration operations remain available. This conservative fallback applies to missing comparison evidence, not to
 well-supported newer facts, which continue to follow the normal temporal reconciliation policy.
 
-## Storage comparison and proposed three tables
+## Storage comparison and proposed shared media tables
 
 The prototype has seven service-side tables. Their responsibilities map as follows; this comparison does not adopt
 the prototype's physical schema as a public contract.
@@ -284,49 +339,91 @@ the prototype's physical schema as a public contract.
 | Prototype table | Responsibility | Proposed disposition and reason |
 | --- | --- | --- |
 | `pc_experimental_image_state` | Format marker, asset/queue totals, worker owner/lease, fairness pointer | Format moves to normal migrations; worker ownership/fairness to Supervisor; capacity to the capacity table |
-| `pc_experimental_image_scope_budgets` | Per-Scope pending count | Consolidate global and scoped image admission budgets in the capacity table |
+| `pc_experimental_image_scope_budgets` | Per-Scope pending count | Consolidate global and scoped media admission budgets in the capacity table |
 | `pc_experimental_image_assets` | Scoped byte identity, reservation and retained-asset descriptor | Retain an asset table, but store bounded bytes transactionally; file reservation/orphan state is unnecessary |
 | `pc_experimental_image_captures` | Durable capture digest and replay receipt | Merge into typed processing-request receipts; Source alone cannot replay the pinned task/response |
 | `pc_experimental_image_tasks` | Pinned work, state and publication outcome | Processing-request table; domain progress is distinct from a coalesced Scope invocation |
 | `pc_experimental_image_attempts` | Bounded provider attempts and outcomes | Bounded attempt list in each request; no separate table at the proposed maximum of five attempts |
 | `pc_experimental_image_operations` | Retry/reparse key-to-request mapping | Typed keys and unique constraints in the same request table |
 
-Proposed physical names are illustrative and require normal migration review:
+Proposed physical names require normal migration review. Their ownership is shared media persistence, with image
+validation and interpretation implemented by the first handler:
 
-1. **`pc_image_assets`**: `(scope_id, byte_digest)` identity, bounded raw bytes, media type/dimensions/size and creation
-   metadata. Reuse relational binary encoding and exact digest verification. Source/Artifact JSON remains small;
-   separate asset identity allows several acquired Sources to reference one byte object without repeating the bytes.
-2. **`pc_image_processing_requests`**: typed capture/retry/reparse identity and request digest; original Source; pinned
-   profile/context; acceptance receipt; state, attempt budget, bounded attempts, claim token and exact published result.
-   Unique keys protect replay and one active request per original. Due/state/Scope indexes support bounded discovery.
-   Existing processing intents deliberately contain no per-image payload, queue state or retry history; overloading
-   them would change the Supervisor contract. Rows are domain command records, not another general job system.
-3. **`pc_image_capacity`**: explicitly distinguished global and scoped budget rows with retained-byte and active-request
-   counters. Admission locks and changes the applicable counters in the same transaction as asset/request insertion.
-   Scope settings are configuration, not a transactional capacity ledger. Recomputing
-   asset totals on every upload would scan a growing collection and cannot safely replace concurrent reservation.
+1. **`pc_media_assets`**: `(scope_id, byte_digest)` identity, bounded raw bytes, validated media type, byte size and
+   creation metadata. Reuse relational binary encoding and exact digest verification. Handler-specific technical
+   metadata, such as image dimensions, uses a bounded, versioned typed schema; identity, size and common lookup fields
+   remain explicit columns. Technical metadata must agree with validated bytes. Source/Artifact JSON remains small;
+   several acquired Sources may reference one byte object without repeating or recharging its bytes within a Scope.
+2. **`pc_media_processing_requests`**: typed capture/retry/reparse identity and request digest; original Source and
+   processing kind; pinned handler/schema/profile/context; acceptance receipt; state, attempt budget, bounded attempts,
+   claim token and exact published Artifact reference. Unique constraints protect replay and one active request per
+   scoped original and kind. Kind/state/due/Scope indexes support bounded discovery without scanning all requests or
+   extracting scheduling keys from arbitrary JSON. Modality-specific input is versioned and validated by its handler.
+3. **`pc_media_capacity`**: explicitly distinguished global and scoped rows with retained-media-byte and active-request
+   counters. Admission locks and changes applicable counters with asset/request insertion. Byte storage and request
+   slots have distinct units; image pixels or future audio/video duration are handler admission limits, not values
+   added to a common usage number. Future per-kind limits must define their accounting and reconciliation explicitly.
+
+Shared records cannot accept opaque payloads merely because a media type is present. Unsupported kinds/schema versions
+fail before acceptance; supported records round-trip through persistence, typed runtime/HTTP reads and recovery.
+Disabling a handler's execution preserves the schemas/readers needed for its retained assets, Sources and results.
 
 Original/interpretation Sources, Artifact revisions/heads/lineage and processing leadership use existing tables. The
 new capacity table does not store worker ownership or schema versions. Attempts stay operational, bounded data rather
-than Artifact revisions; attempt details cannot include keys, raw prompts, Base64 or unconstrained provider errors.
+than Artifact revisions; attempt details cannot include credentials, raw prompts, Base64 or unconstrained provider errors.
+
+Existing storage is reused according to its contract:
+
+| Existing facility | Reuse and boundary |
+| --- | --- |
+| Source storage and journal | Capture identity, immutable evidence and consumption order; not mutable request state or binary payload storage |
+| Artifact content, heads and lineage | Handler-specific result revisions and exact provenance; no new result-history table per modality |
+| Processing intents and Supervisor | Coalesced Scope wakeups, leadership and dispatch; intents deliberately omit individual request payloads and retry history |
+| Scope configuration and model-usage statistics | Limits/configuration and inference reporting; neither is a transactional retained-byte/request-slot ledger |
+| Skill package storage | Reuse binary encoding and verification patterns; preserve its package identity and validation contract |
 
 Existing binary storage was evaluated:
 [SkillPackageRepository](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/skill_packages.py)
 already stores and verifies scoped immutable archive bytes. Its canonical ZIP/tree identity, required `SKILL.md`,
-manifest and 4 MiB uncompressed package limit are Skill contracts, not an image asset contract. Reuse the binary
-encoding/digest pattern, not `pc_skill_packages` or fake Skill packages. A shared generic asset substrate could be
-extracted later if several owners have the same durability and failure semantics.
+manifest and 4 MiB uncompressed package limit are Skill contracts, not a captured-media contract. The media repository
+does not place images in `pc_skill_packages` or migrate unrelated domains merely to reduce table count. A broader binary
+substrate would need a separate assessment of identity, lifecycle and migration costs.
+
+### Capacity ledger versus transactional aggregation
+
+A two-table SQLite alternative can be correct: acquire a write transaction, such as `BEGIN IMMEDIATE`, aggregate
+retained bytes and nonterminal requests, check limits, and insert before committing. Its safety depends on all
+admission/state mutations following the same serialization boundary. A capacity table is not the only way to prevent
+over-admission.
+
+| Option | Benefit | Cost to qualify |
+| --- | --- | --- |
+| Assets + requests, with transactional aggregation | Two tables; no separately maintained usage counters | Repeated aggregation over growing scoped/global records and the resulting write-lock duration |
+| Assets + requests + capacity ledger | Indexed counter-row updates for normal admission; one ledger shared across media kinds | Counter consistency, global-row contention and recovery/reconciliation work |
+
+Recommend the three-table design to bound normal admission accounting work, without claiming measured superiority.
+Before implementation qualification, compare both options at the proposed storage/request caps and with many small
+assets and concurrent Scopes. Report admission latency, rows visited, write-lock time/contention, restart/reconciliation
+cost and crash/concurrency correctness. Queries using indexes still incur aggregation work; ledger repair may still
+visit all records. If measurements favor two tables, revise this explicit design choice rather than silently changing
+the accepted accounting contract.
+
+### Initial storage and resource bounds
 
 Recommend database-backed image bytes for the initial bounded SQLite deployment. Asset, Source, request and capacity
 commit in one database transaction, eliminating the prototype's file-publication gap, orphan reservation and paired
 DB/file-tree restore requirement. BLOB writes increase database/WAL size and can hold the SQLite write lock longer;
 the choice needs measured admission/read latency and growth, not a claim that it is always faster. External managed
-files/object storage are a separate alternative if those measurements justify their recovery complexity.
+files/object storage are a separate alternative if those measurements justify their recovery complexity. Public asset
+references identify exact scoped bytes, not a database column or filesystem path. This preserves a stable read identity,
+but any future storage backend must separately qualify durable acceptance, integrity, backup and recovery; the SQLite
+BLOB choice and current size caps do not establish suitability for large recordings or videos.
 
 Initial caps are 8 MiB/image, 12 MiB JSON request, 20 million decoded pixels, four attachments/message, 1 GiB of retained
-asset payloads, 256 active requests/Scope and 1,024 globally. Ingress/decode concurrency is independently bounded;
-vision concurrency starts at one. Automatic attempts
-default to three with a hard maximum of five. Invalid output is bounded to 64 KiB and validated before publication.
+media asset payloads globally, 256 active media requests/Scope and 1,024 globally. Only images are enabled initially;
+these budgets are not multiplied per modality. Future handlers require explicit resource limits and qualification.
+Ingress/decode concurrency is independently bounded; vision concurrency starts at one. Automatic attempts default to
+three with a hard maximum of five. Model output is bounded to 64 KiB and validated before publication.
 These are proposed protection defaults, not measured performance claims. Operators can lower them.
 
 Admission uses a fixed lock order and database constraints. Duplicate bytes are not charged twice. Decoder/model work
@@ -358,11 +455,11 @@ it returns conflict. Superseding, invalidating the old claim and accepting the r
 response cannot publish, and its already-started provider call remains counted. This permits replacing an unavailable
 pinned profile without silently changing accepted work or leaving an image permanently locked.
 
-Capture keys are qualified by Scope and attachment position. Retry/reparse keys are qualified by operation kind and
-original/parent request identity. Canonical request digests include bytes, provenance and fixed context; equal keys
-with different requests return conflict. Retry preserves the failed profile and context; reparse pins the selected
-current profile at acceptance and checks the caller's expected Artifact revision/profile digest. Operation replay
-uses its first receipt even if configuration has changed.
+Capture keys are qualified by Scope and attachment position. Retry/reparse keys are qualified by processing kind,
+operation kind and original/parent request identity. Canonical request digests include the selected processing kind,
+bytes, provenance and fixed context; equal keys with different requests return conflict. Retry preserves the failed
+profile and context; reparse pins the selected current profile at acceptance and checks the caller's expected Artifact
+revision/profile digest. Operation replay uses its first receipt even if configuration has changed.
 
 The image binding uses the existing single-flight Scope invocation and Family worker budget. A bounded pending provider
 discovers due image requests and marks domain dirtiness; request acceptance also marks it transactionally. Invocation
@@ -389,18 +486,21 @@ Reuse and extend existing typed catalogs rather than reproduce image content in 
 | Public need | Proposed surface |
 | --- | --- |
 | Submit bytes and pin first interpretation | New image capture command, returning durable original Source and processing-request receipt |
-| Read exact bytes/thumbnail | Authorized image asset read; any thumbnail is a derived representation, never the original |
-| Read/list operational progress | Image processing-request read/list with bounded pagination; result is an exact Artifact reference |
+| Read exact bytes/thumbnail | Shared authorized media asset read; image thumbnails are derived representations, never the original |
+| Read/list operational progress | Shared media request read/list with bounded kind/state pagination; result is an exact Artifact reference |
 | Explicit retry/reparse | One analysis-request command with a typed operation, idempotency key and relevant preconditions |
 | List/read original material | Existing `list_sources` / `get_source`, with image Definition support |
 | List/read analysis/history | Existing `list_artifacts`, `get_artifact`, `get_artifact_revision`, `list_artifact_revisions`, extended for the Family |
 | Health and scheduling | Extend existing processing/configuration diagnostics with image binding readiness and backlog |
 | Memory evidence | Extend existing Dashboard evidence renderers/traversal for original image and analysis nodes |
 
-This proposes five image-specific operations: capture, asset read, request read, request list and analysis request.
-Names/routes are selected in the implementation's OpenAPI contract; the experimental seven-operation surface is not
-promoted unchanged. The new Family requires explicit runtime/HTTP schemas, reader/processor registration and SDK/JS
-binding generation. Generic operations are reusable contracts, not proof that an unknown Family already works.
+This proposes five operations for the image workflow: capture, asset read, request read, request list and analysis
+request. Asset/request reads use common media contracts; capture and analysis commands validate the registered kind's
+typed input and authorization. No generic endpoint may write assets, receipts or result references without those
+checks. Names/routes are selected in the implementation's OpenAPI contract; the experimental seven-operation surface
+is not promoted unchanged. The new Family and shared media records require explicit runtime/HTTP schemas,
+reader/processor registration and SDK/JS binding generation. Reusable operations do not by themselves enable another
+modality or an unknown Family.
 
 Admission needs Scope contribute permission; reads require the relevant existing content permissions. Retry/reparse
 also needs access to the original material. An Artifact share does not grant read permission to its source Scope or
@@ -414,13 +514,18 @@ opening, thumbnail generation and recall never call vision.
 
 ## Configuration and host lifecycle
 
-Use one capability switch and one explicit backend selection, separate from capture consent:
+The initial image handler uses one capability switch and one explicit backend selection, separate from capture consent:
 
 | Choice | Required configuration | Semantics |
 | --- | --- | --- |
 | Disabled | None | Existing text behavior; retained image evidence still readable |
 | `reuse_generation` | Existing connection plus explicitly qualified multimodal capability | Reuse endpoint/model/credentials; no implicit assumption about image support |
 | `dedicated_endpoint` | Vision endpoint, exact model and locally held credentials | Independent hosted or user-managed local inference connection |
+
+Shared media storage grants no additional capture consent or inference permission. Future audio/video handlers need
+their own explicit enablement, capture authorization and qualified connection; image consent and a vision endpoint
+cannot silently authorize recording capture or select its provider. Common setup/doctor and Server lifecycle remain
+the integration boundary rather than adding one independently managed daemon per modality.
 
 The wizard and `.env` describe these optional settings; text-only installations do not gain a mandatory image decoder,
 Torch/CUDA dependency or model download. Credentials are resolved at execution through a pinned connection identity;
@@ -438,7 +543,7 @@ service lifecycle; users do not separately manage an image daemon.
 
 ## Compatibility, migration and delivery
 
-Use the normal versioned migration mechanism for the three image-domain tables and Family registration. Do not add
+Use the normal versioned migration mechanism for the three shared media tables and Family registration. Do not add
 an isolated schema version/auto-upgrade subsystem. An official release initializes/upgrades supported image storage
 explicitly; incompatible storage rejects admission while ordinary text remains usable.
 
@@ -454,10 +559,10 @@ never redirects to another asset. Initial storage pressure refuses new work rath
 If external file storage is selected instead, paired DB/assets backup, durable reservation, file publication and
 crash-safe orphan reclamation become additional required contracts and acceptance cases.
 
-After RFC acceptance, deliver reviewed increments: (1) domain/storage/Artifact publication, the shared Memory ordering
-contract and explicit upload, (2) standard host lifecycle and Dashboard/SDK integration, (3) real-host/model and recovery
-qualification. Implementation
-approval is separate from RFC acceptance. #1956 remains a draft prototype pending alignment with this design.
+After RFC acceptance, deliver reviewed increments: (1) shared media persistence, the image handler and Artifact
+publication, the shared Memory ordering contract and explicit upload, (2) standard host lifecycle and Dashboard/SDK
+integration, (3) real-host/model, resource-cost and recovery qualification. Implementation approval is separate from
+RFC acceptance. #1956 remains a draft prototype pending alignment with this design.
 
 ## Acceptance criteria
 
@@ -466,7 +571,7 @@ approval is separate from RFC acceptance. #1956 remains a draft prototype pendin
 | Default-off and normal setup | Text-only startup unchanged; optional wizard/env, normal service lifecycle and host diagnostics; vision works with Memory processing unconfigured |
 | Actual hosts | Qualified Desktop drag/file-picker/paste and CLI entries; verify host-produced attachment and Hook timing, not just invoke a Hook with synthetic input |
 | Durable receipt | Exact uploaded representation survives response loss, temporary-file deletion, process kill and restart |
-| Replay/concurrency | Same request returns the same receipt; conflicting reuse rejected; parallel admission respects budgets; one active analysis/original; stale fence/head publishes nothing |
+| Replay/concurrency | Same request returns the same receipt; conflicting reuse rejected; parallel admission respects budgets; one active request/scoped original/kind even across profile changes; stale fence/head publishes nothing |
 | Vision failure | Invalid/oversized output, timeout and provider crash obey actual request/attempt budgets; other Scope/Family work progresses |
 | Source/Artifact publication | Atomic revision/view/outcome; exact historical readback after reparse; no cycles or model calls during reads |
 | Authorization | Cross-Scope denial, revoked permissions and shared Artifact without raw-image access; no hidden byte/metadata disclosure |
@@ -474,7 +579,8 @@ approval is separate from RFC acceptance. #1956 remains a draft prototype pendin
 | Memory ordering | Both comparison sides carry validated statement-specific ordering support; the scenarios below pass through consumption, revision publication and exact readback |
 | Client recovery | Offline backlog, capacity exhaustion, consent disable/re-enable, endpoint/Scope changes and collector replacement preserve consent and progress |
 | Storage/migration | Normal fresh/upgrade paths; controlled refusal of experimental format; database backup/restore with exact BLOBs, corruption and mid-transaction crash recovery |
-| Resource costs | Measure request/row/file growth, quota-lock contention and indexed page/reconciliation cost; verify all proposed caps |
+| Shared media boundary | Validate typed asset/request readback and kind-qualified identities; reject unsupported types/kinds before writes; review the audio walkthrough without claiming audio support |
+| Resource costs | Compare transactional aggregation with the ledger; measure request/row/file growth, quota-lock contention and indexed page/reconciliation cost; verify all proposed caps |
 
 Controlled providers prove request/recovery behavior. Real model execution proves inference compatibility; actual host
 execution proves host input/lifecycle support. These are reported separately. Existing prototype results do not qualify
@@ -502,9 +608,10 @@ Ordering acceptance includes:
 # Drawbacks
 
 An additional Artifact family and deterministic Source publication add integration work. Binary data enlarges the
-database and needs explicit quota ownership; three domain tables remain necessary in this proposal. Persisted vision output
-can be wrong and can contain sensitive text. Cloud interpretation also has cost and latency. Exact provenance and
-Memory policy reduce ambiguity but do not guarantee correct recognition or justify every Memory write.
+database and needs explicit quota ownership; this proposal adds three shared media tables. The common request/schema
+boundary adds design work and does not eliminate future modality-specific workflows or prove their storage suitability.
+Persisted vision output can be wrong and can contain sensitive text. Cloud interpretation also has cost and latency.
+Exact provenance and Memory policy reduce ambiguity but do not guarantee correct recognition or justify every Memory write.
 Preserving fact order also extends shared Memory evidence and revision persistence. Bounded historical resolution has
 cost, and unknown ordering can conservatively retain an existing assertion until supported evidence or an explicit
 correction is available.
@@ -517,10 +624,11 @@ possible future qualified interpreter but misses diagram relationships. Reproces
 cost and can change historical meaning. Storing raw Base64 in Artifact/Source JSON grows unrelated reads and still
 does not solve durable binary reservation/read authorization.
 
-A two-table variant could derive budgets on each admission. Without an equivalent atomic reservation ledger it either
-scans growing retained assets or risks oversubscription; this RFC therefore proposes a third capacity table. Separate
-attempt/operation tables can be introduced later if a demonstrated retention/query requirement exceeds bounded request
-records. Unrelated existing tables and Supervisor intents are not repurposed to reduce the count cosmetically.
+A two-table variant can derive usage under serialized admission, at the aggregation and locking cost discussed above.
+The recommended ledger trades one shared table and recovery bookkeeping for bounded incremental accounting work;
+performance acceptance must establish whether that trade is justified. Separate attempt/operation tables require a
+demonstrated retention/query need beyond bounded request records. Adding a media kind alone does not justify copying
+asset/request/capacity tables. Unrelated existing tables and Supervisor intents keep their own contracts.
 The prototype's external-file approach keeps large bytes out of the database, but requires paired snapshots and
 cross-resource crash recovery. Storing image BLOBs in a separate domain table follows the existing Skill-package binary
 pattern without inheriting Skill semantics. This is the initial recommendation; neither storage medium is assumed to
@@ -542,9 +650,9 @@ Resolve before merging this RFC:
 
 1. Accept the hybrid `image-analysis` family and deterministic Source publication, or select the Source-only
    alternative with an explicit equivalent history/inspection contract.
-2. Accept the three-table asset/request/capacity boundary and database-backed bytes, or identify an existing contract
-   or external-storage design that provides the same atomic admission and per-image replay guarantees. Any
-   consolidation must retain the invariants above.
+2. Accept the shared media asset/request/capacity boundary, database-backed bytes and the capacity comparison criteria,
+   or select an alternative with equivalent exact-read, atomic admission and per-input replay guarantees. Any
+   consolidation must retain the invariants above; shared table names alone are not the reuse contract.
 3. Confirm file-backed SQLite and qualified Codex versions as the initial support scope, including which actual
    Desktop/CLI entry variants must pass before release.
 
@@ -562,5 +670,6 @@ runner or implicit cloud fallback is included in this RFC's acceptance.
 Local vision runs on the PowerContext Server machine. It does not make remote capture, ordinary generation or
 embedding offline; their destinations must remain explicit.
 
-Other backends, region-level evidence locators, OCR-only interpreters and image search require their own qualification
-and any material public-contract changes require follow-up design review.
+Audio/video handlers, other storage backends, region/time-span evidence locators, OCR-only interpreters and image search
+require their own qualification. Shared media persistence avoids a default table set per modality, but does not promise
+that multi-stage workflows never need additional records. Material public-contract changes require follow-up review.
