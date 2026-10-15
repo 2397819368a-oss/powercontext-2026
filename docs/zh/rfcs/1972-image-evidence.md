@@ -73,7 +73,7 @@ Desktop/CLI 版本；显式 CLI/SDK 上传提供独立入口。宿主要求的�
 ## 当前契约与所需扩展
 
 核对的代码基线为 master
-[`8970a970`](https://github.com/oceanbase/powercontext/tree/8970a970c50be930fdea0e627f5299e41dcbc5ad)；实验实现为
+[`7f38426e`](https://github.com/oceanbase/powercontext/tree/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76)；实验实现为
 [`21df99c8`](https://github.com/knqiufan/powercontext/tree/21df99c841b154975e838fff6618a91c8c191350)。RFC 中描述的目标能力
 不等于这份基线已经实现了该能力。
 
@@ -83,6 +83,7 @@ Desktop/CLI 版本；显式 CLI/SDK 上传提供独立入口。宿主要求的�
 | 解释内容和历史 | Artifact 内容、head 和精确 `ArtifactRef` 版本 | 注册 `image-analysis` Family，由图片域发布 |
 | 来源链 | Source/Artifact lineage 和发布记录 | 原图 Source → 精确解释版本 → 文字发布 → Memory |
 | Memory 模型输入 | 仅从 Source 抽取、命名文字证据 | 确定性解释发布 Definition；原图不进入文字抽取 |
+| Memory 事实排序 | 新证据暴露 journal 位置；召回的 Memory 提供精确 kind/text 和 Artifact 引用 | 分离消费位置与原始证据顺序；协调双方提供并保留逐陈述的排序依据 |
 | 调度 | Scope 调用意图、各 Family 独立预算、任期及 fencing | 图片解释 binding 和 worker；逐图片进度属于图片域 |
 | 查看 | 通用 Source/Artifact 读取、Dashboard 证据遍历 | 图片与解释渲染，以及有权限的资产读取 |
 | 推理 | 配置的生成角色与用量记录 | 明确视觉角色、真正多模态输入、输出校验及请求预算 |
@@ -92,13 +93,13 @@ Desktop/CLI 版本；显式 CLI/SDK 上传提供独立入口。宿主要求的�
 
 主要源码依据：
 
-- [Source 模型](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/sources/models.py)
-  与 [repository](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/persistence/sources.py)。
-- [Artifact 模型](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/artifacts/models.py)
-  与 [共享表](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/persistence/tables.py)。
-- [处理意图](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/persistence/processing_intents.py)、
-  [Supervisor](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/runtime/artifact_processing.py)
-  和 [Atomic 抽取](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/artifacts/atomic_memory/extraction.py)。
+- [Source 模型](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/sources/models.py)
+  与 [repository](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/sources.py)。
+- [Artifact 模型](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/artifacts/models.py)
+  与 [共享表](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/tables.py)。
+- [处理意图](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/processing_intents.py)、
+  [Supervisor](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/runtime/artifact_processing.py)
+  和 [Atomic 抽取](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/artifacts/atomic_memory/extraction.py)。
 
 ## Artifact 边界的方案比较
 
@@ -151,9 +152,78 @@ Artifact 版本、lineage、发布 Source、请求结果和 Memory dirty 通知�
 不能当作独立佐证或重复召回权重。
 发布的类型化元数据保留已知的原始记录时间和原始 journal 位置。新的 journal 位置用于唤醒消费者，不作为图片事实的
 回退时间。缺少明确事实日期和记录日期时，协调仍保留原证据顺序；解释晚完成不能因此压过较新的文字事实。
+这依赖下文定义的 Atomic Memory 消费端和版本契约扩展，仅在发布 Source 中增加元数据不能保证这一行为。
 
 原图和解释发布 Source 由图片域写入。通用 Source/observation 提交不能伪造 retained 资产描述、接收回执或解释发布。
 采集／发布边界在提交前校验资产的精确 Scope 和状态，以及被引用 Artifact 的精确版本和摘要。
+
+## 迟到解释参与 Memory 时序协调
+
+考虑同一 Scope 的三个 journal 位置，证据均没有明确的事件／生效日期或 Source 记录时间：
+
+| 位置 | 证据或处理结果 |
+| --- | --- |
+| 10 | 原图记载部署上限为 100，图片解释尚未完成 |
+| 20 | 文字 Source 将同一上限改为 200，Memory 处理已发布这一当前事实 |
+| 30 | 图片解释发布文字 Source，读出的内容为“上限为 100” |
+
+处理位置 30 时，当前上限必须仍为 200。可以将 100 保留为历史信息，但不能仅因图片解释较晚完成，就把当前上限
+改回 100，或另建一条相互矛盾的当前 Memory。位置 20、30 在同一个窗口或不同窗口中处理，都必须满足这一要求。
+
+在核对的代码基线中，`project_atomic_memory_evidence` 暴露的是发布 Source 的 `journal_position`。
+`AtomicMemoryArtifactEvidence` 仅提供召回 Memory 的精确 Artifact 引用与 kind/text；`_load_related_items`
+不加载它所依据的 Source 顺序。因此，仅给新图片补上原始位置 10，协调器仍然拿不到旧事实的位置 20。
+所需扩展属于共享的 Atomic Memory 证据和版本契约，不能只修改图片发布端或提示词。
+参见[证据投影](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/artifacts/atomic_memory/extraction.py)、
+[比较证据](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/artifacts/atomic_memory/reconciliation.py)
+和[关联 Memory 加载](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/runtime/atomic_memory_processing.py)。
+
+### 分离处理进度与事实排序
+
+| 值 | 归属与含义 |
+| --- | --- |
+| 消费位置 | 已接收 Source 在 Scope journal 中的实际位置，用于窗口、游标、唤醒与重放；上述解释仍位于 30 |
+| 原始证据锚点 | 带 Scope 的精确原始 Source 引用、其已保存 journal 位置及已知的自身记录时间；上述图片发布解析到位置 10，普通文字使用自身位置 20 |
+| 陈述时间和适用条件 | 被引用陈述支持的生效／事件时间和条件；优先于可比较的记录时间，以及同 Scope journal 顺序回退 |
+
+图片域校验发布 Source → 精确解释版本 → 原图的引用关系，并从已保存记录构造锚点。Atomic Memory 证据适配器
+将锚点作为类型化比较输入，同时保留精确发布 Source 和解释版本；普通文字锚点也从同一 Source repository 边界取得。
+模型和调用方的自由格式元数据都不能指定 journal 位置，或选择无关 Source 充当排序依据。Source 记录时间必须来自其
+声明的 provenance 契约，不能替换成识图、请求、Artifact 发布或迁移时间。不同 Scope 的 journal 位置不是可比较的时钟。
+同一原图的重试和重新解析沿用原锚点；新的发布位置不使它们成为更新的事件或独立佐证。
+
+### 双方提供依据，并保留最终采用的关联
+
+Atomic Memory 拥有带版本的排序依据记录，绑定精确 Memory 版本及其内容摘要。记录将保留的每项陈述，包括历史值和
+适用条件，关联到精确支持证据及其已校验锚点，或明确的未知依据。不能用整个 lineage 的最大或最小位置代表某项陈述的
+时间。召回 Memory 时，在 kind/text 和精确 Artifact 引用之外提供这份紧凑记录；新候选通过选定的 evidence ID 提供
+相同语义。这扩展的是协调输入，初始抽取仍只消费 Source；不把历史 Source 重新送去抽取，也不在每次模型请求中展开全部 lineage。
+
+模型为保留的陈述选择已提供的 evidence ID。Atomic Memory 服务校验这一关联，并从所选记录构造排序依据；模型不能
+生成锚点或刷新时间。无法校验的关联进入既有无效输出失败路径，不能提交编造的顺序。新的 Memory 版本、排序依据、
+lineage 和窗口确认在既有 head／state 与权限校验下一同提交。排序依据属于共享 Artifact 存储中的版本化、不可变
+Memory 版本数据，不能把图片请求表或容量表作为其权威。对应 runtime、序列化和 HTTP schema 的扩展需经过正常契约
+评审，并保证精确版本回读兼容。
+读取端必须接受缺少依据的已有版本，将其标为未知；新依据经过序列化、精确读取和备份／恢复后仍完整保留。格式损坏或
+版本不受支持时明确拒绝，不能静默丢弃或当作缺失。存储升级与消费端就绪检查遵守正常迁移契约，在启用图片消费前完成。
+依据格式和模型输入都有明确大小预算；超限不能静默截断陈述关联，也不能确认尚未发布的 Memory 结果。
+
+创建、修订与合并在窗口内 workset 和后续召回版本之间保留逐陈述的证据关联。恢复使用选定历史版本的排序依据；复制、
+重建投影或切换 head 不能把今天的顺序赋给旧内容。手动写入仍受支持，不为其编造 Source 锚点；无法由支持证据建立
+顺序时，明确记录为未知。共享消费端扩展必须先交付并验收，图片发布才能进入自动 Memory 抽取；不兼容的消费者不能
+静默把图片解释当作刚发生的普通文字事实。
+
+### 历史记录与有界解析
+
+已有 Memory 版本保持可读、可检索，不改写其内容与历史。版本缺少排序依据时，只能通过有界、获授权的解析，从精确
+保留证据及无歧义的陈述关联中恢复依据。优先使用已保存的依据；查询明确限制节点数、字节数和深度，不扫描全部 Source，
+不展开无界版本链。证据缺失、无权限、关联不明确或超出预算时，相应依据保持未知。重建不能使用当前 head 或重新生成
+的解释填补历史空白。恢复出的依据属于派生解析结果，不改写不可变历史版本；后续 Memory 版本可以保存它实际采用的依据。
+
+可比较的明确事实／记录时间仍然优先。如果冲突的新图片证据没有这类排序依据，且任意一方缺少可用的原始锚点，自动
+协调保留已有的当前陈述，不能按解释到达时间、Artifact 版本号或 lineage 的最新时间决定覆盖，也不能通过另建一条
+相互矛盾的当前陈述绕过限制。独立事实仍可继续处理；不新增冲突审批队列，也不回退已消费的 Source 位置。既有显式
+Memory 纠正和恢复操作继续可用。这一保守回退只适用于比较依据不足的情况；有充分依据的新事实继续遵守正常时序协调策略。
 
 ## 存储对照与三表方案
 
@@ -186,7 +256,7 @@ Artifact 版本、lineage、发布 Source、请求结果和 Memory dirty 通知�
 schema 版本。尝试记录是有界运营数据，不是 Artifact 版本；不包含密钥、原始 prompt、Base64 或无界 provider 错误。
 
 也核对了已有二进制存储：
-[SkillPackageRepository](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/persistence/skill_packages.py)
+[SkillPackageRepository](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/skill_packages.py)
 已经保存并验证 Scope 内的不可变归档字节。但 canonical ZIP／目录树身份、必需的 `SKILL.md`、manifest 和 4 MiB 解压
 大小限制属于 Skill 契约，不是图片资产契约。复用二进制编码及摘要模式，不把截图伪装成 Skill 或塞入 `pc_skill_packages`。
 多个所有者确实具有相同耐久和失败语义时，后续可以抽取通用资产基础层。
@@ -298,7 +368,7 @@ setup 保留正常对话采集，并复用现有服务生命周期；用户不�
 返回不可用／完整性结果，不能跳转到别的资产。首期空间不足拒绝新增，不删除历史证据。如果改选外部文件存储，DB／资产
 配套备份、耐久预留、文件发布和崩溃安全的孤立清理才成为额外必需契约及验收项。
 
-RFC 通过后按可审查的增量交付：（1）领域／存储／Artifact 发布和显式上传；（2）标准宿主生命周期及 Dashboard/SDK 集成；
+RFC 通过后按可审查的增量交付：（1）领域／存储／Artifact 发布、共享 Memory 排序契约和显式上传；（2）标准宿主生命周期及 Dashboard/SDK 集成；
 （3）真实宿主、模型及恢复验收。RFC 接受与实现批准是独立步骤。#1956 保留为等待按设计调整的实验草稿。
 
 ## 验收标准
@@ -313,6 +383,7 @@ RFC 通过后按可审查的增量交付：（1）领域／存储／Artifact 发
 | Source/Artifact 发布 | 版本／视图／结果原子提交；重新解析后仍可精确回读历史；无循环，读取不推理 |
 | 权限 | 跨 Scope 拒绝、权限撤销、分享 Artifact 无原图访问；不泄露字节或元数据 |
 | Memory 和新会话召回 | 真实生成产生受治理的 Atomic Memory；新的实际 Agent 会话使用召回证据；零 Memory 可观察；迟到解释不能让旧事实变新 |
+| Memory 排序 | 比较双方提供已校验的逐陈述排序依据；下述场景覆盖消费、版本发布和精确回读 |
 | 客户端恢复 | 离线积压、容量满、授权关闭／重开、endpoint/Scope 变化和采集器替换保留授权与进度 |
 | 存储／迁移 | 正常新建／升级；明确拒绝实验格式；数据库备份／恢复精确 BLOB、损坏和事务中途崩溃恢复 |
 | 资源成本 | 测量请求／行／文件增长、预算锁竞争、索引分页及恢复成本；验证各项上限 |
@@ -320,11 +391,27 @@ RFC 通过后按可审查的增量交付：（1）领域／存储／Artifact 发
 受控 provider 证明请求和恢复行为；真实模型执行证明推理兼容；真实宿主执行证明输入与生命周期支持，分别报告。
 既有实验结果不证明这次 Artifact 调整、本地模型运行、所有宿主形式或其他图片数据库后端已经通过验收。
 
+排序验收包括：
+
+1. 无日期的 10／20／30 场景中，无论同窗口处理，还是位置 20 已经形成 Memory，当前上限都保持为 200。检查实际比较
+   输入，必须同时包含双方原始位置，而游标推进到发布位置 30。在位置 40 重新解析及进程重启后，原始位置仍为 10。
+2. 明确生效／事件时间按既有时序策略优先于相反的接收顺序；不同适用条件分别保留。测试不能把时序策略替换成
+   “位置更小的一方总是失效”。
+3. 修订或合并同时保留由位置 5 和 20 支持的陈述时，各自关联保持准确。锚点位于 10 的图片可以影响由位置 5 支持的
+   陈述，但不能使位置 20 支持的陈述变旧。lineage 最大位置和 Memory 版本创建时间都不能代替这两项陈述的依据。
+4. 历史回读、恢复、重启和投影重建精确保留所选依据。无法恢复依据的历史或手写 Memory 遵守未知依据规则，包括
+   查询无权限及超出预算的情况；不能阻塞独立事实，也不能产生相互矛盾的当前副本。依据缺失时仍可读取，格式损坏或
+   版本不受支持时明确失败；序列化与备份往返完整保留有效依据，不改变历史内容。
+5. 伪造、不匹配或跨 Scope 的锚点引用在发布前被拒绝。受控 provider 测试核对实际提供的证据和已保存依据；真实模型
+   验收另外执行迟到图片场景，检查最终当前与历史 Memory 内容。
+
 # 缺点
 
 增加一个 Artifact Family 和确定性 Source 发布带来集成工作。二进制数据会增大数据库，并需要明确容量管理；方案仍需三张领域表。
 保存的识图结果可能错误，也可能包含敏感文字。在线推理有费用和延迟。精确 provenance 和 Memory 策略降低歧义，但不能
 保证识别正确，也不能证明每项内容都应该写成 Memory。
+保留事实顺序还需要扩展共享 Memory 证据和版本存储。有界历史解析有额外成本；依据未知时，系统会保守保留已有陈述，
+直到获得充分证据或显式纠正。
 
 # 理由与备选方案
 

@@ -89,7 +89,7 @@ Memory approval workflow are outside this RFC. Local weight download and an owne
 ## Current contracts and required extensions
 
 The code baseline examined is master
-[`8970a970`](https://github.com/oceanbase/powercontext/tree/8970a970c50be930fdea0e627f5299e41dcbc5ad).
+[`7f38426e`](https://github.com/oceanbase/powercontext/tree/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76).
 The prototype examined is
 [`21df99c8`](https://github.com/knqiufan/powercontext/tree/21df99c841b154975e838fff6618a91c8c191350).
 RFC descriptions of future capabilities are not evidence that the baseline implements them.
@@ -100,6 +100,7 @@ RFC descriptions of future capabilities are not evidence that the baseline imple
 | Interpretation content/history | Artifact content, heads and exact `ArtifactRef` revisions | Registered `image-analysis` family and domain-owned publication |
 | Provenance | Source/Artifact lineage and publication records | Original Source → exact analysis revision → text publication → Memory |
 | Model input for Memory | Source-only extraction and named text evidence | Deterministic interpretation-publication Definition; raw images excluded from text extraction |
+| Memory fact ordering | New evidence exposes its journal position; recalled Memory supplies exact kind/text and Artifact reference | Separate consumption position from original evidence order; provide and preserve statement-specific ordering support on both sides of reconciliation |
 | Scheduling | Scope invocation intents, independent Family budgets, leadership/fencing | Image-analysis binding and worker; image request progress remains domain-owned |
 | Inspection | Generic Source/Artifact reads and Dashboard evidence traversal | Image/analysis renderers and authorized asset read |
 | Inference | Configured generation roles and usage reporting | Explicit vision role, actual multimodal input, validated output and request budget |
@@ -110,13 +111,13 @@ described in RFC 1400. Definition versions and original identities remain availa
 
 Important source evidence:
 
-- [Source models](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/sources/models.py)
-  and [repository](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/persistence/sources.py).
-- [Artifact models](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/artifacts/models.py)
-  and [shared tables](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/persistence/tables.py).
-- [Processing intents](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/persistence/processing_intents.py),
-  [Supervisor](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/runtime/artifact_processing.py)
-  and [Atomic extraction](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/artifacts/atomic_memory/extraction.py).
+- [Source models](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/sources/models.py)
+  and [repository](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/sources.py).
+- [Artifact models](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/artifacts/models.py)
+  and [shared tables](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/tables.py).
+- [Processing intents](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/processing_intents.py),
+  [Supervisor](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/runtime/artifact_processing.py)
+  and [Atomic extraction](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/artifacts/atomic_memory/extraction.py).
 
 ## Evaluate the Artifact boundary
 
@@ -180,11 +181,100 @@ multiple readings of one image are not independent corroboration or repeated rec
 Publication preserves the original recording time when known and its original journal position in typed metadata.
 Its new journal position wakes consumers; it is not the fallback age of image facts. With no explicit fact/recording
 date, reconciliation preserves original evidence ordering, so delayed interpretation cannot outrank newer text solely
-because it finished later.
+because it finished later. This requires the Atomic Memory consumer and revision extensions defined below; adding
+metadata to the publication Source alone does not establish that behavior.
 
 Original-image and interpretation-publication Sources are domain-owned writes. Generic Source/observation submission
 must not forge a retained asset descriptor, acceptance receipt or interpretation publication. The capture/publication
 boundary validates the asset's exact Scope/state and the referenced Artifact revision/digest before committing them.
+
+## Memory ordering across delayed interpretation
+
+Consider three journal positions in one Scope, with no explicit event/effective dates or Source recording times:
+
+| Position | Evidence or processing result |
+| --- | --- |
+| 10 | An original image states that the deployment limit is 100; interpretation is pending |
+| 20 | A text Source changes the same limit to 200, and Memory processing publishes that current fact |
+| 30 | The image interpretation publishes its text Source with the reading "limit is 100" |
+
+Processing position 30 must keep 200 as the current limit. It may preserve 100 as historical information, but cannot
+revise the current limit to 100 or create a contradictory current Memory solely because interpretation completed later.
+The same result is required whether positions 20 and 30 are processed in one window or separate windows.
+
+At the examined baseline, `project_atomic_memory_evidence` exposes the publication Source's `journal_position`.
+`AtomicMemoryArtifactEvidence` supplies only the exact Artifact reference and kind/text for a recalled Memory;
+`_load_related_items` does not load that Memory's Source ordering. Giving only the incoming image its original position
+10 therefore leaves the comparison without the existing fact's position 20. The required extension is to the shared
+Atomic Memory evidence and revision contract, not only the image publisher or its prompt.
+See [evidence projection](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/artifacts/atomic_memory/extraction.py),
+[comparison evidence](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/artifacts/atomic_memory/reconciliation.py)
+and [related-Memory loading](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/runtime/atomic_memory_processing.py).
+
+### Separate progress from fact ordering
+
+| Value | Owner and meaning |
+| --- | --- |
+| Consumption position | The accepted Source's actual Scope journal position; used for windows, cursors, wakeups and replay. The interpretation above remains at 30 |
+| Original evidence anchor | Exact scoped original Source reference, its retained journal position and its own recording time when known. The image publication above resolves to position 10; ordinary text resolves to its own position 20 |
+| Statement time and applicability | Effective/event time and conditions supported by the cited statement; they retain priority over comparable recording times and the same-Scope journal-order fallback |
+
+The image domain validates the publication-to-analysis-to-original references and constructs its anchor from retained
+records. The Atomic Memory evidence adapter exposes that anchor as typed comparison input alongside the exact
+publication Source and analysis revision. It obtains ordinary text anchors from the same Source repository boundary.
+Neither a model nor caller-supplied free-form metadata may select a journal position or an unrelated Source as an
+ordering authority. A Source recording time comes from its declared provenance contract; image processing, request,
+Artifact publication and migration timestamps are never substitutes. Journal positions from different Scopes are not
+comparable clocks. Interpretation retries and reparses of one original retain its anchor; their new publication
+positions do not make them newer events or independent corroboration.
+
+### Supply both sides and retain the selected support
+
+Atomic Memory owns a versioned ordering-support record bound to each exact Memory revision and its content digest.
+It associates each retained statement, including historical values and applicability conditions, with the exact
+supporting evidence and its validated anchor or an explicit unknown basis. A single maximum or minimum position over
+the entire lineage is not a statement's age. Recalled Memories supply this compact record alongside kind/text and
+their exact Artifact reference; incoming candidates supply the same semantics through their selected evidence IDs.
+This extends reconciliation input while keeping initial extraction Source-only. Historical Sources are not replayed
+through extraction, and the whole lineage is not added to every model request.
+
+The model selects supplied evidence IDs for the statements it retains. The Atomic Memory service validates that
+association and constructs ordering support from those supplied records; the model cannot mint anchors or refresh
+their times. An unverifiable association follows the existing invalid-output failure path rather than committing
+invented ordering. The new Memory revision, its ordering support and lineage, and the window acknowledgement commit
+together under the existing head/state and authorization checks. The support record is part of versioned immutable
+Memory revision persistence in the shared Artifact storage, not authority held in image request or capacity rows.
+Its runtime/serialization/HTTP schema changes require normal contract review and exact readback compatibility.
+Readers must accept existing revisions with absent support as unknown and preserve new support through serialization,
+exact reads and backup/restore. Malformed or unsupported support versions are rejected explicitly, not silently dropped
+or treated as absent. Storage upgrades and consumer readiness follow the normal migration contract before enabling
+image consumption. The support format and model input have explicit size budgets; exceeding them cannot silently
+truncate statement associations or acknowledge an unpublished Memory result.
+
+Create, revise and merge preserve statement-to-support associations through the in-window workset and subsequent
+recalled revisions. Restoration uses the selected historical revision's support; copying, rebuilding a projection or
+changing a head cannot assign today's ordering to old content. Manual writes remain supported without an invented
+Source anchor. When their ordering is not established by supported evidence, that basis is explicitly unknown.
+These shared consumer changes must be delivered and qualified before image publications become eligible for automatic
+Memory extraction; an incompatible consumer must not silently consume them as ordinary newly dated text.
+
+### Historical records and bounded resolution
+
+Existing Memory revisions remain readable and searchable without rewriting their content or history. When a revision
+lacks ordering support, a bounded, authorized resolution may recover it only from exact retained evidence with an
+unambiguous statement association. Persisted support is preferred; lookup has explicit node, byte and depth budgets
+and cannot scan all Sources or expand an unbounded revision chain. Missing, inaccessible, ambiguous or over-budget
+evidence leaves the affected basis unknown. Rebuilds cannot use the current head or a newly generated interpretation
+to fill historical gaps. Recovered support is a derived resolution result, not a rewrite of the immutable historical
+revision; a later Memory revision can persist the support it actually uses.
+
+Comparable explicit fact/recording times still take precedence. If a conflicting incoming image has no such ordering
+and either side lacks a usable original anchor, automatic reconciliation preserves the existing current assertion
+instead of deciding by interpretation arrival, Artifact revision number or the latest lineage timestamp. It must not
+publish a second contradictory current assertion as a workaround. Independent facts can still proceed; this adds
+neither a conflict-approval queue nor a rewind of consumed Source positions. Existing explicit Memory correction and
+restoration operations remain available. This conservative fallback applies to missing comparison evidence, not to
+well-supported newer facts, which continue to follow the normal temporal reconciliation policy.
 
 ## Storage comparison and proposed three tables
 
@@ -221,7 +311,7 @@ new capacity table does not store worker ownership or schema versions. Attempts 
 than Artifact revisions; attempt details cannot include keys, raw prompts, Base64 or unconstrained provider errors.
 
 Existing binary storage was evaluated:
-[SkillPackageRepository](https://github.com/oceanbase/powercontext/blob/8970a970c50be930fdea0e627f5299e41dcbc5ad/src/powercontext/builtin/persistence/skill_packages.py)
+[SkillPackageRepository](https://github.com/oceanbase/powercontext/blob/7f38426ea87ebaf1c9f7bc761b2459f94bda4e76/src/powercontext/builtin/persistence/skill_packages.py)
 already stores and verifies scoped immutable archive bytes. Its canonical ZIP/tree identity, required `SKILL.md`,
 manifest and 4 MiB uncompressed package limit are Skill contracts, not an image asset contract. Reuse the binary
 encoding/digest pattern, not `pc_skill_packages` or fake Skill packages. A shared generic asset substrate could be
@@ -364,8 +454,9 @@ never redirects to another asset. Initial storage pressure refuses new work rath
 If external file storage is selected instead, paired DB/assets backup, durable reservation, file publication and
 crash-safe orphan reclamation become additional required contracts and acceptance cases.
 
-After RFC acceptance, deliver reviewed increments: (1) domain/storage/Artifact publication and explicit upload,
-(2) standard host lifecycle and Dashboard/SDK integration, (3) real-host/model and recovery qualification. Implementation
+After RFC acceptance, deliver reviewed increments: (1) domain/storage/Artifact publication, the shared Memory ordering
+contract and explicit upload, (2) standard host lifecycle and Dashboard/SDK integration, (3) real-host/model and recovery
+qualification. Implementation
 approval is separate from RFC acceptance. #1956 remains a draft prototype pending alignment with this design.
 
 ## Acceptance criteria
@@ -380,6 +471,7 @@ approval is separate from RFC acceptance. #1956 remains a draft prototype pendin
 | Source/Artifact publication | Atomic revision/view/outcome; exact historical readback after reparse; no cycles or model calls during reads |
 | Authorization | Cross-Scope denial, revoked permissions and shared Artifact without raw-image access; no hidden byte/metadata disclosure |
 | Memory and fresh recall | Real generation produces governed Atomic Memories; a new actual Agent session uses retrieved evidence; zero-memory results are observable; delayed analysis does not make older facts newer |
+| Memory ordering | Both comparison sides carry validated statement-specific ordering support; the scenarios below pass through consumption, revision publication and exact readback |
 | Client recovery | Offline backlog, capacity exhaustion, consent disable/re-enable, endpoint/Scope changes and collector replacement preserve consent and progress |
 | Storage/migration | Normal fresh/upgrade paths; controlled refusal of experimental format; database backup/restore with exact BLOBs, corruption and mid-transaction crash recovery |
 | Resource costs | Measure request/row/file growth, quota-lock contention and indexed page/reconciliation cost; verify all proposed caps |
@@ -388,12 +480,34 @@ Controlled providers prove request/recovery behavior. Real model execution prove
 execution proves host input/lifecycle support. These are reported separately. Existing prototype results do not qualify
 the proposed Artifact redesign, local-model runtime, every host variant or other image storage backends.
 
+Ordering acceptance includes:
+
+1. The undated 10/20/30 scenario keeps 200 current both within one window and after position 20 has already become a
+   Memory. Inspect the actual comparison input: both original positions must be present, while the cursor advances
+   through publication position 30. A reparse at 40 and a process restart retain the original position 10.
+2. An explicit effective/event time overrides contrary ingestion order under the existing temporal policy; different
+   applicability conditions remain separate. Tests must not replace the temporal policy with "lower position always loses."
+3. A revision or merge retaining statements supported at positions 5 and 20 keeps each association. An image anchored
+   at 10 can affect the statement supported at 5 without making the statement supported at 20 older. Neither a lineage
+   maximum nor the Memory revision's creation time may stand in for both statements.
+4. Historical readback, restoration, restart and projection rebuild preserve the selected support exactly. Legacy or
+   manually written Memories without recoverable support follow the unknown-basis rule, including inaccessible and
+   over-budget lookup, without blocking independent facts or creating contradictory current duplicates. Absent support
+   remains readable; malformed or unsupported versions fail explicitly, and serialization/backup round trips preserve
+   valid support without changing historical content.
+5. Forged, mismatched or cross-Scope anchor references are rejected before publication. Controlled-provider tests assert
+   the evidence supplied and the persisted support; real-model qualification separately exercises the delayed-image
+   scenario and verifies the resulting current and historical Memory content.
+
 # Drawbacks
 
 An additional Artifact family and deterministic Source publication add integration work. Binary data enlarges the
 database and needs explicit quota ownership; three domain tables remain necessary in this proposal. Persisted vision output
 can be wrong and can contain sensitive text. Cloud interpretation also has cost and latency. Exact provenance and
 Memory policy reduce ambiguity but do not guarantee correct recognition or justify every Memory write.
+Preserving fact order also extends shared Memory evidence and revision persistence. Bounded historical resolution has
+cost, and unknown ordering can conservatively retain an existing assertion until supported evidence or an explicit
+correction is available.
 
 # Rationale and alternatives
 
