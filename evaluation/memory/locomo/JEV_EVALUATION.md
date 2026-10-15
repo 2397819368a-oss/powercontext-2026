@@ -30,6 +30,12 @@ OceanBase scenarios in its database contract step, rejects skipped cases, and
 uploads the JUnit report. Its provider responses still use MockTransport; the
 database integration and hosted Jev quality are separate evidence.
 
+On 2026-10-15, the database contract step of
+[E2E harness run 38720979584](https://github.com/oceanbase/powercontext/actions/runs/38720979584/job/116375167396)
+passed on commit `d644fc3907b19be75f59dfffe4609987474c86ee`: nine cases executed
+without skips, comprising three existing OceanBase contracts and all six Jev
+integration scenarios across SQLite and real OceanBase.
+
 ```bash
 uv run python -m pytest \
   tests/builtin/artifacts/memory/test_jev_reranking.py \
@@ -41,8 +47,8 @@ uv run python -m pytest \
 
 Recommendation: **revise pending live comparative evidence**.
 
-No live three-arm run of this Noul adapter is recorded here. The execution
-environment has no configured Jev credentials or OceanBase acceptance connection.
+No live three-arm run of this Noul adapter is recorded here. The local execution
+environment has no configured Jev or downstream generation/embedding credentials.
 Relevant-evidence recall, ranking quality, downstream task success, real p50/p95
 latency, billed input, retries, and total pipeline cost are therefore unmeasured.
 There is no basis for changing the default provider or claiming a quality, latency,
@@ -54,7 +60,7 @@ regression tolerance is `0.0`, recorded before evaluation. A report with missing
 cost receipts cannot recommend adoption. The bilingual/adversarial smoke cases
 are separate from any future calibration and held-out evaluation.
 
-Complete live Jev and isolated OceanBase runs, retain reviewed non-secret manifests
+Complete a live three-arm Jev comparison, retain reviewed non-secret manifests
 and comparison results, and evaluate a dedicated reranker baseline if available
 before closing the issue's empirical acceptance criteria. Include the shared
 ingestion cost when reporting total pipeline cost; the comparator reports the
