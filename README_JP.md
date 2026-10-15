@@ -84,7 +84,7 @@ PowerContext は、次の Agent によりよい会話ログを読ませるもの
 
 判断や制約を、そのターンを越えて残す必要がある場合は Memory として保存します。次のセッションはアクティブな項目を検索するか、そこから境界つきのコンテキストを準備できます。人は正確な Artifact Revision と Source 参照も確認できます。項目を退役してもアクティブな想起から外れるだけで、履歴は書き換わりません。
 
-![1 つの Scope にあるアクティブな判断と制約、および正確な Atomic Memory 参照を示す Dashboard](docs/assets/readme-dashboard-memories.png)
+![1 つの Scope のアクティブな判断と制約、および対応する Artifact と Source 参照を示す Dashboard](docs/assets/readme-dashboard-memories.png)
 
 ### 2. 会話の丸ごとの転送ではなく、確認済みの境界を引き継ぐ
 
@@ -94,7 +94,7 @@ PowerContext は、次の Agent によりよい会話ログを読ませるもの
 
 ### 3. 成果を再利用する前にも決定を通す
 
-有効な手法が再利用に値する場合、その Scope の Review Inbox に Experience または Skill の候補として入れられます。モデルは提案できますが、自身の出力を直接昇格できません。承認で不変の Revision が作られ、Skill は Agent ホストが発見する前に明示的なエクスポートも必要です。
+有効な手法が再利用に値する場合、その Scope の Review Inbox に Experience または Skill の候補として入れられます。候補内容は、レビューの決定によって不変の Revision が作成されるまで、想起されるコンテキストとは分離されています。Skill は Agent ホストが発見する前に明示的なエクスポートも必要です。
 
 ## 効果の検証
 

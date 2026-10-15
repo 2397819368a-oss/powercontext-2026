@@ -115,7 +115,7 @@ When a decision or constraint must outlive the turn that produced it, save it as
 prepare bounded context from active entries, while a human can inspect its exact Artifact Revision and Source reference.
 Retiring an entry removes it from active recall without rewriting its history.
 
-![Dashboard showing one Scope's active decisions and constraints with exact Atomic Memory references](docs/assets/readme-dashboard-memories.png)
+![Dashboard showing active decisions and constraints for one Scope with their Artifact and Source references](docs/assets/readme-dashboard-memories.png)
 
 ### 2. Hand over an inspected boundary, not a transcript dump
 
@@ -127,9 +127,9 @@ can resolve, acknowledge, and check before continuing.
 
 ### 3. Reuse an outcome only after a decision
 
-When a useful approach emerges, it can become an Experience or Skill candidate in that Scope's Review Inbox. A model may
-propose it, but it cannot promote its own output: approval creates an immutable Revision, and a Skill still needs an
-explicit export before an Agent host can discover it.
+When a useful approach emerges, it can become an Experience or Skill candidate in that Scope's Review Inbox. Candidate
+content remains separate from retrieved context until a review decision creates an immutable Revision. A Skill still
+needs an explicit export before an Agent host can discover it.
 
 ## Proof it works
 

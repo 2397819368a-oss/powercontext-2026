@@ -86,7 +86,7 @@ PowerContext 不是让下一个 Agent 读一份更好的聊天记录，而是留
 
 当一个决定或约束需要跨越产生它的那一轮会话时，把它保存为 Memory。下一个会话可以检索活跃条目，或从中准备有边界的上下文；人也可以查看精确的 Artifact Revision 与 Source 引用。将条目退役只会让它退出主动召回，不会改写历史。
 
-![Dashboard 展示一个 Scope 中活跃的决定和约束，以及精确的 Atomic Memory 引用](docs/assets/readme-dashboard-memories.png)
+![Dashboard 展示一个 Scope 中活跃的决定和约束，以及对应的 Artifact 与 Source 引用](docs/assets/readme-dashboard-memories.png)
 
 ### 2. 交接已经检查过的边界，而不是倾倒整段对话
 
@@ -96,7 +96,7 @@ PowerContext 不是让下一个 Agent 读一份更好的聊天记录，而是留
 
 ### 3. 有结果的做法，也要先经过一次决定才能复用
 
-当一个有效做法值得复用时，它可以进入该 Scope 的 Review Inbox，成为 Experience 或 Skill 候选。模型可以提出它，但不能把自己的输出直接升级：通过才会生成不可变 Revision；Skill 还必须显式导出，Agent 宿主才能发现它。
+当一个有效做法值得复用时，它可以进入该 Scope 的 Review Inbox，成为 Experience 或 Skill 候选。候选内容在一次评审决定生成不可变 Revision 之前，不会进入被召回的上下文。Skill 还必须显式导出，Agent 宿主才能发现它。
 
 ## 效果怎么样
 
