@@ -135,8 +135,11 @@ powercontext doctor codex
 <details>
 <summary><strong>まず Python で試す（API キー不要）</strong></summary>
 
+チュートリアルはリポジトリの checkout 内で実行し、依存関係は `uv` の dependency group から取得します。`powercontext` パッケージには含まれません。リポジトリのルートで実行してください：
+
 ```bash
-pip install "powercontext[cli]==1.3.0"
+uv sync --locked --group notebooks
+uv run --locked --group notebooks jupyter lab --notebook-dir=examples/jupyter
 ```
 
 チーム作業の一連の流れも学べる [22 本の Jupyter チュートリアル（中国語）](examples/jupyter/README.md)で、Memory、コンテキストの準備、Handoff、Experience、Skill、実際の Agent を動かしながら学べます。最初の 7 本はモデルや API キーなしで実行できます。

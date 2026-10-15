@@ -138,8 +138,11 @@ powercontext doctor codex
 <details>
 <summary><strong>先用 Python 体验，不需要 API Key</strong></summary>
 
+教程需要在仓库 checkout 内运行，依赖由 `uv` 的 dependency group 提供，不在 `powercontext` 包内。在仓库根目录执行：
+
 ```bash
-pip install "powercontext[cli]==1.3.0"
+uv sync --locked --group notebooks
+uv run --locked --group notebooks jupyter lab --notebook-dir=examples/jupyter
 ```
 
 想用 Python 逐步体验？从 [22 篇中文 Jupyter 教程与完整团队工作流](examples/jupyter/README.md)开始，亲手运行 Memory、上下文、交接、Experience、Skill 和真实 Agent。前七篇不需要模型或 API Key。

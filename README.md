@@ -174,8 +174,12 @@ powercontext doctor codex
 <details>
 <summary><strong>Explore in Python first — no API key</strong></summary>
 
+The tutorials run from a repository checkout and take their dependencies from a `uv` dependency group, so they are not
+part of the `powercontext` package. From the repository root:
+
 ```bash
-pip install "powercontext[cli]==1.3.0"
+uv sync --locked --group notebooks
+uv run --locked --group notebooks jupyter lab --notebook-dir=examples/jupyter
 ```
 
 Then work through the [22 Chinese Jupyter tutorials and a complete team workflow](examples/jupyter/README.md) to run
