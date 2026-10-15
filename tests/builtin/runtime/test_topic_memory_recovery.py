@@ -25,14 +25,20 @@ from powercontext.builtin.artifacts.topic_memory.processing import (
     TopicMemoryBlockConflictError,
     TopicMemoryBlockNotFoundError,
 )
-from powercontext.builtin.inference import InferenceTimeoutError
+from powercontext.builtin.inference import InferenceTimeoutError, character_token_estimator
 from powercontext.builtin.persistence.processing import ArtifactProcessingPendingRepository
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import TOPIC_MEMORY_WORK_BUDGETS_TABLE as BUDGETS
 from powercontext.builtin.persistence.topic_memory_budget import record_topic_memory_work_failure
 from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingBinding, ArtifactProcessingSupervisor
+from powercontext.builtin.runtime.topic_memory_processing import (
+    TopicMemoryAtomicPublisher,
+    TopicMemoryProcessor,
+    TopicMemoryStageSet,
+    TopicMemoryWindowSelector,
+)
 from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecoveryService
-from powercontext.builtin.runtime.topic_memory_scope import topic_memory_processing_block
+from powercontext.builtin.runtime.topic_memory_scope import TopicMemoryScopeProcessor, topic_memory_processing_block
 from powercontext.sources import SourceMaterialization
 from tests.builtin.persistence.contract import NoteSource
 from tests.builtin.runtime.test_processing_scheduler import _Launcher, _wait
@@ -73,6 +79,76 @@ def test_inspection_cannot_block_or_reset_an_active_third_attempt():
             release.set()
             if task is not None:
                 await task
+            await manager.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+
+
+def test_attempt_range_stays_exact_after_context_window_shrinks_and_database_reopens(tmp_path):
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'attempt-range.db'}")
+
+    async def scenario():
+        manager, profile, sources, topics = await _repositories(config)
+        try:
+            for number in (1, 2, 3):
+                await _capture(profile, sources, number, flush=number == 3)
+            assignment = await _assignment(profile)
+
+            async def unavailable(_count):
+                raise TopicMemoryGenerationError("probe_unavailable")
+
+            probe = _Probe(unavailable)
+            estimator = character_token_estimator()
+            domain = TopicMemoryProcessor(
+                database=profile.database,
+                sources=sources,
+                topics=topics,
+                stages=TopicMemoryStageSet(
+                    probe=probe,
+                    global_evolver=probe,
+                    planner=probe,
+                    evolver=probe,
+                    temporary=probe,
+                    reconciler=probe,
+                    estimator=estimator,
+                    input_tokens_limit=100_000,
+                ),
+                publisher=TopicMemoryAtomicPublisher(profile.database, sources, topics),
+            )
+            for context_window in (100_000, 1, 1):
+                processor = TopicMemoryScopeProcessor(
+                    profile.database,
+                    domain,
+                    TopicMemoryWindowSelector(
+                        profile.database, sources, estimator, context_window_tokens=context_window
+                    ),
+                    source_window_limit=2,
+                )
+                with pytest.raises(TopicMemoryGenerationError, match="probe_unavailable"):
+                    await processor.process(assignment)
+            assert [len(value.evidence) for value in probe.inputs] == [2, 1, 1]
+            service = TopicMemoryRecoveryService(profile.database)
+            status = await service.status("scope-a")
+            block = status.block
+            assert status.state == "blocked" and block is not None
+            assert (status.source_cursor, status.source_head, status.target_source_through) == (0, 3, 3)
+            budget = await _budget(profile.database)
+            assert budget["source_through"] == 2 and budget["attempts"] == 3
+            assert block.attempt_id == budget["attempt_id"]
+            assert (block.source_after, block.source_through, block.target_source_through) == (0, 1, 3)
+            assert block.attempts == 3 and block.error_code == "window_attempt_limit"
+            assert block.last_error_code == "probe_unavailable"
+            assert await service.get_block("scope-a", block.block_id) == block
+        finally:
+            await manager.__aexit__(None, None, None)
+
+        manager, profile, _, _ = await _repositories(config)
+        try:
+            service = TopicMemoryRecoveryService(profile.database)
+            assert (await service.status("scope-a")).block == block
+            assert await service.get_block("scope-a", block.block_id) == block
+            assert await _budget(profile.database) == budget
+        finally:
             await manager.__aexit__(None, None, None)
 
     asyncio.run(scenario())

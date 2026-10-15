@@ -269,7 +269,8 @@ class TopicMemoryWorkBudget:
                         scope_id=self.scope_id,
                         binding_name=self.binding_name,
                         source_after=self.source_after,
-                        source_through=current["source_through"],
+                        # The frontier range is cumulative; the audit range belongs to this attempt.
+                        source_through=self.source_through,
                         target_source_through=max(self.target_source_through, current["source_through"]),
                         attempts=current["attempts"],
                         requests=current["requests"],
