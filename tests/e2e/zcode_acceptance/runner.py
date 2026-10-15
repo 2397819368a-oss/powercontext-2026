@@ -53,6 +53,12 @@ from .workflows import candidate_review, memory_and_handoff
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 PLUGIN = REPOSITORY / "integrations/zcode/plugins/powercontext"
+_NATIVE_ASSERTIONS = {
+    "libuv_async_handle_closing": r"Assertion failed: !\(handle->flags & UV_HANDLE_CLOSING\), "
+    r"file (?:deps[/\\]uv[/\\])?src[/\\]win[/\\]async\.c, line [0-9]+",
+    "libuv_fs_event_path_mismatch": r"Assertion failed: !_wcsnicmp\(filename, dir, dirlen\), "
+    r"file (?:deps[/\\]uv[/\\])?src[/\\]win[/\\]fs-event\.c, line [0-9]+",
+}
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -64,6 +70,20 @@ def error_code(error: Exception) -> str:
     """Persist only a stable code, never an arbitrary exception message or request body."""
     code = str(error) if isinstance(error, AssertionError) else ""
     return code if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_/]{0,95}", code) else type(error).__name__
+
+
+def _cli_events(output: str, *, failed: bool) -> list[dict[str, Any]]:
+    """Decode CLI frames without hiding a process failure behind truncated output."""
+    events = []
+    for line in output.splitlines():
+        if not line.strip().startswith("{"):
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            if not failed:
+                raise
+    return events
 
 
 @contextmanager
@@ -264,7 +284,7 @@ class AcceptanceRun:
         if resume:
             args.extend(["--resume", resume])
         completed = self.process(args, environment=environment)
-        events = [json.loads(line) for line in completed.stdout.splitlines() if line.strip().startswith("{")]
+        events = _cli_events(completed.stdout, failed=completed.returncode != 0)
         self.last_events = events
         if self.live:
             started = [
@@ -280,6 +300,19 @@ class AcceptanceRun:
                     "host_selected_different_model_from_requested"
                 )
         if completed.returncode:
+            self.summary["host_process_exit"] = {
+                "returncode": completed.returncode,
+                "result_event_count": sum(event.get("type") == "result" for event in events),
+                # Retain a fixed native signature without exposing stderr's paths, prompts or credentials.
+                "native_assertion": next(
+                    (
+                        code
+                        for code, pattern in _NATIVE_ASSERTIONS.items()
+                        if any(re.fullmatch(pattern, line) for line in completed.stderr.splitlines())
+                    ),
+                    None,
+                ),
+            }
             failures = [payload for event in events if (payload := event.get("payload", {})).get("errorCode")]
             codes = [
                 payload["errorCode"]
