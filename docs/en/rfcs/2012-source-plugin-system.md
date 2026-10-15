@@ -81,7 +81,7 @@ Arrows show business calls and data flow. write implementations run in Server; c
 | RemoteConnectorWorker | Existing batch pipeline; creates sessions, calls Connector.run, and processes receipts and checkpoint CAS |
 | apply / Connector | Plugin business code; apply decides timing, while Connector reads, transforms, and submits batch data |
 
-write alone requires only Server. N plugin instances add one plugin management service and N plugin instance Runtime processes, hosted by the system service manager.
+write alone requires only Server. N plugin instances add one plugin management service and N plugin instance Runtime processes. Plugin instance Runtimes run as ordinary background processes by default; users explicitly opt into system service management.
 
 ## Startup loading and adding instances at runtime
 
@@ -89,11 +89,13 @@ write alone requires only Server. N plugin instances add one plugin management s
 
 **collect:** Server scans the plugin directory specified through an environment variable once at startup. Each `powercontext.yml` declares an instance `id`, code entry, business configuration, credential references, and serviceable Scopes. id is instance_id, unique within a PC deployment and stable across restarts. Several instances can use the same local code without publishing a wheel; placing configuration in the trusted directory authorizes loading.
 
-Deployment prepares or reuses the plugin management service, validates the plugin, registers Definitions and the instance, grants permissions, and starts an independent plugin instance Runtime. Adding an instance while running requires explicit loading, without continuous directory scanning or restarting other instances. Repeated loading of the same ID and matching configuration reuses registration and processes without resetting desired state. Conflicting configuration is rejected; updates follow section 5.
+Users run `source load` on the plugin execution machine to load instance configuration and connect to a local or remote Server and plugin management service. The command validates the plugin, uses deployment credentials to register Definitions and the instance and grant required Scope permissions, prepares Runtime credentials and startup configuration, and starts an independent Runtime on that machine. Existing permissions are reused; identities for an external Server are provisioned through its authentication mechanism. Users do not run a separate registration script or manually submit credential digests. Local automatic deployment can prepare management as needed; cross-machine deployment connects to services that have already been prepared.
 
-Configuration may contain initial `targets`, each specifying Scope, capability, and business input. First target initialization imports them using normal add rules and records initialization. Management is authoritative thereafter; the file no longer replaces or adds targets. Empty targets or connection failure do not trigger reimport, and changes to initial targets do not constitute instance configuration conflicts.
+Server startup scanning reuses the same loading flow. Adding an instance while running explicitly invokes `source load`, without continuous directory scanning or restarting other instances. Repeated loading of the same ID and matching configuration reuses registration and processes without resetting desired state. Conflicting configuration is rejected; updates follow section 5.
 
-No plugin instances means management need not start. Failure to prepare one instance does not block built-ins. Removing a directory, stopping Server, or disabling all instances does not implicitly uninstall independent services or delete data. Remote machines deploy their own code and plugin instance Runtimes; local loading does not distribute code or invoke remote shells.
+Configuration may contain initial `targets`, each specifying Scope, capability, and business input. First target initialization imports them using normal add rules and records initialization. Management is authoritative thereafter; the file no longer replaces or adds targets. Empty targets or connection failure do not trigger reimport.
+
+No plugin instances means management need not start. Failure to prepare one instance does not block built-ins. Removing a directory, stopping Server, or disabling all instances does not implicitly uninstall independent services or delete data. After preparing code and dependencies on a remote execution machine, users run `source load` there. The command starts Runtime only on the machine where it runs; it does not distribute code or invoke remote shells.
 
 ## Component communication and connection directions
 
@@ -111,10 +113,12 @@ On connection or reconnection, management proactively synchronizes the complete 
 
 ## Persistent data and storage ownership
 
+The framework's new independent persistence management is confined to the plugin management service. PC Server reuses existing data storage, and plugin instance Runtime retains only startup files; neither adds a separate plugin business-state store. write entries and required configuration references are retained as deployment configuration.
+
 | Owner | Authoritative data and recovery basis |
 | --- | --- |
 | Plugin management service | Its own SQLite stores instances, capabilities, collect targets, desired state, and received submission records, plus last reported execution state and confirmation time |
-| PC Server | Existing storage holds Sources, Projections, checkpoints, and user authorization; additionally stores write entries and configuration references, while code and dependencies remain on its filesystem |
+| PC Server | Existing storage holds Sources, Projections, checkpoints, and user authorization; write entries and configuration references belong to deployment configuration, while code and dependencies remain on its filesystem |
 | Plugin instance Runtime | Persists only code, startup configuration, and credential references; target snapshots, batches, and undelivered reports remain in memory and are resynchronized after restart |
 
 Management's `records` stores deployment bindings, instances, capabilities, targets, and submission records (Source references and times). `follow_identity` maps stable collect resource identities to target_id for repeat-add reuse. write uses existing Source storage rules without a separate acceptance ledger.
@@ -141,7 +145,7 @@ The following describes proposed methods, essential parameters, call flows, and 
 
 ## pc_source_capabilities: discover capabilities and input requirements
 
-**Input:** scope_id and operation (`add` for business discovery), optionally filtered by capability or instance_id.
+**Input:** scope_id, optionally filtered by capability or instance_id.
 
 **Flow:** Host calls → Server checks Scope read permission and whether writing is permitted → filters local capabilities and the synchronized collect catalog by visibility and serviceable Scope → directly returns names, versions, kind, input_schema, permissions, instances, and availability.
 
@@ -194,7 +198,7 @@ Repeated add does not reset progress, trigger extra collection, or resume a stop
 
 **Input:** scope_id and target_id; the default view reads collection status, while `view="control"` reads control fields.
 
-**Flow:** Server checks the view's permissions → management verifies the target's actual Scope → reads persistent target and received submission records → reply → Server returns to the host. Queries do not call identify_target, wait for a new batch, or require online plugin instance Runtime.
+**Flow:** Server checks the view's permissions → management verifies the target's actual Scope → reads persistent target and received submission records → reply → Server returns to the host.
 
 | View | Return |
 | --- | --- |
@@ -215,10 +219,10 @@ The response confirms saved intent rather than completed execution. Target ident
 
 | View and input | Call-to-return flow |
 | --- | --- |
-| Business: scope_id, operation=add | Server checks Scope permissions and directly returns visible instances, capabilities, writability, and state using capabilities catalog rules |
+| Business: scope_id | Server checks Scope permissions and directly returns visible instances, capabilities, writability, and state using capabilities catalog rules |
 | Control: instance_id, view=control | Server checks server.admin, queries persistent instance control state and latest execution reports through management, then returns instance_id, enabled, actual, availability, and update time |
 
-Control view requires no Scope and returns no Config, target input, or Sources. Persistent control state remains readable when only plugin instance Runtime is offline, with offline or unknown availability; unreachable management makes control queries unavailable. This method does not load code, access external accounts, or start apply. write has no instances.
+Control view requires no Scope and returns no Config, target input, or Sources. Persistent control state remains readable when only plugin instance Runtime is offline, with offline or unknown availability; unreachable management makes control queries unavailable.
 
 ## pc_source_instance_set_enabled: enable or disable instance business execution
 
@@ -240,7 +244,7 @@ Plugins can load directly from local directories. write code and dependencies re
 
 **Shared data contracts:** SourceDefinition declares input and Source models, name, and version. `resolve(value)` produces a stable Source identity; `project(source)` implementations in `projections` produce Projections. Plugins export implementation objects in `definitions` and declare capability name, version, description, kind, and input_schema in `capabilities`. Capabilities describe callable behavior; Definitions describe output data, without requiring a one-to-one type mapping.
 
-**write loading:** Each write capability associates a Definition name and version, with input_schema matching its input model. Plugin modules export actual Definition and Projection objects. Server's generic loader imports and registers them through a trusted entry, so Server needs no type-specific imports. Adding a module requires code, dependencies, and entry configuration; uploading definition structure through registration alone cannot supply executable functions. Import does not start collection tasks.
+**write loading:** Each write capability associates a Definition name and version, with input_schema matching its input model. Plugin modules export actual Definition and Projection objects. Server's generic loader imports and registers them through a trusted entry. Adding a module requires code, dependencies, and entry configuration; uploading definition structure through registration alone cannot supply executable functions.
 
 **collect runtime contracts:**
 
@@ -351,7 +355,7 @@ flowchart TD
     D -->|Cleanup failed| U[Report error, no second Context]
 ```
 
-After apply returns or fails, Context is cleaned up but plugin instance Runtime stays online. New targets, reconnection, or repeated enablement do not rerun apply. Plugins needing continuous target handling maintain their own loop without blocking management operations while waiting. Internal run identifiers distinguish reports for the current connection and run; hosts do not provide them.
+After apply returns or fails, Context is cleaned up but plugin instance Runtime stays online. New targets, reconnection, or repeated enablement do not rerun apply. Plugins needing continuous target handling maintain their own loop without blocking management operations while waiting.
 
 Rerunning within a process requires disablement, confirmed stopped state, and enablement. Process restart instead synchronizes and decides whether to create a Context from enabled. The direct execution entry exits when apply ends and cannot share instance identity with background mode. After a system service exits or is uninstalled, deployment tooling on that machine must restart it.
 
@@ -372,7 +376,7 @@ Disablement does not undo saved Sources or affect Server write capabilities. Dis
 | Management disconnected from Server | Host collect management is unavailable; existing collection can continue, while built-ins and loaded write remain independent |
 | Server unavailable | Submissions fail or wait for recovery; saved Sources remain, and write calls are not automatically recovered or replayed |
 
-If exit of the previous process with the same identity cannot be established, another plugin instance Runtime must not start. Missing heartbeats do not authorize cross-machine takeover. The framework does not guarantee exactly-once apply or external effects.
+Each plugin instance runs only one Runtime. Stop the old Runtime before redeploying.
 
 Recovery follows actual persisted data: a saved Source without an advanced checkpoint may be recollected using stable identity; a lost checkpoint-update response requires rereading it. Lost submission reports do not roll back Sources or checkpoints and are not guaranteed to be backfilled in management records.
 
@@ -382,7 +386,7 @@ Recovery follows actual persisted data: a saved Source without an advanced check
 - **Expand Scopes:** Grant execution identity the relevant Scope Binding (Server role assignment) and update serviceable scope. After synchronization, targets can use the new Scope with the same Context. Passing scope_id alone grants no permission.
 - **Reduce scope, change execution configuration, or upgrade collect:** Disable and confirm stopped, exit old plugin instance Runtime, validate and update code, Config, and registration, then explicitly enable after the new plugin instance Runtime validates. Credential changes use configuration updates, with business meaning interpreted by the plugin.
 
-Upgrades preserve Sources, targets, checkpoints, and received submission records. Validate compatibility of capability input and target identity, Definitions, Connector, and checkpoint formats. New code must handle retained targets, including disabled ones, without resetting progress to bypass checks. Uncertain compatibility keeps the instance disabled for explicit deployment handling, without automatic migration. New instances do not inherit old targets automatically.
+Upgrades preserve Sources, targets, checkpoints, and received submission records. Validate compatibility of capability input and target identity, Definitions, Connector, and checkpoint formats. New code must handle retained targets, including disabled ones. Uncertain compatibility keeps the instance disabled for explicit deployment handling, without automatic migration. New instances do not inherit old targets automatically.
 
 write updates first resolve in-flight calls, then restart and load while preserving capability and Definition contracts and existing Source identity. Ordinary repeated loading does not replace configuration updates.
 
@@ -401,7 +405,7 @@ User authorization reuses Server Access. A Principal is the user or service iden
 
 Server forwards authorized operations and trusted identity. Management verifies actual resource Scope, instance serviceable scope, and execution conditions to prevent addressing another Scope's target through an authorized Scope. Authenticated plugin instance Runtime synchronizes and reports only its instance and cannot impersonate Server management requests. Plugins handle external authorization; identify_target does not authorize.
 
-Any contributor in the Scope can control targets, regardless of creator; instance-wide controls require server.admin. collect uses the instance PC identity for continuous execution, checked on each submission. Creator permission changes do not automatically stop targets. write uses the current host identity, and returning data requires current read permission; denial does not undo already saved data. Control responses exclude business configuration, target input, and Source data.
+Any contributor in the Scope can control targets, regardless of creator; instance-wide controls require server.admin. collect uses the instance PC identity for continuous execution, checked on each submission. write uses the current host identity; denial does not undo already saved data. Control responses exclude business configuration, target input, and Source data.
 
 ## Credentials and initial authorization
 
@@ -409,11 +413,11 @@ AuthenticationProvider maps credentials to Principals. Local deployment can prep
 
 | Credential | Use and ownership |
 | --- | --- |
-| Deployment | Deployment tooling loads code, registers Definitions, grants permissions, and configures instances; not passed to plugin instance Runtime |
+| Deployment | The startup loading flow uses these credentials to load code, register Definitions, grant permissions, and configure instances; not passed to plugin instance Runtime |
 | Host | Stored in host security configuration to call Server |
 | Management channel | Management authenticates to Server |
 | PC execution | Per-instance identity for Source submission and checkpoints, without server.admin |
 | Instance connection | plugin instance Runtime proves its own identity to management |
 | External system | Stored and interpreted by plugins, optionally referenced in Config |
 
-Before business execution, deployment verifies actual identities, registers Definitions, grants Scope permissions, records instance scope and connection identities, and checks access using execution credentials. Existing identity and Access interfaces are reused. Instances may be registered without Scope authorization but cannot accept work for that Scope. write has no separate execution credentials and does not borrow deployment authority for daily saves. Credentials are excluded from command arguments, catalogs, and ordinary logs; cross-machine connections use TLS or equivalent security.
+Before business execution, the startup loading flow verifies actual identities, registers Definitions, grants Scope permissions, records instance scope and connection identities, and checks access using execution credentials. Server checks deployment authority before forwarding instance registration to management, which stores the instance connection credential digest. Management authenticates Runtime connections directly without consulting Server on each connection. Existing identity and Access interfaces are reused. Instances may be registered without Scope authorization but cannot accept work for that Scope. write has no separate execution credentials and does not borrow deployment authority for daily saves. Credentials are excluded from command arguments, catalogs, and ordinary logs; cross-machine connections use TLS or equivalent security.

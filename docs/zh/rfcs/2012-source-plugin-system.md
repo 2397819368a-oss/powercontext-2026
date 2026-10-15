@@ -81,7 +81,7 @@ flowchart TB
 | RemoteConnectorWorker | 已有批次管道；创建 session、调用 Connector.run、处理提交回执及 checkpoint CAS |
 | apply / Connector | 插件业务代码；apply 决定节奏，Connector 读取、转换并提交本批数据 |
 
-只使用 write 时仅需 Server；N 个插件实例增加一个插件管理服务和 N 个插件实例 Runtime 进程，由系统服务托管。
+只使用 write 时仅需 Server；N 个插件实例增加一个插件管理服务和 N 个插件实例 Runtime 进程。插件实例 Runtime 默认作为普通后台进程运行，系统服务托管由用户显式选择。
 
 ## 启动加载与运行时新增实例
 
@@ -89,11 +89,13 @@ flowchart TB
 
 **collect：** Server 启动时扫描一次通过环境变量指定的插件目录；每份 `powercontext.yml` 声明实例 `id`、代码入口、业务配置、凭据引用和可服务 Scope。id 即 instance_id，在同一 PC 部署内唯一且跨重启稳定。同一份本地代码可供多个实例使用，无需发布 wheel；配置进入可信目录表示部署者允许加载。
 
-部署流程准备或复用插件管理服务，校验插件、注册 Definition、登记实例并授权，再启动独立插件实例 Runtime。运行中新增实例需显式加载，不持续扫描目录，也不重启其他实例。重复加载同一 ID 和一致配置复用登记及进程，不重置启停状态；配置不同则报冲突，更新按第 5 节处理。
+用户在插件执行机器通过 `source load` 加载实例配置，连接本机或远端 Server 和插件管理服务。命令校验插件，使用部署凭据注册 Definition、登记实例并完成所需 Scope 授权，准备 Runtime 凭据和启动配置，再启动本机独立插件实例 Runtime；已有权限会复用，外部 Server 的身份由其认证机制准备。用户无须另行执行登记脚本或手工提交凭据摘要。本机自动部署可按需准备插件管理服务；跨机器部署连接已准备好的服务。
 
-配置可包含初始 `targets`，每项指定 Scope、能力及业务输入。实例首次初始化目标时按正常添加规则导入插件管理服务，并记录已初始化；此后以插件管理服务为准，文件不再覆盖或补充目标。目标为空或连接失败不触发重新导入，初始 targets 的变化不算实例配置冲突。
+Server 启动扫描复用同一加载流程；运行中新增实例显式执行 `source load`，不持续扫描目录，也不重启其他实例。重复加载同一 ID 和一致配置复用登记及进程，不重置启停状态；配置不同则报冲突，更新按第 5 节处理。
 
-无插件实例时不必启动插件管理服务；单个实例准备失败不阻塞内置功能。删除目录、停止 Server 或停用全部实例不会隐式卸载独立服务或删除数据。远端机器自行部署代码与插件实例 Runtime，本机加载不负责远程 shell 或代码分发。
+配置可包含初始 `targets`，每项指定 Scope、能力及业务输入。实例首次初始化目标时按正常添加规则导入插件管理服务，并记录已初始化；此后以插件管理服务为准，文件不再覆盖或补充目标。目标为空或连接失败不触发重新导入。
+
+无插件实例时不必启动插件管理服务；单个实例准备失败不阻塞内置功能。删除目录、停止 Server 或停用全部实例不会隐式卸载独立服务或删除数据。远端机器准备代码和依赖后，在该机器执行 `source load`；命令只启动执行机器上的 Runtime，不负责远程 shell 或代码分发。
 
 ## 组件通信与连接方向
 
@@ -111,10 +113,12 @@ flowchart TB
 
 ## 持久化数据与存储归属
 
+插件框架新增的独立持久化管理集中在插件管理服务。PC Server 复用已有数据存储，插件实例 Runtime 仅保留启动所需文件，两者不另建插件业务状态存储；write 加载入口及必要配置引用作为部署配置保留。
+
 | 保存方 | 权威数据与恢复依据 |
 | --- | --- |
 | 插件管理服务 | 自管 SQLite 保存实例、能力、collect 目标、期望启停状态及收到的提交记录；同时记录最近执行状态与确认时间 |
-| PC Server | 已有存储保存 Source、Projection、checkpoint 和用户授权；另存 write 加载入口及配置引用，代码与依赖留在 Server 文件系统 |
+| PC Server | 已有存储保存 Source、Projection、checkpoint 和用户授权；write 加载入口及配置引用属于部署配置，代码与依赖留在 Server 文件系统 |
 | 插件实例 Runtime | 仅持久保留代码、启动配置和凭据引用；目标快照、批次与未送达报告放在内存，重启后重新同步 |
 
 管理存储中的 `records` 保存部署绑定、实例、能力、目标及提交记录（Source 引用和时间）；`follow_identity` 保存 collect 稳定资料身份到 target_id 的映射，用于重复添加时复用目标。write 直接沿用 Source 存储规则，不保存独立受理记录。
@@ -141,7 +145,7 @@ flowchart TB
 
 ## pc_source_capabilities：发现能力与输入要求
 
-**输入：** scope_id、operation（业务发现为 `add`），可按 capability、instance_id 筛选。
+**输入：** scope_id，可按 capability、instance_id 筛选。
 
 **链路：** 宿主调用 → Server 检查 Scope 读取权限及是否可写 → 根据本地能力和已同步 collect 目录筛选公开范围、可服务 Scope → 直接返回能力名称、版本、kind、input_schema，以及权限、实例和可用性。
 
@@ -194,7 +198,7 @@ sequenceDiagram
 
 **输入：** scope_id、target_id；默认查询采集状态，`view="control"` 查询启停字段。
 
-**链路：** Server 检查对应视图权限 → 插件管理服务核对目标实际 Scope → 读取持久目标及已收到的提交记录 → reply → Server 返回宿主。查询不调用 identify_target、不等待新批次，也不要求插件实例 Runtime 在线。
+**链路：** Server 检查对应视图权限 → 插件管理服务核对目标实际 Scope → 读取持久目标及已收到的提交记录 → reply → Server 返回宿主。
 
 | 视图 | 返回 |
 | --- | --- |
@@ -215,10 +219,10 @@ tracking 表示 enabled / stopping / stopped。提交记录只表示已确认并
 
 | 视图与输入 | 从调用到返回 |
 | --- | --- |
-| 业务：scope_id、operation=add | Server 检查 Scope 权限，按 capabilities 的目录规则直接返回可见实例、能力、可写性与运行状态 |
+| 业务：scope_id | Server 检查 Scope 权限，按 capabilities 的目录规则直接返回可见实例、能力、可写性与运行状态 |
 | 控制：instance_id、view=control | Server 检查 server.admin，经管理通道读取实例的持久控制状态与最近执行报告，再返回 instance_id、enabled、actual、可用性与更新时间 |
 
-控制视图不要求 Scope，也不返回 Config、目标输入或 Source。仅插件实例 Runtime 离线时仍可读取控制状态，但须标注离线或未知；插件管理服务不可达则控制查询不可用。本方法不加载代码、访问外部账号或启动 apply；write 没有实例。
+控制视图不要求 Scope，也不返回 Config、目标输入或 Source。仅插件实例 Runtime 离线时仍可读取控制状态，但须标注离线或未知；插件管理服务不可达则控制查询不可用。
 
 ## pc_source_instance_set_enabled：启停整个实例的业务运行
 
@@ -240,7 +244,7 @@ tracking 表示 enabled / stopping / stopped。提交记录只表示已确认并
 
 **共同数据契约：** SourceDefinition 声明输入模型、Source 模型、名称及版本；`resolve(value)` 生成稳定身份的 Source，`projections` 中的 `project(source)` 生成 Projection。插件通过 `definitions` 导出实现对象，通过 `capabilities` 声明能力名称、版本、说明、kind 和 input_schema。能力描述可调用行为，Definition 描述输出数据；二者不是一一对应的类型体系。
 
-**write 加载：** 每个 write 能力关联一个 Definition 的名称与版本，input_schema 对应其输入模型。插件模块导出实际 Definition 和 Projection 对象，Server 通用加载器按受信任入口导入并登记，因此无需在 Server 代码中增加类型专属 import。新增模块只需准备代码、依赖和入口配置，不能仅通过注册 API 上传定义结构来获得可执行函数。导入不启动采集任务。
+**write 加载：** 每个 write 能力关联一个 Definition 的名称与版本，input_schema 对应其输入模型。插件模块导出实际 Definition 和 Projection 对象，Server 通用加载器按受信任入口导入并登记。新增模块只需准备代码、依赖和入口配置，不能仅通过注册 API 上传定义结构来获得可执行函数。
 
 **collect 运行契约：**
 
@@ -351,7 +355,7 @@ flowchart TD
     D -->|清理失败| U[报告错误，不创建第二份 Context]
 ```
 
-apply 返回或异常结束后清理 Context，插件实例 Runtime 仍在线；新增目标、重连或重复启用不重新调用 apply。需要持续处理新增目标的插件自行保持循环，等待不阻塞管理操作。内部运行标识只用于区分当前连接和本次运行的报告，宿主无需提供。
+apply 返回或异常结束后清理 Context，插件实例 Runtime 仍在线；新增目标、重连或重复启用不重新调用 apply。需要持续处理新增目标的插件自行保持循环，等待不阻塞管理操作。
 
 同一进程再次运行须停用、确认 stopped，再启用；进程重启则在同步后按 enabled 决定是否新建 Context。直接运行入口在 apply 结束后退出，不能与后台模式同时占用同一实例。系统服务卸载或退出后，须由执行机器的部署工具重新启动。
 
@@ -372,7 +376,7 @@ apply 返回或异常结束后清理 Context，插件实例 Runtime 仍在线；
 | 插件管理服务与 Server 断线 | 宿主 collect 管理操作不可用，已有采集可继续；内置和已加载 write 独立可用 |
 | Server 不可用 | 数据提交失败或等待恢复；已保存 Source 保留，write 调用不自动恢复或重放 |
 
-同身份旧进程是否退出无法确认时，不启动另一份插件实例 Runtime；心跳丢失不是跨机器接管依据。框架不保证 apply 或外部副作用只执行一次。
+同一插件实例只运行一个 Runtime。重新部署前，先停止旧 Runtime。
 
 恢复以各存储中的真实数据为准：Source 已保存而 checkpoint 未更新时可能重新采集，沿用稳定身份避免重复；checkpoint 更新响应丢失时重新读取；提交报告丢失不回退 Source 或 checkpoint，也不保证补齐管理记录。
 
@@ -382,7 +386,7 @@ apply 返回或异常结束后清理 Context，插件实例 Runtime 仍在线；
 - **扩展 Scope：** 授予执行身份相应 Scope Binding（Server 中的角色授权关系），更新实例可服务范围；同步后可添加新 Scope 目标，保留原 Context。传入 scope_id 本身不授予权限。
 - **缩减范围、修改执行配置或升级 collect：** 停用并确认停止，退出旧插件实例 Runtime，校验和更新代码、Config 与登记；新插件实例 Runtime 校验成功后显式启用。凭据变更按配置更新处理，业务含义由插件解释。
 
-升级保留 Source、目标、checkpoint 与已收到的提交记录，核对能力输入和目标身份、Definition、Connector 与 checkpoint 格式的兼容性。新代码须能处理保留的目标，包括停用目标；不能通过重置进度绕过检查。无法确认兼容时保持停用，由部署者明确处理，不自动迁移；新实例不自动继承旧目标。
+升级保留 Source、目标、checkpoint 与已收到的提交记录，核对能力输入和目标身份、Definition、Connector 与 checkpoint 格式的兼容性。新代码须能处理保留的目标，包括停用目标。无法确认兼容时保持停用，由部署者明确处理，不自动迁移；新实例不自动继承旧目标。
 
 write 更新先处置在途调用，再重启加载，保留能力与 Definition 契约及已有 Source 身份。普通重复加载不代替配置更新。
 
@@ -401,7 +405,7 @@ write 更新先处置在途调用，再重启加载，保留能力与 Definition
 
 Server 转交已授权操作及可信身份；插件管理服务核对资源实际 Scope、实例可服务范围和运行条件，避免以有权限的 Scope 操作其他 Scope 的目标。插件实例 Runtime 认证后仅同步和报告自身实例，不能冒充 Server 管理请求。插件处理外部系统权限，identify_target 不承担授权。
 
-同 Scope 的贡献者均可控制目标，不限创建者；跨 Scope 的实例控制须 server.admin。collect 持续执行使用实例 PC 身份，每次提交由 Server 检查；创建者权限变化不自动停止目标。write 使用当前宿主身份，返回结果前检查当前读取权限；拒绝返回不撤销已经保存的数据。控制响应不含业务配置、目标输入或 Source 数据。
+同 Scope 的贡献者均可控制目标，不限创建者；跨 Scope 的实例控制须 server.admin。collect 持续执行使用实例 PC 身份，每次提交由 Server 检查。write 使用当前宿主身份；拒绝返回不撤销已经保存的数据。控制响应不含业务配置、目标输入或 Source 数据。
 
 ## 凭据与初始化授权
 
@@ -409,11 +413,11 @@ AuthenticationProvider 将凭据映射为 Principal。本机部署可由部署�
 
 | 凭据 | 用途与归属 |
 | --- | --- |
-| 部署凭据 | 部署工具加载代码、注册 Definition、授权与登记，不下发插件实例 Runtime |
+| 部署凭据 | 启动加载流程用于加载代码、注册 Definition、授权与登记，不下发插件实例 Runtime |
 | 宿主凭据 | 保存在宿主安全配置，用于调用 Server |
 | 管理通道凭据 | 插件管理服务向 Server 认证 |
 | PC 执行凭据 | 每实例独立身份，提交 Source 和处理 checkpoint，不持有 server.admin |
 | 实例连接凭据 | 插件实例 Runtime 向插件管理服务证明自身身份 |
 | 外部系统凭据 | 插件保存和解释，可通过 Config 引用 |
 
-部署启动业务前确认实际身份、完成 Definition 注册和 Scope 授权、登记实例范围及连接身份，再用执行凭据检查权限。复用已有身份与 Access 接口；无 Scope 授权可登记实例，但不能受理该 Scope 工作。write 不另发执行凭据，日常保存不借用部署权限。凭据不进入命令参数、能力目录或普通日志；跨机使用 TLS 或等效安全入口。
+启动加载流程在业务运行前确认实际身份、完成 Definition 注册和 Scope 授权、登记实例范围及连接身份，再用执行凭据检查权限。实例登记经 Server 校验部署权限后传给插件管理服务，后者保存实例连接凭据摘要；Runtime 连接时由插件管理服务直接校验，无须逐次请求 Server。复用已有身份与 Access 接口；无 Scope 授权可登记实例，但不能受理该 Scope 工作。write 不另发执行凭据，日常保存不借用部署权限。凭据不进入命令参数、能力目录或普通日志；跨机使用 TLS 或等效安全入口。
