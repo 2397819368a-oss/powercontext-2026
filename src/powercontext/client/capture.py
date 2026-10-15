@@ -157,12 +157,8 @@ def redact_known_secrets(
     ``codex_home`` is intentionally ignored in that mode.
     """
 
-    if secrets is None:
-        known: Iterable[str] = sorted(known_secret_values(codex_home=codex_home), key=len, reverse=True)
-    elif isinstance(secrets, tuple):
-        known = secrets
-    else:
-        known = sorted(secrets, key=len, reverse=True)
+    values = known_secret_values(codex_home=codex_home) if secrets is None else secrets
+    known: Iterable[str] = sorted(values, key=len, reverse=True)
     for secret in known:
         value = value.replace(secret, REDACTED)
     return value

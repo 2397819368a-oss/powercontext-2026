@@ -59,6 +59,13 @@ def test_capture_redaction_keeps_provider_prefix_handling_out_of_the_shared_path
     assert redact_known_secrets(value) == value
 
 
+def test_known_secret_redaction_sorts_explicit_tuple_by_descending_length() -> None:
+    short_secret = "synthetic-secret"  # noqa: S105 - synthetic redaction sentinel.
+    long_secret = "synthetic-secret-with-suffix"  # noqa: S105 - synthetic redaction sentinel.
+
+    assert redact_known_secrets(long_secret, secrets=(short_secret, long_secret)) == "[REDACTED]"
+
+
 def test_capture_disabled_makes_no_source_or_flush_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     RecordingClient.reset()
     RecordingClient.prepare_result = prepared_response(None)
