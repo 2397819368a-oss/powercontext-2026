@@ -46,6 +46,16 @@ Artifact publication/revision/migration time does not date its facts. Do not tak
 of all supporting Sources as the date of every statement. Inspect which exact evidence supports each fact.
 """.strip()
 
+LANGUAGE_RULES = """
+For each new or corrected fact, use the predominant natural language of its supporting Source statements:
+keep Chinese statements in Chinese and English statements in English. Choose per fact, not for the whole batch;
+the language of these instructions, schema keys or unrelated evidence is not an output-language preference.
+For mixed-language statements, retain their natural-language framing and preserve exact code identifiers,
+project names, technical terms and literal values. Do not invent translations, bilingual aliases, entities or reasons.
+If supporting statements use several languages without a clear predominance, retain faithful original wording.
+A language difference alone is not a factual correction and does not authorize rewriting an existing memory.
+""".strip()
+
 
 def atomic_memory_extraction_instructions(profile: MemoryExtractionProfile) -> str:
     selection = (
@@ -63,6 +73,7 @@ Each candidate must cite one or more supplied evidence_ids and contain self-cont
 Use kind fact, preference, decision, constraint or working_note. Split facts that can change independently.
 Preserve the conditions, effective/event times and uncertainty in text. Do not allocate Artifact IDs or revisions,
 choose existing targets, approve or publish anything. Return empty candidates when nothing is worth remembering.
+{LANGUAGE_RULES}
 {TIME_RULES}
 """.strip()
 
