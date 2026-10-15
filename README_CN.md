@@ -155,3 +155,5 @@ PowerContext 是 [PowerMem](https://www.powermem.ai/) 的后续项目。
 ## 许可证
 
 PowerContext 基于 [Apache License 2.0](LICENSE) 发布。
+
+第一个pr
