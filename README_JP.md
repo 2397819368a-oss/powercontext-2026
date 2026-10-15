@@ -147,7 +147,7 @@ pip install "powercontext[cli]==1.3.0"
 <summary><strong>つまずいたときの確認事項</strong></summary>
 
 - `doctor` は連携のインストールが整ったことのみを示します。自動記憶を検証するには、実際の入力が Source になり、Topic が生成され、関連する入力で主題が変化し、同じ Scope を使う新しいセッションで想起できることを確認してください。
-- Python 依存関係のダウンロードが遅い、または失敗する場合は、[ミラー利用の再試行手順](https://powercontext.oceanbase.io/en/docs/get-started/install-and-run/#retry-dependency-downloads-with-a-mirror)に従ってください。
+- Python 依存関係のダウンロードが遅い、または失敗する場合は、[uv](https://docs.astral.sh/uv/configuration/indexes/) にパッケージインデックス（ミラー）を設定してから再試行してください。
 - 自動 Memory と Topic Memory を試すには **Full memory** を選択し、Generation と Embedding の API 接続を設定してください。Agent のサブスクリプションとは別の認証情報が必要です。**Basic memory** は追加のモデル API なしで明示的な保存・検索を利用できます。
 - seekdb のインストールが必要な場合、ウィザードが一度確認し、依存関係をバックグラウンドでインストールします。
 - オプションの想起十分性ゲートは、Scope ごとの 1 日あたりの検索量と予算超過を記録し、後からポリシー評価に使えます。記録範囲と失敗時の挙動は[設定リファレンス](docs/en/docs/operate/configuration.md)を参照してください。

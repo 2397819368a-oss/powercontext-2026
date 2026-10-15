@@ -189,8 +189,8 @@ model or API key.
 
 - `doctor` verifies integration setup. To verify automatic memory, check that a real prompt becomes a Source, produces a
   Topic, evolves after a related prompt, and can be recalled in a new session using the same Scope.
-- If Python dependency downloads are slow or fail, follow the
-  [mirror retry instructions](https://powercontext.oceanbase.io/en/docs/get-started/install-and-run/#retry-dependency-downloads-with-a-mirror).
+- If Python dependency downloads are slow or fail, configure a package index for
+  [uv](https://docs.astral.sh/uv/configuration/indexes/) and retry.
 - Choose **Full memory capabilities** to test automatic Memory and Topic Memory; this requires separate Generation and
   Embedding API credentials. An Agent subscription does not provide those Server credentials. Choose **Basic memory** to
   save and retrieve memories explicitly without additional model APIs.

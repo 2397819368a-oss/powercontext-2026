@@ -150,7 +150,7 @@ pip install "powercontext[cli]==1.3.0"
 <summary><strong>出问题之前，先看这几条</strong></summary>
 
 - `doctor` 通过只代表集成安装就绪。自动记忆验收需要确认：真实输入进入 Source、产生 Topic、相关输入推动主题演进，并能在使用同一 Scope 的新会话中召回。
-- Python 依赖下载缓慢或失败时，可按[镜像重试步骤](https://powercontext.oceanbase.io/zh/docs/get-started/install-and-run/#使用镜像重试依赖下载)重新安装。
+- Python 依赖下载缓慢或失败时，可先为 [uv](https://docs.astral.sh/uv/configuration/indexes/) 配置包索引（镜像源）再重试。
 - 要体验自动 Memory 提取和 Topic Memory，请选择**完整记忆能力**并准备独立的 Generation、Embedding API 凭据；Agent 官方订阅不会自动给 PowerContext Server 提供这些凭据。选择**基础记忆**则可显式保存与召回，无需额外模型 API。
 - 选择 seekdb 且缺少依赖时，会在确认后后台增量安装。
 - 可选的召回充分性门控会按 Scope 记录每日搜索工作量和字节预算遗漏，供后续策略评估使用。记录范围与失败行为见[配置说明](docs/zh/docs/operate/configuration.md)。
