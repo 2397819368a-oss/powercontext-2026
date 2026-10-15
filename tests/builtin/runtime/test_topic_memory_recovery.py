@@ -352,7 +352,8 @@ def test_generic_failed_workers_retain_last_error_and_stop_after_three_attempts(
 
 
 @pytest.mark.parametrize("error_code", ["worker_timeout", "model_timeout"])
-def test_timeout_diagnostics_survive_database_reopen(tmp_path, error_code):
+def test_timeout_diagnostics_survive_database_reopen(tmp_path, caplog, error_code):
+    caplog.set_level(logging.WARNING, logger="powercontext.builtin.runtime.artifact_processing")
     config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'timeout.db'}")
 
     async def scenario():
@@ -368,9 +369,18 @@ def test_timeout_diagnostics_survive_database_reopen(tmp_path, error_code):
                 await asyncio.Event().wait()
 
             # The launcher is a test double; the Supervisor enforces the real deadline.
-            launcher = _Launcher(
-                profile.database, on_work=_processor(profile, sources, topics, _Probe(timeout)).process
-            )
+            processor = _processor(profile, sources, topics, _Probe(timeout))
+            startup_pending = error_code == "worker_timeout"
+
+            async def run_assignment(assignment):
+                nonlocal startup_pending
+                if startup_pending:
+                    startup_pending = False
+                    # A startup timeout must not count as a reserved Topic attempt.
+                    await asyncio.Event().wait()
+                return await processor.process(assignment)
+
+            launcher = _Launcher(profile.database, on_work=run_assignment)
             async with ArtifactProcessingSupervisor(
                 database=profile.database,
                 bindings=(
@@ -378,7 +388,7 @@ def test_timeout_diagnostics_survive_database_reopen(tmp_path, error_code):
                         BINDING,
                         "topic-memory",
                         launcher,
-                        worker_timeout_seconds=0.5,
+                        worker_timeout_seconds=2.0,
                         work_block=topic_memory_processing_block,
                         work_failure=record_topic_memory_work_failure,
                     ),
@@ -389,13 +399,24 @@ def test_timeout_diagnostics_survive_database_reopen(tmp_path, error_code):
                 retry_jitter=lambda: 1,
                 blocked_check_seconds=0.03,
             ) as supervisor:
-                await _wait(lambda: supervisor.family_status["topic-memory"]["failed"] == 3, timeout_seconds=10)
+                # Worker failures may precede admission; wait for the exhausted frontier.
+                await _wait(
+                    lambda: any(
+                        getattr(record, "event", None) == "artifact_processing.blocked"
+                        and getattr(record, "scope", None) == "scope-a"
+                        for record in caplog.records
+                    ),
+                    timeout_seconds=30,
+                )
                 service = TopicMemoryRecoveryService(profile.database)
                 status = await service.status("scope-a")
                 block = status.block
                 assert status.state == "blocked" and block is not None
                 assert (status.source_cursor, status.source_head) == (0, 1)
                 assert block.attempts == 3 and block.error_code == "window_attempt_limit"
+                assert int(supervisor.family_status["topic-memory"]["failed"]) >= block.attempts
+                if error_code == "worker_timeout":
+                    assert int(supervisor.family_status["topic-memory"]["timeouts"]) >= block.attempts
                 assert supervisor.family_status["topic-memory"]["last_error"] == error_code
                 assert block.last_error_code == error_code
                 assert await service.get_block("scope-a", block.block_id) == block
