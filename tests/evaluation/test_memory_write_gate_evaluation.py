@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
+import rfc8785
 
 from evaluation.memory.write_gate.dataset import (
     ArtifactRef,
@@ -33,7 +35,14 @@ from evaluation.memory.write_gate.dataset import (
     validate_split_pair,
 )
 from evaluation.memory.write_gate.report import calibration_report, report
-from evaluation.memory.write_gate.resolver import AuthorizedClientResolver, MissingInput, ResolvedCase
+from evaluation.memory.write_gate.resolver import (
+    AuthorizedClientResolver,
+    MissingInput,
+    ResolvedCase,
+    SplitCheckedResolver,
+    Unauthorized,
+    UnsupportedReference,
+)
 from evaluation.memory.write_gate.runner import EvaluationStatus, evaluate_dataset
 from powercontext.builtin.decision_observations import DecisionCoverage
 from powercontext.builtin.inference import InferenceUsage
@@ -78,7 +87,11 @@ def _datasets():
                 language="en" if index < 4 else "zh",
                 label=Label.ACCEPT if index % 2 == 0 else Label.HOLD,
                 label_reason="test_support",
-                subject=ArtifactRef(artifact_id=f"{split}-{index}", revision=1, content_digest=DIGEST),
+                subject=ArtifactRef(
+                    artifact_id=f"{split}-{index}",
+                    revision=1,
+                    content_digest="sha256:" + sha256(f"{split}-{index}".encode()).hexdigest(),
+                ),
                 evidence=(ArtifactRef(artifact_id="evidence", revision=1, content_digest=DIGEST),),
             )
             for index in range(8)
@@ -196,6 +209,228 @@ def test_rejects_scenario_group_leakage_between_splits() -> None:
     bad = held_out.model_copy(update={"cases": (copied, *held_out.cases[1:])})
     with pytest.raises(ValueError, match="scenario groups"):
         validate_split_pair(calibration, bad)
+
+
+def test_rejects_copied_private_inputs_with_distinct_case_and_group_ids() -> None:
+    calibration, held_out, _ = _datasets()
+    value = held_out.model_dump()
+    for case, original in zip(value["cases"], calibration.cases, strict=True):
+        case["subject"] = original.subject.model_dump()
+        case["evidence"] = tuple(ref.model_dump() for ref in original.evidence)
+    copied = Dataset.model_validate(value)
+    with pytest.raises(ValueError, match="private inputs must not cross splits"):
+        validate_split_pair(calibration, copied)
+
+
+def test_rejects_duplicate_immutable_references_even_with_changed_artifact_digests() -> None:
+    calibration, held_out, _ = _datasets()
+    original = calibration.cases[0]
+    copied = held_out.cases[0].model_copy(
+        update={
+            "subject": original.subject.model_copy(update={"content_digest": DIGEST}),
+            "evidence": tuple(
+                ref.model_copy(update={"content_digest": "sha256:" + "b" * 64}) for ref in original.evidence
+            ),
+        }
+    )
+    duplicate = Dataset.model_validate({**held_out.model_dump(), "cases": (copied, *held_out.cases[1:])})
+    with pytest.raises(ValueError, match="private inputs must not cross splits"):
+        validate_split_pair(calibration, duplicate)
+
+
+@pytest.mark.parametrize("evidence_kind", ["artifact", "source"])
+def test_rejects_duplicate_content_under_different_references_and_evidence_order(evidence_kind: str) -> None:
+    calibration, held_out, _ = _datasets()
+    if evidence_kind == "source":
+        evidence = (
+            SourceRef(source_id="source-a", content_digest=DIGEST, gate_input_digest=DIGEST),
+            SourceRef(source_id="source-b", content_digest="sha256:" + "b" * 64),
+        )
+        renamed = tuple(ref.model_copy(update={"source_id": f"copy-{index}"}) for index, ref in enumerate(evidence))
+    else:
+        evidence = (
+            ArtifactRef(artifact_id="evidence-a", revision=1, content_digest=DIGEST),
+            ArtifactRef(artifact_id="evidence-b", revision=1, content_digest="sha256:" + "b" * 64),
+        )
+        renamed = tuple(
+            ref.model_copy(update={"artifact_id": f"copy-{index}", "revision": 2}) for index, ref in enumerate(evidence)
+        )
+    original = calibration.cases[0].model_copy(update={"evidence": evidence})
+    calibration = calibration.model_copy(update={"cases": (original, *calibration.cases[1:])})
+    copied = held_out.cases[0].model_copy(
+        update={
+            "scope_id": "another-scope",
+            "subject": original.subject.model_copy(update={"artifact_id": "copied-memory", "revision": 2}),
+            "evidence": tuple(reversed(renamed)),
+        }
+    )
+    held_out = held_out.model_copy(update={"cases": (copied, *held_out.cases[1:])})
+    with pytest.raises(ValueError, match="private inputs must not cross splits"):
+        validate_split_pair(calibration, held_out)
+
+
+def test_allows_shared_evidence_for_distinct_private_candidates() -> None:
+    calibration, held_out, _ = _datasets()
+    assert calibration.cases[0].evidence == held_out.cases[0].evidence
+    validate_split_pair(calibration, held_out)
+
+
+def test_allows_same_private_candidate_with_different_evidence() -> None:
+    calibration, held_out, _ = _datasets()
+    changed = held_out.cases[0].model_copy(
+        update={
+            "subject": calibration.cases[0].subject,
+            "evidence": (ArtifactRef(artifact_id="other-evidence", revision=1, content_digest="sha256:" + "b" * 64),),
+        }
+    )
+    validate_split_pair(calibration, held_out.model_copy(update={"cases": (changed, *held_out.cases[1:])}))
+
+
+def test_cli_rejects_duplicate_private_inputs_before_server_reads(tmp_path: Path, monkeypatch) -> None:
+    from evaluation.memory.write_gate import cli
+
+    calibration, held_out, _ = _datasets()
+    copied = held_out.cases[0].model_copy(
+        update={
+            "subject": calibration.cases[0].subject,
+            "evidence": calibration.cases[0].evidence,
+        }
+    )
+    held_out = held_out.model_copy(update={"cases": (copied, *held_out.cases[1:])})
+    for dataset in (calibration, held_out):
+        (tmp_path / f"{dataset.split}.json").write_text(dataset.model_dump_json(), encoding="utf-8")
+
+    def unexpected_read(*args):
+        pytest.fail("overlapping inputs must be rejected before Server reads")
+
+    monkeypatch.setenv("POWERCONTEXT_CLIENT_API_TOKEN", "test-token")
+    monkeypatch.setattr(cli, "_evaluate_remote", unexpected_read)
+    with pytest.raises(ValueError, match="private inputs must not cross splits"):
+        cli.main([
+            "--calibration",
+            str(tmp_path / "calibration.json"),
+            "--held-out",
+            str(tmp_path / "held_out.json"),
+            "--server-url",
+            "http://localhost:8000",
+        ])
+
+
+@pytest.mark.parametrize("scenario", ["duplicate", "reordered_duplicate", "different_candidate", "different_evidence"])
+def test_resolved_split_validation_uses_gate_text_instead_of_artifact_metadata(scenario: str) -> None:
+    records = {}
+    datasets = []
+
+    def reference(scope_id, artifact_id, kind, text, citations=()):
+        content = {"schema": "powercontext.atomic-memory.v1", "kind": kind, "text": text, "creation": None}
+        digest = "sha256:" + sha256(rfc8785.dumps(content)).hexdigest()
+        records[artifact_id] = SimpleNamespace(
+            scope_id=scope_id,
+            family="atomic-memory",
+            artifact_id=artifact_id,
+            revision=1,
+            content_digest=digest,
+            content=content,
+            sources=(),
+            artifacts=citations,
+        )
+        return ArtifactRef(artifact_id=artifact_id, revision=1, content_digest=digest)
+
+    for dataset, kind in zip(_datasets()[:2], ("fact", "preference"), strict=True):
+        held_out = dataset.split == "held_out"
+        cases = []
+        for index, case in enumerate(dataset.cases):
+            scope = f"scope-{dataset.split}"
+            evidence_text = f"evidence {index}"
+            if held_out and scenario == "different_evidence":
+                evidence_text += " changed"
+            evidence = (
+                reference(scope, f"{case.case_id}-evidence-a", kind, evidence_text),
+                reference(scope, f"{case.case_id}-evidence-b", kind, "additional support"),
+            )
+            if held_out and scenario == "reordered_duplicate":
+                evidence = tuple(reversed(evidence))
+            citations = tuple(
+                SimpleNamespace(family=ref.family, artifact_id=ref.artifact_id, revision=ref.revision)
+                for ref in evidence
+            )
+            candidate = f"candidate {index}"
+            if held_out and scenario == "different_candidate":
+                candidate += " changed"
+            subject = reference(scope, case.case_id, kind, candidate, citations)
+            cases.append(case.model_copy(update={"scope_id": scope, "subject": subject, "evidence": evidence}))
+        datasets.append(Dataset.model_validate({**dataset.model_dump(), "cases": cases}))
+
+    class ExactReadClient:
+        async def get_artifact_revision(self, scope_id, family, artifact_id, revision):
+            return records[artifact_id]
+
+    calibration, held_out = datasets
+    validate_split_pair(calibration, held_out)
+    assert calibration.cases[0].subject.content_digest != held_out.cases[0].subject.content_digest
+    resolver = SplitCheckedResolver(
+        calibration, held_out, AuthorizedClientResolver(cast(PowerContextClient, ExactReadClient()))
+    )
+
+    async def evaluate_splits():
+        await evaluate_dataset(calibration, resolver)
+        return await evaluate_dataset(held_out, resolver)
+
+    if scenario in {"duplicate", "reordered_duplicate"}:
+        with pytest.raises(ValueError, match="private gate inputs must not cross splits"):
+            asyncio.run(evaluate_splits())
+    else:
+        asyncio.run(evaluate_splits())
+
+
+def test_cli_rejects_duplicate_gate_text_without_writing_report(tmp_path: Path, monkeypatch) -> None:
+    from evaluation.memory.write_gate import cli
+
+    calibration, held_out, _ = _datasets()
+    for dataset in (calibration, held_out):
+        (tmp_path / f"{dataset.split}.json").write_text(dataset.model_dump_json(), encoding="utf-8")
+
+    async def resolve(self, case):
+        return ResolvedCase(candidate="same candidate", evidence=("same evidence",))
+
+    monkeypatch.setenv("POWERCONTEXT_CLIENT_API_TOKEN", "test-token")
+    monkeypatch.setattr(AuthorizedClientResolver, "resolve", resolve)
+    output = tmp_path / "coverage.json"
+    with pytest.raises(ValueError, match="private gate inputs must not cross splits"):
+        cli.main([
+            "--calibration",
+            str(tmp_path / "calibration.json"),
+            "--held-out",
+            str(tmp_path / "held_out.json"),
+            "--server-url",
+            "http://localhost:8000",
+            "--output",
+            str(output),
+        ])
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (MissingInput, EvaluationStatus.MISSING_INPUT),
+        (Unauthorized, EvaluationStatus.UNAUTHORIZED),
+        (UnsupportedReference, EvaluationStatus.UNSUPPORTED_REFERENCE),
+    ],
+)
+def test_resolved_split_validation_preserves_incomplete_coverage(error, status) -> None:
+    class IncompleteResolver:
+        async def resolve(self, case):
+            raise error
+
+    calibration, held_out, _ = _datasets()
+
+    async def scenario():
+        resolver = SplitCheckedResolver(calibration, held_out, IncompleteResolver())
+        return await evaluate_dataset(held_out, resolver)
+
+    rows = asyncio.run(scenario())
+    assert all(row.status is status and row.actions is None for row in rows)
 
 
 def _remote_case(*, evidence: tuple[SourceRef | ArtifactRef, ...]) -> Case:
@@ -332,7 +567,7 @@ def test_no_call_cli_reports_local_preflight_hold_without_model_configuration(
         (tmp_path / f"{dataset.split}.json").write_text(dataset.model_dump_json(), encoding="utf-8")
 
     async def resolve(self, case):
-        candidate = "x" * 4000 if case.case_id == f"{split}-0" else "candidate"
+        candidate = "x" * 4000 if case.case_id == f"{split}-0" else f"candidate {case.case_id}"
         return ResolvedCase(candidate=candidate, evidence=("evidence",))
 
     monkeypatch.setattr(AuthorizedClientResolver, "resolve", resolve)
