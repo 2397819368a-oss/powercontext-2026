@@ -246,6 +246,10 @@ Run each arm with `--skip-ingestion`, its own output directory, and respectively
 run ID and all selection/model/budget arguments. Retain the three `run.json` files.
 The comparator rejects changed query sets, exact ordered candidate pools, budgets,
 deployment settings, or predeclared quality tolerance.
+The downstream identity fingerprints the endpoint resolved by the model provider,
+including environment variables such as `OPENAI_BASE_URL` and the provider's own
+defaults. Changing that endpoint invalidates both resuming a run and comparing
+runs; explicitly setting the same resolved default does not change the identity.
 
 ```bash
 uv run python -m evaluation.memory.locomo compare-rerank \

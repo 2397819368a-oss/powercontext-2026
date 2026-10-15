@@ -25,6 +25,10 @@ The same acceptance scenarios support an isolated real OceanBase database throug
 `POWERCONTEXT_TEST_OCEANBASE_URL`. The fixture creates and removes its own database;
 the connection must permit those operations. OceanBase scenarios are skipped when
 the setting is absent.
+The E2E harness's `Recall effort (OceanBase)` job includes all six Jev SQLite and
+OceanBase scenarios in its database contract step, rejects skipped cases, and
+uploads the JUnit report. Its provider responses still use MockTransport; the
+database integration and hosted Jev quality are separate evidence.
 
 ```bash
 uv run python -m pytest \

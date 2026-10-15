@@ -181,7 +181,7 @@ def public_configuration(settings: ServerSettings) -> dict[str, Any]:
     }
 
 
-def prepare_run(
+async def prepare_run(
     *,
     dataset: LoCoMoDataset,
     settings: ServerSettings,
@@ -224,6 +224,12 @@ def prepare_run(
         question_limit=question_limit,
     )
     jev_config = _jev_config() if rerank_mode is MemoryRerankMode.JEV else None
+    downstream_base_url = None
+    if answer_max_bytes is not None:
+        if settings.inference.generation_model is None:
+            raise ValueError("rerank comparisons require a generation model")  # noqa: TRY003
+        async with infer_model(settings.inference.generation_model) as downstream_model:
+            downstream_base_url = downstream_model.base_url
     manifest = {
         "schema": "powercontext.benchmark.locomo.run.v8",
         "run_id": normalized_run_id,
@@ -258,7 +264,7 @@ def prepare_run(
                 "comparison_inference_sha256": hashlib.sha256(
                     json.dumps(
                         {
-                            "generation_base_url": str(settings.inference.generation_base_url),
+                            "generation_base_url": downstream_base_url,
                             "generation_model_settings": settings.inference.generation_model_settings,
                             "embedding_base_url": str(settings.inference.embedding_base_url),
                             "recall_fts_weight": settings.runtime.recall_fts_weight,
@@ -313,7 +319,7 @@ def prepare_run(
         "judge_instructions": judge_instructions(judge_profile)[1],
         "configuration": public_configuration(settings),
     }
-    output_directory.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(output_directory.mkdir, parents=True, exist_ok=True)
     manifest_path = output_directory / "run.json"
     if manifest_path.is_file():
         observed = json.loads(manifest_path.read_text(encoding="utf-8"))

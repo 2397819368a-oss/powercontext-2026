@@ -16,15 +16,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
 
 from evaluation.memory.locomo.compare_rerank import compare_rerank_runs
 from evaluation.memory.locomo.dataset import load_locomo
-from evaluation.memory.locomo.runner import RetrievedMemory, _bounded_answer_input
+from evaluation.memory.locomo.runner import RetrievedMemory, _bounded_answer_input, prepare_run
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.memory import MemoryRerankMode
+from powercontext.builtin.runtime import InferenceConfig
+from powercontext.server.settings import ServerSettings
 
 
 def _runs(tmp_path):
@@ -82,6 +87,106 @@ def test_comparison_requires_the_same_exact_candidate_pool(tmp_path):
     runs = _runs(tmp_path)
     _change_observation(runs["jev"] / "observations.jsonl", lambda value: value.update(candidate_digest="changed"))
     with pytest.raises(ValueError, match="coarse candidate pool changed"):
+        _compare(runs)
+
+
+@pytest.mark.parametrize(
+    ("model", "endpoint_variable", "key_variable"),
+    [
+        ("openai:test-chat", "OPENAI_BASE_URL", "OPENAI_API_KEY"),
+        ("anthropic:test-chat", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"),
+    ],
+)
+def test_resuming_comparison_rejects_environment_endpoint_drift(
+    tmp_path, monkeypatch, model, endpoint_variable, key_variable
+):
+    monkeypatch.setenv(key_variable, "test-key")
+    monkeypatch.setenv(endpoint_variable, "https://provider-a.example/v1")
+    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json")
+    settings = ServerSettings(inference=InferenceConfig(generation_model=model))
+    prepare = partial(
+        prepare_run,
+        dataset=dataset,
+        settings=settings,
+        run_id="endpoint-drift",
+        output_directory=tmp_path,
+        top_k=3,
+        answer_max_bytes=2048,
+        categories=(1,),
+        conversation_limit=1,
+        question_limit=1,
+        operation_retries=1,
+    )
+    asyncio.run(prepare())
+    asyncio.run(prepare())
+
+    monkeypatch.setenv(endpoint_variable, "https://provider-b.example/v1")
+    with pytest.raises(ValueError, match="run manifest does not match"):
+        asyncio.run(prepare())
+
+
+def test_comparison_can_resume_with_the_same_resolved_provider_default(tmp_path, monkeypatch):
+    from pydantic_ai.models import infer_model
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json")
+    generation_model = "openai:test-chat"
+    settings = ServerSettings(inference=InferenceConfig(generation_model=generation_model))
+
+    async def scenario():
+        async with infer_model(generation_model) as model:
+            default_endpoint = model.base_url
+        prepare = partial(
+            prepare_run,
+            dataset=dataset,
+            settings=settings,
+            run_id="provider-default",
+            output_directory=tmp_path,
+            top_k=3,
+            answer_max_bytes=2048,
+            categories=(1,),
+            conversation_limit=1,
+            question_limit=1,
+            operation_retries=1,
+        )
+        first = await prepare()
+        monkeypatch.setenv("OPENAI_BASE_URL", default_endpoint)
+        assert await prepare() == first
+
+    asyncio.run(scenario())
+
+
+def test_comparison_rejects_different_environment_downstream_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("JEV_API_KEY", "test-key")
+    monkeypatch.setenv("JEV_MODEL", "jev-1.13.0")
+    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json")
+    settings = ServerSettings(inference=InferenceConfig(generation_model="openai:test-chat"))
+    runs = _runs(tmp_path)
+    for mode, directory in runs.items():
+        monkeypatch.setenv(
+            "OPENAI_BASE_URL",
+            "https://provider-b.example/v1" if mode == "jev" else "https://provider-a.example/v1",
+        )
+        (directory / "run.json").unlink()
+        asyncio.run(
+            prepare_run(
+                dataset=dataset,
+                settings=settings,
+                run_id="endpoint-drift",
+                output_directory=directory,
+                top_k=3,
+                answer_max_bytes=2048,
+                rerank_mode=MemoryRerankMode(mode),
+                categories=(1,),
+                conversation_limit=1,
+                question_limit=1,
+                operation_retries=1,
+            )
+        )
+
+    with pytest.raises(ValueError, match="changed comparison_inference_sha256"):
         _compare(runs)
 
 
@@ -197,7 +302,6 @@ def test_utf8_budget_records_only_evidence_delivered_to_the_answer_model():
 
 
 def test_jev_evaluation_runs_persisted_candidates_through_answer_and_judge(tmp_path, monkeypatch):
-    import asyncio
     from contextlib import asynccontextmanager
 
     import httpx
@@ -287,7 +391,7 @@ def test_jev_evaluation_runs_persisted_candidates_through_answer_and_judge(tmp_p
                 },
             })
         )
-        runner.prepare_run(
+        await runner.prepare_run(
             dataset=dataset,
             settings=settings,
             run_id="jev-evaluation",

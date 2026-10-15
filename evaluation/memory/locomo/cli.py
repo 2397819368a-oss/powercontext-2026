@@ -241,27 +241,27 @@ def _run(arguments: argparse.Namespace) -> int:
         if arguments.output_directory is None
         else arguments.output_directory.resolve()
     )
-    manifest = prepare_run(
-        dataset=dataset,
-        settings=settings,
-        run_id=run_id,
-        output_directory=output_directory,
-        top_k=arguments.top_k,
-        answer_k=arguments.answer_k,
-        answer_max_bytes=arguments.answer_max_bytes,
-        rerank_mode=arguments.rerank_mode,
-        answer_source_content=arguments.answer_source_content,
-        answer_inference_aware=arguments.answer_inference_aware,
-        answer_unknown_fallback_inference=arguments.answer_unknown_fallback_inference,
-        judge_profile=arguments.judge_profile,
-        categories=arguments.categories,
-        conversation_limit=arguments.conversation_limit,
-        question_limit=arguments.question_limit,
-        operation_retries=arguments.operation_retries,
-    )
-    print(json.dumps({"run": manifest, "output_directory": str(output_directory)}, ensure_ascii=False, indent=2))
 
     async def scenario() -> None:
+        manifest = await prepare_run(
+            dataset=dataset,
+            settings=settings,
+            run_id=run_id,
+            output_directory=output_directory,
+            top_k=arguments.top_k,
+            answer_k=arguments.answer_k,
+            answer_max_bytes=arguments.answer_max_bytes,
+            rerank_mode=arguments.rerank_mode,
+            answer_source_content=arguments.answer_source_content,
+            answer_inference_aware=arguments.answer_inference_aware,
+            answer_unknown_fallback_inference=arguments.answer_unknown_fallback_inference,
+            judge_profile=arguments.judge_profile,
+            categories=arguments.categories,
+            conversation_limit=arguments.conversation_limit,
+            question_limit=arguments.question_limit,
+            operation_retries=arguments.operation_retries,
+        )
+        print(json.dumps({"run": manifest, "output_directory": str(output_directory)}, ensure_ascii=False, indent=2))
         if not arguments.skip_ingestion:
             result = await ingest_dataset(
                 dataset,
