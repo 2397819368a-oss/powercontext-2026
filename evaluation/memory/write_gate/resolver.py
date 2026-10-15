@@ -29,7 +29,7 @@ from powercontext.client.errors import (
     UnauthorizedResponseError,
 )
 
-from .dataset import ArtifactRef, Case, PublicDatasetRef, SourceRef
+from .dataset import ArtifactRef, Case, Dataset, PublicDatasetRef, SourceRef, validate_split_pair
 from .prepare_public import load_xnli, text_digest
 
 
@@ -53,6 +53,28 @@ class ResolvedCase:
 
 class CaseResolver(Protocol):
     async def resolve(self, case: Case) -> ResolvedCase: ...
+
+
+class SplitCheckedResolver:
+    """Check cross-split gate inputs on each authorized read, retaining only hashes."""
+
+    def __init__(self, calibration: Dataset, held_out: Dataset, resolver: CaseResolver) -> None:
+        validate_split_pair(calibration, held_out)
+        self._resolver = resolver
+        self._splits = {case.case_id: dataset.split for dataset in (calibration, held_out) for case in dataset.cases}
+        self._inputs: dict[str, set[bytes]] = {"calibration": set(), "held_out": set()}
+
+    async def resolve(self, case: Case) -> ResolvedCase:
+        split = self._splits[case.case_id]
+        resolved = await self._resolver.resolve(case)
+        # Record metadata and evidence order do not distinguish the evaluated input.
+        payload = json.dumps([resolved.candidate, sorted(resolved.evidence)], ensure_ascii=False, separators=(",", ":"))
+        digest = sha256(payload.encode("utf-8")).digest()
+        other_split = "held_out" if split == "calibration" else "calibration"
+        if digest in self._inputs[other_split]:
+            raise ValueError("private gate inputs must not cross splits")  # noqa: TRY003
+        self._inputs[split].add(digest)
+        return resolved
 
 
 class PublicDatasetResolver:

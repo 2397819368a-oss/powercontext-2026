@@ -36,7 +36,7 @@ from .artifacts import load_calibration_results
 from .dataset import load_dataset, validate_split_pair
 from .jev import JEV_ENDPOINT, JEV_MODEL, PublicJevModel
 from .report import calibration_report, case_record, report
-from .resolver import AuthorizedClientResolver, PublicDatasetResolver
+from .resolver import AuthorizedClientResolver, PublicDatasetResolver, SplitCheckedResolver
 from .runner import HOLD_DIRECTIONS, THRESHOLDS, configuration_key, evaluate_dataset, evaluate_public_dataset
 
 
@@ -166,6 +166,8 @@ async def _evaluate_remote(args, calibration, held_out, token):
 async def _evaluate(calibration, held_out, resolver, args):
     if args.backend == "jev":
         return await _evaluate_jev(calibration, held_out, resolver, args)
+    if calibration.public_source is None:
+        resolver = SplitCheckedResolver(calibration, held_out, resolver)
     calibration_results = await evaluate_dataset(calibration, resolver)
     if args.calibration_only:
         return calibration_results, (), None

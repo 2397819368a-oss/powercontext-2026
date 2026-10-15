@@ -126,6 +126,39 @@ def load_dataset(path: Path) -> tuple[Dataset, str]:
     return Dataset.model_validate_json(raw), sha256(raw).hexdigest()
 
 
+def _private_reference_identity(ref: Reference) -> tuple[str | int, ...]:
+    if isinstance(ref, ArtifactRef):
+        return ref.kind, ref.family, ref.artifact_id, ref.revision
+    if isinstance(ref, SourceRef):
+        return ref.kind, ref.source_type, ref.source_id, ref.content_digest
+    raise ValueError("private inputs cannot contain public references")  # noqa: TRY003
+
+
+def _validate_private_input_overlap(calibration: Dataset, held_out: Dataset) -> None:
+    reference_keys = [
+        {
+            (
+                case.scope_id,
+                _private_reference_identity(case.subject),
+                tuple(sorted(_private_reference_identity(ref) for ref in case.evidence)),
+            )
+            for case in dataset.cases
+        }
+        for dataset in (calibration, held_out)
+    ]
+    # Digests also catch copied content under new identities or another Scope.
+    # Evidence order and caller-assigned labels do not make a new input.
+    content_keys = [
+        {
+            (case.subject.content_digest, tuple(sorted(ref.content_digest for ref in case.evidence)))
+            for case in dataset.cases
+        }
+        for dataset in (calibration, held_out)
+    ]
+    if reference_keys[0] & reference_keys[1] or content_keys[0] & content_keys[1]:
+        raise ValueError("private inputs must not cross splits")  # noqa: TRY003
+
+
 def validate_split_pair(calibration: Dataset, held_out: Dataset) -> None:
     if calibration.split != "calibration" or held_out.split != "held_out":
         raise ValueError("expected calibration and held-out datasets")  # noqa: TRY003
@@ -137,6 +170,8 @@ def validate_split_pair(calibration: Dataset, held_out: Dataset) -> None:
         raise ValueError("case IDs must not cross splits")  # noqa: TRY003
     if {case.group_id for case in calibration.cases} & {case.group_id for case in held_out.cases}:
         raise ValueError("scenario groups must not cross splits")  # noqa: TRY003
+    if calibration.public_source is None:
+        _validate_private_input_overlap(calibration, held_out)
     for dataset in (calibration, held_out):
         for language in ("en", "zh"):
             if {case.label for case in dataset.cases if case.language == language} != {Label.ACCEPT, Label.HOLD}:
