@@ -4,7 +4,7 @@ title: Topic Memory blocked processing recovery
 
 - Proposal Name: `topic_memory_blocked_processing_recovery`
 - Start Date: 2026-10-15
-- RFC PR: [oceanbase/powercontext#0000](https://github.com/oceanbase/powercontext/pull/0000)
+- RFC PR: [oceanbase/powercontext#2018](https://github.com/oceanbase/powercontext/pull/2018)
 - Tracking Issue: [#1885](https://github.com/oceanbase/powercontext/issues/1885)
 - Implementation PR: [#1966](https://github.com/oceanbase/powercontext/pull/1966)
 - Amends: [RFC 1417](1417_topic_memory.md), [RFC 1515](1515_artifact_processing_supervisor.md)
