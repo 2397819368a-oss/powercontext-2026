@@ -25,7 +25,12 @@ from typing_extensions import override
 
 from powercontext.artifacts import ArtifactSearchQuery, ArtifactSearchUnsupported
 from powercontext.artifacts.fusion import FusionSelection, RrfParameters, parse_fusion_parameters
-from powercontext.builtin.artifacts.search import AdmissionFloor, LexicalSearchAdmission
+from powercontext.builtin.artifacts.search import (
+    DEFAULT_RECALL_CHANNEL_WEIGHTS,
+    AdmissionFloor,
+    LexicalSearchAdmission,
+    RecallChannelWeights,
+)
 from powercontext.builtin.records import InvalidBaseAccessRequestError
 from powercontext.builtin.tags import TagFilter, normalize_tags
 
@@ -138,8 +143,11 @@ def plan_atomic_search(  # noqa: C901
     capabilities: AtomicMemoryIndexCapabilities,
     *,
     embedding_profile: EmbeddingProfile | None,
+    channel_weights: RecallChannelWeights = DEFAULT_RECALL_CHANNEL_WEIGHTS,
 ) -> AtomicSearchPlan:
     params = atomic_fusion_parameters(request.fusion)
+    if request.fusion is None and request.mode == "hybrid":
+        params = params.model_copy(update={"weights": {"text": channel_weights.fts, "vector": channel_weights.vector}})
     if request.mode == "text" and "min_semantic_similarity" in request.admission.model_fields_set:
         raise atomic_search_error(
             ("admission", "min_semantic_similarity"), "semantic admission requires vector or hybrid mode"

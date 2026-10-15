@@ -47,8 +47,8 @@ from starlette.routing import Match
 from starlette.types import Lifespan, Scope
 from typing_extensions import override
 
-from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactAddress, ArtifactRef
+from powercontext._logging import error_category, log_safely
+from powercontext.artifacts import ArtifactAddress, ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchFamilyNotFound,
@@ -240,6 +240,9 @@ from powercontext.builtin.runtime import (
 from powercontext.builtin.runtime import (
     ApproveArtifactCandidateRequest as RuntimeApproveArtifactCandidateRequest,
 )
+from powercontext.builtin.runtime import BootstrapContext as RuntimeBootstrapContext
+from powercontext.builtin.runtime import BootstrapContextRequest as RuntimeBootstrapContextRequest
+from powercontext.builtin.runtime import BootstrapDeliveryReceipt as RuntimeBootstrapDeliveryReceipt
 from powercontext.builtin.runtime import (
     CommitConnectorCheckpoint as RuntimeCommitConnectorCheckpoint,
 )
@@ -277,6 +280,7 @@ from powercontext.builtin.runtime import (
     ProposeExperienceRequest as RuntimeProposeExperienceRequest,
 )
 from powercontext.builtin.runtime import ProposeSkillRequest as RuntimeProposeSkillRequest
+from powercontext.builtin.runtime import RecordBootstrapDeliveryRequest as RuntimeRecordBootstrapDeliveryRequest
 from powercontext.builtin.runtime import (
     RejectArtifactCandidateRequest as RuntimeRejectArtifactCandidateRequest,
 )
@@ -397,11 +401,17 @@ from powercontext.http import (
     ArtifactCollectionItem,
     ArtifactCreated,
     ArtifactFamilyAccessCapability,
+    ArtifactHandleBinding,
     ArtifactPage,
     ArtifactReadFamily,
+    ArtifactReference,
     ArtifactRevision,
     ArtifactRevisionPage,
     BaseArtifactFamily,
+    BindArtifactHandleRequest,
+    BootstrapContext,
+    BootstrapContextRequest,
+    BootstrapDeliveryReceipt,
     CandidatePermissions,
     Capabilities,
     CaptureContentSourceRequest,
@@ -503,6 +513,7 @@ from powercontext.http import (
     ReadinessStatus,
     ReconcileRemoteSkillsRequest,
     ReconcileRemoteSkillsResponse,
+    RecordBootstrapDeliveryRequest,
     RecordRemoteSkillReceiptRequest,
     RecordSkillUsageRequest,
     RecordTaskOutcomeRequest,
@@ -543,6 +554,7 @@ from powercontext.http import (
     SearchTopicMemoryRequest,
     SearchTopicMemoryResponse,
     ServerAccessResource,
+    ServerInfo,
     SetDefaultScopeRequest,
     SetScopeBindingRequest,
     SkillArtifact,
@@ -646,6 +658,7 @@ from powercontext.http._generated.operations import (
     API_TITLE,
     API_VERSION,
     APPROVE_ARTIFACT_CANDIDATE,
+    BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
     CHECK_ACCESS,
     CLEAR_SCOPE_BINDING,
@@ -689,6 +702,7 @@ from powercontext.http._generated.operations import (
     GET_PROMPT_CONFIGURATION,
     GET_READINESS,
     GET_SCOPE,
+    GET_SERVER_INFO,
     GET_SKILL,
     GET_SKILL_PACKAGE_MANIFEST,
     GET_SOURCE,
@@ -712,6 +726,7 @@ from powercontext.http._generated.operations import (
     LIST_SCOPES,
     LIST_SOURCES,
     OPENAPI_VERSION,
+    PREPARE_BOOTSTRAP_CONTEXT,
     PREPARE_CONTEXT,
     PREPARE_HANDOFF,
     PREPARE_HANDOFF_HINT,
@@ -724,6 +739,7 @@ from powercontext.http._generated.operations import (
     QUERY_ARTIFACT_TAGS,
     QUERY_CODE,
     RECONCILE_REMOTE_SKILLS,
+    RECORD_BOOTSTRAP_DELIVERY,
     RECORD_REMOTE_SKILL_RECEIPT,
     RECORD_SKILL_USAGE,
     RECORD_TASK_OUTCOME,
@@ -735,6 +751,7 @@ from powercontext.http._generated.operations import (
     REPLACE_ARTIFACT,
     REPLACE_ARTIFACT_TAGS,
     REPLACE_MEMORY_ENTRY_TAGS,
+    RESOLVE_ARTIFACT_HANDLE,
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
@@ -874,6 +891,10 @@ class _ScopedRecordApplication(Protocol):
         /,
     ) -> RuntimeArtifactCreated: ...
 
+    async def bind_artifact_handle(self, handle: StableHandle, target: ArtifactRef, /) -> ArtifactRef: ...
+
+    async def resolve_artifact_handle(self, handle: StableHandle, /) -> ArtifactRef: ...
+
     async def get_artifact(
         self, family: str, artifact_id: str, /, *, execution_context: Any = None
     ) -> RuntimeArtifactRecord: ...
@@ -936,6 +957,26 @@ class _ScopedContextApplication(Protocol):
 
 class _ContextApplication(Protocol):
     def for_scope(self, scope_id: str, /) -> _ScopedContextApplication: ...
+
+
+class _ScopedBootstrapApplication(Protocol):
+    async def prepare(
+        self,
+        request: RuntimeBootstrapContextRequest,
+        /,
+        *,
+        authorize_scopes: Callable[[tuple[str, ...]], Awaitable[None]] | None = None,
+    ) -> RuntimeBootstrapContext: ...
+
+    async def record_delivery(
+        self,
+        request: RuntimeRecordBootstrapDeliveryRequest,
+        /,
+    ) -> RuntimeBootstrapDeliveryReceipt: ...
+
+
+class _BootstrapApplication(Protocol):
+    def for_scope(self, scope_id: str, /) -> _ScopedBootstrapApplication: ...
 
 
 class _ScopedExperienceApplication(Protocol):
@@ -1222,6 +1263,7 @@ class ServerApplication(Protocol):
     ingestion: _RemoteIngestionApplication
     code: CodeApplication
     context: _ContextApplication
+    bootstrap: _BootstrapApplication
     experience: _ExperienceApplication
     external_skills: _ExternalSkillApplication
     handoff: _HandoffApplication
@@ -1292,6 +1334,7 @@ def create_app(
         search_modes=[],
         context_versions=[],
     )
+    app.state.server_info = None
 
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -1357,6 +1400,7 @@ def create_app(
     _add_route(app, LIST_DREAM_RUNS, list_dream_runs)
     _add_route(app, GET_LIVENESS, get_liveness)
     _add_route(app, GET_READINESS, get_readiness)
+    _add_route(app, GET_SERVER_INFO, get_server_info)
     _add_route(app, GET_CAPABILITIES, get_capabilities)
     _add_route(app, LIST_SCOPES, list_scopes)
     _add_route(app, CREATE_SCOPE, create_scope)
@@ -1389,6 +1433,8 @@ def create_app(
     _add_route(app, FLUSH_PROFILE, flush_profile)
     _add_route(app, GET_SOURCE, get_source)
     _add_route(app, CREATE_ARTIFACT, create_artifact)
+    _add_route(app, BIND_ARTIFACT_HANDLE, bind_artifact_handle)
+    _add_route(app, RESOLVE_ARTIFACT_HANDLE, resolve_artifact_handle)
     _add_route(app, GET_MEMORY_ENTRY_TAGS, get_memory_entry_tags)
     _add_route(app, REPLACE_MEMORY_ENTRY_TAGS, replace_memory_entry_tags)
     _add_route(app, GET_ARTIFACT_TAGS, get_artifact_tags)
@@ -1419,6 +1465,8 @@ def create_app(
     _add_route(app, FLUSH_MEMORY, flush_memory)
     _add_route(app, REMEMBER_MEMORY, remember_memory)
     _add_route(app, SEARCH_MEMORY, search_memory)
+    _add_route(app, PREPARE_BOOTSTRAP_CONTEXT, prepare_bootstrap_context)
+    _add_route(app, RECORD_BOOTSTRAP_DELIVERY, record_bootstrap_delivery)
     _add_route(app, PREPARE_CONTEXT, prepare_context)
     _add_route(app, QUERY_CODE, query_code)
     _add_route(app, CREATE_WORK_CONTRACT, create_work_contract)
@@ -1561,6 +1609,13 @@ async def get_capabilities(request: Request) -> Capabilities:
     if capability_provider is not None:
         return capability_provider()
     return request.app.state.capabilities
+
+
+async def get_server_info(request: Request) -> ServerInfo:
+    info: ServerInfo | None = request.app.state.server_info
+    if info is None:
+        raise _RuntimeNotReadyError
+    return info
 
 
 async def get_access_principal(request: Request) -> AccessMeResponse:
@@ -2390,6 +2445,42 @@ async def create_artifact(
     return _artifact_created_response(result)
 
 
+async def bind_artifact_handle(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    family: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
+    key: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")],
+    request: BindArtifactHandleRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ArtifactHandleBinding:
+    handle = StableHandle(family=family, key=key)
+    target = ArtifactRef(family=family, artifact_id=request.artifact_id, revision=request.revision)
+    result = await application.records.for_scope(scope_id).bind_artifact_handle(handle, target)
+    return _artifact_handle_binding(handle, result)
+
+
+async def resolve_artifact_handle(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    family: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
+    key: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")],
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ArtifactHandleBinding:
+    handle = StableHandle(family=family, key=key)
+    result = await application.records.for_scope(scope_id).resolve_artifact_handle(handle)
+    return _artifact_handle_binding(handle, result)
+
+
+def _artifact_handle_binding(handle: StableHandle, target: ArtifactRef) -> ArtifactHandleBinding:
+    return ArtifactHandleBinding(
+        family=handle.family,
+        key=handle.key,
+        artifact=ArtifactReference(
+            family=target.family,
+            artifact_id=target.artifact_id,
+            revision=target.revision,
+        ),
+    )
+
+
 def _list_artifacts_query(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
@@ -2965,6 +3056,44 @@ async def prepare_context(
             atomic_context=_atomic_execution_context(http_request, PREPARE_CONTEXT.operation_id),
         )
     return mapping.prepared_context_response(result)
+
+
+async def prepare_bootstrap_context(
+    request: BootstrapContextRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
+) -> BootstrapContext:
+    prepared_request = mapping.bootstrap_context_request(request)
+    scoped = application.bootstrap.for_scope(request.scope_id)
+    access = access_control_for_mode(
+        http_request.app.state.access_control,
+        mode=http_request.app.state.access_mode,
+    )
+    if access is None:
+        result = await scoped.prepare(prepared_request)
+    else:
+
+        async def authorize_scopes(scope_ids: tuple[str, ...]) -> None:
+            await access.require_all(
+                _require_principal(),
+                tuple((AccessAction.SCOPE_READ, ResourceRef.scope(scope_id)) for scope_id in scope_ids),
+                context=_access_audit_context(PREPARE_BOOTSTRAP_CONTEXT.operation_id),
+            )
+            for scope_id in scope_ids[1:]:
+                await require_scope_content_ready(http_request, scope_id)
+
+        result = await scoped.prepare(prepared_request, authorize_scopes=authorize_scopes)
+    return mapping.bootstrap_context_response(result)
+
+
+async def record_bootstrap_delivery(
+    request: RecordBootstrapDeliveryRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> BootstrapDeliveryReceipt:
+    result = await application.bootstrap.for_scope(request.scope_id).record_delivery(
+        mapping.record_bootstrap_delivery_request(request)
+    )
+    return mapping.bootstrap_delivery_response(result)
 
 
 async def create_work_contract(
@@ -4429,6 +4558,7 @@ _COLLECTION_CONTENT_OPERATIONS = frozenset({
     "get_memory_capacity",
     "list_memory_changes",
     "prepare_context",
+    "prepare_bootstrap_context",
     "list_managed_skills",
     "list_artifact_candidates",
     "get_artifact_candidate",
@@ -5110,8 +5240,9 @@ def _observe_application_operation(
                 started_at=started_at,
                 error=diagnostic_error,
                 error_code=error_code,
+                status_code=response_status,
             )
-            _finish_span(span, "failure", error=diagnostic_error)
+            _finish_span(span, "failure", error=diagnostic_error, error_code=error_code, status_code=response_status)
             raise
         outcome = _application_outcome(result)
         _observe_application(app, operation, outcome, started_at)
@@ -5168,10 +5299,24 @@ def _start_application_span(app: FastAPI, operation: Operation[Any, Any]) -> Any
     )
 
 
-def _finish_span(span: Any | None, outcome: str, *, error: BaseException | None = None) -> None:
+def _finish_span(
+    span: Any | None,
+    outcome: str,
+    *,
+    error: BaseException | None = None,
+    error_code: str | None = None,
+    status_code: int | None = None,
+) -> None:
     if span is not None:
         with suppress(Exception):
-            span.finish(outcome, error=error)
+            attributes: dict[str, Any] = {}
+            if status_code is not None:
+                attributes["http.response.status_code"] = status_code
+            if error_code is not None:
+                category = error_category(error_code, status_code=status_code, outcome=outcome)
+                if category is not None:
+                    attributes["powercontext.error.category"] = category
+            span.finish(outcome, error=error, attributes=attributes or None)
 
 
 def _observe_application(
@@ -5216,6 +5361,7 @@ def _log_operation(
     started_at: float,
     error: Exception | None = None,
     error_code: str | None = None,
+    status_code: int | None = None,
 ) -> None:
     extra = {
         "event": "application.operation.completed",
@@ -5227,6 +5373,8 @@ def _log_operation(
     }
     if error_code is not None:
         extra["error_code"] = error_code
+    if status_code is not None:
+        extra["status_code"] = status_code
     log_safely(logger, level, message, exc_info=error, extra=extra)
 
 

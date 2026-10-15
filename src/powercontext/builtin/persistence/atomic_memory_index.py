@@ -34,6 +34,7 @@ from powercontext.builtin.artifacts.search import (
     DEFAULT_ADMISSION_FLOOR,
     AdmissionFloor,
     InvalidSearchScore,
+    RecallChannelWeights,
     analyze_text,
     fts_query_requirements,
     lexical_search_score,
@@ -44,6 +45,7 @@ from powercontext.builtin.persistence.tables import ARTIFACT_TAGS_TABLE
 from powercontext.builtin.tags import TagFilter
 
 AtomicMemorySearchMode = Literal["fts", "vector", "hybrid"]
+ATOMIC_MEMORY_RRF_CONSTANT = 60
 # Columns of unreleased development layouts; their tables are derived and rebuilt rather than migrated.
 _OBSOLETE_PROJECTION_COLUMNS = frozenset({"read_grants", "owner_type", "owner_id"})
 
@@ -419,8 +421,13 @@ def atomic_memory_channel_hits(rows: Any, /, *, vector: bool = False) -> tuple[A
     return tuple(hits)
 
 
-def combine_atomic_memory_channels(
-    channels: AtomicMemorySearchChannels, /, *, fusion: RrfParameters | None = None, mode: str = "hybrid"
+def combine_atomic_memory_channels(  # noqa: C901
+    channels: AtomicMemorySearchChannels,
+    /,
+    *,
+    fusion: RrfParameters | None = None,
+    mode: str = "hybrid",
+    channel_weights: RecallChannelWeights | None = None,
 ) -> tuple[AtomicMemoryIndexHit, ...]:
     """Return exact-ref union with the RRF score used for its stable ordering.
 
@@ -431,13 +438,20 @@ def combine_atomic_memory_channels(
     versions: dict[str, tuple[int, int]] = {}
     hits: dict[str, AtomicMemoryIndexHit] = {}
     ranks: dict[str, float] = {}
-    for name, channel in (("text", channels.fts), ("vector", channels.vector)):
-        for rank, hit in enumerate(channel):
+    # Validate all retrieved identities, including evidence from a zero-weight channel.
+    for channel in (channels.fts, channels.vector):
+        for hit in channel:
             artifact_id = hit.artifact_ref.artifact_id
             version = (hit.artifact_ref.revision, hit.state_version)
             if artifact_id in versions and versions[artifact_id] != version:
                 raise AtomicMemoryIndexError("stale-recall", "Atomic Memory changed between retrieval channels")
             versions[artifact_id] = version
+    weights = (1.0, 1.0) if channel_weights is None else (channel_weights.fts, channel_weights.vector)
+    for name, channel, weight in zip(("text", "vector"), (channels.fts, channels.vector), weights, strict=True):
+        if fusion is None and weight == 0.0:
+            continue
+        for rank, hit in enumerate(channel, start=1):
+            artifact_id = hit.artifact_ref.artifact_id
             previous = hits.setdefault(artifact_id, hit)
             if fusion is not None and (hit.channel_scores is None or name not in hit.channel_scores):
                 raise InvalidSearchScore("Atomic search channel did not return its raw score")  # noqa: TRY003
@@ -448,7 +462,7 @@ def combine_atomic_memory_channels(
                 previous = hits[artifact_id]
             if previous.distance is None and hit.distance is not None:
                 hits[artifact_id] = replace(previous, distance=hit.distance)
-            ranks[artifact_id] = ranks.get(artifact_id, 0.0) + 1.0 / (60 + rank + 1)
+            ranks[artifact_id] = ranks.get(artifact_id, 0.0) + weight / (ATOMIC_MEMORY_RRF_CONSTANT + rank)
     if fusion is not None:
         enabled = ("text",) if mode == "text" else ("vector",) if mode == "vector" else ("text", "vector")
         fused = fuse_rrf(
@@ -657,6 +671,7 @@ class RelationalAtomicMemoryIndex:
 
 
 __all__ = [
+    "ATOMIC_MEMORY_RRF_CONSTANT",
     "AtomicMemoryIndex",
     "AtomicMemoryIndexCapabilities",
     "AtomicMemoryIndexError",

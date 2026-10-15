@@ -22,6 +22,7 @@ from powercontext.http._generated.models import (
     ArtifactCandidate,
     ArtifactCandidatePage,
     ArtifactCreated,
+    ArtifactHandleBinding,
     ArtifactPage,
     ArtifactPublication,
     ArtifactRevision,
@@ -35,6 +36,10 @@ from powercontext.http._generated.models import (
     AtomicMemoryRestorationRequest,
     AtomicMemoryRestorationResponse,
     AtomicMemoryStateResponse,
+    BindArtifactHandleRequest,
+    BootstrapContext,
+    BootstrapContextRequest,
+    BootstrapDeliveryReceipt,
     Capabilities,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
@@ -136,6 +141,7 @@ from powercontext.http._generated.models import (
     ReadinessResponse,
     ReconcileRemoteSkillsRequest,
     ReconcileRemoteSkillsResponse,
+    RecordBootstrapDeliveryRequest,
     RecordRemoteSkillReceiptRequest,
     RecordSkillUsageRequest,
     RecordTaskOutcomeRequest,
@@ -173,6 +179,7 @@ from powercontext.http._generated.models import (
     SearchMemoryResponse,
     SearchTopicMemoryRequest,
     SearchTopicMemoryResponse,
+    ServerInfo,
     SetDefaultScopeRequest,
     SetScopeBindingRequest,
     SkillArtifact,
@@ -194,7 +201,18 @@ from powercontext.http._generated.models import (
 OPENAPI_VERSION = "3.0.3"
 API_TITLE = "PowerContext API"
 API_DESCRIPTION = "Remote PowerContext transport. Runtime behavior is reported by /v1/capabilities."
-API_VERSION = "1.2.0"
+API_VERSION = "1.3.0"
+FEATURE_CONTRACTS: dict[str, dict[str, JsonValue]] = {
+    "access.principal": {"version": {"major": 1, "minor": 0}, "operations": ["get_access_principal"]},
+    "scope.selection": {
+        "version": {"major": 1, "minor": 0},
+        "operations": ["list_scopes", "get_scope", "get_default_scope"],
+    },
+    "memory.explicit": {
+        "version": {"major": 1, "minor": 0},
+        "operations": ["remember_memory", "search_memory", "get_memory_entry"],
+    },
+}
 
 RequestT = TypeVar("RequestT")
 ResponseT = TypeVar("ResponseT")
@@ -570,6 +588,30 @@ GET_READINESS = Operation[None, ReadinessResponse](
         },
     },
     access=None,
+)
+
+GET_SERVER_INFO = Operation[None, ServerInfo](
+    method="GET",
+    path="/v1/server-info",
+    operation_id="get_server_info",
+    request_type=None,
+    request_location=None,
+    path_parameters=(),
+    response_type=ServerInfo,
+    success_status=200,
+    summary="Get stable Server deployment identity and protocol contracts",
+    tags=("server",),
+    scope_mode="none",
+    responses={
+        200: {
+            "description": "Stable deployment identity and protocol compatibility metadata.",
+            "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+        },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+    },
+    access=AccessRequirement(action="server.observe", resource="server", scope_id_field=None, resolver="static"),
 )
 
 GET_CAPABILITIES = Operation[None, Capabilities](
@@ -1026,6 +1068,56 @@ PREPARE_CONTEXT = Operation[PrepareContextRequest, PreparedContext](
             "description": "Final context ready for direct injection, or a normal empty result.",
             "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
         },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+PREPARE_BOOTSTRAP_CONTEXT = Operation[BootstrapContextRequest, BootstrapContext](
+    method="POST",
+    path="/v1/context/bootstrap",
+    operation_id="prepare_bootstrap_context",
+    request_type=BootstrapContextRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=BootstrapContext,
+    success_status=200,
+    summary="Prepare bounded context for an Agent lifecycle boundary",
+    tags=("context",),
+    scope_mode="current",
+    responses={
+        200: {
+            "description": "A bounded package ready for host injection, or a normal empty/skipped result.",
+            "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+        },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+RECORD_BOOTSTRAP_DELIVERY = Operation[RecordBootstrapDeliveryRequest, BootstrapDeliveryReceipt](
+    method="POST",
+    path="/v1/context/bootstrap/receipts",
+    operation_id="record_bootstrap_delivery",
+    request_type=RecordBootstrapDeliveryRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=BootstrapDeliveryReceipt,
+    success_status=200,
+    summary="Record a bootstrap delivery outcome",
+    tags=("context",),
+    scope_mode="current",
+    responses={
+        200: {"description": "Current durable delivery state."},
         401: {"$ref": "#/components/responses/Unauthorized"},
         403: {"$ref": "#/components/responses/Forbidden"},
         422: {"$ref": "#/components/responses/InvalidRequest"},
@@ -2790,6 +2882,55 @@ LIST_ARTIFACTS = Operation[ListArtifactsRequest, ArtifactPage](
         500: {"$ref": "#/components/responses/InternalError"},
     },
     access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+RESOLVE_ARTIFACT_HANDLE = Operation[None, ArtifactHandleBinding](
+    method="GET",
+    path="/v1/scopes/{scope_id}/artifact-handles/{family}/{key}",
+    operation_id="resolve_artifact_handle",
+    request_type=None,
+    request_location=None,
+    path_parameters=("scope_id", "family", "key"),
+    response_type=ArtifactHandleBinding,
+    success_status=200,
+    summary="Resolve a stable Artifact handle",
+    tags=("artifacts",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The exact Artifact revision bound to the handle."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+BIND_ARTIFACT_HANDLE = Operation[BindArtifactHandleRequest, ArtifactHandleBinding](
+    method="PUT",
+    path="/v1/scopes/{scope_id}/artifact-handles/{family}/{key}",
+    operation_id="bind_artifact_handle",
+    request_type=BindArtifactHandleRequest,
+    request_location="body",
+    path_parameters=("scope_id", "family", "key"),
+    response_type=ArtifactHandleBinding,
+    success_status=200,
+    summary="Bind a stable Artifact handle",
+    tags=("artifacts",),
+    scope_mode="none",
+    responses={
+        200: {"description": "The existing or newly committed handle binding."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        409: {"$ref": "#/components/responses/Conflict"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.admin", resource="scope", scope_id_field="scope_id", resolver="request"),
 )
 
 GET_ARTIFACT = Operation[None, ArtifactRevision](

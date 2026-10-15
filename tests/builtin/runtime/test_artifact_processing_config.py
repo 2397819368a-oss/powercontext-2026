@@ -178,8 +178,8 @@ def test_server_cli_routes_background_role_without_starting_http(monkeypatch) ->
     monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", OCEANBASE_URL)
     monkeypatch.setattr("powercontext.server.cli._run_background", run_background)
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
 
     result = CliRunner().invoke(create_cli([server_app]), ["server", "run", "--no-env-file", "--role", "background"])
 
@@ -204,7 +204,7 @@ def test_server_cli_routes_split_role_with_a_migrated_schedule(monkeypatch) -> N
     run_background = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_background", run_background)
     # Foreground logging must not retain CliRunner's temporary stdout after it closes.
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
     result = CliRunner().invoke(create_cli([server_app]), ["server", "run", "--role", "background"])
 
     assert result.exit_code == 0, result.output

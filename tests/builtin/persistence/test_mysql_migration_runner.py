@@ -113,17 +113,44 @@ def _oceanbase_scratch_target(config: OceanBaseConfig, evidence_directory: Path)
                 pytest.fail("OceanBase owned test database cleanup failed", pytrace=False)
 
 
+@contextmanager
+def _seekdb_scenario_lifetime(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    binding = pytest.importorskip("pylibseekdb")
+    open_instance = binding.aopen
+    instances = {}
+
+    async def open_with_scenario_lifetime(path: str):
+        # Keep a real native lease across this scenario's independent
+        # maintenance connections. Rapid last-client exits in seekdb 1.4
+        # can strand a background DDL lock on restart. Engine restart and
+        # cross-process ownership have separate connection acceptance tests.
+        # Acquire lazily so inspecting a missing target still creates nothing.
+        if path not in instances:
+            instances[path] = await open_instance(path)
+        return await open_instance(path)
+
+    monkeypatch.setattr(binding, "aopen", open_with_scenario_lifetime)
+    try:
+        yield
+    finally:
+        for instance in instances.values():
+            instance.close()
+
+
 @pytest.fixture(params=("seekdb", "oceanbase"), ids=("seekdb", "oceanbase"))
 def backend(
-    request: pytest.FixtureRequest, short_tmp_path: Path, caplog: pytest.LogCaptureFixture
+    request: pytest.FixtureRequest,
+    short_tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[_BackendTarget]:
     if os.environ.get("POWERCONTEXT_TEST_MIGRATION_SQL_LOG") == "1":
         caplog.set_level(logging.INFO, logger="sqlalchemy.engine")
     if request.param == "seekdb":
         if os.environ.get("POWERCONTEXT_TEST_MIGRATION_SEEKDB") != "1":
             pytest.skip("real seekdb probe not enabled")
-        pytest.importorskip("pylibseekdb")
-        yield _BackendTarget(SeekDBConfig(path=short_tmp_path / "seekdb"), short_tmp_path / "evidence")
+        with _seekdb_scenario_lifetime(monkeypatch):
+            yield _BackendTarget(SeekDBConfig(path=short_tmp_path / "seekdb"), short_tmp_path / "evidence")
         return
     value = os.environ.get("POWERCONTEXT_TEST_MIGRATION_OCEANBASE_URL")
     if not value:
@@ -271,10 +298,10 @@ def test_mysql_initialization_and_shared_evidence_noop(backend: _BackendTarget) 
     assert result.state == "ready"
     assert result.changed
     assert result.backup_state == "not_required"
-    assert result.revision == "p0003"
+    assert result.revision == "p0004"
     replacement = backend.runner()
     assert replacement.plan().state == "ready"
-    assert replacement.verify().revision == "p0003"
+    assert replacement.verify().revision == "p0004"
     assert not replacement.apply().changed
 
 
@@ -294,7 +321,7 @@ def test_mysql_operator_backup_choices_preserve_baseline_data_without_fork(
     result = _apply(runner, policy=policy)
     assert result.backup_state == ("user_confirmed" if policy == "manual" else "skipped")
     state = _read_state(backend)
-    assert state["revision"] == "p0003"
+    assert state["revision"] == "p0004"
     assert state["content"] == [(b'{"content":"preserved"}',)]
     assert state["tags"] == [("Keep",)]
     assert "memory_citations" in state["columns"]["pc_artifacts"]
@@ -362,7 +389,7 @@ def test_mysql_committed_partial_ddl_resumes_from_shared_original_evidence(backe
     replacement = _acknowledge_known_completed_interruption(backend, recovery)
     assert _apply(replacement, policy="manual").state == "ready"
     state = _read_state(backend)
-    assert state["revision"] == "p0003"
+    assert state["revision"] == "p0004"
     assert state["content"] == [(b'{"content":"preserved"}',)]
     assert state["tags"] == [("Keep",)]
     assert replacement.verify().state == "ready"
@@ -408,7 +435,7 @@ def test_mysql_empty_source_recovers_baseline_and_citation_ddl_without_probing_b
     )
     result = _apply(replacement)
     assert result.backup_state == "not_required"
-    assert replacement.verify().revision == "p0003"
+    assert replacement.verify().revision == "p0004"
     assert _read_state(backend)["content"] == []
 
 
@@ -425,7 +452,7 @@ def test_mysql_baseline_adoption_recovers_an_empty_committed_version_table(backe
     assert recovered.adopt_baseline
     replacement = _acknowledge_known_completed_interruption(backend, recovered)
     assert _apply(replacement, policy="manual").state == "ready"
-    assert replacement.verify().revision == "p0003"
+    assert replacement.verify().revision == "p0004"
     assert _read_state(backend)["tags"] == [("Keep",)]
 
 
@@ -451,7 +478,7 @@ def test_mysql_committed_revision_recovers_before_evidence_advance(backend: _Bac
     assert recovery.source_revision == "p0002"
     replacement = _acknowledge_known_completed_interruption(backend, recovery)
     assert _apply(replacement, policy="manual").state == "ready"
-    assert replacement.verify().revision == "p0003"
+    assert replacement.verify().revision == "p0004"
     assert _read_state(backend)["content"] == [(b'{"content":"preserved"}',)]
 
 
@@ -460,7 +487,7 @@ def test_mysql_completed_head_with_an_interrupted_run_requires_exact_acknowledge
         pytest.skip("embedded seekdb closes its engine and has no remote in-flight run receipt")
     _load_baseline(backend)
     assert _apply(backend.runner(), policy="manual").state == "ready"
-    assert backend.runner().verify().revision == "p0003"
+    assert backend.runner().verify().revision == "p0004"
 
     def committed_write_then_interrupt(
         connection: Connection | None, _identity: BackendIdentity, verify: Callable[[], None]
@@ -474,12 +501,12 @@ def test_mysql_completed_head_with_an_interrupted_run_requires_exact_acknowledge
     with pytest.raises(_InterruptedDDL):
         backend.connections().run(committed_write_then_interrupt, writable=True)
     before = _read_state(backend)
-    assert before["revision"] == "p0003"
+    assert before["revision"] == "p0004"
     assert before["tags"] == [("Confirmed",)]
     replacement = backend.runner(backup_factory=_forbidden_automatic_backup)
     recovery = replacement.plan()
     assert recovery.state == "recovery_required"
-    assert recovery.source_revision == "p0003"
+    assert recovery.source_revision == "p0004"
     assert recovery.revisions == ()
     pending = (recovery.coordination or {}).get("pending_run_id")
     assert pending
@@ -498,6 +525,6 @@ def test_mysql_completed_head_with_an_interrupted_run_requires_exact_acknowledge
     assert result.state == "ready"
     assert not result.changed
     assert _read_state(backend) == before
-    assert backend.runner().verify().revision == "p0003"
+    assert backend.runner().verify().revision == "p0004"
     assert not backend.runner().apply().changed
     assert "pending_run_id" not in (backend.runner().plan().coordination or {})

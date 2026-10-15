@@ -144,6 +144,7 @@ dev = [
     "pytest>=9.0.2",
     "time-machine==3.5.0",
     "pytest-cov>=7,<8",
+    "pytest-xdist>=3.6,<4",
     "pyyaml>=6,<7",
     "prek>=0.2.0",
     "tox-uv>=1.33.4",
@@ -199,6 +200,7 @@ exclude = [
     "evaluation/coding",
     "evaluation/memory/longmemeval_v2",
     "evaluation/skills",
+    "evaluation/zcode_guidance",
 ]
 
 [tool.ty.rules]
@@ -224,6 +226,7 @@ markers = [
     "real_e2e: uses real Codex, external model providers, and the configured database",
     "zcode_host_acceptance: uses an explicitly configured real ZCode CLI and isolated real PowerContext Server",
     "zcode_live_model: opt-in ZCode host acceptance using live host and Generation models",
+    "cross_host_acceptance: opt-in actual Pi RPC to ZCode CLI with isolated SQLite and controlled inference",
 ]
 
 [tool.ruff]

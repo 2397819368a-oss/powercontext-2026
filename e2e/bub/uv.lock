@@ -224,7 +224,7 @@ wheels = [
 
 [[package]]
 name = "bub"
-version = "0.4.2"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -244,9 +244,9 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ae/7e/64cf99d10c79a4d4505ec57868e64465213f9d42fc58b1f380d52175c8d6/bub-0.4.2.tar.gz", hash = "sha256:139552478786dd069053f0d121385fe156e3c9f1c37549f55d1d7b5c2d7917b1", size = 150787, upload-time = "2026-08-07T06:40:23.793Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/79/7b307f6745c805570b64e90bad8cf798f631ee0eac780e32c3fbb39bbe8e/bub-0.5.1.tar.gz", hash = "sha256:cbf2d18b2132651af94ae2890c417cbead6a835d4dc3d59d0a4d889bb902472e", size = 235764, upload-time = "2026-10-11T04:53:14.322Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/11/4f51f40199d13e78d216223765090d22e5dbe94294cdd1ff2acb07c02c35/bub-0.4.2-py3-none-any.whl", hash = "sha256:7353229a9d5134a9971d22c8de079ba37dce39a7ff86870962739c1f79c645b5", size = 132119, upload-time = "2026-08-07T06:40:22.625Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/d1/a7c6855d6b74267bb171205d08d7ea0ce2ffbd3ed2d690ed5a70fc0b1183/bub-0.5.1-py3-none-any.whl", hash = "sha256:054b4214a31081134c0f744500fe2f7645c811904345983a42a0481b74e77fd6", size = 178146, upload-time = "2026-10-11T04:53:12.774Z" },
 ]
 
 [[package]]
@@ -974,14 +974,14 @@ wheels = [
 
 [[package]]
 name = "inquirer-textual"
-version = "0.6.1"
+version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "textual" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/57/9c/d9bea1a0227f555addf23012de4e12b27b9bec92042c8eb8a763bde08cdf/inquirer_textual-0.6.1.tar.gz", hash = "sha256:d8b0c959e4e58fd730a2fc3da4c92612bef757db1c664399cc7534be8c5b757a", size = 3696974, upload-time = "2026-06-08T13:11:03.234Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/20/4594d09c5b7580ddfdbd244e862550f250e7601a8ba4777e65d1b5df3c00/inquirer_textual-0.8.1.tar.gz", hash = "sha256:1f098d0c4d7b3f4238857c4d9be50ad11e0f304ccf69f50191504cc620a2ec88", size = 3704021, upload-time = "2026-09-30T12:35:23.731Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/d8/94e1120bc2b88d2836f4be2e0fd74c613abed92f5671af9a6e5c4b6a5dff/inquirer_textual-0.6.1-py3-none-any.whl", hash = "sha256:8e93879e59fcf7b804941672e5efcb0f2aa3a117a36e4cafc2c91fdb6d0a6586", size = 34355, upload-time = "2026-06-08T13:11:01.99Z" },
+    { url = "https://files.pythonhosted.org/packages/22/50/3d2179567c3dee8afc75420da87bf918025a635ad3fe462149d755434f4c/inquirer_textual-0.8.1-py3-none-any.whl", hash = "sha256:a02e7796322cadc86b9c4978eab036200e8e3f198408dce3a1173c0b4461a7bb", size = 36482, upload-time = "2026-09-30T12:35:22.275Z" },
 ]
 
 [[package]]
@@ -1711,6 +1711,7 @@ dev = [
     { name = "prek", specifier = ">=0.2.0" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-cov", specifier = ">=7,<8" },
+    { name = "pytest-xdist", specifier = ">=3.6,<4" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "ruff", specifier = ">=0.15.7" },
     { name = "sqlalchemy", specifier = ">=2,<3" },
@@ -1745,7 +1746,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bub", specifier = ">=0.4.0,<0.5.0" },
+    { name = "bub", specifier = ">=0.4.0,<0.6.0" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "powercontext", extras = ["client"] },
     { name = "pydantic-settings", specifier = ">=2.7,<3" },
@@ -1773,7 +1774,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bub", specifier = "==0.4.2" },
+    { name = "bub", specifier = "==0.5.1" },
     { name = "harbor", specifier = ">=0.16,<0.17" },
     { name = "loguru", specifier = ">=0.7,<1" },
     { name = "marko", specifier = ">=2.2,<3" },

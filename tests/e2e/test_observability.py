@@ -669,6 +669,7 @@ def test_memory_commit_failure_is_traced_and_rolls_back(tmp_path) -> None:
         "powercontext.memory.commit.artifact_revision_count": 1,
         "powercontext.operation.outcome": "failure",
         "error.type": "IntegrityError",
+        "powercontext.error.category": "internal",
     }
     exported = _exported_span_data(failed_spans)
     assert source_content not in exported
@@ -973,7 +974,9 @@ def test_scope_lock_stage_span_reports_contention_and_closes_at_acquisition(tmp_
             assert (span.attributes or {}).get("powercontext.operation.outcome") == "success"
         allowed_keys = _STAGE_ATTRIBUTE_KEYS.get(span.name)
         if (span.attributes or {}).get("powercontext.operation.outcome") == "failure":
-            allowed_keys = None if allowed_keys is None else allowed_keys | {"error.type"}
+            allowed_keys = (
+                None if allowed_keys is None else allowed_keys | {"error.type", "powercontext.error.category"}
+            )
         assert allowed_keys is None or (span.attributes or {}).keys() <= allowed_keys
     exported = _exported_span_data(spans)
     assert scope_id not in exported
@@ -1444,7 +1447,9 @@ def _wait_for_named_span(
 def _assert_stage_attribute_keys(span: ReadableSpan) -> None:
     allowed_keys = _STAGE_ATTRIBUTE_KEYS[span.name]
     attributes = dict(span.attributes or {})
-    assert attributes.keys() <= allowed_keys
+    assert attributes.keys() <= allowed_keys | {"powercontext.error.category"}
+    if "powercontext.error.category" in attributes:
+        assert attributes["powercontext.error.category"] in {"internal", "timeout", "cancelled"}
     assert all(isinstance(value, str | bool | int | float) for value in attributes.values())
 
 

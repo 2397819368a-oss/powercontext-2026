@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
-from powercontext.builtin.artifacts.atomic_memory.extraction import TIME_RULES, AtomicMemoryEvidence
+from powercontext.builtin.artifacts.atomic_memory.extraction import LANGUAGE_RULES, TIME_RULES, AtomicMemoryEvidence
 from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent, AtomicMemoryRead
 from powercontext.builtin.inference import InvalidInferenceOutputError
 from powercontext.sources import SourceRef
@@ -48,6 +48,7 @@ Choose merge to combine the proposal and one or more related items, returning fu
 Multiple existing original_refs require merge; multiple unpublished candidates can merge without creating history.
 Choose noop with one target_id when that item already expresses the proposal, without changing the target content.
 Choose noop with no target only when the candidate is unworthy or unsupported and has no published original_refs.
+For noop, return content null and evidence_ids empty; target_ids alone identifies the retained item.
 Never discard or silently transfer published original_refs during noop. If earlier decisions and a later item both
 represent published identities, use merge to reconcile them. Every create/revise/merge must cite supplied evidence.
 For the same enduring fact (same entity, attribute and applicability), prefer revising a supplied existing identity
@@ -57,6 +58,9 @@ historical and late old evidence must not become current. Keep facts that can ch
 different applicability separate. Keep each identity's final decision consistent with previously combined working
 content. Preserve independent historical events, conditions, exceptions and effective dates.
 Never request approval or store conflict markers.
+{LANGUAGE_RULES}
+Preserve the language of retained, unchanged published facts. Express genuinely new or corrected facts in the
+language of their supporting Source statements; unrelated new evidence must not cause existing facts to be translated.
 {TIME_RULES}
 """.strip()
 

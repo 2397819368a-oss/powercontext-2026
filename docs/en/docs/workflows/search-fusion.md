@@ -46,7 +46,9 @@ changing the retrieval score.
 `rank_constant` is the only location for `K`; a top-level `K` or `rank_constant` is invalid. Numeric strings, booleans,
 explicit `null`, non-finite values, unknown parameter keys, and negative weights are rejected.
 
-Weight overrides are partial: every enabled channel omitted from `weights` keeps weight `1`. Weight `0` removes a
+When `fusion` is omitted, hybrid searches use the deployment's recall channel weights; single-channel searches use
+weight `1`. An explicit `fusion` object replaces the deployment weights, even when its `params` is empty.
+Within that object, weight overrides are partial: every enabled channel omitted from `weights` keeps weight `1`. Weight `0` removes a
 channel's contribution to both the numerator and denominator. Scaling all weights by the same positive factor leaves
 the normalized score unchanged. A larger `K` reduces the relative advantage of nearby top ranks; a smaller `K` makes
 their rank differences matter more.

@@ -221,6 +221,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/server-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get stable Server deployment identity and protocol contracts
+         * @description Returns deployment identity and compatibility metadata only. Runtime availability, enabled behavior, limits and inventory remain owned by health, capabilities and statistics endpoints.
+         */
+        get: operations["get_server_info"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/capabilities": {
         parameters: {
             query?: never;
@@ -532,6 +552,46 @@ export interface paths {
          * @description Prepare final, ephemeral context from Runtime-owned sources without persisting or injecting it. Retrieve bounded, query-specific PowerContext when additional assembled context is needed. Automatic recall already attempts this on supported lifecycle events; do not repeat it routinely or to satisfy an explicit save. A returned context value is not proof of host injection. Empty context is normal; use only the evidence actually returned.
          */
         post: operations["prepare_context"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/context/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare bounded context for an Agent lifecycle boundary
+         * @description Prepare an opt-in, deterministic bootstrap package without manufacturing a query. Only explicitly curated active Atomic Memory Artifacts and one caller-selected exact committed Handoff are eligible. Returned historical text is untrusted data and grants no authority. A ready receipt remains pending until the host records delivery. Reusing one stable event identity with different package-shaping fields is rejected with 422.
+         */
+        post: operations["prepare_bootstrap_context"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/context/bootstrap/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a bootstrap delivery outcome
+         * @description Atomically claim one pending content-free receipt as injected or failed. A second injected claim is rejected with 422, so concurrent lifecycle hooks cannot both inject the same package. A terminal outcome never changes.
+         */
+        post: operations["record_bootstrap_delivery"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1780,6 +1840,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/scopes/{scope_id}/artifact-handles/{family}/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve a stable Artifact handle
+         * @description Resolve one scope-local handle to the exact immutable Artifact revision it names.
+         */
+        get: operations["resolve_artifact_handle"];
+        /**
+         * Bind a stable Artifact handle
+         * @description Idempotently and permanently bind one scope-local handle to an exact immutable Artifact revision. A committed binding cannot be updated, released, or deleted. Repeating the same binding succeeds, while binding the key to another Artifact revision returns 409. Verify the family, Artifact ID, revision, and key before committing the binding; a mistakenly bound key cannot be reused in that Scope.
+         */
+        put: operations["bind_artifact_handle"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}": {
         parameters: {
             query?: never;
@@ -2103,6 +2187,32 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description A major/minor compatibility version. A major increment may remove or incompatibly change the governed contract. A minor increment only adds backward-compatible behavior or fields. */
+        ContractVersion: {
+            major: number;
+            minor: number;
+        };
+        /** @description Compatibility version for exactly the listed OpenAPI operation IDs. Adding operations or compatible semantics increments minor; removing, renaming or incompatibly changing a listed operation increments major. */
+        FeatureContract: {
+            version: components["schemas"]["ContractVersion"];
+            operations: string[];
+        };
+        /** @description Stable deployment identity and protocol compatibility metadata. Compatible clients must ignore unknown optional fields added by a future schema minor version. This contract intentionally excludes runtime capabilities, health, limits, inventory and authorization-principal identity. */
+        ServerInfo: {
+            /** @description Compatibility version for this response shape and field semantics. */
+            schema_version: components["schemas"]["ContractVersion"];
+            /** @enum {string} */
+            product: "powercontext";
+            /** @description Opaque identity of the durable Server deployment. It is unrelated to Access deployment_id and remains stable across restarts, upgrades, backup restore and replicas sharing the same primary database. */
+            server_id: string;
+            package_version: string;
+            /** @description Major/minor projection of the OpenAPI info.version served by this package. */
+            api_contract_version: components["schemas"]["ContractVersion"];
+            /** @description Stable feature groups keyed by contract name. */
+            feature_contracts: {
+                [key: string]: components["schemas"]["FeatureContract"];
+            };
+        };
         /** @enum {string} */
         AtomicMemoryState: "active" | "forgotten" | "merged" | "retired";
         AtomicMemoryWriteContent: {
@@ -2172,6 +2282,7 @@ export interface components {
         };
         AtomicMemorySearchHit: {
             memory: components["schemas"]["AtomicMemoryRecord"];
+            /** @description Raw RRF score. Hybrid mode applies the deployment's normalized relative FTS/vector weights. */
             score: number;
             matched_by: ("text" | "vector")[];
         };
@@ -2332,6 +2443,8 @@ export interface components {
             boundary_source: components["schemas"]["SourceReference"];
             objective: string;
             /** @default [] */
+            rollover_reasons: components["schemas"]["HandoffRolloverReason"][];
+            /** @default [] */
             evidence: components["schemas"]["HandoffCitation"][];
             /** @default 8000 */
             max_bytes: number;
@@ -2388,6 +2501,15 @@ export interface components {
             family: string;
             artifact_id: string;
             revision: number;
+        };
+        BindArtifactHandleRequest: {
+            artifact_id: string;
+            revision: number;
+        };
+        ArtifactHandleBinding: {
+            family: string;
+            key: string;
+            artifact: components["schemas"]["ArtifactReference"];
         };
         ArtifactAddress: {
             scope_id: string;
@@ -3194,6 +3316,8 @@ export interface components {
         PrepareHandoffRequest: {
             scope_id: string;
             objective: string;
+            /** @default [] */
+            rollover_reasons: components["schemas"]["HandoffRolloverReason"][];
             evidence: components["schemas"]["HandoffCitation"][];
             /** @default 8000 */
             max_bytes: number;
@@ -3230,6 +3354,29 @@ export interface components {
             status: components["schemas"]["PreparedContextStatus"];
             content: string | null;
             content_bytes: number;
+        };
+        BootstrapContextItem: {
+            kind: components["schemas"]["BootstrapContextItemKind"];
+            scope_id: string;
+            artifact: components["schemas"]["ArtifactReference"];
+            content_digest: string;
+            truncated: boolean;
+        };
+        BootstrapDeliveryReceipt: {
+            receipt_id: string;
+            state: components["schemas"]["BootstrapReceiptState"];
+        };
+        BootstrapContext: {
+            schema: components["schemas"]["BootstrapContextSchema"];
+            status: components["schemas"]["BootstrapContextStatus"];
+            reason: components["schemas"]["BootstrapSkipReason"] | null;
+            profile: components["schemas"]["BootstrapContextProfile"];
+            content: string | null;
+            content_bytes: number;
+            package_digest: string | null;
+            items: components["schemas"]["BootstrapContextItem"][];
+            truncated: boolean;
+            receipt: components["schemas"]["BootstrapDeliveryReceipt"];
         };
         EntryChange: {
             op: components["schemas"]["EntryChangeOperation"];
@@ -3908,6 +4055,29 @@ export interface components {
              */
             include_code: boolean;
             assembly?: components["schemas"]["ContextAssembly"];
+            /** @description Optional exact receipt for the last successfully injected bootstrap package. Only fully delivered Atomic Memory revisions from an injected same-Scope receipt are removed before candidate limiting and sufficiency assessment; Artifacts whose bootstrap bodies were truncated remain eligible. */
+            bootstrap_receipt_id?: string;
+        };
+        BootstrapContextRequest: {
+            scope_id: string;
+            /** @default false */
+            enabled: boolean;
+            /** @default powercontext.scope-bootstrap.v1 */
+            profile: components["schemas"]["BootstrapContextProfile"];
+            lifecycle: components["schemas"]["BootstrapContextLifecycle"];
+            integration: string;
+            /** @description Optional stable host event identity, persisted only as a digest. Within the same Scope, integration, and lifecycle, retries must keep the profile, max_bytes, and exact Handoff unchanged. */
+            event_id?: string;
+            /** @default 4096 */
+            max_bytes: number;
+            /** @description Optional exact committed Handoff Revision in the current Scope. */
+            handoff?: components["schemas"]["ArtifactReference"];
+        };
+        RecordBootstrapDeliveryRequest: {
+            scope_id: string;
+            receipt_id: string;
+            /** @enum {string} */
+            outcome: "injected" | "failed";
         };
         ContextAssemblySection: {
             family: components["schemas"]["ContextAssemblyFamily"];
@@ -4045,6 +4215,7 @@ export interface components {
             title: string;
             summary: string;
             snippet: string | null;
+            /** @description Weighted RRF relevance normalized to the 0..100 range. */
             score: number;
             matched_by: components["schemas"]["TopicMemoryMatchedBy"][];
         };
@@ -4460,6 +4631,20 @@ export interface components {
         /** @enum {string} */
         PreparedContextStatus: "ready" | "empty";
         /** @enum {string} */
+        BootstrapContextSchema: "powercontext.bootstrap-context.v1";
+        /** @enum {string} */
+        BootstrapContextProfile: "powercontext.scope-bootstrap.v1";
+        /** @enum {string} */
+        BootstrapContextLifecycle: "startup" | "resume" | "clear" | "compact" | "restore" | "fork";
+        /** @enum {string} */
+        BootstrapContextStatus: "ready" | "empty" | "skipped";
+        /** @enum {string} */
+        BootstrapContextItemKind: "atomic-memory" | "handoff";
+        /** @enum {string} */
+        BootstrapReceiptState: "pending" | "injected" | "skipped" | "failed";
+        /** @enum {string} */
+        BootstrapSkipReason: "disabled" | "no_eligible_context" | "already_delivered" | "preparation_failed";
+        /** @enum {string} */
         EntryChangeOperation: "add" | "revise" | "deactivate" | "reactivate" | "compact";
         /** @enum {string} */
         FlushStatus: "idle" | "processed";
@@ -4483,6 +4668,8 @@ export interface components {
         HandoffEvidenceStatus: "available" | "unavailable";
         /** @enum {string} */
         HandoffResolutionStatus: "empty" | "resolved";
+        /** @enum {string} */
+        HandoffRolloverReason: "user_requested" | "host_context_budget" | "host_compaction" | "context_quality" | "delegation" | "manual_checkpoint";
         /** @enum {string} */
         HandoffSchema: "powercontext.handoff.v1";
         /** @enum {string} */
@@ -5283,6 +5470,30 @@ export interface operations {
             };
         };
     };
+    get_server_info: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stable deployment identity and protocol compatibility metadata. */
+            200: {
+                headers: {
+                    "X-PowerContext-Request-ID": components["headers"]["RequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerInfo"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
     get_capabilities: {
         parameters: {
             query?: never;
@@ -5842,6 +6053,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PreparedContext"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    prepare_bootstrap_context: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BootstrapContextRequest"];
+            };
+        };
+        responses: {
+            /** @description A bounded package ready for host injection, or a normal empty/skipped result. */
+            200: {
+                headers: {
+                    "X-PowerContext-Request-ID": components["headers"]["RequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BootstrapContext"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    record_bootstrap_delivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordBootstrapDeliveryRequest"];
+            };
+        };
+        responses: {
+            /** @description Current durable delivery state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BootstrapDeliveryReceipt"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -7873,6 +8144,71 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             410: components["responses"]["CursorExpired"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    resolve_artifact_handle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                family: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The exact Artifact revision bound to the handle. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactHandleBinding"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    bind_artifact_handle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_id: string;
+                family: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindArtifactHandleRequest"];
+            };
+        };
+        responses: {
+            /** @description The existing or newly committed handle binding. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactHandleBinding"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["InvalidRequest"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];

@@ -7,7 +7,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
     "info": {
         "title": "PowerContext API",
         "description": "Remote PowerContext transport. Runtime behavior is reported by /v1/capabilities.",
-        "version": "1.2.0",
+        "version": "1.3.0",
     },
     "paths": {
         "/v1/atomic-memory/list": {
@@ -436,6 +436,29 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "security": [],
             }
         },
+        "/v1/server-info": {
+            "get": {
+                "tags": ["server"],
+                "summary": "Get stable Server deployment identity and protocol contracts",
+                "description": "Returns deployment identity and "
+                "compatibility metadata only. Runtime "
+                "availability, enabled behavior, limits and "
+                "inventory remain owned by health, "
+                "capabilities and statistics endpoints.",
+                "operationId": "get_server_info",
+                "responses": {
+                    "200": {
+                        "description": "Stable deployment identity and protocol compatibility metadata.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ServerInfo"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                },
+                "x-powercontext-access": {"action": "server.observe", "resource": {"type": "server"}},
+            }
+        },
         "/v1/capabilities": {
             "get": {
                 "tags": ["capabilities"],
@@ -476,6 +499,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "query parameters preserve the existing "
                 "complete-list behavior.",
                 "operationId": "list_scopes",
+                "x-powercontext-feature-contracts": ["scope.selection"],
                 "x-powercontext-access": {"action": "server.observe", "resource": {"type": "server"}},
                 "parameters": [
                     {"name": "query", "in": "query", "required": False, "schema": {"type": "string", "maxLength": 256}},
@@ -646,6 +670,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "its Memory, or authorize cross-Scope "
                 "access.",
                 "operationId": "get_scope",
+                "x-powercontext-feature-contracts": ["scope.selection"],
                 "x-powercontext-access": {"resolver": "path_scope_read_access"},
                 "parameters": [
                     {
@@ -721,6 +746,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "403": {"$ref": "#/components/responses/Forbidden"},
                     "503": {"$ref": "#/components/responses/Unavailable"},
                 },
+                "x-powercontext-feature-contracts": ["scope.selection"],
                 "x-powercontext-access": {"action": "server.observe", "resource": {"type": "server"}},
             },
             "put": {
@@ -1141,6 +1167,92 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "description": "Final context ready for direct injection, or a normal empty result.",
                         "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PreparedContext"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "x-powercontext-scope-mode": "current",
+            }
+        },
+        "/v1/context/bootstrap": {
+            "post": {
+                "tags": ["context"],
+                "summary": "Prepare bounded context for an Agent lifecycle boundary",
+                "description": "Prepare an opt-in, deterministic "
+                "bootstrap package without "
+                "manufacturing a query. Only "
+                "explicitly curated active Atomic "
+                "Memory Artifacts and one "
+                "caller-selected exact committed "
+                "Handoff are eligible. Returned "
+                "historical text is untrusted data "
+                "and grants no authority. A ready "
+                "receipt remains pending until the "
+                "host records delivery. Reusing one "
+                "stable event identity with different "
+                "package-shaping fields is rejected "
+                "with 422.",
+                "operationId": "prepare_bootstrap_context",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/BootstrapContextRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "A bounded package ready for host injection, or a normal empty/skipped result.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BootstrapContext"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "x-powercontext-scope-mode": "current",
+            }
+        },
+        "/v1/context/bootstrap/receipts": {
+            "post": {
+                "tags": ["context"],
+                "summary": "Record a bootstrap delivery outcome",
+                "description": "Atomically claim one "
+                "pending content-free "
+                "receipt as injected or "
+                "failed. A second injected "
+                "claim is rejected with 422, "
+                "so concurrent lifecycle "
+                "hooks cannot both inject "
+                "the same package. A "
+                "terminal outcome never "
+                "changes.",
+                "operationId": "record_bootstrap_delivery",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/RecordBootstrapDeliveryRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Current durable delivery state.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/BootstrapDeliveryReceipt"}}
+                        },
                     },
                     "401": {"$ref": "#/components/responses/Unauthorized"},
                     "403": {"$ref": "#/components/responses/Forbidden"},
@@ -1928,6 +2040,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "503": {"$ref": "#/components/responses/Unavailable"},
                     "500": {"$ref": "#/components/responses/InternalError"},
                 },
+                "x-powercontext-feature-contracts": ["memory.explicit"],
                 "x-powercontext-access": {
                     "action": "scope.contribute",
                     "resource": {"type": "scope", "scope-id-from": "scope_id"},
@@ -1965,6 +2078,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "503": {"$ref": "#/components/responses/Unavailable"},
                     "500": {"$ref": "#/components/responses/InternalError"},
                 },
+                "x-powercontext-feature-contracts": ["memory.explicit"],
                 "x-powercontext-access": {
                     "action": "scope.read",
                     "resource": {"type": "scope", "scope-id-from": "scope_id"},
@@ -2075,6 +2189,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "503": {"$ref": "#/components/responses/Unavailable"},
                     "500": {"$ref": "#/components/responses/InternalError"},
                 },
+                "x-powercontext-feature-contracts": ["memory.explicit"],
                 "x-powercontext-access": {"resolver": "exact_memory_access"},
                 "x-powercontext-scope-mode": "current",
             }
@@ -3868,6 +3983,170 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 },
             }
         },
+        "/v1/scopes/{scope_id}/artifact-handles/{family}/{key}": {
+            "get": {
+                "tags": ["artifacts"],
+                "summary": "Resolve a stable Artifact handle",
+                "description": "Resolve one scope-local handle to the exact immutable Artifact revision it names.",
+                "operationId": "resolve_artifact_handle",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[\\x21-\\x7E]+$"},
+                    },
+                    {
+                        "name": "key",
+                        "in": "path",
+                        "required": True,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                        },
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The exact Artifact revision bound to the handle.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ArtifactHandleBinding"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+            "put": {
+                "tags": ["artifacts"],
+                "summary": "Bind a stable Artifact handle",
+                "description": "Idempotently "
+                "and "
+                "permanently "
+                "bind "
+                "one "
+                "scope-local "
+                "handle "
+                "to an "
+                "exact "
+                "immutable "
+                "Artifact "
+                "revision. "
+                "A "
+                "committed "
+                "binding "
+                "cannot "
+                "be "
+                "updated, "
+                "released, "
+                "or "
+                "deleted. "
+                "Repeating "
+                "the "
+                "same "
+                "binding "
+                "succeeds, "
+                "while "
+                "binding "
+                "the "
+                "key "
+                "to "
+                "another "
+                "Artifact "
+                "revision "
+                "returns "
+                "409. "
+                "Verify "
+                "the "
+                "family, "
+                "Artifact "
+                "ID, "
+                "revision, "
+                "and "
+                "key "
+                "before "
+                "committing "
+                "the "
+                "binding; "
+                "a "
+                "mistakenly "
+                "bound "
+                "key "
+                "cannot "
+                "be "
+                "reused "
+                "in "
+                "that "
+                "Scope.",
+                "operationId": "bind_artifact_handle",
+                "x-powercontext-access": {
+                    "action": "scope.admin",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[\\x21-\\x7E]+$"},
+                    },
+                    {
+                        "name": "key",
+                        "in": "path",
+                        "required": True,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                        },
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/BindArtifactHandleRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "The existing or newly committed handle binding.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ArtifactHandleBinding"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+        },
         "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}": {
             "get": {
                 "tags": ["artifacts"],
@@ -4717,6 +4996,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "403": {"$ref": "#/components/responses/Forbidden"},
                     "503": {"$ref": "#/components/responses/Unavailable"},
                 },
+                "x-powercontext-feature-contracts": ["access.principal"],
                 "x-powercontext-access": {"action": "access.self", "resource": {"type": "server"}},
             }
         },
@@ -4933,6 +5213,101 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
     },
     "components": {
         "schemas": {
+            "ContractVersion": {
+                "properties": {
+                    "major": {"type": "integer", "minimum": 1.0},
+                    "minor": {"type": "integer", "minimum": 0.0},
+                },
+                "type": "object",
+                "required": ["major", "minor"],
+                "description": "A major/minor compatibility "
+                "version. A major increment may "
+                "remove or incompatibly change the "
+                "governed contract. A minor "
+                "increment only adds "
+                "backward-compatible behavior or "
+                "fields.",
+            },
+            "FeatureContract": {
+                "properties": {
+                    "version": {"$ref": "#/components/schemas/ContractVersion"},
+                    "operations": {"items": {"type": "string"}, "type": "array", "minItems": 1, "uniqueItems": True},
+                },
+                "type": "object",
+                "required": ["version", "operations"],
+                "description": "Compatibility version for exactly "
+                "the listed OpenAPI operation IDs. "
+                "Adding operations or compatible "
+                "semantics increments minor; "
+                "removing, renaming or incompatibly "
+                "changing a listed operation "
+                "increments major.",
+            },
+            "ServerInfo": {
+                "properties": {
+                    "schema_version": {
+                        "allOf": [{"$ref": "#/components/schemas/ContractVersion"}],
+                        "description": "Compatibility version for this response shape and field semantics.",
+                    },
+                    "product": {"type": "string", "enum": ["powercontext"]},
+                    "server_id": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "description": "Opaque "
+                        "identity "
+                        "of the "
+                        "durable "
+                        "Server "
+                        "deployment. "
+                        "It is "
+                        "unrelated "
+                        "to Access "
+                        "deployment_id "
+                        "and "
+                        "remains "
+                        "stable "
+                        "across "
+                        "restarts, "
+                        "upgrades, "
+                        "backup "
+                        "restore "
+                        "and "
+                        "replicas "
+                        "sharing "
+                        "the same "
+                        "primary "
+                        "database.",
+                    },
+                    "package_version": {"type": "string", "minLength": 1},
+                    "api_contract_version": {
+                        "allOf": [{"$ref": "#/components/schemas/ContractVersion"}],
+                        "description": "Major/minor projection of the OpenAPI info.version served by this package.",
+                    },
+                    "feature_contracts": {
+                        "additionalProperties": {"$ref": "#/components/schemas/FeatureContract"},
+                        "type": "object",
+                        "description": "Stable feature groups keyed by contract name.",
+                    },
+                },
+                "type": "object",
+                "required": [
+                    "schema_version",
+                    "product",
+                    "server_id",
+                    "package_version",
+                    "api_contract_version",
+                    "feature_contracts",
+                ],
+                "description": "Stable deployment identity and protocol "
+                "compatibility metadata. Compatible "
+                "clients must ignore unknown optional "
+                "fields added by a future schema minor "
+                "version. This contract intentionally "
+                "excludes runtime capabilities, health, "
+                "limits, inventory and "
+                "authorization-principal identity.",
+            },
             "AtomicMemoryState": {"type": "string", "enum": ["active", "forgotten", "merged", "retired"]},
             "AtomicMemoryWriteContent": {
                 "properties": {
@@ -5060,7 +5435,21 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "AtomicMemorySearchHit": {
                 "properties": {
                     "memory": {"$ref": "#/components/schemas/AtomicMemoryRecord"},
-                    "score": {"type": "number"},
+                    "score": {
+                        "type": "number",
+                        "description": "Raw "
+                        "RRF "
+                        "score. "
+                        "Hybrid "
+                        "mode "
+                        "applies "
+                        "the "
+                        "deployment's "
+                        "normalized "
+                        "relative "
+                        "FTS/vector "
+                        "weights.",
+                    },
                     "matched_by": {"items": {"type": "string", "enum": ["text", "vector"]}, "type": "array"},
                 },
                 "additionalProperties": False,
@@ -5327,6 +5716,13 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "boundary_source": {"$ref": "#/components/schemas/SourceReference"},
                     "objective": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
+                    "rollover_reasons": {
+                        "items": {"$ref": "#/components/schemas/HandoffRolloverReason"},
+                        "type": "array",
+                        "maxItems": 6,
+                        "uniqueItems": True,
+                        "default": [],
+                    },
                     "evidence": {
                         "items": {"$ref": "#/components/schemas/HandoffCitation"},
                         "type": "array",
@@ -5435,6 +5831,30 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["family", "artifact_id", "revision"],
+            },
+            "BindArtifactHandleRequest": {
+                "properties": {
+                    "artifact_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "revision": {"type": "integer", "minimum": 1.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["artifact_id", "revision"],
+            },
+            "ArtifactHandleBinding": {
+                "properties": {
+                    "family": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "key": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                    },
+                    "artifact": {"$ref": "#/components/schemas/ArtifactReference"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["family", "key", "artifact"],
             },
             "ArtifactAddress": {
                 "properties": {
@@ -7426,6 +7846,13 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "properties": {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "objective": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
+                    "rollover_reasons": {
+                        "items": {"$ref": "#/components/schemas/HandoffRolloverReason"},
+                        "type": "array",
+                        "maxItems": 6,
+                        "uniqueItems": True,
+                        "default": [],
+                    },
                     "evidence": {
                         "items": {"$ref": "#/components/schemas/HandoffCitation"},
                         "type": "array",
@@ -7510,6 +7937,59 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["schema", "status", "content", "content_bytes"],
+            },
+            "BootstrapContextItem": {
+                "properties": {
+                    "kind": {"$ref": "#/components/schemas/BootstrapContextItemKind"},
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "artifact": {"$ref": "#/components/schemas/ArtifactReference"},
+                    "content_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+                    "truncated": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["kind", "scope_id", "artifact", "content_digest", "truncated"],
+            },
+            "BootstrapDeliveryReceipt": {
+                "properties": {
+                    "receipt_id": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "state": {"$ref": "#/components/schemas/BootstrapReceiptState"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["receipt_id", "state"],
+            },
+            "BootstrapContext": {
+                "properties": {
+                    "schema": {"$ref": "#/components/schemas/BootstrapContextSchema"},
+                    "status": {"$ref": "#/components/schemas/BootstrapContextStatus"},
+                    "reason": {"allOf": [{"$ref": "#/components/schemas/BootstrapSkipReason"}], "nullable": True},
+                    "profile": {"$ref": "#/components/schemas/BootstrapContextProfile"},
+                    "content": {"type": "string", "nullable": True},
+                    "content_bytes": {"type": "integer", "minimum": 0.0},
+                    "package_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "nullable": True},
+                    "items": {
+                        "items": {"$ref": "#/components/schemas/BootstrapContextItem"},
+                        "type": "array",
+                        "maxItems": 7,
+                    },
+                    "truncated": {"type": "boolean"},
+                    "receipt": {"$ref": "#/components/schemas/BootstrapDeliveryReceipt"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "schema",
+                    "status",
+                    "reason",
+                    "profile",
+                    "content",
+                    "content_bytes",
+                    "package_digest",
+                    "items",
+                    "truncated",
+                    "receipt",
+                ],
             },
             "EntryChange": {
                 "properties": {
@@ -8931,10 +9411,116 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "default": False,
                     },
                     "assembly": {"$ref": "#/components/schemas/ContextAssembly"},
+                    "bootstrap_receipt_id": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[\\x21-\\x7E]+$",
+                        "description": "Optional "
+                        "exact "
+                        "receipt "
+                        "for "
+                        "the "
+                        "last "
+                        "successfully "
+                        "injected "
+                        "bootstrap "
+                        "package. "
+                        "Only "
+                        "fully "
+                        "delivered "
+                        "Atomic "
+                        "Memory "
+                        "revisions "
+                        "from "
+                        "an "
+                        "injected "
+                        "same-Scope "
+                        "receipt "
+                        "are "
+                        "removed "
+                        "before "
+                        "candidate "
+                        "limiting "
+                        "and "
+                        "sufficiency "
+                        "assessment; "
+                        "Artifacts "
+                        "whose "
+                        "bootstrap "
+                        "bodies "
+                        "were "
+                        "truncated "
+                        "remain "
+                        "eligible.",
+                    },
                 },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["scope_id", "query"],
+            },
+            "BootstrapContextRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "enabled": {"type": "boolean", "default": False},
+                    "profile": {
+                        "allOf": [{"$ref": "#/components/schemas/BootstrapContextProfile"}],
+                        "default": "powercontext.scope-bootstrap.v1",
+                    },
+                    "lifecycle": {"$ref": "#/components/schemas/BootstrapContextLifecycle"},
+                    "integration": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "event_id": {
+                        "type": "string",
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "pattern": "^[\\x20-\\x7E]+$",
+                        "description": "Optional "
+                        "stable "
+                        "host "
+                        "event "
+                        "identity, "
+                        "persisted "
+                        "only "
+                        "as "
+                        "a "
+                        "digest. "
+                        "Within "
+                        "the "
+                        "same "
+                        "Scope, "
+                        "integration, "
+                        "and "
+                        "lifecycle, "
+                        "retries "
+                        "must "
+                        "keep "
+                        "the "
+                        "profile, "
+                        "max_bytes, "
+                        "and "
+                        "exact "
+                        "Handoff "
+                        "unchanged.",
+                    },
+                    "max_bytes": {"type": "integer", "maximum": 8192.0, "minimum": 512.0, "default": 4096},
+                    "handoff": {
+                        "$ref": "#/components/schemas/ArtifactReference",
+                        "description": "Optional exact committed Handoff Revision in the current Scope.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "lifecycle", "integration"],
+            },
+            "RecordBootstrapDeliveryRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "receipt_id": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "outcome": {"type": "string", "enum": ["injected", "failed"]},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "receipt_id", "outcome"],
             },
             "ContextAssemblySection": {
                 "properties": {
@@ -9443,7 +10029,12 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "title": {"type": "string", "maxLength": 512, "minLength": 1},
                     "summary": {"type": "string", "maxLength": 8000, "minLength": 1},
                     "snippet": {"type": "string", "nullable": True},
-                    "score": {"type": "number", "minimum": 0.0},
+                    "score": {
+                        "type": "number",
+                        "maximum": 100.0,
+                        "minimum": 0.0,
+                        "description": "Weighted RRF relevance normalized to the 0..100 range.",
+                    },
                     "matched_by": {
                         "items": {"$ref": "#/components/schemas/TopicMemoryMatchedBy"},
                         "type": "array",
@@ -10435,6 +11026,19 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "CandidateStatus": {"type": "string", "enum": ["pending", "approved", "rejected"]},
             "PreparedContextSchema": {"type": "string", "enum": ["powercontext.prepared-context.v1"]},
             "PreparedContextStatus": {"type": "string", "enum": ["ready", "empty"]},
+            "BootstrapContextSchema": {"type": "string", "enum": ["powercontext.bootstrap-context.v1"]},
+            "BootstrapContextProfile": {"type": "string", "enum": ["powercontext.scope-bootstrap.v1"]},
+            "BootstrapContextLifecycle": {
+                "type": "string",
+                "enum": ["startup", "resume", "clear", "compact", "restore", "fork"],
+            },
+            "BootstrapContextStatus": {"type": "string", "enum": ["ready", "empty", "skipped"]},
+            "BootstrapContextItemKind": {"type": "string", "enum": ["atomic-memory", "handoff"]},
+            "BootstrapReceiptState": {"type": "string", "enum": ["pending", "injected", "skipped", "failed"]},
+            "BootstrapSkipReason": {
+                "type": "string",
+                "enum": ["disabled", "no_eligible_context", "already_delivered", "preparation_failed"],
+            },
             "EntryChangeOperation": {
                 "type": "string",
                 "enum": ["add", "revise", "deactivate", "reactivate", "compact"],
@@ -10453,6 +11057,17 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "HandoffDisposition": {"type": "string", "enum": ["continuable", "blocked", "complete"]},
             "HandoffEvidenceStatus": {"type": "string", "enum": ["available", "unavailable"]},
             "HandoffResolutionStatus": {"type": "string", "enum": ["empty", "resolved"]},
+            "HandoffRolloverReason": {
+                "type": "string",
+                "enum": [
+                    "user_requested",
+                    "host_context_budget",
+                    "host_compaction",
+                    "context_quality",
+                    "delegation",
+                    "manual_checkpoint",
+                ],
+            },
             "HandoffSchema": {"type": "string", "enum": ["powercontext.handoff.v1"]},
             "HandoffSelection": {"type": "string", "enum": ["prepared", "exact", "latest"]},
             "PreparedHandoffSchema": {"type": "string", "enum": ["powercontext.prepared-handoff.v1"]},
@@ -11082,4 +11697,9 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
         },
     },
     "security": [{"BearerAuth": []}, {}],
+    "x-powercontext-feature-contracts": {
+        "access.principal": {"major": 1, "minor": 0},
+        "scope.selection": {"major": 1, "minor": 0},
+        "memory.explicit": {"major": 1, "minor": 0},
+    },
 }

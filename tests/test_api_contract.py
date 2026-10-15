@@ -29,6 +29,9 @@ from powercontext.http import (
     ArtifactCreated,
     ArtifactReference,
     ArtifactRevision,
+    BootstrapContext,
+    BootstrapContextRequest,
+    BootstrapDeliveryReceipt,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
     CommitHandoffRequest,
@@ -57,6 +60,7 @@ from powercontext.http import (
     HandoffCurrentWorkRequest,
     HandoffDraft,
     HandoffResolution,
+    HandoffRolloverReason,
     ImportExternalSkillRequest,
     ListArtifactsRequest,
     ListExternalSkillsRequest,
@@ -70,6 +74,7 @@ from powercontext.http import (
     PrepareHandoffRequest,
     ProposeExperienceRequest,
     ProposeSkillRequest,
+    RecordBootstrapDeliveryRequest,
     RecordTaskOutcomeRequest,
     ResolveExternalSkillRequest,
     ReviseArtifactCandidateRequest,
@@ -127,6 +132,7 @@ from powercontext.http._generated.operations import (
     LIST_MEMORY_CHANGES,
     LIST_MEMORY_ENTRIES,
     LIST_REMOTE_SKILL_TARGETS,
+    PREPARE_BOOTSTRAP_CONTEXT,
     PREPARE_CONTEXT,
     PREPARE_HANDOFF,
     PROPOSE_EXPERIENCE,
@@ -135,6 +141,7 @@ from powercontext.http._generated.operations import (
     PUBLISH_ARTIFACT,
     PUBLISH_REMOTE_SKILL,
     RECONCILE_REMOTE_SKILLS,
+    RECORD_BOOTSTRAP_DELIVERY,
     RECORD_REMOTE_SKILL_RECEIPT,
     RECORD_SKILL_USAGE,
     RECORD_TASK_OUTCOME,
@@ -156,6 +163,7 @@ from powercontext.http._generated.operations import (
 )
 from powercontext.server.app import create_app
 from powercontext.server.factory import create_server_app
+from powercontext.server.info import server_info
 from powercontext.server.settings import HandoffReportConfig, ServerSettings
 
 
@@ -182,6 +190,47 @@ def test_contract_uses_the_namespaced_request_id_header() -> None:
 
     assert "X-PowerContext-Request-ID" in contract
     assert "X-Request-ID" not in contract
+
+
+def test_server_info_contract_is_observable_and_forward_compatible() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+
+    assert contract["info"]["version"] == "1.3.0"
+    operation = contract["paths"]["/v1/server-info"]["get"]
+    assert operation["operationId"] == "get_server_info"
+    assert operation["x-powercontext-access"] == {
+        "action": "server.observe",
+        "resource": {"type": "server"},
+    }
+    schema = contract["components"]["schemas"]["ServerInfo"]
+    assert schema["required"] == [
+        "schema_version",
+        "product",
+        "server_id",
+        "package_version",
+        "api_contract_version",
+        "feature_contracts",
+    ]
+    assert "additionalProperties" not in schema
+
+
+def test_server_info_feature_contracts_match_openapi_versions_and_membership() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    expected = {
+        name: {
+            "version": version,
+            "operations": [
+                operation["operationId"]
+                for path_item in contract["paths"].values()
+                for operation in path_item.values()
+                if name in operation.get("x-powercontext-feature-contracts", [])
+            ],
+        }
+        for name, version in contract["x-powercontext-feature-contracts"].items()
+    }
+    assert {
+        name: feature.model_dump() for name, feature in server_info("server-a").feature_contracts.items()
+    } == expected
 
 
 def test_contract_declares_server_and_remote_target_bearer_boundaries() -> None:
@@ -480,10 +529,35 @@ def test_prepared_context_is_a_generic_typed_operation_outside_the_mcp_memory_to
         "query",
         "max_bytes",
         "assembly",
+        "bootstrap_receipt_id",
         "include_code",
     }
     assert set(schemas["PreparedContext"]["properties"]) == {"schema", "status", "content", "content_bytes"}
     assert not {"memory", "mode", "selection"} & set(schemas["PreparedContext"]["properties"])
+
+
+def test_bootstrap_context_has_typed_prepare_and_delivery_operations() -> None:
+    assert PREPARE_BOOTSTRAP_CONTEXT.path == "/v1/context/bootstrap"
+    assert PREPARE_BOOTSTRAP_CONTEXT.request_type is BootstrapContextRequest
+    assert PREPARE_BOOTSTRAP_CONTEXT.response_type is BootstrapContext
+    assert PREPARE_BOOTSTRAP_CONTEXT.success_status == 200
+    assert RECORD_BOOTSTRAP_DELIVERY.path == "/v1/context/bootstrap/receipts"
+    assert RECORD_BOOTSTRAP_DELIVERY.request_type is RecordBootstrapDeliveryRequest
+    assert RECORD_BOOTSTRAP_DELIVERY.response_type is BootstrapDeliveryReceipt
+
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    schemas = contract["components"]["schemas"]
+    assert schemas["BootstrapContextRequest"]["properties"]["enabled"]["default"] is False
+    assert schemas["BootstrapContextRequest"]["properties"]["max_bytes"]["maximum"] == 8192
+    assert schemas["BootstrapContext"]["properties"]["items"]["maxItems"] == 7
+    assert schemas["BootstrapContextLifecycle"]["enum"] == [
+        "startup",
+        "resume",
+        "clear",
+        "compact",
+        "restore",
+        "fork",
+    ]
 
 
 def test_experience_skill_and_review_operations_are_typed_and_family_routed() -> None:
@@ -663,6 +737,29 @@ def test_handoff_operations_expose_the_complete_explicit_lifecycle() -> None:
     assert CONTINUE_HANDOFF.response_type is HandoffResolution
 
 
+def test_handoff_prepare_and_activation_accept_advisory_rollover_reasons() -> None:
+    citation = {
+        "kind": "source",
+        "source_ref": {"name": "content", "source_id": "turn-1"},
+    }
+
+    prepare = PrepareHandoffRequest.model_validate({
+        "scope_id": "project",
+        "objective": "Continue the current work in a fresh session.",
+        "rollover_reasons": ["user_requested", "context_quality"],
+        "evidence": [citation],
+    })
+    activation = ActivateHandoffRequest.model_validate({
+        "scope_id": "project",
+        "boundary_source": citation["source_ref"],
+        "objective": "Continue the current work in a fresh session.",
+        "rollover_reasons": ["host_context_budget"],
+    })
+
+    assert prepare.rollover_reasons == [HandoffRolloverReason.USER_REQUESTED, HandoffRolloverReason.CONTEXT_QUALITY]
+    assert activation.rollover_reasons == [HandoffRolloverReason.HOST_CONTEXT_BUDGET]
+
+
 def test_work_operations_expose_the_high_level_continuity_loop() -> None:
     operations = (
         CREATE_WORK_CONTRACT,
@@ -765,6 +862,8 @@ def test_base_access_contract_includes_revision_history_and_tags() -> None:
         ("/v1/scopes/{scope_id}/sources", "get"): "list_sources",
         ("/v1/scopes/{scope_id}/sources/{source_type}/{source_id}", "get"): "get_source",
         ("/v1/scopes/{scope_id}/artifacts", "post"): "create_artifact",
+        ("/v1/scopes/{scope_id}/artifact-handles/{family}/{key}", "get"): "resolve_artifact_handle",
+        ("/v1/scopes/{scope_id}/artifact-handles/{family}/{key}", "put"): "bind_artifact_handle",
         ("/v1/scopes/{scope_id}/artifacts/{family}", "get"): "list_artifacts",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}", "get"): "get_artifact",
         ("/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}", "put"): "replace_artifact",
@@ -781,7 +880,9 @@ def test_base_access_contract_includes_revision_history_and_tags() -> None:
     actual_operations = {
         (path, method): operation["operationId"]
         for path, path_item in paths.items()
-        if path.startswith("/v1/scopes/{scope_id}/sources") or path.startswith("/v1/scopes/{scope_id}/artifacts")
+        if path.startswith("/v1/scopes/{scope_id}/sources")
+        or path.startswith("/v1/scopes/{scope_id}/artifacts")
+        or path.startswith("/v1/scopes/{scope_id}/artifact-handles")
         for method, operation in path_item.items()
     }
     assert actual_operations == expected_operations

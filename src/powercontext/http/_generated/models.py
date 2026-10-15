@@ -22,6 +22,42 @@ from pydantic import (
 )
 
 
+class ContractVersion(BaseModel):
+    major: Annotated[StrictInt, Field(ge=1)]
+    minor: Annotated[StrictInt, Field(ge=0)]
+
+
+class FeatureContract(BaseModel):
+    version: ContractVersion
+    operations: Annotated[list[StrictStr], Field(min_length=1)]
+
+
+class Product(StrEnum):
+    POWERCONTEXT = "powercontext"
+
+
+class ServerInfo(BaseModel):
+    schema_version: Annotated[
+        ContractVersion, Field(description="Compatibility version for this response shape and field semantics.")
+    ]
+    product: Product
+    server_id: Annotated[
+        StrictStr,
+        Field(
+            description="Opaque identity of the durable Server deployment. It is unrelated to Access deployment_id and remains stable across restarts, upgrades, backup restore and replicas sharing the same primary database.",
+            max_length=128,
+            min_length=1,
+        ),
+    ]
+    package_version: Annotated[StrictStr, Field(min_length=1)]
+    api_contract_version: Annotated[
+        ContractVersion, Field(description="Major/minor projection of the OpenAPI info.version served by this package.")
+    ]
+    feature_contracts: Annotated[
+        dict[str, FeatureContract], Field(description="Stable feature groups keyed by contract name.")
+    ]
+
+
 class AtomicMemoryState(StrEnum):
     ACTIVE = "active"
     FORGOTTEN = "forgotten"
@@ -209,6 +245,23 @@ class ArtifactReference(BaseModel):
     family: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
     artifact_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
     revision: Annotated[StrictInt, Field(ge=1)]
+
+
+class BindArtifactHandleRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    artifact_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    revision: Annotated[StrictInt, Field(ge=1)]
+
+
+class ArtifactHandleBinding(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    family: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    key: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[a-z0-9]+(?:-[a-z0-9]+)*$")]
+    artifact: ArtifactReference
 
 
 class ArtifactAddress(BaseModel):
@@ -1862,6 +1915,20 @@ class CodeQueryResponse(RootModel[CodeQueryResult | CodeStatus]):
     root: CodeQueryResult | CodeStatus
 
 
+class Outcome1(StrEnum):
+    INJECTED = "injected"
+    FAILED = "failed"
+
+
+class RecordBootstrapDeliveryRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    receipt_id: Annotated[StrictStr, Field(max_length=64, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    outcome: Outcome1
+
+
 class ContextAssemblyFamily(StrEnum):
     MEMORY = "memory"
     EXPERIENCE = "experience"
@@ -2675,6 +2742,48 @@ class PreparedContextStatus(StrEnum):
     EMPTY = "empty"
 
 
+class BootstrapContextSchema(StrEnum):
+    POWERCONTEXT_BOOTSTRAP_CONTEXT_V1 = "powercontext.bootstrap-context.v1"
+
+
+class BootstrapContextProfile(StrEnum):
+    POWERCONTEXT_SCOPE_BOOTSTRAP_V1 = "powercontext.scope-bootstrap.v1"
+
+
+class BootstrapContextLifecycle(StrEnum):
+    STARTUP = "startup"
+    RESUME = "resume"
+    CLEAR = "clear"
+    COMPACT = "compact"
+    RESTORE = "restore"
+    FORK = "fork"
+
+
+class BootstrapContextStatus(StrEnum):
+    READY = "ready"
+    EMPTY = "empty"
+    SKIPPED = "skipped"
+
+
+class BootstrapContextItemKind(StrEnum):
+    ATOMIC_MEMORY = "atomic-memory"
+    HANDOFF = "handoff"
+
+
+class BootstrapReceiptState(StrEnum):
+    PENDING = "pending"
+    INJECTED = "injected"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class BootstrapSkipReason(StrEnum):
+    DISABLED = "disabled"
+    NO_ELIGIBLE_CONTEXT = "no_eligible_context"
+    ALREADY_DELIVERED = "already_delivered"
+    PREPARATION_FAILED = "preparation_failed"
+
+
 class EntryChangeOperation(StrEnum):
     ADD = "add"
     REVISE = "revise"
@@ -2742,6 +2851,15 @@ class HandoffEvidenceStatus(StrEnum):
 class HandoffResolutionStatus(StrEnum):
     EMPTY = "empty"
     RESOLVED = "resolved"
+
+
+class HandoffRolloverReason(StrEnum):
+    USER_REQUESTED = "user_requested"
+    HOST_CONTEXT_BUDGET = "host_context_budget"
+    HOST_COMPACTION = "host_compaction"
+    CONTEXT_QUALITY = "context_quality"
+    DELEGATION = "delegation"
+    MANUAL_CHECKPOINT = "manual_checkpoint"
 
 
 class HandoffSchema(StrEnum):
@@ -3250,7 +3368,12 @@ class AtomicMemorySearchHit(BaseModel):
         extra="forbid",
     )
     memory: AtomicMemoryRecord
-    score: StrictFloat
+    score: Annotated[
+        StrictFloat,
+        Field(
+            description="Raw RRF score. Hybrid mode applies the deployment's normalized relative FTS/vector weights."
+        ),
+    ]
     matched_by: list[MatchedByEnum]
 
 
@@ -3648,6 +3771,41 @@ class PreparedContext(BaseModel):
     content_bytes: Annotated[StrictInt, Field(ge=0)]
 
 
+class BootstrapContextItem(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    kind: BootstrapContextItemKind
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    artifact: ArtifactReference
+    content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
+    truncated: StrictBool
+
+
+class BootstrapDeliveryReceipt(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    receipt_id: Annotated[StrictStr, Field(max_length=64, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    state: BootstrapReceiptState
+
+
+class BootstrapContext(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_: Annotated[BootstrapContextSchema, Field(alias="schema")]
+    status: BootstrapContextStatus
+    reason: Annotated[BootstrapSkipReason | None, Field(...)]
+    profile: BootstrapContextProfile
+    content: Annotated[StrictStr | None, Field(...)]
+    content_bytes: Annotated[StrictInt, Field(ge=0)]
+    package_digest: Annotated[StrictStr | None, Field(pattern="^sha256:[0-9a-f]{64}$")]
+    items: Annotated[list[BootstrapContextItem], Field(max_length=7)]
+    truncated: StrictBool
+    receipt: BootstrapDeliveryReceipt
+
+
 class EntryChange(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -3884,6 +4042,30 @@ class MemoryRevisionChanges(BaseModel):
     changes: list[EntryChange]
 
 
+class BootstrapContextRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    enabled: StrictBool = False
+    profile: BootstrapContextProfile = BootstrapContextProfile.POWERCONTEXT_SCOPE_BOOTSTRAP_V1
+    lifecycle: BootstrapContextLifecycle
+    integration: Annotated[StrictStr, Field(max_length=64, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    event_id: Annotated[
+        StrictStr | None,
+        Field(
+            description="Optional stable host event identity, persisted only as a digest. Within the same Scope, integration, and lifecycle, retries must keep the profile, max_bytes, and exact Handoff unchanged.",
+            max_length=512,
+            min_length=1,
+            pattern="^[\\x20-\\x7E]+$",
+        ),
+    ] = None
+    max_bytes: Annotated[StrictInt, Field(ge=512, le=8192)] = 4096
+    handoff: Annotated[
+        ArtifactReference | None, Field(description="Optional exact committed Handoff Revision in the current Scope.")
+    ] = None
+
+
 class ContextAssemblySection(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -4095,7 +4277,9 @@ class SearchTopicMemoryHit(BaseModel):
     title: Annotated[StrictStr, Field(max_length=512, min_length=1)]
     summary: Annotated[StrictStr, Field(max_length=8000, min_length=1)]
     snippet: Annotated[StrictStr | None, Field(...)]
-    score: Annotated[StrictFloat, Field(ge=0.0)]
+    score: Annotated[
+        StrictFloat, Field(description="Weighted RRF relevance normalized to the 0..100 range.", ge=0.0, le=100.0)
+    ]
     matched_by: Annotated[list[TopicMemoryMatchedBy], Field(min_length=1)]
 
 
@@ -4358,6 +4542,7 @@ class PrepareHandoffRequest(BaseModel):
     )
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     objective: Annotated[StrictStr, Field(max_length=8192, min_length=1, pattern=".*\\S.*")]
+    rollover_reasons: Annotated[list[HandoffRolloverReason], Field(max_length=6)] = []
     evidence: Annotated[list[HandoffCitation], Field(max_length=32, min_length=1)]
     max_bytes: Annotated[StrictInt, Field(ge=512, le=32768)] = 8000
 
@@ -4420,6 +4605,15 @@ class PrepareContextRequest(BaseModel):
         Field(description="Opt into current-Scope native code evidence. No index is built during preparation."),
     ] = False
     assembly: ContextAssembly | None = None
+    bootstrap_receipt_id: Annotated[
+        StrictStr | None,
+        Field(
+            description="Optional exact receipt for the last successfully injected bootstrap package. Only fully delivered Atomic Memory revisions from an injected same-Scope receipt are removed before candidate limiting and sufficiency assessment; Artifacts whose bootstrap bodies were truncated remain eligible.",
+            max_length=64,
+            min_length=1,
+            pattern="^[\\x21-\\x7E]+$",
+        ),
+    ] = None
 
 
 class GeneratedCandidateResponse(BaseModel):
@@ -4468,6 +4662,7 @@ class ActivateHandoffRequest(BaseModel):
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     boundary_source: SourceReference
     objective: Annotated[StrictStr, Field(max_length=8192, min_length=1, pattern=".*\\S.*")]
+    rollover_reasons: Annotated[list[HandoffRolloverReason], Field(max_length=6)] = []
     evidence: Annotated[list[HandoffCitation], Field(max_length=32, validate_default=True)] = []
     max_bytes: Annotated[StrictInt, Field(ge=512, le=32768)] = 8000
 

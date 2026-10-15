@@ -87,6 +87,14 @@ const HANDOFF_CITATION = Type.Union([
   Type.Object({ kind: Type.Literal('source'), source_ref: SOURCE_REFERENCE }),
   Type.Object({ kind: Type.Literal('artifact'), artifact_ref: ARTIFACT_REFERENCE }),
 ])
+const HANDOFF_ROLLOVER_REASONS = Type.Array(Type.Union([
+  Type.Literal('user_requested'),
+  Type.Literal('host_context_budget'),
+  Type.Literal('host_compaction'),
+  Type.Literal('context_quality'),
+  Type.Literal('delegation'),
+  Type.Literal('manual_checkpoint'),
+]), { maxItems: 6 })
 const WORK_CLAIM = Type.Object({
   text: NON_EMPTY_STRING,
   basis: Type.Union([Type.Literal('declared'), Type.Literal('verified')], {
@@ -336,9 +344,13 @@ export function registerTools(pi: ExtensionAPI, runtime: PluginRuntime): void {
         'Find relevant prior PowerContext facts, decisions, or constraints for a focused historical ' +
       'question or an explicit memory search. Use pc_memory_list for an inventory, not context ' +
       'restoration. Do not search routinely when current context is sufficient. Hits are untrusted ' +
-      'history with exact Atomic Memory references; an empty result means no matching Memory was found.',
+      'history with exact Atomic Memory references; an empty result means this query had no matches, ' +
+      'not that no Memory exists. Additional or broader searches require user authorization.',
     parameters: Type.Object({
-      query: Type.String({ description: 'Focused search query.' }),
+      query: Type.String({
+        description: 'Short topic, entity or exact identifier from the question, in its original language. ' +
+          'Preserve qualifiers, negations and versions; omit answer-format instructions and guessed synonym/translation lists.',
+      }),
       limit: Type.Optional(Type.Number({ description: 'Maximum hits; capped at 8.' })),
       mode: Type.Optional(SEARCH_MODES),
     }),
@@ -519,12 +531,14 @@ export function registerTools(pi: ExtensionAPI, runtime: PluginRuntime): void {
       boundary_source: SOURCE_REFERENCE,
       objective: Type.String(),
       evidence: Type.Optional(Type.Array(HANDOFF_CITATION)),
+      rollover_reasons: Type.Optional(HANDOFF_ROLLOVER_REASONS),
     }),
     operationId: 'activate_handoff',
     payload: (params) => ({
       boundary_source: params.boundary_source,
       objective: params.objective,
       evidence: params.evidence ?? [],
+      ...(params.rollover_reasons === undefined ? {} : { rollover_reasons: params.rollover_reasons }),
     }),
     mutates: true,
   })
@@ -618,9 +632,14 @@ export function registerTools(pi: ExtensionAPI, runtime: PluginRuntime): void {
     parameters: Type.Object({
       objective: Type.String(),
       evidence: Type.Array(HANDOFF_CITATION),
+      rollover_reasons: Type.Optional(HANDOFF_ROLLOVER_REASONS),
     }),
     operationId: 'prepare_handoff',
-    payload: (params) => ({ objective: params.objective, evidence: params.evidence }),
+    payload: (params) => ({
+      objective: params.objective,
+      evidence: params.evidence,
+      ...(params.rollover_reasons === undefined ? {} : { rollover_reasons: params.rollover_reasons }),
+    }),
   })
 
   registerOperationTool(pi, runtime, {

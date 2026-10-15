@@ -41,6 +41,7 @@ from powercontext.http import (
     AccessSubject,
     ArtifactAccessResource,
     ArtifactReference,
+    BindArtifactHandleRequest,
     CaptureContentSourceRequest,
     ExactScopeSelection,
     FlushTopicMemoryRequest,
@@ -63,6 +64,38 @@ from powercontext.http import (
     SearchTopicMemoryRequest,
     UpdateScopeRequest,
 )
+
+
+def test_client_reads_server_info_and_ignores_future_optional_fields() -> None:
+    async def scenario() -> None:
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/v1/server-info"
+            return httpx.Response(
+                200,
+                json={
+                    "schema_version": {"major": 1, "minor": 0},
+                    "product": "powercontext",
+                    "server_id": "server-a",
+                    "package_version": "1.2.3",
+                    "api_contract_version": {"major": 1, "minor": 2},
+                    "feature_contracts": {
+                        "access.principal": {
+                            "version": {"major": 1, "minor": 0},
+                            "operations": ["get_access_principal"],
+                        }
+                    },
+                    "future_optional_field": True,
+                },
+                request=request,
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+            info = await PowerContextClient("https://memory.example", http_client=http_client).get_server_info()
+
+        assert info.server_id == "server-a"
+        assert info.api_contract_version.minor == 2
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(
@@ -110,6 +143,41 @@ def test_client_preserves_supported_artifact_tag_queries(families) -> None:
         assert result.items == []
         assert len(sent) == 1
         assert json.loads(sent[0].content) == payload
+
+
+def test_artifact_handle_client_binds_and_resolves_exact_revision() -> None:
+    async def scenario() -> None:
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "family": "profile",
+                    "key": "support-agent",
+                    "artifact": {"family": "profile", "artifact_id": "profile-1", "revision": 2},
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as transport:
+            client = PowerContextClient("https://memory.example", http_client=transport)
+            bound = await client.bind_artifact_handle(
+                "scope-a",
+                "profile",
+                "support-agent",
+                BindArtifactHandleRequest(artifact_id="profile-1", revision=2),
+            )
+            resolved = await client.resolve_artifact_handle("scope-a", "profile", "support-agent")
+
+        assert bound == resolved
+        assert [request.method for request in requests] == ["PUT", "GET"]
+        assert [request.url.path for request in requests] == [
+            "/v1/scopes/scope-a/artifact-handles/profile/support-agent",
+            "/v1/scopes/scope-a/artifact-handles/profile/support-agent",
+        ]
+        assert json.loads(requests[0].content) == {"artifact_id": "profile-1", "revision": 2}
+        assert requests[1].content == b""
 
     asyncio.run(scenario())
 

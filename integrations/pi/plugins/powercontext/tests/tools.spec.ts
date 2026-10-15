@@ -614,6 +614,57 @@ describe('Pi native tool surface', () => {
     ])
   })
 
+  it('accepts and forwards advisory rollover reasons for Handoff preparation', async () => {
+    const registered: Array<Record<string, unknown>> = []
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true })))
+    const runtime = createRuntime(fetch)
+    registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, runtime)
+    const activate = registeredTool<Record<string, unknown>>(registered, 'pc_handoff_activate')
+    const prepare = registeredTool<Record<string, unknown>>(registered, 'pc_handoff_prepare')
+    const boundarySource = { name: 'content', source_id: 'turn-1' }
+    const reasons = ['host_context_budget', 'context_quality']
+    const context = { cwd: '/workspace/repo', hasUI: true, ui: { confirm: vi.fn(async () => true) } }
+    const signal = new AbortController().signal
+
+    expect(Value.Check(activate.parameters!, {
+      boundary_source: boundarySource,
+      objective: 'Continue in a fresh session.',
+      rollover_reasons: reasons,
+    })).toBe(true)
+    expect(Value.Check(prepare.parameters!, {
+      objective: 'Continue in a fresh session.',
+      evidence: [{ kind: 'source', source_ref: boundarySource }],
+      rollover_reasons: reasons,
+    })).toBe(true)
+
+    await activate.execute('call-activate', {
+      boundary_source: boundarySource,
+      objective: 'Continue in a fresh session.',
+      rollover_reasons: reasons,
+    }, signal, () => undefined, context)
+    await prepare.execute('call-prepare', {
+      objective: 'Continue in a fresh session.',
+      evidence: [{ kind: 'source', source_ref: boundarySource }],
+      rollover_reasons: reasons,
+    }, signal, () => undefined, context)
+
+    expect(fetch.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([
+      ['http://127.0.0.1:8000/v1/handoff/activate', {
+        boundary_source: boundarySource,
+        objective: 'Continue in a fresh session.',
+        evidence: [],
+        rollover_reasons: reasons,
+        scope_id: 'project:demo',
+      }],
+      ['http://127.0.0.1:8000/v1/handoff/prepare', {
+        objective: 'Continue in a fresh session.',
+        evidence: [{ kind: 'source', source_ref: boundarySource }],
+        rollover_reasons: reasons,
+        scope_id: 'project:demo',
+      }],
+    ])
+  })
+
   it('accepts the check results the OpenAPI contract marks optional', () => {
     const registered: Array<Record<string, unknown>> = []
     registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, createRuntime(vi.fn()))

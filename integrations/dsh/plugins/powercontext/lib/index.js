@@ -302,6 +302,17 @@ const OPERATIONS$1 = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
+	get_server_info: {
+		method: "GET",
+		path: "/v1/server-info",
+		location: null,
+		scopeMode: "none",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
 	get_capabilities: {
 		method: "GET",
 		path: "/v1/capabilities",
@@ -512,6 +523,28 @@ const OPERATIONS$1 = {
 	prepare_context: {
 		method: "POST",
 		path: "/v1/context/prepare",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	prepare_bootstrap_context: {
+		method: "POST",
+		path: "/v1/context/bootstrap",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	record_bootstrap_delivery: {
+		method: "POST",
+		path: "/v1/context/bootstrap/receipts",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -1238,6 +1271,36 @@ const OPERATIONS$1 = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
+	resolve_artifact_handle: {
+		method: "GET",
+		path: "/v1/scopes/{scope_id}/artifact-handles/{family}/{key}",
+		location: null,
+		scopeMode: "none",
+		pathParameters: [
+			"scope_id",
+			"family",
+			"key"
+		],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	bind_artifact_handle: {
+		method: "PUT",
+		path: "/v1/scopes/{scope_id}/artifact-handles/{family}/{key}",
+		location: "body",
+		scopeMode: "none",
+		pathParameters: [
+			"scope_id",
+			"family",
+			"key"
+		],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
 	get_artifact: {
 		method: "GET",
 		path: "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}",
@@ -1872,6 +1935,7 @@ const PUBLIC_ERROR_CODES = new Set([
 	"scope_not_found",
 	"memory_not_found",
 	"artifact_not_found",
+	"artifact_handle_not_found",
 	"candidate_not_found",
 	"handoff_evidence_not_found",
 	"source_definition_not_found",
@@ -4030,6 +4094,20 @@ const HANDOFF_EVIDENCE = {
 	},
 	description: "For captured evidence use {kind: \"source\", source_ref: data.source}, copying the exact result. No raw facts."
 };
+const HANDOFF_ROLLOVER_REASONS = {
+	type: "array",
+	items: {
+		type: "string",
+		enum: [
+			"user_requested",
+			"host_context_budget",
+			"host_compaction",
+			"context_quality",
+			"delegation",
+			"manual_checkpoint"
+		]
+	}
+};
 function handoffTools(runtime, defineTool) {
 	return [
 		pcTool(defineTool, {
@@ -4048,12 +4126,14 @@ function handoffTools(runtime, defineTool) {
 				evidence: {
 					type: "array",
 					items: HANDOFF_EVIDENCE
-				}
+				},
+				rollover_reasons: HANDOFF_ROLLOVER_REASONS
 			},
 			execute: (args, exec) => run(runtime, exec, "activate_handoff", {
 				boundary_source: args.boundary_source,
 				objective: args.objective,
-				evidence: args.evidence ?? []
+				evidence: args.evidence ?? [],
+				...args.rollover_reasons === void 0 ? {} : { rollover_reasons: args.rollover_reasons }
 			})
 		}),
 		pcTool(defineTool, {
@@ -4069,11 +4149,13 @@ function handoffTools(runtime, defineTool) {
 					type: "array",
 					required: true,
 					items: HANDOFF_EVIDENCE
-				}
+				},
+				rollover_reasons: HANDOFF_ROLLOVER_REASONS
 			},
 			execute: (args, exec) => run(runtime, exec, "prepare_handoff", {
 				objective: args.objective,
-				evidence: args.evidence
+				evidence: args.evidence,
+				...args.rollover_reasons === void 0 ? {} : { rollover_reasons: args.rollover_reasons }
 			})
 		}),
 		pcTool(defineTool, {
