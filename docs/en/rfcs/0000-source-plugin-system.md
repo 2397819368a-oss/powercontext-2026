@@ -29,16 +29,14 @@ These capabilities need to serve business applications, automation workflows, co
 
 # 1. Overview
 
-Hosts use built-in and custom Source capabilities through **the same public MCP on PC Server**, with different execution paths for the two operations:
+Hosts use built-in and custom Source capabilities through **the same public MCP on PC Server**:
 
-- **write**: the host already has complete content. PC Server uses loaded SourceDefinition and Projection implementations to save it synchronously and return the result; no plugin instance or management service is started.
-- **collect**: plugins continuously read external resources. A shared background management service manages targets, and each plugin instance executes in its own background Runtime process. By default, Server startup discovers instances in a configured directory and automatically starts the local independent management service and Runtimes. Multiple hosts share instances. Remote Runtimes can connect to the same management service, which can also run on another machine.
+- **write**: the host supplies complete content. Server executes loaded SourceDefinition and Projection implementations, saves synchronously, and returns.
+- **collect**: plugins continuously read external resources. One independent background plugin management service stores collection targets; each instance executes in its own plugin instance Runtime process and can serve multiple authorized Scopes. Management and plugin instance Runtimes can run on different machines, with instances shared by hosts.
 
-Both paths reuse SourceDefinition and Projection contracts. The same Source type can be produced by host writes and plugin collection.
+Both paths reuse SourceDefinition, Projection, and existing Source persistence rules. The same Source type can originate from write or collect. The framework provides loading, lifecycle management, and the data pipeline; plugins decide collection content, timing, batching, retries, and exit.
 
-**The framework provides SourceDefinition (output type, identity, and Projection contracts) and the Source saving pipeline; collect plugins decide what to collect, when to execute, when to submit, and when to exit.** collect reuses the existing Worker and checkpoint pipeline, with batch execution invoked by the plugin. write validation and transformation execute within the current Server call.
-
-One management service serves one Server. Multiple instances, Scopes, and execution machines are supported; management clusters, automatic migration, general-purpose task scheduling, and in-process Python code replacement are out of scope. This document specifies the target design. Appendix A describes directory discovery and automatic startup.
+One plugin management service serves one Server. This proposal excludes management clustering, automatic migration, general task scheduling, and in-process Python code replacement. Default local deployment prepares independent background services during Server startup. Installation or startup commands return when done; host exit does not stop collection.
 
 # 2. Architecture, connections, and storage
 
@@ -54,8 +52,8 @@ flowchart TB
         M -->|write| W
         W --> S
     end
-    G[Independent management service]
-    subgraph RT[Runtime process per collect instance]
+    G[Independent plugin management service]
+    subgraph RT[Plugin instance Runtime process]
         R[Target synchronization and lifecycle]
         A[Plugin apply and Connector]
         C[PluginContext.run_batch]
@@ -71,166 +69,91 @@ flowchart TB
     K -->|Source submissions and checkpoint| S
 ```
 
-Arrows represent business calls or data flow. write implementations run inside the Server process; collect Context, Worker, and user Connector execute inside the corresponding Runtime process. The management service delivers targets and control state without relaying Source data or scheduling batches. Management messages are delivered in responses to polls initiated by the receiver; network connection directions are described below.
+Arrows show business calls and data flow. write implementations run in Server; collect Context, Worker, and Connector run in the plugin instance Runtime process.
 
-| Component | Responsibility and location |
+| Component | Responsibility |
 | --- | --- |
-| Public Source MCP | PC Server's `/mcp`; authenticates hosts, checks Scope permissions, and unifies discovery, submission, queries, and enable/disable operations |
-| PC Server data pipeline | Loads custom write Definition and Projection code and registers Definitions; saves Source / Projection and checkpoint data and provides reads. Built-in and custom write use the Server saving pipeline directly |
-| Shared management service | Independent background process; stores instances, collection targets, and results; executes Server-authorized management requests; checks Scope ownership and execution conditions; synchronizes collect capabilities and instance state to Server |
-| Runtime | Outer framework in each collect instance process. A stable instance_id identifies an account, configuration, and execution environment that can serve multiple authorized Scopes. Loads the plugin, maintains management connectivity, synchronizes targets and control state, and creates and ends business runs |
-| PluginContext (Context below) | Context for one business run, passed as ctx to apply; owns the Connector and business resources and provides the SDK (interfaces plugins call), including run_batch, submission, and cleanup |
-| RemoteConnectorWorker | Existing execution pipeline; called by `run_batch()` to create a session, execute the Connector, and handle submission receipts and checkpoint CAS |
-| apply / Connector | Plugin business code; apply decides timing, while Connector.run(session) reads or transforms data and submits it |
-| Host-specific plugin | Optional adapter for Hooks, Scope defaults, and context injection; does not host Source instances or duplicate public MCP management logic |
+| Public Source MCP | Server `/mcp`; authenticates hosts, checks PC permissions, and provides discovery, submission, query, and controls |
+| PC Server data pipeline | Loads write implementations, registers Definitions, and saves and reads Sources, Projections, and checkpoints |
+| Plugin management service | Stores plugin instances, capabilities, targets, desired control state, and received submission records; delivers management requests without scheduling collection or relaying Source data |
+| Plugin instance Runtime | Outer framework of each plugin instance; loads plugins, maintains management connectivity, synchronizes targets and controls, and creates and ends business runs |
+| PluginContext (Context) | Context for one business run, passed as ctx to apply; owns Connector, clients, and resources, and provides plugin interfaces such as run_batch |
+| RemoteConnectorWorker | Existing batch pipeline; creates sessions, calls Connector.run, and processes receipts and checkpoint CAS |
+| apply / Connector | Plugin business code; apply decides timing, while Connector reads, transforms, and submits batch data |
 
-Only Server is needed for built-in capabilities or custom write. N collect instances add one management service and N instance processes; Server startup prepares these independent services. System services host background processes. Installation/startup commands return when finished, and closing Codex does not stop collection.
+write alone requires only Server. N plugin instances add one plugin management service and N plugin instance Runtime processes, hosted by the system service manager.
 
 ## Startup loading and adding instances at runtime
 
-**write: load implementations local to Server.** The deployer prepares trusted plugin code and dependencies on the Server machine and configures an entry. Server's generic loader imports it, reads `definitions` and write capability declarations, validates input, Definition, Projection, and name/version conflicts, and exposes capabilities only after SourceDefinition registration succeeds. Deployment requires `server.admin`; the CLI triggers loading, but the Server process imports the code. Registering SourceDefinition structures and contracts through an API does not transfer Python functions and cannot establish that write is executable.
+**write:** The deployer prepares trusted code and dependencies on the Server machine and configures an entry with `server.admin`. Server's generic loader imports the module, validates Definitions, Projections, capabilities, and name/version conflicts, and publishes capabilities after registration succeeds. The registration API stores definition contracts rather than Python implementations and cannot replace code loading. Entry and required configuration references are persisted for reimport on Server restart.
 
-Server saves successfully loaded entries and required configuration references, then imports and validates them again on restart. Explicit additions and repeated loading of identical configuration are supported; differing configuration conflicts. Existing implementations are replaced through the restart/update procedure in section 5, without in-process Python replacement. Interfaces and examples appear in section 4. This path creates no collect instance, Runtime, or target.
+**collect:** Server scans the plugin directory specified through an environment variable once at startup. Each `powercontext.yml` declares an instance `id`, code entry, business configuration, credential references, and serviceable Scopes. id is instance_id, unique within a PC deployment and stable across restarts. Several instances can use the same local code without publishing a wheel; placing configuration in the trusted directory authorizes loading.
 
-**collect: load an instance and start an independent Runtime.** The following configuration and deployment flow apply to collect.
+Deployment prepares or reuses the plugin management service, validates the plugin, registers Definitions and the instance, grants permissions, and starts an independent plugin instance Runtime. Adding an instance while running requires explicit loading, without continuous directory scanning or restarting other instances. Repeated loading of the same ID and matching configuration reuses registration and processes without resetting desired state. Conflicting configuration is rejected; updates follow section 5.
 
-The deployer specifies a trusted directory through Server's `source_plugins_dir`. Each `powercontext.yml` declares an instance: instance ID, code entry, plugin business configuration, and external credential references. Its `id` becomes the runtime `instance_id`, for example `yuque-personal`. It is unique within a PC deployment and stable across restarts, and is not a code name, Scope ID, or Source ID. Bundled code does not execute merely because it is installed; putting instance configuration in this directory authorizes loading. Different instance IDs can reuse the same code without copying it.
+Configuration may contain initial `targets`, each specifying Scope, capability, and business input. First target initialization imports them using normal add rules and records initialization. Management is authoritative thereafter; the file no longer replaces or adds targets. Empty targets or connection failure do not trigger reimport, and changes to initial targets do not constitute instance configuration conflicts.
 
-`powercontext.yml` may provide initial `targets`, each containing `scope_id`, a capability, and business input. On first startup, if targets have not been initialized for this instance, deployment adds them to the management service through normal add rules and marks the instance initialized. Subsequently, management targets and control state are authoritative. File targets do not overwrite or supplement them or participate in instance configuration conflict detection. An empty target set does not trigger reimport, nor does management connection failure imply an uninitialized instance.
-
-Server's deployment flow scans the directory once at startup and supports explicit instance loading at runtime. It prepares independent management and Runtime services through the local service manager and generates and saves their connection configuration. Behavior is summarized below; Appendix A gives usage steps.
-
-| Situation | Behavior |
-| --- | --- |
-| No local instances and management service not enabled | Run only Server; explicitly loading the first local instance later starts management on demand |
-| First valid instance configuration | Start one management service as needed, validate code contracts and configuration, register Definitions and the instance, then start business execution. Preparation failures show their reason without blocking built-in functionality |
-| New instance while Server is running | Prepare code, dependencies, and complete `powercontext.yml`, then explicitly load it. Placing files alone does not start it; existing instances are not restarted |
-| Server restart or repeated load of the same plugin instance ID | Reuse registration and process by configured id. Identical configuration preserves control intent and does not call apply again in a surviving Runtime. Required process restarts follow section 5; differing configuration conflicts and requires its update procedure |
-| Directory removed or all instances stopped | File deletion is not unload and does not delete targets, history, or the management database. An already started management service keeps waiting; instance disablement is explicit |
-
-Stopping Server does not implicitly uninstall independent services or delete their state. Submissions fail or await recovery while Server is unavailable, subject to section 5. Remote code and Runtime deployment belong to the execution machine; local loading does not perform remote shell execution or code distribution.
+No plugin instances means management need not start. Failure to prepare one instance does not block built-ins. Removing a directory, stopping Server, or disabling all instances does not implicitly uninstall independent services or delete data. Remote machines deploy their own code and plugin instance Runtimes; local loading does not distribute code or invoke remote shells.
 
 ## Component communication and connection directions
 
-| Initiator | Receiver | Content |
+| Connection initiator | Receiver | Content |
 | --- | --- | --- |
-| Host | PC Server | `/mcp` and existing data-read interfaces |
-| Management service | PC Server | Establish the management channel, register capabilities, receive management requests, and return results |
-| Runtime | Management service | Instance authentication, resource identity resolution, target synchronization, control state and collection result reports |
-| Runtime | PC Server | Worker Source submissions and checkpoint reads/updates |
-| Plugin business code | External system | Read resources and check external business permissions |
+| Host | Server | Public MCP and data reads |
+| Plugin management service | Server | Authentication, capability catalog synchronization, request polling, and replies |
+| Plugin instance Runtime | Plugin management service | Instance authentication, resource identification, target/control synchronization, and submission reports |
+| Plugin instance Runtime | Server | Worker Source submission and checkpoint reads/updates |
+| Plugin business code | External system | Resource access and external business authorization |
 
-The management channel uses **HTTP polling and reporting initiated by the management service**: it receives pending messages from Server and posts results back. Appendix C lists paths. Thus Server hands requests to management at the business level, while management always initiates network requests to Server. Server need not connect to management's listening address; Runtimes must still be able to reach it.
+The management channel uses active HTTP polling: management calls Server's `channel/poll` to receive requests and `channel/reply` to return results. Server matches replies to the original MCP call using temporary message IDs. Business requests flow from Server to management, but management initiates all network connections. Plugin instance Runtime likewise initiates connections to management, which must be reachable by plugin instance Runtime.
 
-After connecting, management sends Server its complete collect capability list: names, versions, input requirements, associated instances, instance states, and public scope configuration needed for discovery. This is the capability catalog; management synchronizes changes proactively. Server merges it with built-in and locally loaded write capabilities and answers capability and business-instance discovery directly under the caller's PC permissions. It does not ask management on every discovery. collect add, target queries, control views, and enable/disable operations still use the management channel. The catalog does not replace operation-time authorization and execution checks. write executes locally on Server.
+On connection or reconnection, management proactively synchronizes the complete **capability catalog**: capability names, versions, input requirements, instances, state, and public visibility. Changes trigger updates. Server combines this catalog with built-ins and loaded write capabilities and checks current PC permissions to answer discovery directly. Actual collect management operations still use the channel; cached discovery does not replace operation-time authorization and execution checks.
 
 ## Persistent data and storage ownership
 
-| Owner | Storage and contents |
+| Owner | Authoritative data and recovery basis |
 | --- | --- |
-| Management service | Maintains `<state_dir>/management.sqlite3` without a separate database service. Stores instances, capabilities, collect targets, control state, and collection results; user authorization remains in PC Server |
-| Runtime machine | Keeps only startup files: plugin code, startup configuration, and credential references. Target lists, current batches, and receipts are in process memory |
-| PC Server | Existing data storage holds final Source, Projection, and checkpoints; also saves successful write code entries and required configuration references for restart. Code and dependencies remain on Server's filesystem; imported objects are in memory. Repeated write uses existing Source storage rules |
+| Plugin management service | Its own SQLite stores instances, capabilities, collect targets, desired state, and received submission records, plus last reported execution state and confirmation time |
+| PC Server | Existing storage holds Sources, Projections, checkpoints, and user authorization; additionally stores write entries and configuration references, while code and dependencies remain on its filesystem |
+| Plugin instance Runtime | Persists only code, startup configuration, and credential references; target snapshots, batches, and undelivered reports remain in memory and are resynchronized after restart |
 
-Management SQLite uses two tables:
+Management's `records` stores deployment bindings, instances, capabilities, targets, and submission records (Source references and times). `follow_identity` maps stable collect resource identities to target_id for repeat-add reuse. write uses existing Source storage rules without a separate acceptance ledger.
 
-| Table | Contents |
-| --- | --- |
-| `records` | Deployment bindings, instances, capability declarations, collect targets, and received submission records (Source references and timestamps). Scope ownership, creator records, and control state belong to their corresponding records |
-| `follow_identity` | Maps stable collect resource identities to target_id to reuse targets on repeated add |
-
-write inputs and responses are used only within the current synchronous call. Server persists the resulting Source and Projection.
-
-**Management stores what to collect; PC Server stores what has been collected; Runtime performs current execution.** Management persists running collect targets, synchronized by Runtime on startup and reconnection. Initial file targets are not a replica of running state. Management owns desired instance/target control state; PC Server owns Source and checkpoint data. Management stores the latest received execution state and collection results for host queries.
-
-Runtime process exit loses in-memory work. Restart reruns apply if enabled, using Server checkpoint data to determine subsequent collection positions. Plugins may persist data for their own business needs.
-
-Source submission and result reporting to management are separate actions. A lost report does not remove a saved Source, but management may lack its submission record; the framework does not guarantee repair after restart. Management and Server databases need durable storage; Runtime needs only its startup files. System service managers start and stop processes without storing collection business state.
+**Management stores what to collect; Server stores what has been collected; plugin instance Runtime executes.** Source persistence and submission reporting are separate actions: a lost report does not undo data, and management does not guarantee report backfill after restart. Its result view is not a complete inventory of Server data; both databases require persistent storage. Plugins may persist additional business data as needed.
 
 # 3. Public MCP: unified host usage
-
-Hosts connect only to PC Server's `/mcp`. Public MCP provides capability discovery, Source writes, target management, and instance controls. Host-specific plugins provide connection, identity, and Scope context without connecting directly to management or Runtime.
-
-This section describes the public MCP's **proposed interfaces**, explaining each method's required inputs, complete call/response flow, and result and error meanings. JSON illustrates proposed request and response formats; requests use the MCP `tools/call` parameter structure. Replace Scope, instance, and target IDs with real values. Method and field names may change during implementation review with corresponding RFC updates; authorization checks and behavior remain governed by the design below.
 
 ## Objects to understand before calling
 
 | Object | Meaning |
 | --- | --- |
-| capability | Callable business operation with name, version, description, input_schema (business parameter structure), and kind. It is not a Source type; collect may produce several Source types, while write associates its input with a Definition |
-| kind | Operation type declared by a capability: write synchronously saves content the host already has; collect accepts an external location or selection criteria and establishes ongoing collection. The capability declaration determines the operation type |
-| instance_id | ID of the collect plugin instance, such as yuque-personal; represents an account, configuration, and execution environment and may serve multiple authorized Scopes. write does not use it |
-| target_id | Persistent collect relationship ID for queries, stopping, and resuming; not a Source ID |
-| SourceRef | Reference to a saved Source, with source_type and source_id. Use it with this call's scope_id to read through existing Server data interfaces |
-| enabled | Desired target/instance control state; not confirmation that the execution side completed the transition |
-| capability_version | Version of the capability's input and behavior contract, selected from discovery; separate from the output SourceDefinition version |
+| capability | Callable behavior with name, version, description, input_schema (business input structure), and kind; not a Source type, and one collect capability may produce several types |
+| kind | write receives complete content and saves synchronously; collect establishes continuous collection; declared by the capability |
+| capability_version | Version of input and operation contracts, including resource identity rules for collect; separate from the output SourceDefinition version |
+| instance_id | collect executor with its configuration, external credentials, and environment; may serve multiple Scopes; write has no instance |
+| target_id | Durable collection relationship ID for querying and controls, not a Source ID |
+| SourceRef | source_type and source_id of a saved Source, read with its Scope through existing data interfaces |
+| enabled / actual | Desired control state / last confirmed business state; neither replaces connection availability |
 
-Invalid parameters, insufficient permissions, and processing failures return errors through the original MCP call. Steps that have not passed their checks are not executed.
+Hosts call only Server. After authentication and PC authorization, Server handles write and catalog discovery directly or delivers collect requests through the section 2 channel. Management checks resource Scope and execution conditions and replies; Server then completes the original MCP call. Returning data requires current read permission. Business input cannot declare caller identity; plugins handle external permissions during actual access. Section 5 centralizes operation permissions.
 
-Server authenticates the host on every call and applies operation-specific PC permissions; scope_id specifies data ownership. For collect, management checks target Scope ownership, instance service range, and execution conditions. Plugins handle external accounts, credentials, and business permissions during actual access.
-
-Server answers capability and business-instance discovery directly. Calls requiring management use this handoff:
-
-**Management requests share one handoff mechanism:** Server delivers a message in a response to management's `channel/poll`; management processes it and posts to Server's `channel/reply`, after which Server completes the corresponding MCP call. The framework matches the exchange with a temporary message_id, which hosts neither supply nor retain. “Server → management” below describes message flow, not a reverse network connection. Runtime also initiates its management connections. Appendix C explains communication details.
-
-| Method | When hosts use it |
-| --- | --- |
-| `pc_source_capabilities` | Discover available operations, inputs, and executable instances |
-| `pc_source_add` | Write existing content or add an ongoing collection target |
-| `pc_source_status` | Read collect target results or control state |
-| `pc_source_target_set_enabled` | Stop or resume one collect target |
-| `pc_source_instances` | Discover instances or read instance control state |
-| `pc_source_instance_set_enabled` | Enable or disable an instance's entire business run |
+The following describes proposed methods, essential parameters, call flows, and return semantics.
 
 ## pc_source_capabilities: discover capabilities and input requirements
 
-Call when the host needs to choose a capability, understand input, or confirm available instances. Discovery only reads management information; it does not load code, start apply, or access external resources.
+**Input:** scope_id and operation (`add` for business discovery), optionally filtered by capability or instance_id.
 
-**Parameters:** scope_id and operation; business discovery here uses `operation="add"`. capability and instance_id can narrow results.
+**Flow:** Host calls → Server checks Scope read permission and whether writing is permitted → filters local capabilities and the synchronized collect catalog by visibility and serviceable Scope → directly returns names, versions, kind, input_schema, permissions, instances, and availability.
 
-```json
-{
-  "name": "pc_source_capabilities",
-  "arguments": {"scope_id": "scp_demo", "operation": "add"}
-}
-```
+Discovery does not access external resources or invoke plugin authorization prechecks. Visible offline or disabled instances may appear as unavailable. A disconnected management channel prevents cached information from promising collect execution; records are withheld when visibility cannot be established. Missing management does not affect built-ins or loaded write capabilities.
 
-**Call-to-response flow:**
-
-1. The host calls Server. Server checks Scope read permission and determines whether the caller can contribute. Discovery must not claim writable access when it is absent.
-2. Server reads built-in capabilities, loaded custom write capabilities, and the collect catalog synchronized by management. It filters using public visibility, instance Scope ranges, and current PC permissions. This discovery sends no management query.
-3. write availability depends on the local implementation being loaded and ready; collect uses catalog instance state and management connection availability. Visible offline or disabled instances may still appear, marked unavailable.
-4. Server returns directly through the original MCP call, without channel/reply. Results contain only public information, not instance Config or external credentials.
-
-**Host result:** capability name, version, kind, description, input_schema, PC permissions, and availability; collect additionally includes visible instances, a suggested default, and running state. Permissions and running state are separate: write permission does not imply Runtime connectivity; connectivity does not imply apply is processing work or external resources are accessible.
-
-The host selects a capability and calls `pc_source_add`. collect also requires explicit instance_id. A default is only a discovery suggestion; retries must not select another account. write selects no instance. The chosen capability version is fixed as well. capability_version prevents upgrades from interpreting original calls and persistent collect targets under incompatible input rules. The same version must preserve inputs, operation meaning, and resource identity rules.
-
-Without management configured, built-in and loaded custom write capabilities remain discoverable. Management disconnection marks collect unavailable for new management requests rather than failing all discovery or reporting stale cached states as executable. Unavailability does not imply Runtime stopped existing collection. Discovery reflects call-time state; add checks again.
+Hosts use the discovered contract to fill input. collect requires explicit instance_id; a suggested default is only a recommendation, and retries do not reselect instance or version. Discovery is a snapshot; add still checks conditions.
 
 ## pc_source_add: write content or add a collection target
 
-**Parameters:** scope_id, capability, capability_version, and input; collect also requires instance_id, while write does not. Input follows the discovered input_schema; capability kind determines the operation.
-
-Server checks current `scope.contribute` and `scope.read`. write requires the capability version and associated Definition/Projection implementations to be loaded and validated on Server. New collect work also requires registered capability/version, completed SourceDefinition deployment validation, a valid Runtime management connection, enabled=true, and recently confirmed actual=running. A connected outer Runtime whose apply has ended cannot accept new collection work.
+**Input:** scope_id, capability, capability_version, and input; collect additionally requires instance_id. Server checks `scope.contribute` and `scope.read`, then dispatches by capability kind.
 
 ### write: the original call waits for Source persistence
-
-For example, a host with existing text saves it through built-in `content.inline / 2`:
-
-```json
-{
-  "name": "pc_source_add",
-  "arguments": {
-    "scope_id": "scp_demo",
-    "capability": "content.inline",
-    "capability_version": "2",
-    "input": {"source_id": "meeting-note-001", "text": "Text to save"}
-  }
-}
-```
-
-source_id is the stable identity of this data and remains unchanged on repeated submission. Custom write uses the same tool with its public capability and business input, without instance_id.
 
 ```mermaid
 sequenceDiagram
@@ -248,300 +171,96 @@ sequenceDiagram
     S-->>H: SourceRef and save result, or error
 ```
 
-**Call-to-response flow:**
+1. Server checks capability version and loading readiness, then validates complete input with the associated Definition's input model.
+2. It calls `resolve()` to produce a stable Source identity and `project()` for Projections, validates output, and saves through the existing pipeline.
+3. After receiving actual persistence receipts, it returns SourceRef and saved / unchanged through the original MCP call. Validation, transformation, or persistence failures return errors. The host need not query processing status separately.
 
-1. The host submits complete content. Server authenticates, checks Scope permissions, capability version, and input requirements, then locates the associated loaded Definition.
-2. Server validates input through the Definition input model, calls `resolve()` to form a Source with stable identity, then calls Projection `project()` implementations. Custom functions come from the loaded plugin module; adding a type needs no type-specific import in Server code.
-3. Server validates output contracts and saves Source and Projection through existing write rules. Identical identity and data reuse storage; identical identity with different data conflicts.
-4. Server obtains the actual persistence result, checks current read permission, and returns SourceRef through the original MCP call. Input, transformation, or storage failures return errors. The call waits for the actual result rather than returning acceptance first; no host query is required.
+Built-in and custom write share this path. The same `(scope_id, source_type, source_id)` and data reuse the Source; different data conflict, while different IDs represent different Sources. The underlying submitter owns stable identity: built-in adapters provide it, and custom plugins derive it through Definitions. If the host must provide a resource ID, input_schema says so.
 
-Both built-in and custom write execute this flow inside Server; custom implementations must be loaded first. write accepts complete content and does not continuously fetch remote resources.
-
-**Successful response example:**
-
-```json
-{
-  "kind": "write",
-  "result": {
-    "outcome": "saved",
-    "source_refs": [{"source_type": "content", "source_id": "meeting-note-001"}]
-  }
-}
-```
-
-SourceRef comes from actual persistence receipts. saved means required writes completed; unchanged means storage confirmed an identical Source. Hosts read content with SourceRef through existing Server data interfaces.
-
-**Repeated calls and failures:** write reuses `(scope_id, source_type, source_id)` rules: identical identity and data reuse; identical identity with different data conflicts; different IDs create distinct Sources. The underlying submitter owns stable identity: built-in adapters provide it, and custom plugins derive it through their Definition. If a host must supply a resource ID, input_schema says so. Repeated calls may rerun validation or transformation; there is no exactly-once guarantee for external side effects.
-
-Timeout, disconnection, or Server exit can leave the result unconfirmed and do not prove nothing was saved. Server cleans up current processing when it detects an invalidated call; an already started save may succeed, and reconnection does not automatically replay it. Retries retain the same identity and actual submitted data, without new random IDs or changing metadata. Lost responses do not roll back saved data.
+A timeout or lost response does not imply nothing was saved; retries preserve identity and actual data. Server does not recover or replay interrupted calls. Repeated calls may repeat validation and transformation and do not guarantee exactly-once external effects.
 
 ### collect: return the collection relationship, then continue processing
 
-For example, add newly created Yuque document B to the running yuque-personal instance:
+1. Server checks permissions and input and passes the request with trusted caller identity to management through the channel.
+2. Management asks plugin instance Runtime to invoke plugin `identify_target`, obtaining stable `target_key` and complete `normalized_input`, defined in section 4.
+3. It looks up **Scope + instance + capability and version + target_key**. Matching identity and configuration reuse a target; conflicting configuration is rejected. New targets additionally require validated Definition deployment, a serviceable Scope, active management connectivity, enabled=true, and running instance business execution before target and identity association are persisted.
+4. Management replies; Server returns target_id, enabled, tracking, existing Source references, and latest submission time. A new target has no references or submission time. The response confirms a collection relationship, not saved external content.
 
-```json
-{
-  "name": "pc_source_add",
-  "arguments": {
-    "scope_id": "scp_demo",
-    "capability": "yuque.document",
-    "capability_version": "1",
-    "instance_id": "yuque-personal",
-    "input": {"url": "https://www.yuque.com/team/book/doc-b"}
-  }
-}
-```
+After the response, plugin instance Runtime synchronizes targets. Existing apply discovers additions through `ctx.targets.list()` and calls run_batch at plugin-selected times. Worker executes Connector and saves Sources directly to Server. SDK associates actual receipts, and plugin instance Runtime reports references and times to management. Hosts choose whether to query progress; queries do not drive collection.
 
-**Call-to-response flow:**
-
-1. Server checks host identity, Scope permissions, and input, then hands the call and trusted caller identity to management through the channel.
-2. Management invokes plugin `identify_target(request, config)` through Runtime to obtain target_key (stable resource identity) and normalized_input (full normalized input including collection options). This entry is independent of apply and resolves identity from input and instance configuration.
-3. Management looks up “Scope + instance + capability and version + target_key.” Matching identity/configuration reuses a target; differing configuration returns target-config-conflict. New targets pass instance Scope-range and readiness checks before target and identity index are persisted together. Uniqueness constraints handle concurrent duplicates. Creator identity is recorded but does not determine target identity or management authorization.
-4. Management returns the target through reply. Subject to current read permission, Server completes the original MCP call with target_id, tracking state, and existing collection results. This confirms the relationship, not that external content has been saved.
-
-**First-creation response example:**
-
-```json
-{
-  "kind": "collect",
-  "target_id": "tgt_b",
-  "enabled": true,
-  "tracking": "enabled",
-  "source_refs": [],
-  "last_submitted_at": null
-}
-```
-
-**Collection after the response:** Runtime synchronizes targets from management. Existing apply obtains B through a later `ctx.targets.list()` and chooses its own batches and timing. Worker executes Connector; plugin credentials read Yuque, and data is submitted directly to Server. SDK associates targets and Sources using actual successful receipts. Runtime reports Source references and timestamps to management for persistence. Reports describe received submissions. Worker handles batches and checkpoints under existing rules. Hosts may call `pc_source_status` for progress; querying neither triggers nor sustains collection.
-
-Adding B does not restart the instance or recreate A's business client. Repeated add of an existing target does not reset progress, trigger extra collection, or resume stopping/stopped targets, and always requires current PC permissions. Identity confirmation requires a reachable Runtime, but reusing an existing target does not require apply to be running. If identity cannot be confirmed, return an error rather than guessing a new target. Management can still query or stop an existing target_id.
-
-If the acceptance response is lost, repeating the original Scope, instance, capability version, and business input returns the original target. Within one Scope, different users reuse the same instance/capability-version/resource identity with identical configuration. Different Scopes, instances, or capability versions do not merge. Stopped targets retain their identities. This version provides neither hard target deletion nor automatic merging of historical duplicates.
+Repeated add does not reset progress, trigger extra collection, or resume a stopped target. Different users in the same Scope reuse matching identity and configuration; different Scopes, instances, or versions do not merge. Identification requires reachable plugin instance Runtime; reusing an existing target does not require running apply. Failure to establish identity returns an error rather than guessing a new target. Stopped targets retain identity; target hard deletion is outside this proposal.
 
 ## pc_source_status: query collection results or control state
 
-This method queries collect targets and submission records saved by management.
+**Input:** scope_id and target_id; the default view reads collection status, while `view="control"` reads control fields.
 
-**Parameters:** scope_id and target_id. The default view reads collection state; `view="control"` reads only control fields for subsequent control operations.
+**Flow:** Server checks the view's permissions → management verifies the target's actual Scope → reads persistent target and received submission records → reply → Server returns to the host. Queries do not call identify_target, wait for a new batch, or require online plugin instance Runtime.
 
-```json
-{
-  "name": "pc_source_status",
-  "arguments": {"scope_id": "scp_demo", "target_id": "tgt_b"}
-}
-```
-
-**Call-to-response flow:**
-
-1. Server authenticates the host. The default view requires current scope.read; control requires scope.contribute.
-2. After checking Scope permissions, Server forwards the query through the management channel. Management verifies actual target Scope matches the requested Scope; mismatches are rejected without revealing another Scope's target.
-3. Management reads its target and received collection records without identify_target, a reachable Runtime, or waiting for another Worker batch.
-4. Management replies to Server, which completes the original MCP call with permitted results. Collection data still requires current read permission; control responses include only authorized control fields.
-
-**Host result:**
-
-| View | Returned content and meaning |
+| View | Return |
 | --- | --- |
-| Default | target_id, enabled, tracking, source_refs, last_submitted_at, latest confirmation time, and instance availability. source_refs contains received actual submission associations; last_submitted_at is their latest submission time. Without records, these are an empty list and null |
-| control | target_id, enabled, tracking; no input, SourceRef, or business error body. scope.contribute permits this view without additionally requiring scope.read |
+| Default | target_id, enabled, tracking, source_refs, last_submitted_at, last confirmation time, and instance availability |
+| control | target_id, enabled, tracking; no input, Source references, or business error bodies |
 
-tracking represents enabled / stopping / stopped for the collection relationship. source_refs and last_submitted_at reflect confirmed, reported submissions, not complete collection. Without new submissions, they do not distinguish unprocessed, absent, or unchanged content. Submission reports can be lost, so this view is not a complete Server data inventory. An offline instance retains past records but shows offline / unknown availability; past submissions do not establish current collection.
-
-The call is repeatable without business side effects. Unreachable management returns unavailable, not a fabricated latest state from Server cache. Authorized hosts can still read Sources already saved on Server.
+tracking expresses enabled / stopping / stopped. Submission records show confirmed and reported persistence, not complete collection of a target. No new submission does not distinguish unprocessed resources, unchanged content, or absent data. Disconnected plugin instance Runtime is offline / unknown; unreachable management makes this query unavailable, while authorized direct reads of saved Sources remain possible.
 
 ## pc_source_target_set_enabled: stop or resume a target
 
-**Parameters:** scope_id, target_id, and enabled. Hosts express stop/resume intent directly.
+**Input:** scope_id, target_id, enabled.
 
-```json
-{
-  "name": "pc_source_target_set_enabled",
-  "arguments": {
-    "scope_id": "scp_demo",
-    "target_id": "tgt_b",
-    "enabled": false
-  }
-}
-```
+**Flow:** Server checks scope.contribute → management verifies target Scope and, when resuming, instance serviceable scope → persists desired state → reply → returns target control state; plugin instance Runtime synchronizes and applies it.
 
-**Call-to-response flow:**
-
-1. Server checks scope.contribute for the target Scope and forwards the call through the management channel.
-2. Management verifies target Scope ownership and, when resuming, the instance service range, then saves enabled while preserving target identity, existing Sources, and checkpoint. Setting the current state again creates no action.
-3. Management returns control state through Server to the original MCP call. Runtime synchronizes target control state and applies it to collection.
-
-The response confirms persisted intent, not completed execution. Resuming a target does not enable a disabled instance or rerun an ended apply.
+The response confirms saved intent rather than completed execution. Target identity, Sources, and checkpoint remain. Resuming a target does not enable a disabled instance or rerun completed apply.
 
 ## pc_source_instances: discover instances or read instance control state
 
-This method manages collect instances. Server-local write capabilities have no associated instance.
+| View and input | Call-to-return flow |
+| --- | --- |
+| Business: scope_id, operation=add | Server checks Scope permissions and directly returns visible instances, capabilities, writability, and state using capabilities catalog rules |
+| Control: instance_id, view=control | Server checks server.admin, queries persistent instance control state and latest execution reports through management, then returns instance_id, enabled, actual, availability, and update time |
 
-capabilities starts from “what can be done”; instances starts from “which instances are available and how is this instance running.” It loads no code and starts no instance.
-
-**Two parameter combinations:**
-
-| View | Parameters | Purpose |
-| --- | --- | --- |
-| Business | scope_id, operation="add" | Find visible instances serving this Scope, PC permissions, and running state |
-| Control | instance_id, view="control" | Read authorized control state for an instance without specifying Scope |
-
-```json
-{
-  "name": "pc_source_instances",
-  "arguments": {"scope_id": "scp_demo", "operation": "add"}
-}
-```
-
-```json
-{
-  "name": "pc_source_instances",
-  "arguments": {"instance_id": "yuque-personal", "view": "control"}
-}
-```
-
-**Call-to-response flow:**
-
-1. Server authenticates. Business view checks scope.read and determines current write permission; control view checks server.admin.
-2. Server directly answers business view from synchronized public visibility, Scope ranges, and instance state without asking management. Catalog and connection handling match capabilities.
-3. After server.admin authorization, Server forwards control queries to management without additional Scope permission requirements. Management reads persistent instance control state and latest execution reports, replies to Server, and Server returns to the host. Neither view reruns apply or accesses external accounts.
-
-**Host result:** business view returns instance IDs, capabilities, PC permissions, and running state. Control view returns instance_id, enabled, actual, availability, and latest update time, without business Config, target inputs, or Source results.
-
-Desired enabled=true does not guarantee actual=running. Normal apply completion can be actual=complete; unhandled errors can be failed, while outer Runtime remains online. Control view distinguishes desired and actual state; enabled alone must not be described as collecting.
-
-Calls are read-only and repeatable. Business view uses Server's synchronized public information; invalid management connectivity marks the custom collect portion unavailable. Old catalogs do not guarantee current permission or executability, and records are withheld when visibility cannot be confirmed. Control view requires reachable management. If only Runtime is offline, persistent control state remains readable but running availability is unknown/offline. Built-in and custom write need no plugin instances.
+Control view requires no Scope and returns no Config, target input, or Sources. Persistent control state remains readable when only plugin instance Runtime is offline, with offline or unknown availability; unreachable management makes control queries unavailable. This method does not load code, access external accounts, or start apply. write has no instances.
 
 ## pc_source_instance_set_enabled: enable or disable instance business execution
 
-This method controls apply / Context inside Runtime, affecting all Scopes and targets served by the instance. It is not a command to install, uninstall, or start a remote system process.
+**Input:** instance_id, enabled. This affects every Scope and target served by the instance, not installation or remote system-process startup.
 
-**Parameters:** instance_id and enabled. Hosts express intent directly.
+**Flow:** Server checks server.admin → management checks transition conditions and persists desired state → reply → returns instance_id, enabled, actual → plugin instance Runtime synchronizes and executes. Section 5 defines cleanup and restart behavior.
 
-```json
-{
-  "name": "pc_source_instance_set_enabled",
-  "arguments": {
-    "instance_id": "yuque-personal",
-    "enabled": false
-  }
-}
-```
-
-**Call-to-response flow:**
-
-1. Server authenticates and checks server.admin before forwarding instance control. An instance may serve multiple Scopes; one Scope's permission cannot control the entire instance.
-2. Management checks instance existence and transition conditions, then transactionally sets desired state in processing order. Same-state requests return current results. Disable saves enabled=false and, if execution confirmation is outstanding, stopping. Enable requires the old run confirmed stopped, then saves enabled=true, creates a new run_id (business-run identity), and waits for Runtime execution.
-3. Management replies with persistent control state; Server returns it to the host. Fields such as instance_id, enabled, and actual do not mean the system process was installed or business execution started successfully.
-4. Runtime synchronizes and applies desired state. Disable blocks new batches, cancels and awaits apply and owned subtasks, and closes Context/business resources. It reports stopped only after completion; outer Runtime stays online. Enable creates a new Context, calls apply, and reports actual state. Hosts may use instances control view for confirmation; querying does not drive transitions.
-
-An offline Runtime permits saving disable intent but not reporting completed stopping. Cleanup failure or surviving old tasks prevents creating a second Context. Management disconnection prevents confirmation of control changes. Re-enabling processes only still-enabled targets; it does not resume individually stopped targets or reset their checkpoints.
-
-Within one Runtime process, repeated enable while already enabled does not rerun apply, even after complete or failed. Rerun requires explicit disable, confirmed stopped, then explicit enable. After Runtime is shut down or uninstalled, management cannot remotely start its system process. See sections 2 and 5 for deployment.
+Responses do not promise execution has started or stopped. Disablement can be saved while plugin instance Runtime is offline, but stopping cannot be confirmed; reenabling requires confirmed stopped business execution. Repeated enablement does not rerun apply even after complete or failed. Rerunning requires explicit disablement, confirmed stop, and enablement. Individually disabled targets remain disabled when the instance is reenabled.
 
 ## Operation retries
 
-Repeated collect add reuses targets; repeated write reuses underlying Source rules; controls directly set desired state. Setting the same state creates no action, and different intents take effect in processing order. Communication timeout does not roll back saved data or control changes. Hosts may retry or read state according to each method's rules.
+Discovery and queries are read-only. collect add reuses stable target identity; write reuses underlying Source rules. Controls set desired state: identical state causes no new action, and different intents take effect in processing order. Communication timeout does not undo persisted data or control state; hosts can repeat calls or read state under these rules.
 
 # 4. Plugin interfaces and data pipeline
 
-This section is for plugin authors. write provides input models, Definition, and Projection implementations that Server can load. collect additionally provides apply and Connector, controls its own timing, and submits through Worker. Section 3 describes host calls; section 5 describes loading, process controls, and restart behavior.
-
 ## Contracts provided by plugins
 
-Plugin code can load from a local directory without publishing a wheel. write code and dependencies reside on the Server machine; collect code and dependencies reside on the Runtime machine. Both may reuse Definition and Projection implementations from one package without splitting packages.
+Plugins can load directly from local directories. write code and dependencies reside on the Server machine; collect code resides on the plugin instance Runtime machine. Both can reuse data definitions from the same package.
 
-**Shared data contracts.** SourceDefinition declares its input model, Source model, name, and version. `resolve(value)` converts input to a Source with stable identity; `project(source)` on each implementation in `projections` produces its Projection. `definitions` exports these objects. Capability declarations contain name, version, description, kind, and input_schema and describe callable operations; Definitions describe how results are saved. One collect capability can submit several Source types, and several capabilities can reuse one Source type.
+**Shared data contracts:** SourceDefinition declares input and Source models, name, and version. `resolve(value)` produces a stable Source identity; `project(source)` implementations in `projections` produce Projections. Plugins export implementation objects in `definitions` and declare capability name, version, description, kind, and input_schema in `capabilities`. Capabilities describe callable behavior; Definitions describe output data, without requiring a one-to-one type mapping.
 
-**write loading contract.** Each write capability explicitly associates a Definition name and version, with input_schema matching its input model. Server can validate input and call the associated Definition directly. Plugins export `definitions` and `capabilities` for Server to load. Capability names cannot override built-ins; identical name/version combinations must preserve input and operation semantics.
+**write loading:** Each write capability associates a Definition name and version, with input_schema matching its input model. Plugin modules export actual Definition and Projection objects. Server's generic loader imports and registers them through a trusted entry, so Server needs no type-specific imports. Adding a module requires code, dependencies, and entry configuration; uploading definition structure through registration alone cannot supply executable functions. Import does not start collection tasks.
 
-The following **interface sketch** illustrates how Server obtains the Projection function by relating plugin exports to Server loading. Concrete class names, module paths, and supporting code may change during implementation; write association fields and deployment entry support remain to be implemented. Suppose a deployer prepares this importable local package:
+**collect runtime contracts:**
 
-```text
-/srv/powercontext/custom_sources/tickets/
-  __init__.py
-  ticket_definition.py
-```
-
-`ticket_definition.py` implements TicketCapture, TicketDefinition, and TicketProjection. The key relationship is shown below, omitting the existing Source model and resolve implementation:
-
-```python
-class TicketProjection:
-    # Also declare Projection name, version, input Source class, and output model.
-    def project(self, source):
-        return TextEvidence(
-            source_type="example-ticket",
-            source_id=source.name,
-            content=f"{source.capture.title}\n\n{source.capture.body}",
-        )
-
-
-class TicketDefinition:
-    name = "example-ticket"
-    version = "1"
-    input_class = TicketCapture
-    projections = (TicketProjection(),)
-    # resolve() produces TicketSource with stable identity; other members follow SourceDefinition.
-```
-
-The plugin's own `__init__.py` exports objects. Type-specific imports belong in the plugin:
-
-```python
-from .ticket_definition import TicketCapture, TicketDefinition
-
-definitions = (TicketDefinition(),)
-capabilities = ({
-    "name": "ticket.write",
-    "version": "1",
-    "kind": "write",
-    "description": "Save ticket content supplied by the host",
-    "input_schema": TicketCapture.model_json_schema(),
-    "definition_name": "example-ticket",
-    "definition_version": "1",
-},)
-```
-
-Server's configured entry points to this package, imported by a generic loader. This shows only the imported object relationship, not a complete loader:
-
-```python
-module = importlib.import_module(entry)  # For example tickets, from trusted deployment configuration.
-registry = SourceDefinitionRegistry(module.definitions)
-# registry.resolve / registry.project call these actual Python objects at runtime.
-```
-
-Server can execute TicketProjection.project because **it imported the local module containing that object**. Adding a type adds a module and entry configuration, not a hardcoded type-specific Server import. The deployer makes code available on Server's module search path and installs dependencies in that environment. The generic loader also resolves file-path entries. Implementations validate and transform current input without starting collection tasks during import.
-
-**Registering SourceDefinition and loading code are separate actions.** The existing registration API saves type structure, identity, and Projection contracts, not Python implementations. Server's write loader validates code, contracts, and conflicts and publishes capabilities only after successful registration. Registration alone cannot execute write. collect still registers Definitions with `server.admin` during deployment or upgrade. Daily Worker execution uses only Scope execution permissions, without registering each batch or temporarily acquiring admin credentials. Missing or mismatched Definitions produce explicit errors.
-
-**Additional collect runtime contracts:**
-
-| Export or object | Plugin definition |
+| Export | Plugin responsibility |
 | --- | --- |
-| `plugin_api_version` | Interface version used with Runtime, currently the string `"2"` |
-| `Config` | Pydantic model defining and validating configuration needed by plugin logic, such as external credentials or credential references |
-| `capabilities / definitions` | Nonempty collect capability declarations and SourceDefinition collection; capability input describes external locations or selection criteria |
-| `connector_name / connector_version` | Stable Connector name and compatibility version for checkpoint ownership; cannot change randomly on restart |
-| `identify_target(request, config)` | Derives stable resource identity and normalized collection parameters from input |
-| `apply(ctx, config)` | Async business entry; creates clients, connects a Connector, and decides batches, waits, retries, and exit |
-| `Connector.run(session)` | Processes and submits the batch, returning ConnectorRunCompletion (batch completion and next checkpoint) |
+| plugin_api_version | Declares the interface version used with plugin instance Runtime |
+| Config | Pydantic model for plugin business configuration, such as external credential references; not public to hosts |
+| capabilities / definitions | Nonempty capabilities and data definitions; capability input describes external resources or selection criteria |
+| connector_name / connector_version | Stable Connector name and compatibility version for checkpoint ownership |
+| identify_target(request, config) | Derives stable resource identity and normalized parameters from capability, version, input, and instance configuration |
+| apply(ctx, config) | Async entry; creates clients, connects a Connector, and decides loops, batches, waits, retries, and exit |
+| Connector.run(session) | Reads and submits batch data, returning ConnectorRunCompletion: batch completion and next checkpoint |
 
-collect Config remains with the instance. Plugins handle external credentials and permissions. Capability descriptions and input_schema expose only what hosts need to call them; catalogs, results, and ordinary logs do not expose secrets. Same-version collect capabilities must also preserve resource identity rules.
+`identify_target` runs independently of collection and returns `target_key` and `normalized_input`. The former identifies a resource, such as a document ID after removing a navigation-only URL fragment. The latter preserves every collection-affecting option to detect configuration conflicts. This method does not check authorization or readability, which are handled during collection; insufficient input for identity produces an explicit failure.
 
-**Identifying the same resource for collect:** Runtime invokes identify_target during target acceptance, independently of apply's collection loop. The request contains capability, capability_version, and input. The plugin returns:
-
-| Result | Meaning |
-| --- | --- |
-| target_key | Stable resource identity used by management to reuse a target |
-| normalized_input | Complete normalized collection parameters, preserving all options that affect collection, for detecting configuration conflicts on the same target |
-
-For example, a plugin may remove URL fragments used only for page navigation and identify two addresses as the same target. identify_target resolves resource identity from input and instance configuration; content and readability are handled during actual collection. input_schema must require sufficient identifiers, and equivalence must not be promised when it cannot be established.
+Capabilities cannot override built-ins. The same name/version preserves input and operation semantics; collect also preserves target identity rules. Administrators register Definitions during deployment or upgrade. Daily Worker execution uses only Scope permissions and fails on missing or mismatched definitions without registering every batch.
 
 ## collect: from apply to Source persistence
 
-`ctx` is the PluginContext passed by Runtime to apply. It holds the Connector and business resources and exposes the SDK below. One Context connects exactly one Connector. Worker creates `session` per batch, providing its Scope, current checkpoint, and submission capability.
-
-One apply can execute multiple batches. **One `run_batch()` is one batch, fixed to one Scope and a selected set of content.** A collect target may continue producing Sources over many batches. SDK associates targets with actual submissions; hosts do not generate batch IDs.
-
-The diagram shows one batch's call order. apply and Connector on the left are plugin code; SDK and existing RemoteConnectorWorker are in the middle, and PC Server is on the right. Arrows indicate calls/returns, not process counts. It shows successful collect submission, and submit can be called repeatedly. binding identifies this instance's execution within a Scope; isolation is explained at the end of this section.
+Context holds one Connector and business resources. Worker creates each batch's session with Scope, checkpoint, and submission capability. **One run_batch is one batch, fixed to one Scope and selected targets; one apply can execute many batches.**
 
 ```mermaid
 sequenceDiagram
@@ -562,7 +281,7 @@ sequenceDiagram
     SDK->>S: session.submit / Source and Projection
     S-->>SDK: Actual submission receipt
     SDK-->>C: ConnectorItemOutcome
-    Note over SDK: Associate target and SourceRef for Runtime reporting
+    Note over SDK: Associate target and SourceRef for plugin instance Runtime reporting
     C-->>W: ConnectorRunCompletion
     W->>S: CAS checkpoint under completion and receipt rules
     W-->>SDK: Batch result
@@ -570,46 +289,23 @@ sequenceDiagram
     Note over A: Plugin decides wait, next batch, or exit
 ```
 
-apply obtains work, selects entries for one Scope, and calls run_batch. Worker reads checkpoint and invokes Connector.run; Connector reads the external system and transforms data as needed, then submits through SDK. The plugin decides waiting and subsequent batches.
+Plugins obtain synchronized target snapshots through `ctx.targets.list()` (identity, ownership, normalized input, and reported Source references), select targets in one Scope, and call `ctx.run_batch(scope_id=..., targets=selected)`. Batches execute sequentially within a Context without concurrent mutation of the batch snapshot. Managed execution supplies an explicit selection, with an explicit empty set for autonomous collection; the standalone entry retains `run_batch(scope_id=...)`.
 
-| Step | collect interface |
-| --- | --- |
-| Obtain currently eligible work | `ctx.targets.list()` |
-| Execute the selected batch | `ctx.run_batch(scope_id=..., targets=selected)` |
-| Submit one item | `ctx.targets.submit(...)` |
-
-list returns a target snapshot for current processing:
-
-| Field | Meaning |
-| --- | --- |
-| target_id | Corresponding target persisted by management |
-| scope_id, instance_id, capability, capability_version | Ownership and capability contract |
-| input | Normalized collection parameters confirmed by identify_target |
-| source_refs | Actual submission associations received by management, available for plugin reference; not proof of complete collection |
-
-After initial synchronization, ctx.targets.list / run_batch may use the last in-memory target/control snapshot while management is disconnected. Without an initial snapshot, they report unavailable rather than pretending there is no work. New targets appear after synchronization.
-
-Batches in one Context execute sequentially without overlap. Each selects targets from one Scope without concurrently modifying its snapshot. Managed mode explicitly passes the selected set; autonomous collection uses an explicit empty set, and omission does not mean all targets. Direct execution retains `run_batch(scope_id=...)`.
-
-submit accepts the current entry, session, batch-unique item_id, Definition name, and business value. SDK checks instance, Scope, and batch ownership, wraps `session.submit(...)`, and associates the actual receipt with that entry. Returned ConnectorItemOutcome describes the submission result; plugins must check acceptance. Processed data goes directly to PC Server rather than through management.
-
-Actual collect submission associations are reported to management for persistence. Appendix B shows full apply and Connector code.
+Connector submits through `ctx.targets.submit(target, session, item_id, definition_name, value)`. SDK checks instance, Scope, and batch membership, wraps session.submit, and associates targets with Sources using actual receipts. item_id is unique within the batch; plugins check whether the returned ConnectorItemOutcome was accepted. Data goes directly to Server, not through management storage.
 
 ## collect receipts and batch completion
 
-Plugins maintain loops, pagination, and retries and submit through `ctx.targets.submit(...)`. Submission receipts describe persistence results; ConnectorRunCompletion describes batch completion. An ongoing collection target may produce Sources across multiple batches.
-
-| Action | Meaning |
+| Signal | Meaning |
 | --- | --- |
-| submit receives a successful receipt | Server accepted one item; SDK associates its actual SourceRef with the collect target |
-| Connector returns ConnectorRunCompletion | Declares batch completion and next checkpoint; Worker validates and processes progress under existing rules |
-| collect submission report reaches management | Saves confirmed Source references and timestamps for optional host queries, without waiting for the whole target or other targets in that batch to finish |
+| Successful submission receipt | Server accepted one item; SDK can associate and report its real SourceRef without waiting for other targets |
+| ConnectorRunCompletion | Batch completion and next checkpoint, processed by Worker under existing receipt/completion rules |
+| Management receives submission report | References and times are stored for host queries; continuous collection is not declared fully complete |
 
-Without new submissions, the framework does not infer whether a target is unprocessed, unchanged, or empty. Plugins decide retries and continuation; unhandled exceptions end apply as described in section 5. Source saving, checkpoint updates, and reporting are separate: incomplete batches or lost reports do not undo saved Sources, and reports are not guaranteed to be restored after restart.
+Plugins decide loops, pagination, and retries. Source persistence, checkpoint advancement, and reporting are separate actions; section 5 describes failure recovery. The framework does not infer business outcomes from the absence of new submissions.
 
 ## Checkpoint isolation, advancement, and new targets
 
-ConnectorBinding describes which instance's Connector executes in which Scope. This design uses instance_id as binding_id. PC Server stores checkpoints by `(scope_id, binding_id)` and verifies connector_name / connector_version. ConnectorBinding differs from the permission system's role-granting Scope Binding.
+ConnectorBinding identifies an instance's Connector execution within a Scope, using instance_id as binding_id. Server stores checkpoints by `(scope_id, binding_id)` and checks Connector name/version. This differs from the authorization system's Scope Binding.
 
 ```mermaid
 flowchart TB
@@ -625,35 +321,21 @@ flowchart TB
     A --> P[Plugin-defined format may include per-target progress]
 ```
 
-Server stores every checkpoint in the diagram; plugins define the content format. Multiple targets or capabilities in the same instance and Scope share one checkpoint. The framework does not automatically create a cursor per target; plugins may record individual target progress inside it. Different instances or Scopes do not share checkpoints.
+Plugins define checkpoint content. Targets and capabilities within one instance and Scope share a checkpoint, which can hold per-target progress. Worker reads the current value and uses CAS to advance according to Connector's returned business progress (update only while stored state still matches the value read for this batch), without skipping unprocessed resources.
 
-Worker reads checkpoint at batch start, and Connector returns the next value based on business progress. Updates use CAS: save the new value only if Server still has the previously read value, preventing overwrites of concurrent progress. Plugins must not advance past unprocessed data.
-
-For example, A has been collected through time T when document B, older than T, is added. The plugin must not skip B using A's cursor. It recognizes the new target, initializes B's progress, and backfills it using a plugin-defined representation. Stopping/resuming targets does not automatically clear checkpoints; changing Connector versions cannot bypass compatibility checks on existing progress.
-
-After Runtime process restart, targets are resynchronized and Worker reads Server's current checkpoint. Plugins decide whether to continue or recollect; the framework does not restore individual steps from the previous batch.
+For example, if A is collected through time T and newly added B predates T, the plugin initializes and backfills B rather than skipping it using A's cursor. Target controls do not clear checkpoints. Restart reads Server progress without restoring batch execution steps; upgrades cannot evade progress compatibility checks by changing versions.
 
 # 5. Lifecycle, restarts, and permissions
 
-Runtime, instance, and target lifecycle in this section applies to collect; apply still controls collection timing. write implementations load and release with Server without separate instance controls. New implementations can be loaded explicitly, and identical repeat loads reuse registration. Existing code replacement takes effect through controlled Server restart. Saved entries are revalidated on startup; failed capabilities are not marked executable, while other valid capabilities remain usable.
+write implementations load and release with Server. New implementations load explicitly, and matching repeated loads reuse registration. Replacing existing code requires a controlled restart. Startup revalidates entries; failed capabilities are unavailable while other valid capabilities remain usable. The instance lifecycle below applies to collect.
 
-## Runtime connectivity and apply execution
+## Plugin instance Runtime connectivity and apply execution
 
-In managed background mode, each instance has one Runtime process. Runtime maintains management connectivity and synchronizes targets/control state. **Context is the Connector, clients, and business tasks owned by one apply run.** Business waits or sleep do not block Runtime from receiving management operations.
-
-Instances distinguish three things:
-
-| Information | Meaning |
-| --- | --- |
-| enabled | Desired control state stored by management; true does not mean apply is currently running |
-| actual | Latest reported business state, such as running, normal completion (complete), failure (failed), stopping, or stopped |
-| Connection availability | Whether Runtime can communicate; disconnected means offline / unknown, not that an old actual state proves ongoing execution |
-
-**Background Runtime remains online after apply ends.** It can receive controls but does not rerun apply because a target is added, connectivity recovers, or enable is repeated. Plugins that continuously handle new targets keep their own loop inside apply.
+Plugin instance Runtime maintains management connectivity; Context owns one apply run's resources. enabled is desired state, while actual is last confirmed running / complete / failed / stopping / stopped. Connection failure is separately offline / unknown; old state cannot promise active collection.
 
 ```mermaid
 flowchart TD
-    S[Runtime starts and syncs instance state and targets] --> E{enabled?}
+    S[plugin instance Runtime starts and syncs instance state and targets] --> E{enabled?}
     E -->|No| I[Remain online waiting]
     E -->|Yes, old process exited| R[Create Context and run apply]
     R -->|Normal return| C[Clean up Context, report complete]
@@ -663,458 +345,75 @@ flowchart TD
     R -->|Disable| D[Cancel and await tasks, close resources]
     I -->|Disable| D
     I -->|Enable from disabled, old run confirmed stopped| R
-    D -->|Cleanup complete| T[Confirm stopped, Runtime stays online]
+    D -->|Cleanup complete| T[Confirm stopped, plugin instance Runtime stays online]
     T -->|Explicit enable| R
     I -->|New target, reconnect, or enable while already enabled| I
     D -->|Cleanup failed| U[Report error, no second Context]
 ```
 
-Uninstalling the system service exits Runtime; starting it again requires a deployment operation on the execution machine.
+After apply returns or fails, Context is cleaned up but plugin instance Runtime stays online. New targets, reconnection, or repeated enablement do not rerun apply. Plugins needing continuous target handling maintain their own loop without blocking management operations while waiting. Internal run identifiers distinguish reports for the current connection and run; hosts do not provide them.
 
-To rerun an ended apply within the same process, explicitly disable, confirm stopped, then enable. Direct `pc-source run` exits when apply ends; direct and background execution cannot occupy the same instance identity simultaneously.
-
-Management saves desired state, latest actual state, and update time. Internal run_id distinguishes apply reports; only the current connection/run's messages are accepted so late reports cannot overwrite newer state. Hosts do not supply run_id, and Runtime does not use it for cross-process business recovery.
+Rerunning within a process requires disablement, confirmed stopped state, and enablement. Process restart instead synchronizes and decides whether to create a Context from enabled. The direct execution entry exits when apply ends and cannot share instance identity with background mode. After a system service exits or is uninstalled, deployment tooling on that machine must restart it.
 
 ## Instance disablement and resource cleanup
 
-To disable an instance, management saves enabled=false. Runtime blocks new batches, cancels and awaits apply and its subtasks, and closes Context. After cleanup, it reports stopped; outer Runtime remains online awaiting enable.
+On disablement, plugin instance Runtime blocks new batches, cancels and waits for apply and its child tasks, and closes Context. It reports stopped only after cleanup; the outer process stays online. Business tasks belong to apply, and resources register with Context for cleanup. Plugins must not leave detached tasks or swallow cancellation. Cleanup failure or surviving old tasks prevent stopped confirmation and creation of a second Context.
 
-Business subtasks must belong to apply, for example through TaskGroup. Resources registered with `ctx.enter_async_context` / `ctx.on_dispose` close with Context. Plugins cannot leave detached background tasks or swallow cancellation. If tasks remain or cleanup fails, do not report stopped or create a second Context.
-
-Instance disablement does not affect loaded write capabilities or undo saved Sources. An offline Runtime cannot be claimed stopped; unreachable management cannot confirm persistence of new control intent.
+Disablement does not undo saved Sources or affect Server write capabilities. Disconnection does not mean stopped; unreachable management cannot confirm a new control state was saved.
 
 ## Disconnections, restarts, and data recovery
 
-**Reconnection preserves process memory; process restart creates a new business run.** Server or management restart is not Runtime restart. The system service manager maintains processes, not Worker invocations.
-
-| Situation | Subsequent behavior |
+| Situation | Behavior |
 | --- | --- |
-| Runtime lacks an initial target snapshot | collect list / run_batch reports unavailable; plugin waits or exits. Process restarts also need targets first |
-| Synchronized Runtime loses management | collect may start new batches using the last in-memory target/control state on plugin timing. Server still checks submission permissions; reports may be lost |
-| Same Runtime process reconnects | Synchronize latest instance/target control before further processing. Apply synchronized control state; do not rerun active or ended apply |
-| Runtime process restarts | In-memory batches and undelivered reports are lost. After synchronization, if enabled, create Context and execute apply even after previous complete / failed. Worker reads Server checkpoint |
-| Only management-to-Server channel fails, while Runtime still connects to both | Host collect management is unavailable. Existing collection may continue under synchronized state. Built-ins and loaded custom write remain independently usable |
+| No initial target snapshot | list / run_batch reports unavailable; plugin decides to wait or exit, without treating failure as an empty target list |
+| Plugin instance Runtime disconnected from management | Collection, including new batches, may continue with the last in-memory targets and controls; Server still checks submission permissions |
+| Same plugin instance Runtime reconnects | Synchronize current controls before further processing; do not rerun active or ended apply |
+| Plugin instance Runtime process restarts | Resynchronize targets/state and run new apply if enabled, even after previous complete / failed; Worker reads Server checkpoint, and undelivered reports are lost |
+| Management disconnected from Server | Host collect management is unavailable; existing collection can continue, while built-ins and loaded write remain independent |
+| Server unavailable | Submissions fail or wait for recovery; saved Sources remain, and write calls are not automatically recovered or replayed |
 
-Do not start another Runtime when the old process's exit cannot be confirmed. Heartbeat loss is not grounds for cross-machine takeover. apply and external side effects are not guaranteed exactly once; repeat submissions use underlying Source identity rules.
+If exit of the previous process with the same identity cannot be established, another plugin instance Runtime must not start. Missing heartbeats do not authorize cross-machine takeover. The framework does not guarantee exactly-once apply or external effects.
 
-Runtime retains startup files only, with execution information in memory. Section 2 defines storage ownership. Recovery uses management targets/control state and Server Sources/checkpoints.
-
-collect **Source saving, checkpoint update, and submission reporting** are three separate actions; section 4 describes normal processing. Failures are handled separately:
-
-| Failure point | Recovery and effect |
-| --- | --- |
-| Source saved before checkpoint update | Later collection may repeat; identical identity/data reuse storage. Plugins maintain stable Source identity and handle changed data according to their Definition |
-| Checkpoint update response lost | Read actual Server progress next time. Do not claim this update confirmed, but actual successful submission receipts may still be reported |
-| Source and checkpoint saved, report lost | Data and progress remain valid; management may lack submission records. Do not roll back checkpoint, and do not guarantee report repair after restart |
-
-Missing management records do not prove Server lacks Sources; authorized hosts can still read through Server data interfaces. collect continues on plugin timing without restoring previous batch steps. Server restart interrupts in-flight write. After restart implementations reload, but old calls are neither resumed nor replayed. Saved Sources remain; retries retain the same identity and data.
+Recovery follows actual persisted data: a saved Source without an advanced checkpoint may be recollected using stable identity; a lost checkpoint-update response requires rereading it. Lost submission reports do not roll back Sources or checkpoints and are not guaranteed to be backfilled in management records.
 
 ## Adding instances, configuration changes, and upgrades
 
-| Change | Handling |
-| --- | --- |
-| New instance | Prepare code/dependencies; deployment registers Definitions and instance and starts Runtime. Publish new capabilities without restarting existing instances |
-| Add a Scope to a running instance | Grant its execution identity the appropriate Scope Binding and update service range. After Runtime sync, hosts can add targets in that Scope while preserving Context |
-| Change business configuration or code | Disable and confirm stopped, stop old Runtime, then validate and update code, Config, and registration. Start the new Runtime and explicitly enable. External credential changes use the same configuration-update flow; plugins interpret their business meaning |
+- **New instance:** Deploy code and dependencies, register Definitions and the instance, and start plugin instance Runtime without restarting others.
+- **Expand Scopes:** Grant execution identity the relevant Scope Binding (Server role assignment) and update serviceable scope. After synchronization, targets can use the new Scope with the same Context. Passing scope_id alone grants no permission.
+- **Reduce scope, change execution configuration, or upgrade collect:** Disable and confirm stopped, exit old plugin instance Runtime, validate and update code, Config, and registration, then explicitly enable after the new plugin instance Runtime validates. Credential changes use configuration updates, with business meaning interpreted by the plugin.
 
-Scope Binding is Server's relation granting an identity a role in a Scope, not section 4's checkpoint ConnectorBinding. Passing a new scope_id grants no permissions and does not require a separate plugin instance per Scope.
+Upgrades preserve Sources, targets, checkpoints, and received submission records. Validate compatibility of capability input and target identity, Definitions, Connector, and checkpoint formats. New code must handle retained targets, including disabled ones, without resetting progress to bypass checks. Uncertain compatibility keeps the instance disabled for explicit deployment handling, without automatic migration. New instances do not inherit old targets automatically.
 
-Confirm old Runtime exit before updating collect code/configuration; retain Sources, targets, and checkpoints. For write, first handle in-flight Server calls, then load new code through controlled restart, preserving capability/Definition compatibility and Source identity without migrating old calls. collect upgrades check three compatibility dimensions:
-
-| Retained data or contract | Requirement |
-| --- | --- |
-| Target capability/version, input, and identity rules | New code can still handle registered targets, including stopped ones; a v2-only entry cannot take over v1 targets directly |
-| SourceDefinition, ConnectorBinding, and checkpoint format | Remain compatible with existing Sources and progress; do not bypass checks by changing versions or resetting cursors |
-| Targets and received submission records | Preserve records and Scope ownership under current PC permissions; do not require business reruns to recreate history |
-
-If compatibility cannot be established, remain disabled without deleting records or resetting progress. Deployers can supply compatible code or explicitly address incompatible targets and progress; the first version provides no automatic migration, and a new instance does not automatically inherit old targets.
-
-After validation, the deployer updates registration through configure while keeping it disabled, then explicitly enables the new Runtime after successful validation. Failure leaves it non-executable without creating a second Context. Ordinary repeated startup/loading only reuses identical configuration; conflicting configuration must fail explicitly rather than substitute for the update procedure. Appendix C lists management interfaces.
+write updates first resolve in-flight calls, then restart and load while preserving capability and Definition contracts and existing Source identity. Ordinary repeated loading does not replace configuration updates.
 
 ## Permission responsibilities and operation conditions
 
-**Reuse PC Server's existing Access authorization.** Principal is the user or service identity authenticated by Server. Hosts cannot claim another identity in input.
+User authorization reuses Server Access. A Principal is the user or service identity authenticated by Server; management does not maintain a second user authorization system.
 
-| Component | Responsibility |
+| Operation | Server check |
 | --- | --- |
-| PC Server | Authenticate hosts and check current Scope/Server permissions before forwarding management requests. Check write persistence under the host identity, every collect submission under its execution identity, and current read permission when returning data |
-| Management service | Accept only Server management requests over authenticated channels; verify actual target Scope, instance service range, and execution conditions |
-| Plugin | Interpret private configuration/external credentials and handle business permissions when accessing external systems; identify_target resolves identity only and does not authorize |
+| Capability and business instance discovery | scope.read, with scope.contribute indicated |
+| write, new or repeated collect | scope.contribute and scope.read, since replies may contain data or Source references |
+| Query collect results or read Sources | scope.read |
+| Target control view and target controls | scope.contribute, returning control fields only |
+| Load write; instance control view, loading, configuration, removal, or controls | server.admin; deployment tools perform actual process operations |
+| Grant Scope roles | Existing Access authorization rules |
 
-| Operation | PC Server permission |
-| --- | --- |
-| Capability and business-instance discovery | scope.read; indicate whether scope.contribute is currently present |
-| write and new/repeated collect | scope.contribute plus scope.read because responses contain data or existing Source references |
-| Query collect targets/submissions or read Sources | scope.read |
-| collect control view, target stop/resume | scope.contribute; only control fields returned, without additional scope.read |
-| Load Server-local write; instance control view, loading, configuration, unload, or whole-instance enable/disable | server.admin; actual process operations still belong to deployment tools on the execution machine |
-| Grant users/execution identities Scope permissions | Existing Access authorization rules |
+Server forwards authorized operations and trusted identity. Management verifies actual resource Scope, instance serviceable scope, and execution conditions to prevent addressing another Scope's target through an authorized Scope. Authenticated plugin instance Runtime synchronizes and reports only its instance and cannot impersonate Server management requests. Plugins handle external authorization; identify_target does not authorize.
 
-All scope.contribute holders can control that Scope's targets, not only creators; creator identity is informational. An instance may serve multiple Scopes, so whole-instance control requires server.admin, not one Scope's permission. Instance control responses contain no business Config, target inputs, or Source data.
-
-Server forwards the authorized operation together with Scope, target_id, or instance_id. Management verifies actual ownership to prevent using an authorized Scope to address another Scope's target; this adds no new authorization model. Management channels and instance connections still authenticate. Runtime can synchronize only its own targets and report its own state, not impersonate Server management commands.
-
-Permission changes/revocation occur only in PC Server Access. Current read permissions remain checked while write waits and before returning. Revoked read permission prevents returning results but does not imply an accepted save did not occur. Continuous collect uses its own PC execution identity; creator permission changes do not automatically disable existing targets. Normal controls stop targets, and Server checks execution permission on every submission.
-
-On external access refusal, the collect plugin decides to wait, retry, or end apply. Server returns write validation, resolve, project, or storage errors through the original call.
+Any contributor in the Scope can control targets, regardless of creator; instance-wide controls require server.admin. collect uses the instance PC identity for continuous execution, checked on each submission. Creator permission changes do not automatically stop targets. write uses the current host identity, and returning data requires current read permission; denial does not undo already saved data. Control responses exclude business configuration, target input, and Source data.
 
 ## Credentials and initial authorization
 
-AuthenticationProvider verifies Server credentials and maps them to Principal. Local deployment may create or reuse execution identities through a deployment-controlled Provider. Externally managed Servers keep their own Provider; administrators pre-provision identities where needed. Deployment does not overwrite authentication configuration or promise automatic credential issuance.
+AuthenticationProvider maps credentials to Principals. Local deployment can prepare identities through its deployment-controlled Provider. External Servers retain their Provider and may require administrator-provisioned identities; deployment does not replace authentication settings or promise automatic issuance.
 
-| Credential | Purpose | Location |
-| --- | --- | --- |
-| Deployment | Load write, register Definitions, create Scopes, grant roles, and configure instances | Deployment secret storage, not distributed to Runtime |
-| Host | Call Server as the host user/service identity | Host secure configuration |
-| Management channel | Authenticate management to Server on its dedicated channel | Management service |
-| PC execution | Per-instance Principal submits to authorized Scopes and handles checkpoints | Execution machine, without server.admin |
-| Instance connection | Runtime proves instance identity to management for its own work/reports | Execution machine |
-| External system | Plugin accesses Yuque, ticket systems, etc. | Plugin-managed storage/interpretation; Config may reference files, environment, or secret services |
-
-write loading requires admin permission, but daily writes use the current host identity without creating another execution identity or credential. collect deployment uses separate Bearer credentials mapped by Provider to explicit identities. Before collect business execution, deployment:
-
-1. Validates Server, deployment identity, permissions, and target Scope. Confirms actual host/execution Principals rather than treating credential-file existence as validation.
-2. Registers SourceDefinition with deployment credentials and creates/reuses execution Scope Bindings through existing Access interfaces. Daily execution needs neither Definition registration nor server.admin.
-3. Configures management channel identity, registers execution location and served Scopes, reuses Server Access for management authorization, and supplies Runtime only required credentials/references.
-4. Checks actual execution identity and Scope permissions before allowing work in that Scope. An unauthorized instance may be registered but cannot accept that Scope's collection. Host MCP connectivity/authorization follows host integration procedures.
-
-These steps use existing `POST /v1/source-definitions/register`, `POST /v1/access/bindings/create`, `GET /v1/access/me`, and `POST /v1/access/check`, without another registration or OAuth system.
-
-Automatic local deployment generates internal configuration without bypassing authorization. Deployment credentials do not reach collect Runtime. Only administrators load trusted write code, while daily writes do not borrow deployment permissions. Credential values are excluded from command arguments, ordinary logs, and capability catalogs. Rotation uses Provider and secret references; invalid identities cannot remain in use. Cross-machine communication uses TLS or equivalent authenticated secure entry points.
-
-# Appendix A: usage scenarios—startup and adding resources dynamically
-
-These scenarios first show collect user operations and component interactions by deployment location, then write loading/calls. For local collect, Server startup scanning and `source load` prepare shared management and Runtime without separately running both `install` commands. For cross-machine deployment, deployers prepare full configuration, start management, complete registration/authorization, then start remote Runtime. Service installation commands here use Linux `systemd --user`; Server must already have authentication configured and PC Access enabled.
-
-Commands and configuration in this appendix are **usage illustrations** showing deployment locations, operation order, and component interactions. Final commands and arguments are documented in the user guide shipped with the implementation. Run shell commands on the indicated machine. JSON uses MCP `tools/call` parameters for section 3's **proposed interfaces**, sent by the host to Server. Replace example Scopes, paths, and document URLs with real values.
-
-## Scenario 1: start Codex, Server, and plugins on one machine
-
-**1. Prepare the instance directory on the Server machine.** Assume bundled code, directory `/srv/powercontext/source-plugins/yuque-personal`, and external credentials kept separately in a protected file. `powercontext.yml`:
-
-```yaml
-id: yuque-personal
-plugin: yuque
-config:
-  token_file: /srv/powercontext/secrets/yuque.token
-  base_url: https://www.yuque.com
-  poll_interval: 60
-# Optional targets for first initialization.
-targets:
-  - scope_id: scp_demo
-    capability: yuque.document
-    capability_version: "1"
-    input:
-      url: https://www.yuque.com/team/book/doc-a
-```
-
-The plugin defines `config`, including business parameters such as external credential references. Target Scopes must exist, and both initialization caller and execution identity need appropriate permissions. Initial targets use normal add rules; management becomes authoritative after initialization. Later file changes do not overwrite or supplement targets, and neither empty lists nor connection failures trigger reimport. Omit targets if Scopes are not ready; complete Scope authorization/service-range expansion below, then add through public MCP.
-
-**2. Configure the plugin directory and start Server in the background.** Keep existing database, authentication, and deployment settings in `pc.env`, adding:
-
-```bash
-POWERCONTEXT_SERVER_SOURCE_PLUGINS_DIR=/srv/powercontext/source-plugins
-```
-
-From the PowerContext repository root:
-
-```bash
-uv run powercontext service install --env-file ./pc.env
-```
-
-`service install` installs and starts Server's background service, then returns. Startup performs the following local deployment without separate `manager install` or `runtime install`:
-
-| Order | Components and interactions |
+| Credential | Use and ownership |
 | --- | --- |
-| 1 | Server deployment scans trusted directories, reads instance configuration, and prepares local service configuration and internal identity references |
-| 2 | Start/reuse independent management; management initiates its authenticated Server channel |
-| 3 | Validate plugin declarations, register Definition/instance with deployment permission, and confirm execution Scope permissions and served range |
-| 4 | Start Runtime, connecting to management and Server; Runtime creates Context and executes apply, with capabilities and instance state synchronized to Server |
-| 5 | If targets are not initialized, import file targets through normal add after instance readiness. Plugin obtains them through ctx.targets.list() and decides collection timing |
-
-Deployment permissions come from Server deployment configuration, not daily Runtime. Existing instance restarts do not reimport targets; management retains runtime additions and stop/resume state. Built-in and custom write need no management service when no collect instances exist.
-
-**3. Install host integration and connect to the same Server.** If Codex is installed but PowerContext integration is not, run from repository root:
-
-```bash
-uv run powercontext setup codex --source . --server-url http://127.0.0.1:8000
-POWERCONTEXT_CODEX_SCOPE_ID='scp_demo' codex
-```
-
-Prepare host credentials through existing host authentication. The second command starts a new Codex session from this shell. Desktop hosts use their own integration configuration and establish a new session; they do not inherit another terminal's environment. Verify the session Scope through `resolve_scope_binding` and explicitly pass the same Scope to Source MCP calls below.
-
-Hosts access only Server `/mcp`, not management or Runtime directly. Closing Codex does not stop background plugins; adding a Source plugin does not require reinstalling host integration.
-
-## Scenario 2: collect a new document through a running instance
-
-Assume `yuque-personal` already collects A and needs document B added.
-
-**1. Codex creates B through an authorized Yuque tool and obtains its actual URL.** For example, with Yuque CLI:
-
-```bash
-yuque create doc --namespace team/book --title 'Document B' --body-file /tmp/doc-b.md --yes --json
-```
-
-Public Source MCP neither creates Yuque documents nor monitors all external tool operations.
-
-**2. Codex discovers capabilities and instances.**
-
-```json
-{
-  "name": "pc_source_capabilities",
-  "arguments": {"scope_id": "scp_demo", "operation": "add"}
-}
-```
-
-Server returns capabilities, versions, schemas, and instance state based on current PC permissions and synchronized catalog. Choose the returned `yuque.document` version and `yuque-personal` instance.
-
-**3. Codex adds B.**
-
-```json
-{
-  "name": "pc_source_add",
-  "arguments": {
-    "scope_id": "scp_demo",
-    "capability": "yuque.document",
-    "capability_version": "1",
-    "instance_id": "yuque-personal",
-    "input": {"url": "https://www.yuque.com/team/book/doc-b"}
-  }
-}
-```
-
-Server checks current Scope permissions and forwards to management. Runtime invokes identify_target to confirm resource identity; management creates/reuses the target and returns target_id. The response establishes ongoing collection, not that B is saved. Repeating the same Scope, instance, capability version, and resource identity reuses the target without resuming stopped targets.
-
-**4. The running plugin obtains and processes B.** Runtime synchronizes targets; apply reads B through `ctx.targets.list()` and calls `run_batch()` on its own schedule. Worker executes Connector, which reads Yuque and submits directly to Server. SDK automatically associates actual receipts, and Runtime reports Source references/timestamps to management.
-
-**5. Call query/control tools only when the user needs results or wants to stop tracking.** Queries are not needed to sustain collection:
-
-```json
-{
-  "name": "pc_source_status",
-  "arguments": {"scope_id": "scp_demo", "target_id": "tgt_b"}
-}
-```
-
-source_refs and last_submitted_at describe confirmed and reported submissions, not complete collection of B. Stop B using the actual returned target_id:
-
-```json
-{
-  "name": "pc_source_target_set_enabled",
-  "arguments": {"scope_id": "scp_demo", "target_id": "tgt_b", "enabled": false}
-}
-```
-
-Any scope.contribute holder can stop/resume Scope targets, not only their creator; reading submissions requires scope.read. The response confirms saved intent; a disconnected Runtime may still collect from its last synchronized state. Resume uses the same target_id and enabled=true. Repeated add is not resume.
-
-## Scenario 3: add plugins, Scopes, and remote execution
-
-**Add a local custom plugin instance.** Prepare code, dependencies, and an independent instance configuration:
-
-```text
-/srv/powercontext/source-plugins/tickets-team/
-  powercontext.yml
-  plugin.py
-```
-
-```yaml
-id: tickets-team
-plugin: ./plugin.py
-scope_ids: [scp_demo]
-config:
-  api_base: https://tickets.example.org
-  token_file: /srv/powercontext/secrets/tickets.token
-```
-
-Business parameters must be declared by the plugin's Config. The instance ID is deployment-unique, and a local entry needs no published wheel. Once Server is running with the plugin directory configured, execute on the same machine using its `pc.env`:
-
-```bash
-uv run powercontext source load --config /srv/powercontext/source-plugins/tickets-team/powercontext.yml --env-file ./pc.env
-```
-
-`load` uses protected local deployment credentials, prepares/reuses shared management, registers Definitions and the instance, configures execution Scope permissions, generates RuntimeConfig, and installs/starts Runtime. First loading also imports optional initial targets. It calls the service-installation logic used by the two `install` commands, so this scenario needs only `load`. Background execution continues after the command returns, without restarting Server or existing instances. Prepare plugin dependencies beforehand.
-
-Adding files alone while running does not start an instance. Repeat loading neither overwrites initialized targets nor restarts an instance with identical configuration. Hosts then call `pc_source_capabilities` again and use the new input_schema with `pc_source_add`, without modifying the MCP tool list.
-
-The three plugin configuration files have different purposes:
-
-- `powercontext.yml`: user-authored instance configuration with ID, entry, business config, served Scopes, and optional initial targets; read by `source load` or startup scanning.
-- `source-manager.yml`: management deployment configuration (ManagerConfig), including Server address/credential file, management ID, listening address, and durable state directory; read by `manager install`.
-- `plugin-runtime.yml`: full deployment configuration for one plugin process (RuntimeConfig), including plugin directory, business config, Server/management addresses, both connection credential files, and configuration digest; read by `runtime install`. An instance powercontext.yml cannot substitute for it.
-
-`pc.env` is Server environment configuration used by load for connection addresses and local deployment directories.
-
-**Add a Scope to the same instance.** An administrator grants the execution identity permissions through existing Access and expands the instance service range through `POST /v1/source-management/configure`. Hosts also need corresponding PC permissions. Add targets with the new scope_id without recreating Context or editing initialized file targets.
-
-**Manual cross-machine deployment.** For example, machine A runs Server and management, while B can reach the ticket system and runs `tickets-team`. Codex connects only to A's public MCP. A's `source load` does not install code or start processes on B.
-
-Prepare reachable addresses and connection credentials. With deployment permissions, register Definitions on Server, register instance ID, execution location, configuration digest, and served Scopes with management, and grant execution Scope permissions through PC Access. B's code, dependencies, and RuntimeConfig must match registration. If management has not started, install it first as below, register the instance, then install Runtime.
-
-```bash
-# Machine A: manually deploy shared management; skip if it already exists.
-uv run powercontext source manager install --config ./source-manager.yml
-
-# Machine B: after registration and authorization, start the prepared Runtime.
-uv run powercontext source runtime install --config ./plugin-runtime.yml
-```
-
-These commands only install/start their background services; they do not install dependencies or automatically register Definitions/instances or authorize identities. Deployment generates or prepares RuntimeConfig from that information. Current source load orchestrates local deployment without remote configuration distribution or SSH execution.
-
-Management initiates requests to Server; Runtime initiates requests to management, Server, and external sources. Cross-machine connections need reachable secure endpoints, not loopback-only defaults. Management may run on a third machine with the same responsibilities; each Server has one shared management service.
-
-**Custom write: load implementations, then save complete content directly.** For example, a host already has complete ticket content to save as an `example-ticket` Source:
-
-1. Prepare section 4's local `tickets` package and dependencies on Server's machine, importable from Server's Python environment.
-2. Supply entry configuration and trigger Server loading with administrator permission. The configuration sketch is `entry: tickets`; loading validates/registers Definitions, saves entry references, and exposes `ticket.write / 1`.
-3. The host connects to the same `/mcp`, discovers and submits below without an instance, target, or manager/runtime configuration:
-
-```json
-{
-  "name": "pc_source_capabilities",
-  "arguments": {"scope_id": "scp_demo", "operation": "add"}
-}
-```
-
-After discovery confirms `ticket.write / 1` and its input model:
-
-```json
-{
-  "name": "pc_source_add",
-  "arguments": {
-    "scope_id": "scp_demo",
-    "capability": "ticket.write",
-    "capability_version": "1",
-    "input": {
-      "namespace": "team",
-      "project": "support",
-      "ticket_id": "T-100",
-      "title": "Login failure",
-      "body": "A user reports being unable to log in."
-    }
-  }
-}
-```
-
-Server validates TicketCapture, calls TicketDefinition.resolve and TicketProjection.project, saves, and returns actual SourceRef through this call. Hosts read Source/Projection through the reference without status queries. This example's Definition derives stable identity from the complete ticket snapshot, so identical-content retries reuse Sources. Continuous ticket-change collection uses collect above; both paths may reuse the same Definition.
-
-# Appendix B: plugin collection pipeline reference
-
-This collect **interface sketch** relates identity confirmation, plugin loops, submissions, and checkpoints; concrete class names, module paths, and helper functions may change during implementation. Plugins implement `BusinessClient`, `DocumentDefinition`, `TemporaryReadError`, and Config external-credential fields. It is not a complete runnable client and does not replace SDK changes still to be implemented.
-
-Plugins declare `plugin_api_version = "2"`, Config, capabilities, definitions, and stable Connector name/version. Capabilities describe collect input/business contracts; identify_target confirms resource identity.
-
-For collect input `{"document_id":"A"}`, an identity entry can return:
-
-```python
-async def identify_target(request, config):
-    # document_id is a nonempty business ID required by input_schema.
-    document_id = request.input["document_id"].strip()
-    if not document_id:
-        raise ValueError("document_id must not be blank")
-    return {
-        "target_key": document_id,
-        "normalized_input": {"document_id": document_id},
-    }
-```
-
-This entry resolves resource identity. If there are additional collection options, normalized_input must preserve all parameters affecting collection. Omitting options must not equate different requirements.
-
-```python
-import asyncio
-
-from powercontext.source_management import ManagementError
-from powercontext.sources import (
-    ConnectorRunCompletion,
-    ConnectorRunStatus,
-    ConnectorSubmissionStatus,
-)
-
-plugin_api_version = "2"
-connector_name = "document-reader"
-connector_version = "1"
-document_definition = DocumentDefinition()
-definitions = (document_definition,)
-
-
-class BusinessConnector:
-    name = connector_name
-    version = connector_version
-    source_definitions = frozenset({document_definition.name})
-
-    def __init__(self, ctx, client):
-        self.ctx = ctx
-        self.client = client
-        self.targets = ()
-
-    async def run(self, session):
-        batch_complete = True
-        for target in self.targets:
-            try:
-                document = await self.client.read(target.input)
-                if document is None:
-                    # Confirmed absent content; network or permission errors must not become None.
-                    continue
-                receipt = await self.ctx.targets.submit(
-                    target,
-                    session=session,
-                    item_id=target.target_id,  # One item per target in this example, unique within the batch.
-                    definition_name=document_definition.name,
-                    value=document,
-                )
-                if receipt.status != ConnectorSubmissionStatus.ACCEPTED:
-                    batch_complete = False
-            except TemporaryReadError:
-                # Retry in a later batch; do not swallow cancellation or other unhandled errors.
-                batch_complete = False
-        return ConnectorRunCompletion(
-            status=ConnectorRunStatus.COMPLETE if batch_complete else ConnectorRunStatus.INCOMPLETE,
-            checkpoint=session.checkpoint,  # Full reads in this example, without advancing an incremental cursor.
-        )
-
-
-async def apply(ctx, config):
-    client = await ctx.enter_async_context(BusinessClient(config))
-    connector = BusinessConnector(ctx, client)
-    ctx.connect(connector)
-    while True:
-        try:
-            targets = await ctx.targets.list()
-            for scope_id in sorted({target.scope_id for target in targets}):
-                selected = tuple(target for target in targets if target.scope_id == scope_id)
-                connector.targets = selected
-                await ctx.run_batch(scope_id=scope_id, targets=selected)
-        except ManagementError as error:
-            # Wait for an initial target snapshot; propagate other configuration/permission errors.
-            if error.code not in {"targets-unavailable", "management-unavailable"}:
-                raise
-        await asyncio.sleep(config.poll_interval)
-```
-
-SDK records actual submission associations automatically. Connector batch results serve the Worker/checkpoint pipeline; section 5 defines disconnection and restart behavior.
-
-Incremental/paginated plugins calculate checkpoints themselves and may maintain target-specific progress inside the instance/Scope checkpoint. New targets need backfill rather than being skipped because another target's cursor is newer. Repeated data must produce stable Source identity, with failure retries following existing saving rules.
-
-Section 5 defines full cleanup and stop behavior. write loading/calls are in section 4 and Appendix A.
-
-# Appendix C: management communication and instance configuration reference
-
-This appendix serves deployers and framework implementers. Hosts use public MCP; plugins use SDK to obtain targets and submit data. Paths and configuration fields below are **interface sketches**; connection directions, permissions, and state semantics remain governed by the main design.
-
-## Channels and identity
-
-Sections 2 and 3 define connection directions and request handoff; section 5 defines authentication and permission responsibilities. Management and Runtime each use their own credentials to connect upstream.
-
-| Interface | Purpose |
-| --- | --- |
-| Server `/v1/source-management/channel/open`, `catalog`, `poll`, `reply`, `close` | Authenticate management, synchronize catalog, receive/respond to messages. Once catalog is ready, Server answers discovery directly |
-| Server `POST /v1/source-management/configure` | After server.admin checks, register or explicitly update instances through the management channel; does not upload arbitrary Python code |
-| Management `POST /v1/source-management/instances/{instance_id}/sync` | Runtime authenticates with instance credentials and synchronizes its collect targets/control state; SDK handles pagination |
-| Management `POST /v1/source-management/instances/{instance_id}/results` | Runtime reports actual Source references/timestamps for its instance. Duplicate reports reuse associations |
-
-On reconnection, management authenticates again and synchronizes its complete catalog. Server checks capability names, versions, kind, and input contracts for consistency with existing capabilities. Management message size, in-flight count, and waiting time are bounded.
-
-## Instance configuration and updates
-
-`registration` in `POST /v1/source-management/configure` is complete instance registration; `update=true` requests an explicit update. Section 2 defines initial target import; section 5 defines configuration updates and upgrades.
-
-Expanding an already authorized Scope range can preserve Context; shrinking the range or changing execution configuration follows the disable/update procedure.
+| Deployment | Deployment tooling loads code, registers Definitions, grants permissions, and configures instances; not passed to plugin instance Runtime |
+| Host | Stored in host security configuration to call Server |
+| Management channel | Management authenticates to Server |
+| PC execution | Per-instance identity for Source submission and checkpoints, without server.admin |
+| Instance connection | plugin instance Runtime proves its own identity to management |
+| External system | Stored and interpreted by plugins, optionally referenced in Config |
+
+Before business execution, deployment verifies actual identities, registers Definitions, grants Scope permissions, records instance scope and connection identities, and checks access using execution credentials. Existing identity and Access interfaces are reused. Instances may be registered without Scope authorization but cannot accept work for that Scope. write has no separate execution credentials and does not borrow deployment authority for daily saves. Credentials are excluded from command arguments, catalogs, and ordinary logs; cross-machine connections use TLS or equivalent security.
