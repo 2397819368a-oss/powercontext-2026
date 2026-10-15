@@ -23,7 +23,7 @@
 ```text
 Scope
 ├── Source journal    # 证据：输入、文档、工作契约、任务结果
-├── Memory            # memory/ARTIFACT_ID@REVISION —— 决定、约束、下一步
+├── Memory            # atomic-memory/ARTIFACT_ID@REVISION —— 决定、约束、下一步
 ├── Review Inbox      # 等待评审的 Experience 与 Skill 候选
 ├── Handoff history   # handoff/ARTIFACT_ID@REVISION —— 跨会话的工作接续
 └── Topic Memory      # 由符合条件的 Source 后台提取

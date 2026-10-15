@@ -23,7 +23,7 @@
 ```text
 Scope
 ├── Source journal    # 根拠：入力、ドキュメント、作業契約、タスク結果
-├── Memory            # memory/ARTIFACT_ID@REVISION —— 判断、制約、次の手順
+├── Memory            # atomic-memory/ARTIFACT_ID@REVISION —— 判断、制約、次の手順
 ├── Review Inbox      # レビュー待ちの Experience / Skill 候補
 ├── Handoff history   # handoff/ARTIFACT_ID@REVISION —— セッションをまたぐ作業の継続
 └── Topic Memory      # 対象となる Source からバックグラウンドで抽出

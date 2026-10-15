@@ -28,7 +28,7 @@ A Scope ID selects data; it does not prove user identity, grant tool access, or 
 ```text
 Scope
 ├── Source journal    # evidence: prompts, documents, work contracts, task outcomes
-├── Memory            # memory/ARTIFACT_ID@REVISION — decisions, constraints, next steps
+├── Memory            # atomic-memory/ARTIFACT_ID@REVISION — decisions, constraints, next steps
 ├── Review Inbox      # pending Experience and Skill candidates awaiting a decision
 ├── Handoff history   # handoff/ARTIFACT_ID@REVISION — work continuity across sessions
 └── Topic Memory      # extracted in the background from eligible Sources
