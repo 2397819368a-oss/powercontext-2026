@@ -35,6 +35,7 @@ from powercontext.builtin.persistence.atomic_memory_index import (
     atomic_memory_profile_fingerprint,
     atomic_memory_vector_sql,
     combine_atomic_memory_channels,
+    oceanbase_fts_coverage_sql,
 )
 from powercontext.builtin.persistence.atomic_memory_index_schema import (
     ATOMIC_MEMORY_PROJECTION_FORMAT,
@@ -169,13 +170,8 @@ class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
         if request.mode in {"fts", "hybrid"}:
             terms, required = fts_query_requirements(request.query, floor=request.admission)
             if terms:
-                coverage = []
-                for index, term in enumerate(terms):
-                    key = f"fts_term_{index}"
-                    parameters[key] = f" {term} "
-                    coverage.append(
-                        f"CASE WHEN LOCATE(BINARY :{key}, BINARY CONCAT(' ', searchable_text, ' ')) > 0 THEN 1 ELSE 0 END"
-                    )
+                coverage, coverage_parameters = oceanbase_fts_coverage_sql(terms)
+                parameters.update(coverage_parameters)
                 parameters.update(fts_query=" ".join(terms), fts_required=required)
                 rows = (
                     await connection.execute(
@@ -184,7 +180,7 @@ class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                             "MATCH(searchable_text) AGAINST (:fts_query) AS raw_score, 'oceanbase_match' AS score_metric "
                             "FROM pc_atomic_memory_current WHERE scope_id = :scope_id "
                             f"AND ({eligibility}) AND MATCH(searchable_text) AGAINST (:fts_query) > 0 "
-                            f"AND ({' + '.join(coverage)}) >= :fts_required "
+                            f"AND ({coverage}) >= :fts_required "
                             f"ORDER BY score DESC, artifact_id{limit_sql}"
                         ),
                         parameters,

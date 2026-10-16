@@ -88,16 +88,18 @@ def sqlite_expression_limit(monkeypatch):
     ids=["ascii-1000", "cjk-600"],
 )
 @pytest.mark.parametrize("mode", ["text", "hybrid"])
-def test_supported_long_query_preserves_all_terms_in_both_http_searches(tmp_path, query, mode, sqlite_expression_limit):
+def test_supported_long_query_preserves_all_terms_in_both_http_searches(
+    migration_backend, query, mode, sqlite_expression_limit
+):
     async def scenario():
         app = create_server_app(
             settings=ServerSettings(
-                database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'long-query.db'}"),
+                database=migration_backend.config,
                 runtime=RuntimeConfig(artifact_processing_families=()),
                 metrics=MetricsConfig(enabled=False),
                 mcp=McpConfig(enabled=False),
             ),
-            scheduler_path=tmp_path / "scheduler.db",
+            scheduler_path=migration_backend.directory / "scheduler.db",
             embedding_model=_Embedding(),
         )
         async with (
@@ -127,13 +129,11 @@ def test_supported_long_query_preserves_all_terms_in_both_http_searches(tmp_path
     asyncio.run(scenario())
 
 
-def test_long_query_recovery_probe_preserves_lexical_coverage(tmp_path, sqlite_expression_limit):
+def test_long_query_recovery_probe_preserves_lexical_coverage(migration_backend, sqlite_expression_limit):
     async def scenario():
         terms = [f"term{i}" for i in range(1000)]
         query = " ".join(terms)
-        async with open_builtin_contexts(
-            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'recovery.db'}"))
-        ) as contexts:
+        async with open_builtin_contexts(BuiltinConfig(database=migration_backend.config)) as contexts:
             await contexts.get("project")
             await contexts.records.create_atomic_memories("project", ({"kind": "fact", "text": " ".join(terms[:500])},))
             page = await contexts.atomic_memory.for_scope("project").search(

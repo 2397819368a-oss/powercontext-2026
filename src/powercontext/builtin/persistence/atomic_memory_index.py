@@ -319,6 +319,27 @@ def sqlite_fts_coverage_sql(terms: tuple[str, ...], /) -> tuple[str, dict[str, o
     )
 
 
+def oceanbase_fts_coverage_sql(terms: tuple[str, ...], /) -> tuple[str, dict[str, object]]:
+    """Count whole terms with logarithmic expression depth on OceanBase and seekdb."""
+
+    parameters: dict[str, object] = {}
+    coverage: list[str] = []
+    for index, term in enumerate(terms):
+        key = f"fts_term_{index}"
+        parameters[key] = f" {term} "
+        coverage.append(
+            f"CASE WHEN LOCATE(BINARY :{key}, BINARY CONCAT(' ', searchable_text, ' ')) > 0 THEN 1 ELSE 0 END"
+        )
+    # A flat sum becomes a left-deep expression and can exceed the backend's
+    # expression limit for valid long queries. Pair terms without dropping any.
+    while len(coverage) > 1:
+        coverage = [
+            f"({coverage[index]} + {coverage[index + 1]})" if index + 1 < len(coverage) else coverage[index]
+            for index in range(0, len(coverage), 2)
+        ]
+    return coverage[0] if coverage else "0", parameters
+
+
 def atomic_memory_filter_sql(
     filters: AtomicMemoryIndexFilter, dialect: Literal["sqlite", "mysql"], /
 ) -> tuple[str, dict[str, object]]:
@@ -596,15 +617,9 @@ class RelationalAtomicMemoryIndex:
             if terms:
                 if dialect == "sqlite":
                     lexical, coverage_parameters = sqlite_fts_coverage_sql(terms)
-                    parameters.update(coverage_parameters)
                 else:
-                    coverage: list[str] = []
-                    for index, term in enumerate(terms):
-                        key = f"probe_term_{index}"
-                        parameters[key] = f" {term} "
-                        matched = f"LOCATE(BINARY :{key}, BINARY CONCAT(' ', searchable_text, ' ')) > 0"
-                        coverage.append(f"CASE WHEN {matched} THEN 1 ELSE 0 END")
-                    lexical = " + ".join(coverage)
+                    lexical, coverage_parameters = oceanbase_fts_coverage_sql(terms)
+                parameters.update(coverage_parameters)
                 parameters.update(probe_required=required, probe_lower_required=lower_required)
                 current.append(f"(({lexical}) >= :probe_required)")
                 recoverable.append(f"(({lexical}) >= :probe_lower_required)")
@@ -691,5 +706,6 @@ __all__ = [
     "atomic_memory_profile_fingerprint",
     "combine_atomic_memory_channels",
     "load_atomic_memory_tags",
+    "oceanbase_fts_coverage_sql",
     "sqlite_fts_coverage_sql",
 ]

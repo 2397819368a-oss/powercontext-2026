@@ -54,8 +54,11 @@ evidence and requires an explicit choice; by default errors retain the window fo
 
 Atomic Memory has no legacy collection capacity budget or compact operation. `MEMORY_MAX_ACTIVE_ENTRIES`,
 `MEMORY_MAX_MANIFEST_ENTRIES`, `MEMORY_MAX_MANIFEST_BYTES` and `MEMORY_COMPACTION_*` settings remain parseable but do not
-limit new memories or enable compaction. The legacy MemoryWriteGate collection contract is unsupported by the Atomic
-Runtime; enabling `MEMORY_WRITE_GATE_ENABLED` or injecting an old gate is rejected explicitly.
+limit new memories or enable compaction. MemoryWriteGate is fail-open and only governs the write decision; it never
+changes authoritative history. For a hosted decision backend, set `MEMORY_WRITE_GATE_PRIVACY_BOUNDARY=hosted_redacted`
+and explicitly select `MEMORY_WRITE_GATE_SANITIZER=known_secrets`. The sanitizer covers known sensitive environment/Codex
+values and a bounded set of provider-key prefixes; it is not a general PII or password detector. The sanitizer selection
+defaults to `none`, and hosted-redacted composition fails with a named configuration error until one is selected.
 The existing limit of 32 tags per Artifact still applies. If merged input tags exceed it, the whole merge fails;
 Source processing also retains the window without partial publication or cursor advancement.
 
@@ -115,9 +118,11 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_ENABLED` | `false` | Apply listwise reranking after coarse Memory retrieval |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_CANDIDATE_LIMIT` | `30` | Coarse candidate pool supplied to the reranker |
 | `POWERCONTEXT_SERVER_RUNTIME_DECISION_ASSISTANCE_ENABLED` | `false` | Enable decision-model assistance; requires a decision or generation model |
-| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_ENABLED` | `false` | Legacy collection WriteGate; unsupported by Atomic Runtime, which rejects enabling it |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_ENABLED` | `false` | Enable the fail-open Memory write decision gate |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_HOLD_ON` | `yes` | Decision outcome that means evidence is insufficient: `yes` or `no` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_THRESHOLD` | unset | Optional confidence threshold from `0` to `1`; a hold-direction verdict below it is flagged instead of held |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_PRIVACY_BOUNDARY` | `no_external_call` | Decision egress boundary: `no_external_call` or `hosted_redacted` |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_SANITIZER` | `none` | Required for `hosted_redacted`; choose `known_secrets` to install the built-in projection sanitizer |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_ACTIVE_ENTRIES` | `5000` | Legacy collection setting; does not limit Atomic Memory, but parsing still validates it against the manifest limit |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_ENTRIES` | `10000` | Legacy collection setting; Atomic Memory has no collection manifest |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_BYTES` | `4194304` | Legacy collection setting; does not limit total Atomic Memory content |
