@@ -120,8 +120,9 @@ class GuidanceFixture:
             return {
                 "error": {"code": "FIXTURE_WRITE_DENIED", "message": "Synthetic save was denied; nothing was saved."}
             }, True
-        if name == "get_artifact_candidate":
+        if name == "get_candidate":
             return {
+                "candidate_kind": "artifact",
                 "candidate_id": CANDIDATE,
                 "version": self.version,
                 "family": "experience",
@@ -141,7 +142,7 @@ class GuidanceFixture:
                 "result_artifact": None,
                 "decision_reason": None,
             }, False
-        if name == "approve_artifact_candidate":
+        if name == "approve_candidate":
             self.version = 2
             return {
                 "error": {

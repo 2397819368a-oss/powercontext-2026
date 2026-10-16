@@ -200,7 +200,7 @@ Topic Memory retains their evidence for Topics selected by a positive-weight cha
 Scaling both values equally has no effect. Setting one value to `0` excludes that channel from hybrid fusion, but a
 higher weight cannot restore a candidate rejected before fusion. A zero weight does not disable that channel's
 retrieval or admission work: vector embeddings may still be generated, and retrieval/admission counts still include
-the zero-weight channel. A Topic Artifact search request that supplies its own `fusion` parameters replaces the
+the zero-weight channel. A Topic or Atomic Memory Artifact search request that supplies its own `fusion` parameters replaces the
 deployment recall weights entirely. The deployment weights apply only when the request does not specify `fusion`
 parameters. After normalization, each non-zero channel weight must be at least the smallest normal IEEE 754 binary64
 value (`2.2250738585072014e-308`); smaller values are rejected at startup. Only an explicit `0` disables a channel's
@@ -315,6 +315,9 @@ failures, and timeouts. Unacknowledged counts reflect the latest discovery; coun
 
 The `extraction` object in `GET /v1/capabilities` separates configuration, background execution, and local observations.
 Reading this snapshot does not query the database or call a model, and does not produce an overall health verdict.
+`powercontext capabilities` prints the same facts. Missing diagnostics print `unavailable`, a null supervisor role
+prints `absent`, and unknown values print `unknown`. Success and failure times are historical observations, not a
+current health verdict. `--json` returns the Server payload unchanged.
 
 - `configuration` is `configured` when a local extraction model or custom pipeline is assembled, or a local Memory
   worker is registered. It is `unconfigured` when none is available. Registration does not verify credentials or

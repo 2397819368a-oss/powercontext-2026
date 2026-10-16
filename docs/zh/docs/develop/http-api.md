@@ -188,13 +188,13 @@ Principal，并注入 Authorization Provider。HTTP 与 MCP 使用同一个策�
 | Topic Memory | `/v1/topic-memory/*`、`/v1/scopes/{scope_id}/artifacts/*`（`family=topic-memory`） | 请求后台处理、检索和展开主题；创建、读取、修订正文及查询历史 |
 | Profile | `/v1/profile/*`、`/v1/scopes/{scope_id}/profile-policy`、`/v1/scopes/{scope_id}/artifacts/*`（`family=profile`） | 处理画像生成、配置生成策略、读写画像及查询历史 |
 | Experience 与 Skill | `/v1/experience/*`、`/v1/skill/*`、`/v1/skills/*` | propose、review、打包、治理、分发并读取 managed Skill Revision |
-| 审核 | `/v1/artifact-candidates/*` | 列出、检查、修订、批准或拒绝 pending Candidate |
+| 审核 | `/v1/candidates/*` | 列出、检查、修订、批准或拒绝 pending Candidate |
 | 外部 Skill | `/v1/external-skills/*` | 扫描已配置 target，解析或导入 package |
 | Handoff Report | `/v1/handoff-reports/*` | 按 Scope selection 生成只读报告 |
 | 统计 | `/v1/stats` | 读取指定 scope 的使用统计 |
 
 创建 Artifact 使用 `POST /v1/scopes/{scope_id}/artifacts`，在请求体中指定 `family`。
-Profile 的候选审核复用 `/v1/artifact-candidates/*`。
+Profile 的候选审核复用 `/v1/candidates/*`。
 
 完整路径、schema、限制和状态码以 OpenAPI 契约为准。高层工作流和 Python 示例见[接口](interfaces.md)。
 

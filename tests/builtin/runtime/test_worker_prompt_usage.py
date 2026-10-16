@@ -39,9 +39,9 @@ from powercontext.builtin.persistence.processing_intents import ArtifactProcessi
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.supervision import ArtifactProcessingLeaseRepository
 from powercontext.builtin.persistence.tables import (
-    ARTIFACT_CANDIDATE_HEADS_TABLE,
     ARTIFACT_HEADS_TABLE,
     BUILTIN_TABLES,
+    CANDIDATE_HEADS_TABLE,
     MODEL_USAGE_DAILY_TABLE,
 )
 from powercontext.builtin.records import ArtifactWrite
@@ -243,7 +243,7 @@ def test_spawned_worker_restores_custom_prompt_and_counts_actual_requests_once(t
                         completed is not None and completed.handled_generation == assignment.claimed_request_generation
                     )
                     assert completed.clean_generation == completed.dirty_generation
-                    generated = ARTIFACT_CANDIDATE_HEADS_TABLE if family == "experience" else ARTIFACT_HEADS_TABLE
+                    generated = CANDIDATE_HEADS_TABLE if family == "experience" else ARTIFACT_HEADS_TABLE
                     assert (
                         await connection.scalar(
                             select(func.count())
@@ -255,18 +255,20 @@ def test_spawned_worker_restores_custom_prompt_and_counts_actual_requests_once(t
                     assert await connection.scalar(select(func.count()).select_from(ACCESS_OWNERS_TABLE)) == 1
                     usage = (await connection.execute(select(MODEL_USAGE_DAILY_TABLE))).mappings().all()
                 generation = [row for row in usage if row["operation"] == "generation"]
-                if family == "profile":
-                    assert generation == []
-                else:
-                    assert len(generation) == 1
-                    assert generation[0]["scope_id"] == scope
-                    assert generation[0]["purpose"] == (
-                        "memory_extraction" if family == "memory" else "experience_generation"
-                    )
-                    requests = 2 if family == "memory" else 1
-                    assert generation[0]["requests"] == requests
-                    assert generation[0]["input_tokens"] == 11 * requests
-                    assert generation[0]["output_tokens"] == 13 * requests
+                assert len(generation) == 1
+                assert generation[0]["scope_id"] == scope
+                assert (
+                    generation[0]["purpose"]
+                    == {
+                        "memory": "memory_extraction",
+                        "experience": "experience_generation",
+                        "profile": "profile_generation",
+                    }[family]
+                )
+                requests = 2 if family == "memory" else 1
+                assert generation[0]["requests"] == requests
+                assert generation[0]["input_tokens"] == 11 * requests
+                assert generation[0]["output_tokens"] == 13 * requests
                 embedding = [row for row in usage if row["operation"] == "embedding"]
                 if family == "memory":
                     assert len(embedding) == 1

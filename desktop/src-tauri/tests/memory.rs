@@ -51,6 +51,9 @@ impl Drop for Fixture {
     }
 }
 async fn setup() -> Fixture {
+    setup_response(serde_json::json!({"changed":false,"records":[]})).await
+}
+async fn setup_response(response: serde_json::Value) -> Fixture {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let started = Arc::new(Notify::new());
@@ -72,6 +75,7 @@ async fn setup() -> Fixture {
                 bodies.clone(),
                 failure.clone(),
             );
+            let response = response.clone();
             tokio::spawn(async move {
                 let mut bytes = vec![];
                 let end = loop {
@@ -127,7 +131,7 @@ async fn setup() -> Fixture {
                         if status != 200 {
                             (status, serde_json::json!({"detail":"must not leak"}))
                         } else {
-                            (200, serde_json::json!({"changed":false,"records":[]}))
+                            (200, response)
                         }
                     }
                     path if path.starts_with("/v1/scopes/") => (
@@ -207,7 +211,7 @@ async fn dispatched_write_keeps_its_original_target_and_rejects_duplicate_clicks
     assert_eq!(outcome.record.context.connection_id, fixture.a);
     assert_eq!(outcome.record.context.scope_id, "scope-a");
     assert!(outcome.result.is_none());
-    assert!(outcome.record.artifact.is_none());
+    assert!(outcome.record.references.is_empty());
     let requests = fixture.requests.lock().unwrap();
     assert_eq!(
         requests.as_slice(),
@@ -245,8 +249,65 @@ async fn success_without_records_does_not_invent_a_reference() {
         .await
         .unwrap();
     assert_eq!(result.record.status, WriteStatus::Succeeded);
-    assert!(result.record.artifact.is_none());
+    assert!(result.record.references.is_empty());
     assert!(result.result.unwrap().records.is_empty());
+}
+
+#[tokio::test]
+async fn atomic_write_retains_every_exact_reference_after_context_changes() {
+    let response = serde_json::json!({"changed":true,"records":[
+        {"artifact":{"family":"atomic-memory","artifact_id":"atomic-a","revision":3},"kind":"note","text":"first","state":"active","state_version":1,"merged_into_id":null},
+        {"artifact":{"family":"atomic-memory","artifact_id":"atomic-b","revision":5},"kind":"note","text":"second","state":"forgotten","state_version":2,"merged_into_id":null}
+    ]});
+    for change_context in [false, true] {
+        let fixture = setup_response(response.clone()).await;
+        let generation = fixture.manager.state().unwrap().generation;
+        let manager = fixture.manager.clone();
+        let write =
+            tokio::spawn(async move { manager.remember(generation, "synthetic note").await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            fixture.started.notified(),
+        )
+        .await
+        .unwrap();
+        if change_context {
+            fixture.manager.check(&fixture.b, true).await.unwrap();
+        }
+        fixture.release.notify_one();
+        let outcome = write.await.unwrap().unwrap();
+        assert_eq!(outcome.record.status, WriteStatus::Succeeded);
+        assert_eq!(outcome.record.context.connection_id, fixture.a);
+        if change_context {
+            assert!(outcome.result.is_none());
+        } else {
+            assert_eq!(
+                serde_json::to_value(outcome.result.unwrap()).unwrap(),
+                response
+            );
+        }
+        assert_eq!(outcome.record.references.len(), 2);
+        for (reference, expected) in outcome
+            .record
+            .references
+            .iter()
+            .zip([("atomic-a", 3), ("atomic-b", 5)])
+        {
+            assert_eq!(reference.family, "atomic-memory");
+            assert_eq!(reference.artifact_id, expected.0);
+            assert_eq!(reference.revision, expected.1);
+        }
+        assert_eq!(
+            fixture
+                .manager
+                .state()
+                .unwrap()
+                .last_write
+                .unwrap()
+                .references,
+            outcome.record.references
+        );
+    }
 }
 
 #[tokio::test]

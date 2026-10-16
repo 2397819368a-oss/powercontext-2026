@@ -153,6 +153,14 @@ async fn main() {
     let saved = manager.remember(generation, &submitted).await.unwrap();
     assert_eq!(saved.record.status, WriteStatus::Succeeded);
     let result = saved.result.unwrap();
+    assert_eq!(
+        saved.record.references,
+        result
+            .records
+            .iter()
+            .map(|record| record.artifact.clone())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(result.records.len(), 1);
     let entry = &result.records[0];
     assert_eq!(entry.text, expected);
@@ -187,6 +195,18 @@ async fn main() {
             .unwrap();
         save_ms.push(start.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(result.record.status, WriteStatus::Succeeded);
+        let records = result.result.unwrap().records;
+        assert!(!records.is_empty());
+        assert_eq!(result.record.references.len(), records.len());
+        for (record, reference) in records.iter().zip(&result.record.references) {
+            assert_eq!(reference, &record.artifact);
+            let exact = manager
+                .atomic_memory_entry(generation, reference)
+                .await
+                .unwrap();
+            assert_eq!(exact.artifact, *reference);
+            assert_eq!(exact.text, record.text);
+        }
     }
     let mut search_ms = vec![];
     let mut exact_ms = vec![];

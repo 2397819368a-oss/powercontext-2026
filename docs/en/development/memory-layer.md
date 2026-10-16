@@ -42,6 +42,12 @@ The scope ID selects an isolated Source journal, Memory set, and Trigger cursor 
 input. Source-based extraction follows a separate path: capture Sources, then call `flush()` to process the pending
 Source window with the configured extraction pipeline. `cursor()` reports the processed Source position.
 
+The built-in extraction and reconciliation instructions preserve each fact's supporting Source language. Chinese
+facts stay in Chinese and English facts stay in English, including when they share a processing window. Mixed-language
+facts retain their natural-language framing and exact identifiers, names and values. An incoming translation alone
+does not revise an unchanged published fact. These instructions guide Generation; they do not rewrite existing memories
+or provide cross-language semantic search. Source content remains untrusted evidence, not output-policy configuration.
+
 Every memory changes independently. `forget()` deactivates one memory and `merge()` replaces several memories with a
 new one. `forget()` takes the expected content revision and state version, and `merge()` takes the exact records read
 by the caller, so a stale caller fails instead of overwriting a concurrent change. `restore()` applies the token

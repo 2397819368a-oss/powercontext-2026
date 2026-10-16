@@ -21,6 +21,7 @@ import {
   screen,
   fireEvent,
   act,
+  waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -106,7 +107,7 @@ function outcome(status: "succeeded" | "unknown"): WriteOutcome {
         scopeId: "scope-a",
       },
       status,
-      artifact: null,
+      references: [],
       error: null,
     },
     result: status === "succeeded" ? { changed: false, records: [] } : null,
@@ -131,33 +132,42 @@ test("a save without records succeeds without inventing a memory or submitting o
   expect(desktopApi.remember).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(desktopApi.remember).toHaveBeenCalledWith(1, "Café 中文\nnote");
-  expect(screen.getByText(/Server returned no memory/)).toBeTruthy();
+  expect(screen.getByRole("status").textContent).toMatch(
+    /Server returned no memory/,
+  );
   expect(
     (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
   ).toBe("");
 });
-test("an Atomic save reports the returned record as saved", async () => {
-  const user = userEvent.setup();
-  form();
-  const saved = outcome("succeeded");
-  saved.result = {
-    changed: true,
-    records: [
-      {
-        artifact,
+test.each([1, 2])(
+  "an Atomic save reports %i returned records as saved",
+  async (count) => {
+    const user = userEvent.setup();
+    form();
+    const saved = outcome("succeeded");
+    saved.result = {
+      changed: true,
+      records: Array.from({ length: count }, (_, index) => ({
+        artifact: { ...artifact, artifact_id: `atomic-${index}` },
         kind: "note",
-        text: "Atomic note",
+        text: `Atomic note ${index}`,
         state: "active",
         state_version: 0,
         merged_into_id: null,
-      },
-    ],
-  };
-  vi.mocked(desktopApi.remember).mockResolvedValue(saved);
-  await user.type(screen.getByLabelText("Memory text"), "Atomic note");
-  await user.click(screen.getByRole("button", { name: "Save" }));
-  expect(screen.getByRole("status").textContent).toBe("Saved successfully.");
-});
+      })),
+    };
+    saved.record.references = saved.result.records.map(
+      (record) => record.artifact,
+    );
+    vi.mocked(desktopApi.remember).mockResolvedValue(saved);
+    await user.type(screen.getByLabelText("Memory text"), "Atomic note");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByRole("status").textContent).toBe("Saved successfully.");
+    expect(
+      (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
+    ).toBe("");
+  },
+);
 test("an Atomic save can be searched, opened and copied by exact Artifact reference", async () => {
   const user = userEvent.setup();
   const saved = outcome("succeeded");
@@ -174,6 +184,7 @@ test("an Atomic save can be searched, opened and copied by exact Artifact refere
       },
     ],
   };
+  saved.record.references = [artifact];
   vi.mocked(desktopApi.remember).mockResolvedValue(saved);
   vi.mocked(desktopApi.search).mockResolvedValue({
     hits: [
@@ -415,9 +426,11 @@ test.each(["scope", "page"])(
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "记忆" }));
-    await act(async () => {
-      await new Promise(requestAnimationFrame);
-    });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { level: 1, name: "记忆" }),
+      ),
+    );
     await user.type(screen.getByLabelText("记忆内容"), "draft A");
     await user.click(screen.getByRole("button", { name: "保存" }));
     if (switchKind === "scope") {
@@ -438,10 +451,17 @@ test.each(["scope", "page"])(
       await user.click(screen.getByRole("button", { name: "Scope B" }));
     } else {
       await user.click(screen.getByRole("button", { name: "总览" }));
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          screen.getByRole("heading", { level: 1, name: "总览" }),
+        ),
+      );
       await user.click(screen.getByRole("button", { name: "记忆" }));
-      await act(async () => {
-        await new Promise(requestAnimationFrame);
-      });
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          screen.getByRole("heading", { level: 1, name: "记忆" }),
+        ),
+      );
     }
     await user.type(screen.getByLabelText("记忆内容"), "draft B");
     await act(async () => {
