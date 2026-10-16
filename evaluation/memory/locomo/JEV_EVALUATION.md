@@ -12,14 +12,17 @@ Runtime and LLM reranker retain their defaults.
 
 SQLite acceptance uses a real local database and the actual Runtime assembly,
 HTTP authorization, exact-revision read path, and PreparedContext builder.
-It covers successful scoring, rate-limit fallback, total-deadline fallback,
+It covers successful scoring, explicit rate-limit and total-deadline failures,
 cross-Scope rejection before provider requests, identity preservation, read-only
 Memory state, UTF-8 delivery limits, and suppression of automatic recall expansion.
 
 Provider responses in these tests use HTTPX MockTransport. They establish local
-protocol handling and failure behavior, not Jev's semantic accuracy, availability,
-network latency, or billed cost. A persisted-candidate evaluation test exercises
-search, answer generation, and judging with deterministic local inference.
+protocol handling and RFC 0080's failure behavior, not Jev's semantic accuracy,
+availability, network latency, or billed cost. Persisted-candidate evaluation
+tests exercise search, answer generation, and judging through the locked native
+OpenAI and Anthropic SDKs with simulated HTTP responses. They reject missing or
+partial usage receipts and prevent SDK retries from hiding billable attempts in
+both the answer/judge path and the independent LLM reranker.
 
 The same acceptance scenarios support an isolated real OceanBase database through
 `POWERCONTEXT_TEST_OCEANBASE_URL`. The fixture creates and removes its own database;
@@ -34,7 +37,9 @@ On 2026-10-15, the database contract step of
 [E2E harness run 38720979584](https://github.com/oceanbase/powercontext/actions/runs/38720979584/job/116375167396)
 passed on commit `d644fc3907b19be75f59dfffe4609987474c86ee`: nine cases executed
 without skips, comprising three existing OceanBase contracts and all six Jev
-integration scenarios across SQLite and real OceanBase.
+integration scenarios across SQLite and real OceanBase. This execution establishes
+database integration; the current failure-propagation cases require a CI execution
+against the current commit.
 
 ```bash
 uv run python -m pytest \
@@ -47,20 +52,41 @@ uv run python -m pytest \
 
 Recommendation: **revise pending live comparative evidence**.
 
-No live three-arm run of this Noul adapter is recorded here. The local execution
-environment has no configured Jev or downstream generation/embedding credentials.
+On 2026-10-16, the user-configured hosted endpoint
+`https://jevmodel.org/v1/systemone` accepted the System One request and resolved
+`jev-latest` to `jev-1.13.0`. Subsequent adapter probes pinned `jev-1.13.0`,
+used the normal 30-second deadline and four-request concurrency bound, and sent
+public fixture session text. The initial eight-case probe completed four cases
+and exposed four provider failures. Diagnostic calls returned HTTP 402
+`insufficient_credits` for the Chinese complementary-evidence and version-condition
+cases. The service message stated that input-token credits were insufficient.
+Successful calls supplied token receipts; failed or cancelled requests have
+unknown billing. No additional paid probes are needed to establish that limit.
+
+The non-secret [hosted adapter evidence](evidence/jev_live_smoke_2026-10-16.json)
+records the endpoint, pinned version, dataset and executed-adapter hashes,
+per-case selections, latency, token receipts, and diagnostic failures. This is an
+adapter connectivity and protocol check over public examples. It does not
+exercise ingestion, Runtime search, answer generation, or judging.
+
+No live three-arm run of this Noul adapter is recorded here.
 Relevant-evidence recall, ranking quality, downstream task success, real p50/p95
-latency, billed input, retries, and total pipeline cost are therefore unmeasured.
+pipeline latency, billed pipeline input, retries, and total pipeline cost are
+therefore unmeasured.
 There is no basis for changing the default provider or claiming a quality, latency,
 or cost improvement.
 
 The runnable comparison in [README.md](README.md#jev-memory-comparison) fixes the
 inputs and delivery budget and rejects candidate/model/budget drift. The quality
 regression tolerance is `0.0`, recorded before evaluation. A report with missing
-cost receipts cannot recommend adoption. The bilingual/adversarial smoke cases
+cost receipts cannot recommend adoption. Comparison manifests pin both resolved
+generation and independent reranker endpoints and record a no-SDK-retries,
+required-receipts billing policy. Older runs without that policy cannot establish
+complete cost. The bilingual/adversarial smoke cases
 are separate from any future calibration and held-out evaluation.
 
-Complete a live three-arm Jev comparison, retain reviewed non-secret manifests
+With usable provider credits and downstream services, complete a live three-arm
+Jev comparison, retain reviewed non-secret manifests
 and comparison results, and evaluate a dedicated reranker baseline if available
 before closing the issue's empirical acceptance criteria. Include the shared
 ingestion cost when reporting total pipeline cost; the comparator reports the

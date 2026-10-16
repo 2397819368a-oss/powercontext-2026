@@ -425,8 +425,8 @@ headers、settings、timeout 和 request limit。
 Python 部署可以把可选的 `JevMemoryReranker` 通过
 `open_builtin_runtime(memory_reranker=...)` 注入 Runtime，使用 `JevRerankConfig`
 配置独立 API key、System One endpoint 和固定模型版本，例如 `jev-1.13.0`，并由调用方管理
-HTTPX client。适配器限制整个操作的时限、并发数和请求大小；Provider 失败时保留原候选排序，
-并在进程内的 rerank trace 中标记回退。该行为与 LLM reranker 的 inference error 行为不同。
+HTTPX client。适配器限制整个操作的时限、并发数和请求大小；超时、Provider 不可用、无效分数、
+缺少用量回执和模型版本不符均按 RFC 0080 显式返回 inference error。
 注入的 reranker 默认也会关闭召回扩展，只有现有 `RECALL_GATE_ALLOW_WITH_RERANK`
 配置显式允许时才扩展。上面的 Server 环境变量开关仍选择现有 LLM reranker。
 Jev 配置、三组对照评估与实际验证范围见仓库中的 `evaluation/memory/locomo/README.md`。

@@ -471,9 +471,9 @@ Python deployments can inject the optional `JevMemoryReranker` with a
 `JevRerankConfig` and a caller-owned HTTPX client into
 `open_builtin_runtime(memory_reranker=...)`. It requires a dedicated API key,
 System One endpoint, and pinned model such as `jev-1.13.0`. Its total deadline
-and concurrency/request-size bounds are explicit. Provider failures preserve the
-coarse candidate order and mark the in-process rerank trace as a fallback; this
-differs from the LLM reranker's inference-error behavior. Injected rerankers also
+and concurrency/request-size bounds are explicit. Provider failures propagate as
+inference errors under RFC 0080, including timeouts, unavailable providers, invalid
+scores, missing usage receipts, and model-version drift. Injected rerankers also
 disable recall expansion unless the existing `RECALL_GATE_ALLOW_WITH_RERANK`
 setting enables it. The Server environment switch above selects the existing LLM
 reranker. See `evaluation/memory/locomo/README.md` in the repository for Jev

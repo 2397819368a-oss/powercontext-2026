@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Jev rank identity, bounded requests, usage, and coarse-order fallback."""
+"""Jev rank identity, bounded requests, usage, and visible provider failures."""
 
 from __future__ import annotations
 
@@ -25,6 +25,12 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from powercontext.builtin.artifacts.memory import JevMemoryReranker, JevRerankConfig
+from powercontext.builtin.inference.errors import (
+    InferenceConfigurationError,
+    InferenceTimeoutError,
+    InferenceUnavailableError,
+    InvalidInferenceOutputError,
+)
 
 
 @dataclass(frozen=True)
@@ -79,30 +85,24 @@ def test_ranks_keep_original_identity_and_stable_ties_with_reported_usage():
 
 
 @pytest.mark.parametrize(
-    "response",
+    ("response", "error"),
     [
-        httpx.Response(429),
-        _response(1.1),
-        _response(model="jev-1.14.0"),
-        _response(usage={}),
+        (httpx.Response(429), InferenceUnavailableError),
+        (_response(1.1), InvalidInferenceOutputError),
+        (_response(model="jev-1.14.0"), InvalidInferenceOutputError),
+        (_response(usage={}), InvalidInferenceOutputError),
     ],
 )
-def test_unavailable_or_unusable_results_preserve_coarse_order(response):
+def test_unavailable_or_unusable_results_expose_provider_failure(response, error):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response)) as client:
-            result = await JevMemoryReranker(_config(), client).rerank("query", (_Text("one"), _Text("two")), 2)
-        assert result.selected_ranks == (1, 2)
-        assert result.used_fallback is True
-        assert result.usage.requests >= 1
-        if response.status_code == 200 and response.json().get("usage"):
-            assert result.usage.input_tokens == 20 * result.usage.requests
-        else:
-            assert result.usage.input_tokens is None
+            with pytest.raises(error):
+                await JevMemoryReranker(_config(), client).rerank("query", (_Text("one"), _Text("two")), 2)
 
     asyncio.run(scenario())
 
 
-def test_partial_failure_does_not_report_unknown_billing_as_zero():
+def test_partial_failure_does_not_return_a_successful_decision():
     async def scenario():
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(
@@ -111,12 +111,10 @@ def test_partial_failure_does_not_report_unknown_billing_as_zero():
                 )
             )
         ) as client:
-            result = await JevMemoryReranker(_config(max_concurrency=1), client).rerank(
-                "query", (_Text("one"), _Text("two")), 2
-            )
-        assert result.selected_ranks == (1, 2) and result.used_fallback
-        assert result.usage.requests == 2
-        assert result.usage.input_tokens is None and result.usage.output_tokens is None
+            with pytest.raises(InferenceUnavailableError):
+                await JevMemoryReranker(_config(max_concurrency=1), client).rerank(
+                    "query", (_Text("one"), _Text("two")), 2
+                )
 
     asyncio.run(scenario())
 
@@ -139,11 +137,11 @@ def test_total_deadline_includes_waiting_candidates_and_cancels_requests():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             reranker = JevMemoryReranker(_config(timeout_seconds=0.03, max_concurrency=1), client)
             results = await asyncio.gather(
-                *(reranker.rerank("query", (_Text("one"), _Text("two")), 1) for _ in range(2))
+                *(reranker.rerank("query", (_Text("one"), _Text("two")), 1) for _ in range(2)),
+                return_exceptions=True,
             )
         assert maximum == 1 and active == 0
-        assert all(result.selected_ranks == (1,) and result.used_fallback for result in results)
-        assert sum(result.usage.requests for result in results) == 1
+        assert all(isinstance(result, InferenceTimeoutError) for result in results)
 
     asyncio.run(scenario())
 
@@ -172,16 +170,13 @@ def test_caller_cancellation_propagates_and_releases_pending_calls():
     asyncio.run(scenario())
 
 
-def test_oversized_utf8_request_falls_back_without_sending_content():
+def test_oversized_utf8_request_fails_without_sending_content():
     async def scenario():
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: pytest.fail("unexpected request"))
         ) as client:
-            result = await JevMemoryReranker(_config(max_request_bytes=1), client).rerank(
-                "query", (_Text("evidence"),), 1
-            )
-        assert result.used_fallback and result.selected_ranks == (1,)
-        assert result.usage.requests == 0 and result.usage.input_tokens == 0
+            with pytest.raises(InferenceConfigurationError, match="exceeds max_request_bytes"):
+                await JevMemoryReranker(_config(max_request_bytes=1), client).rerank("query", (_Text("evidence"),), 1)
 
     asyncio.run(scenario())
 
@@ -195,8 +190,8 @@ def test_redirect_does_not_send_credentials_or_evidence_to_another_host():
 
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond), follow_redirects=True) as client:
-            result = await JevMemoryReranker(_config(), client).rerank("query", (_Text("one"),), 1)
-        assert result.used_fallback
+            with pytest.raises(InferenceConfigurationError):
+                await JevMemoryReranker(_config(), client).rerank("query", (_Text("one"),), 1)
         assert requests == ["https://api.typesafe.ai/v1/systemone"]
 
     asyncio.run(scenario())

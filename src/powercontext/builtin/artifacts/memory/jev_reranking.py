@@ -30,6 +30,13 @@ from powercontext.builtin.artifacts.memory.reranking import (
     _validate_bounds,
 )
 from powercontext.builtin.inference import InferenceUsage
+from powercontext.builtin.inference.errors import (
+    InferenceConfigurationError,
+    InferenceError,
+    InferenceTimeoutError,
+    InferenceUnavailableError,
+    InvalidInferenceOutputError,
+)
 
 JEV_MEMORY_RERANK_POLICY = "powercontext.memory.rerank.jev.noul.v1"
 _QUESTION = {
@@ -98,10 +105,20 @@ class _JevResponse(BaseModel):
 
     model: str
     answers: dict[Literal["useful"], _JevAnswer]
+    usage: _JevUsage
+
+
+def _http_failure(error: httpx.HTTPStatusError, timeout_seconds: float) -> InferenceError:
+    status = error.response.status_code
+    if status in {408, 504}:
+        return InferenceTimeoutError("memory.rerank", timeout_seconds)
+    if status in {409, 425, 429} or status >= 500:
+        return InferenceUnavailableError("memory.rerank")
+    return InferenceConfigurationError(f"Jev rejected rerank request (HTTP {status})")
 
 
 class JevMemoryReranker:
-    """Score candidates independently; failures retain coarse order with a trace.
+    """Score candidates independently and expose provider failures to callers.
 
     The caller owns the HTTP client. The adapter adds no retries and bounds all
     requests, pool waits, and transport retries by one total deadline. Concurrency
@@ -117,12 +134,12 @@ class JevMemoryReranker:
         self.policy_id = f"{JEV_MEMORY_RERANK_POLICY}:{config.model}"
 
     async def rerank(self, query: str, candidates: tuple[MemoryRerankText, ...], limit: int, /) -> MemoryRerankDecision:
-        """Return unique original ranks and usage, including work before fallback."""
+        """Return unique original ranks only after every response is validated."""
 
         _validate_bounds(len(candidates), limit)
-        usages = [InferenceUsage(requests=0, input_tokens=0, output_tokens=0) for _ in candidates]
+        usages: list[_JevUsage] = []
 
-        async def score(index: int, candidate: MemoryRerankText) -> float:
+        async def score(candidate: MemoryRerankText) -> float:
             content = json.dumps(
                 {
                     "model": self._config.model,
@@ -132,10 +149,8 @@ class JevMemoryReranker:
                 ensure_ascii=False,
             ).encode("utf-8")
             if len(content) > self._config.max_request_bytes:
-                raise ValueError("Jev rerank request exceeds max_request_bytes")  # noqa: TRY003
+                raise InferenceConfigurationError("Jev rerank request exceeds max_request_bytes")  # noqa: TRY003
             async with self._semaphore:
-                # Unknown usage stays unknown when a sent request has no usable receipt.
-                usages[index] = InferenceUsage(requests=1)
                 request = httpx.Request(
                     "POST",
                     self._config.endpoint,
@@ -148,24 +163,26 @@ class JevMemoryReranker:
                 )
                 response = await self._client.send(request, auth=None, follow_redirects=False)
                 response.raise_for_status()
-                payload = response.json()
-                usage = _JevUsage.model_validate(payload["usage"])
-                usages[index] = InferenceUsage(requests=1, **usage.model_dump())
-                result = _JevResponse.model_validate(payload)
+                result = _JevResponse.model_validate(response.json())
                 if result.model != self._config.model:
                     raise ValueError("Jev returned a different model version")  # noqa: TRY003
+                usages.append(result.usage)
                 return result.answers["useful"].noul
 
         tasks: list[asyncio.Task[float]] = []
-        used_fallback = False
         try:
             async with asyncio.timeout(self._config.timeout_seconds):
-                tasks = [asyncio.create_task(score(index, candidate)) for index, candidate in enumerate(candidates)]
+                tasks = [asyncio.create_task(score(candidate)) for candidate in candidates]
                 scores = await asyncio.gather(*tasks)
             ranks = tuple(sorted(range(1, len(candidates) + 1), key=lambda rank: (-scores[rank - 1], rank))[:limit])
-        except (TimeoutError, httpx.HTTPError, OSError, ValueError, KeyError, TypeError):
-            ranks = tuple(range(1, limit + 1))
-            used_fallback = True
+        except (TimeoutError, httpx.TimeoutException) as error:
+            raise InferenceTimeoutError("memory.rerank", self._config.timeout_seconds) from error
+        except httpx.HTTPStatusError as error:
+            raise _http_failure(error, self._config.timeout_seconds) from error
+        except (httpx.RequestError, OSError) as error:
+            raise InferenceUnavailableError("memory.rerank") from error
+        except (ValueError, KeyError, TypeError) as error:
+            raise InvalidInferenceOutputError("memory.rerank", "Jev did not return a valid result") from error
         finally:
             for task in tasks:
                 if not task.done() and not task.cancelling():
@@ -173,15 +190,10 @@ class JevMemoryReranker:
             await asyncio.gather(*tasks, return_exceptions=True)
         return MemoryRerankDecision(
             selected_ranks=ranks,
-            used_fallback=used_fallback,
             usage=InferenceUsage(
-                requests=sum(usage.requests for usage in usages),
-                input_tokens=None
-                if any(usage.input_tokens is None for usage in usages)
-                else sum(usage.input_tokens or 0 for usage in usages),
-                output_tokens=None
-                if any(usage.output_tokens is None for usage in usages)
-                else sum(usage.output_tokens or 0 for usage in usages),
+                requests=len(usages),
+                input_tokens=sum(usage.input_tokens for usage in usages),
+                output_tokens=sum(usage.output_tokens for usage in usages),
             ),
         )
 

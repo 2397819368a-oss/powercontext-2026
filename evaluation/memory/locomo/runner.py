@@ -26,13 +26,16 @@ from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 
 import httpx
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from pydantic_ai.models import infer_model
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
+from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.models import Model, ModelRequestParameters, infer_model
+from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
+from typing_extensions import override
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.extraction import atomic_memory_extraction_instructions
@@ -44,19 +47,30 @@ from powercontext.builtin.artifacts.atomic_memory.models import (
 from powercontext.builtin.artifacts.atomic_memory.reconciliation import ATOMIC_MEMORY_RECONCILIATION_INSTRUCTIONS
 from powercontext.builtin.artifacts.memory import (
     JEV_MEMORY_RERANK_POLICY,
+    MEMORY_RERANK_INSTRUCTIONS,
     MEMORY_RERANK_INSTRUCTIONS_VERSION,
     JevMemoryReranker,
     JevRerankConfig,
+    LLMMemoryReranker,
+    MemoryReranker,
+    MemoryRerankInput,
     MemoryRerankMode,
+    MemoryRerankOutput,
 )
-from powercontext.builtin.inference.errors import InferenceTimeoutError, InferenceUnavailableError
+from powercontext.builtin.inference.errors import (
+    InferenceTimeoutError,
+    InferenceUnavailableError,
+    InvalidInferenceOutputError,
+)
 from powercontext.builtin.inference.pydantic_ai import InferenceLimits, PydanticAIStructuredGenerator
 from powercontext.builtin.records import ArtifactRecord
 from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, open_builtin_contexts, open_builtin_runtime
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryRerankTrace, AtomicMemorySearchHit
+from powercontext.builtin.runtime.composition import _merge_headers, _provider_factory
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.server.settings import ServerSettings
 
+from .compare_rerank import COMPARISON_BILLING_POLICY
 from .dataset import LoCoMoConversation, LoCoMoDataset, LoCoMoQuestion, load_locomo, render_session
 from .metrics import (
     bleu1,
@@ -81,6 +95,46 @@ from .prompts import (
 Progress = Callable[[str], None]
 ResultT = TypeVar("ResultT")
 BENCHMARK_TEMPERATURE = 0.0
+
+
+class _ReceiptedComparisonModel(WrapperModel):
+    """Reject a missing receipt before an Agent can normalize it to zero usage."""
+
+    @override
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+        # Every call has a nonempty prompt and structured output. Zero also covers
+        # SDK-normalized missing token fields, which cannot establish billed totals.
+        if response.usage.input_tokens <= 0 or response.usage.output_tokens <= 0:
+            raise InvalidInferenceOutputError("generate", "comparison response has no complete token receipt")
+        return response
+
+
+async def _open_comparison_model(
+    model_name: str,
+    *,
+    base_url: AnyHttpUrl | None,
+    headers: Mapping[str, SecretStr],
+    resources: AsyncExitStack,
+) -> Model:
+    """Use Runtime's provider resolution with all retry attempts owned by the runner."""
+
+    model = infer_model(
+        model_name,
+        provider_factory=_provider_factory(
+            base_url,
+            headers,
+            workload="generation",
+            resources=resources,
+            disable_retries=True,
+        ),
+    )
+    return _ReceiptedComparisonModel(await resources.enter_async_context(model))
 
 
 def _benchmark_model_settings() -> ModelSettings:
@@ -225,11 +279,29 @@ async def prepare_run(
     )
     jev_config = _jev_config() if rerank_mode is MemoryRerankMode.JEV else None
     downstream_base_url = None
+    reranker_base_url = None
     if answer_max_bytes is not None:
         if settings.inference.generation_model is None:
             raise ValueError("rerank comparisons require a generation model")  # noqa: TRY003
-        async with infer_model(settings.inference.generation_model) as downstream_model:
+        async with AsyncExitStack() as resources:
+            downstream_model = await _open_comparison_model(
+                settings.inference.generation_model,
+                base_url=settings.inference.generation_base_url,
+                headers=settings.inference.generation_headers,
+                resources=resources,
+            )
             downstream_base_url = downstream_model.base_url
+            if rerank_mode is MemoryRerankMode.LLM:
+                if settings.inference.rerank_model is None:
+                    reranker_base_url = downstream_base_url
+                else:
+                    reranker_model = await _open_comparison_model(
+                        settings.inference.rerank_model,
+                        base_url=settings.inference.rerank_base_url,
+                        headers=settings.inference.rerank_headers,
+                        resources=resources,
+                    )
+                    reranker_base_url = reranker_model.base_url
     manifest = {
         "schema": "powercontext.benchmark.locomo.run.v8",
         "run_id": normalized_run_id,
@@ -261,6 +333,7 @@ async def prepare_run(
         ),
         **(
             {
+                "comparison_billing_policy": COMPARISON_BILLING_POLICY,
                 "comparison_inference_sha256": hashlib.sha256(
                     json.dumps(
                         {
@@ -283,11 +356,7 @@ async def prepare_run(
                         else None
                     ),
                     "endpoint_sha256": hashlib.sha256(
-                        (
-                            jev_config.endpoint
-                            if jev_config is not None
-                            else str(settings.inference.rerank_base_url or settings.inference.generation_base_url)
-                        ).encode("utf-8")
+                        (jev_config.endpoint if jev_config is not None else str(reranker_base_url)).encode("utf-8")
                     ).hexdigest(),
                 },
             }
@@ -529,7 +598,7 @@ async def evaluate_dataset(  # noqa: C901
         scope_ids = _ingested_scope_ids(output_directory, run_id, conversations)
         config = _runtime_config(
             settings,
-            rerank_mode=rerank_mode,
+            rerank_mode=rerank_mode if answer_max_bytes is None else MemoryRerankMode.NONE,
             rerank_candidate_limit=top_k,
         )
         # Resolve the Scopes ingestion recorded while no inference client exists yet. A database
@@ -542,15 +611,55 @@ async def evaluate_dataset(  # noqa: C901
         conversation_by_id = {conversation.sample_id: conversation for conversation in dataset.conversations}
         semaphore = asyncio.Semaphore(concurrency)
         async with AsyncExitStack() as resources:
-            jev_reranker = None
+            reranker: MemoryReranker | None = None
             if rerank_mode is MemoryRerankMode.JEV:
                 jev_client = await resources.enter_async_context(httpx.AsyncClient())
-                jev_reranker = JevMemoryReranker(_jev_config(), jev_client)
-            runtime = await resources.enter_async_context(open_builtin_runtime(config, memory_reranker=jev_reranker))
+                reranker = JevMemoryReranker(_jev_config(), jev_client)
+            elif rerank_mode is MemoryRerankMode.LLM and answer_max_bytes is not None:
+                inference = settings.inference
+                inherits_generation = inference.rerank_model is None
+                reranker_model = await _open_comparison_model(
+                    inference.rerank_model or generation_model,
+                    base_url=inference.generation_base_url if inherits_generation else inference.rerank_base_url,
+                    headers=(
+                        _merge_headers(inference.generation_headers, inference.rerank_headers)
+                        if inherits_generation
+                        else inference.rerank_headers
+                    ),
+                    resources=resources,
+                )
+                reranker = LLMMemoryReranker(
+                    PydanticAIStructuredGenerator[MemoryRerankInput, MemoryRerankOutput](
+                        model=reranker_model,
+                        instructions=MEMORY_RERANK_INSTRUCTIONS,
+                        input_type=MemoryRerankInput,
+                        output_type=MemoryRerankOutput,
+                        limits=InferenceLimits(
+                            timeout_seconds=inference.rerank_timeout_seconds or inference.generation_timeout_seconds,
+                            max_requests=inference.rerank_max_requests or inference.generation_max_requests,
+                        ),
+                        model_settings=cast(
+                            ModelSettings,
+                            (inference.generation_model_settings if inherits_generation else {})
+                            | inference.rerank_model_settings
+                            | _benchmark_model_settings(),
+                        ),
+                    )
+                )
+            runtime = await resources.enter_async_context(open_builtin_runtime(config, memory_reranker=reranker))
             # Read the ingested projections this run scores against before the answer and judge
             # clients exist, so a database that cannot answer for the run fails on its own terms.
             artifact_sources = await _artifact_source_maps(runtime, scope_ids)
-            model = await resources.enter_async_context(infer_model(generation_model))
+            model = (
+                await resources.enter_async_context(infer_model(generation_model))
+                if answer_max_bytes is None
+                else await _open_comparison_model(
+                    generation_model,
+                    base_url=settings.inference.generation_base_url,
+                    headers=settings.inference.generation_headers,
+                    resources=resources,
+                )
+            )
             answer_generator = PydanticAIStructuredGenerator(
                 model=model,
                 instructions=selected_answer_instructions,

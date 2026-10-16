@@ -27,6 +27,7 @@ from pydantic import SecretStr
 from starlette.middleware import Middleware
 
 from powercontext.builtin.artifacts.memory import JevMemoryReranker, JevRerankConfig
+from powercontext.builtin.inference.errors import InferenceTimeoutError, InferenceUnavailableError
 from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig, open_builtin_runtime
 from powercontext.server.app import ServerApplication, create_app
 from powercontext.server.authz.composition import open_builtin_access_control
@@ -38,7 +39,7 @@ database = jev_database
 
 
 @pytest.mark.parametrize("failure", [None, "unavailable", "timeout"])
-def test_jev_search_and_prepare_preserve_identity_authorization_and_budget(database, tmp_path, failure):
+def test_jev_search_and_prepare_preserve_identity_authorization_and_budget(database, tmp_path, failure):  # noqa: C901
     calls = []
     efforts = []
 
@@ -130,22 +131,25 @@ def test_jev_search_and_prepare_preserve_identity_authorization_and_budget(datab
                         assert response.status_code == 200, response.text
                     await _grant(client, scope, "viewer", "scope.viewer")
                     before = await runtime.atomic_memory.for_scope(scope).list()
-                    page = await runtime.atomic_memory.for_scope(scope).search("project", mode="text", limit=1)
-                    assert page.rerank is not None
-                    assert page.rerank.used_fallback is (failure is not None)
-                    assert len(page.hits) == 1
-                    selected = page.hits[0]
-                    assert selected in page.rerank.candidate_hits
-                    exact = await runtime.atomic_memory.for_scope(scope).get(
-                        selected.hit.artifact_ref.artifact_id,
-                        revision=selected.hit.artifact_ref.revision,
-                    )
-                    assert exact.ref == selected.hit.artifact_ref
-                    assert exact.artifact.content.text == selected.text
+                    selected = None
                     if failure is None:
+                        page = await runtime.atomic_memory.for_scope(scope).search("project", mode="text", limit=1)
+                        assert page.rerank is not None and not page.rerank.used_fallback
+                        assert len(page.hits) == 1
+                        selected = page.hits[0]
+                        assert selected in page.rerank.candidate_hits
+                        exact = await runtime.atomic_memory.for_scope(scope).get(
+                            selected.hit.artifact_ref.artifact_id,
+                            revision=selected.hit.artifact_ref.revision,
+                        )
+                        assert exact.ref == selected.hit.artifact_ref
+                        assert exact.artifact.content.text == selected.text
                         assert selected.text == "project exact compatibility constraint"
                     else:
-                        assert page.rerank.selected_ranks == (1,)
+                        with pytest.raises(
+                            InferenceTimeoutError if failure == "timeout" else InferenceUnavailableError
+                        ):
+                            await runtime.atomic_memory.for_scope(scope).search("project", mode="text", limit=1)
                     viewer = {"Authorization": "Bearer viewer"}
                     count = len(calls)
                     denied = await client.post(
@@ -158,6 +162,14 @@ def test_jev_search_and_prepare_preserve_identity_authorization_and_budget(datab
                         },
                     )
                     assert denied.status_code == 403 and len(calls) == count
+                    if failure is not None:
+                        failed_search = await client.post(
+                            "/v1/memory/search",
+                            headers=viewer,
+                            json={"scope_id": scope, "query": "project", "mode": "fts", "limit": 1},
+                        )
+                        assert failed_search.status_code == 503, failed_search.text
+                        assert failed_search.json()["error"]["code"] == f"inference_{failure}"
                     prepared = await client.post(
                         "/v1/context/prepare",
                         headers=viewer,
@@ -168,16 +180,21 @@ def test_jev_search_and_prepare_preserve_identity_authorization_and_budget(datab
                             "assembly": {"sections": [{"family": "memory", "limit": 1}]},
                         },
                     )
-                    assert prepared.status_code == 200, prepared.text
-                    body = prepared.json()
-                    assert body["content"] is not None
-                    assert body["content_bytes"] == len(body["content"].encode("utf-8")) <= 1024
-                    assert "other scope private" not in body["content"]
-                    assert selected.hit.artifact_ref.artifact_id in body["content"]
+                    if failure is None:
+                        assert prepared.status_code == 200, prepared.text
+                        assert selected is not None
+                        body = prepared.json()
+                        assert body["content"] is not None
+                        assert body["content_bytes"] == len(body["content"].encode("utf-8")) <= 1024
+                        assert "other scope private" not in body["content"]
+                        assert selected.hit.artifact_ref.artifact_id in body["content"]
+                        assert len(efforts) == 1 and efforts[0].rounds == 1
+                        assert efforts[0].assessment == "rerank-enabled"
+                    else:
+                        assert prepared.status_code == 503, prepared.text
+                        assert prepared.json()["error"]["code"] == f"inference_{failure}"
                     after = await runtime.atomic_memory.for_scope(scope).list()
                     assert before.items == after.items
-                    assert len(efforts) == 1 and efforts[0].rounds == 1
-                    assert efforts[0].assessment == "rerank-enabled"
                     assert all("other scope private" not in text for text in calls)
 
     asyncio.run(scenario())

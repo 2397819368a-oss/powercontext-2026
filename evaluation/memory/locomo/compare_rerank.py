@@ -24,6 +24,8 @@ from typing import Any
 
 from .metrics import percentile
 
+COMPARISON_BILLING_POLICY = "no-sdk-retries-require-usage.v1"
+
 _SHARED = (
     "run_id",
     "dataset_sha256",
@@ -46,6 +48,7 @@ _SHARED = (
     "question_limit",
     "quality_regression_tolerance",
     "comparison_inference_sha256",
+    "comparison_billing_policy",
 )
 
 
@@ -120,7 +123,11 @@ def compare_rerank_runs(  # noqa: C901
             value["_checkpoint_attempts"] - 1 for value in values.values()
         )
         embedding_calls = sum(value.get("embedding_calls", 0) for value in completed)
-        cost_complete = len(completed) == denominator and retries == 0
+        cost_complete = (
+            len(completed) == denominator
+            and retries == 0
+            and manifests[mode].get("comparison_billing_policy") == COMPARISON_BILLING_POLICY
+        )
         rerank_cost = (
             (input_tokens * input_prices[mode] + output_tokens * output_prices[mode]) / 1_000_000
             if cost_complete and input_tokens is not None and output_tokens is not None

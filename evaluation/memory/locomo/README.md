@@ -213,10 +213,10 @@ The adapter has a 30-second total deadline, a shared concurrency bound of four,
 and a 32 KiB UTF-8 limit per request. The deadline includes connection-pool waits
 and any transport retries. The adapter adds no retries; the ordinary HTTPX transport
 also defaults to zero retries. A timeout, provider rejection, invalid score, missing
-usage receipt, oversized request, or returned model-version mismatch preserves the
-original coarse order and marks `used_fallback`. Caller cancellation propagates.
-Unknown billed-token totals remain `null`. When all sent requests supplied valid
-usage receipts, those totals remain available even if their scores cause fallback.
+usage receipt, oversized request, or returned model-version mismatch fails the
+operation under RFC 0080's inference error contract. Caller cancellation propagates,
+and outstanding requests are cancelled and awaited. A failed benchmark observation
+keeps its total billed cost unknown; it cannot be treated as a successful coarse result.
 
 Runtime authorization, exact Artifact revisions, lifecycle eligibility, and final
 PreparedContext budgets still apply. Injected rerankers suppress recall expansion
@@ -248,8 +248,17 @@ The comparator rejects changed query sets, exact ordered candidate pools, budget
 deployment settings, or predeclared quality tolerance.
 The downstream identity fingerprints the endpoint resolved by the model provider,
 including environment variables such as `OPENAI_BASE_URL` and the provider's own
-defaults. Changing that endpoint invalidates both resuming a run and comparing
-runs; explicitly setting the same resolved default does not change the identity.
+defaults. The independent LLM reranker resolves its own provider endpoint in the
+same way, including `ANTHROPIC_BASE_URL`. A changed reranker endpoint invalidates
+resuming its run. A changed downstream endpoint also invalidates comparing runs;
+explicitly setting the same resolved default does not change the identity.
+
+Comparison answer, judge, and LLM rerank models disable native SDK retries.
+The runner owns transient retries and records them explicitly; token receipts
+are required for every model response, including structured-output retries.
+Missing receipts fail the observation and leave cost unknown. Manifests record
+this billing policy so older runs without observable provider billing cannot
+establish complete costs or recommend adoption.
 
 ```bash
 uv run python -m evaluation.memory.locomo compare-rerank \

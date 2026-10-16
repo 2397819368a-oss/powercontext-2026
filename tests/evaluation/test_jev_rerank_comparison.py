@@ -20,12 +20,18 @@ import asyncio
 import json
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from evaluation.memory.locomo.compare_rerank import compare_rerank_runs
 from evaluation.memory.locomo.dataset import load_locomo
-from evaluation.memory.locomo.runner import RetrievedMemory, _bounded_answer_input, prepare_run
+from evaluation.memory.locomo.runner import (
+    COMPARISON_BILLING_POLICY,
+    RetrievedMemory,
+    _bounded_answer_input,
+    prepare_run,
+)
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.memory import MemoryRerankMode
 from powercontext.builtin.runtime import InferenceConfig
@@ -44,6 +50,7 @@ def _runs(tmp_path):
                 "answer_max_bytes": 2048,
                 "selected_question_count": 1,
                 "quality_regression_tolerance": 0.0,
+                "comparison_billing_policy": COMPARISON_BILLING_POLICY,
             })
         )
         (path / "observations.jsonl").write_text(
@@ -157,6 +164,35 @@ def test_comparison_can_resume_with_the_same_resolved_provider_default(tmp_path,
     asyncio.run(scenario())
 
 
+def test_resuming_comparison_rejects_independent_reranker_endpoint_drift(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://provider-a.example")
+    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json")
+    settings = ServerSettings(
+        inference=InferenceConfig(generation_model="openai:test-chat", rerank_model="anthropic:test-rerank")
+    )
+    prepare = partial(
+        prepare_run,
+        dataset=dataset,
+        settings=settings,
+        run_id="reranker-endpoint-drift",
+        output_directory=tmp_path,
+        top_k=3,
+        answer_max_bytes=2048,
+        rerank_mode=MemoryRerankMode.LLM,
+        categories=(1,),
+        conversation_limit=1,
+        question_limit=1,
+        operation_retries=1,
+    )
+    asyncio.run(prepare())
+    asyncio.run(prepare())
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://provider-b.example")
+    with pytest.raises(ValueError, match="run manifest does not match"):
+        asyncio.run(prepare())
+
+
 def test_comparison_rejects_different_environment_downstream_endpoints(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("JEV_API_KEY", "test-key")
@@ -263,6 +299,18 @@ def test_total_cost_requires_retrieval_receipts_when_embeddings_are_used(tmp_pat
     assert jev["pipeline_cost_usd"] == pytest.approx(jev["priced_request_cost_usd"] + 0.001)
 
 
+def test_legacy_runs_without_observable_provider_billing_cannot_recommend_adoption(tmp_path):
+    runs = _runs(tmp_path)
+    for directory in runs.values():
+        path = directory / "run.json"
+        manifest = json.loads(path.read_text())
+        del manifest["comparison_billing_policy"]
+        path.write_text(json.dumps(manifest))
+    result = _compare(runs)
+    assert all(not value["cost_complete"] for value in result["results"].values())
+    assert result["recommendation"] != "adopt"
+
+
 def test_utf8_budget_records_only_evidence_delivered_to_the_answer_model():
     dataset = Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json"
     conversation = load_locomo(dataset).conversations[1]
@@ -301,7 +349,21 @@ def test_utf8_budget_records_only_evidence_delivered_to_the_answer_model():
     assert conversation.questions[0].answer not in bounded.model_dump_json()
 
 
-def test_jev_evaluation_runs_persisted_candidates_through_answer_and_judge(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("mode", "provider", "provider_failure"),
+    [
+        ("jev", "function", None),
+        *(
+            (mode, provider, failure)
+            for mode in ("jev", "llm")
+            for provider in ("openai-chat", "anthropic")
+            for failure in ("receipt", "timeout", "missing-usage", "partial-usage")
+        ),
+    ],
+)
+def test_comparison_billing_through_persisted_candidates(  # noqa: C901
+    tmp_path, monkeypatch, mode, provider, provider_failure
+):
     from contextlib import asynccontextmanager
 
     import httpx
@@ -340,20 +402,96 @@ def test_jev_evaluation_runs_persisted_candidates_through_answer_and_judge(tmp_p
         output = {"label": "CORRECT"} if "gold_answer" in value else {"answer": "OceanBase"}
         return ModelResponse(parts=[TextPart(json.dumps(output))])
 
-    monkeypatch.setattr(runner, "infer_model", lambda _: FunctionModel(respond_model))
+    model_requests = []
+
+    def respond_native(request):
+        model_requests.append(request)
+        if provider_failure == "timeout" and len(model_requests) == 1:
+            raise httpx.ReadTimeout("response lost", request=request)  # noqa: TRY003
+        body = json.loads(request.content)
+        prompt = json.dumps(body["messages"][-1]["content"])
+        is_judge = "gold_answer" in prompt
+        is_rerank = "max_results" in prompt
+        output = {"label": "CORRECT"} if is_judge else {"selected_ranks": [1]} if is_rerank else {"answer": "OceanBase"}
+        if provider == "anthropic":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg-test",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-haiku-4-5",
+                    "content": [{"type": "text", "text": json.dumps(output)}],
+                    "stop_reason": "end_turn",
+                    **(
+                        {
+                            "usage": {
+                                "input_tokens": 100,
+                                **({"output_tokens": 10} if provider_failure != "partial-usage" else {}),
+                            }
+                        }
+                        if provider_failure != "missing-usage"
+                        else {}
+                    ),
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "created": 0,
+                "model": "gpt-4o",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(output),
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                **(
+                    {
+                        "usage": {
+                            "prompt_tokens": 100,
+                            **(
+                                {"completion_tokens": 10, "total_tokens": 110}
+                                if provider_failure != "partial-usage"
+                                else {}
+                            ),
+                        }
+                    }
+                    if provider_failure != "missing-usage"
+                    else {}
+                ),
+            },
+        )
+
+    if provider == "function":
+        monkeypatch.setattr(runner, "infer_model", lambda *args, **kwargs: FunctionModel(respond_model))
+    else:
+        monkeypatch.setenv("OPENAI_API_KEY" if provider == "openai-chat" else "ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            f"pydantic_ai.providers.{'openai' if provider == 'openai-chat' else 'anthropic'}.create_async_http_client",
+            lambda: original_client(transport=httpx.MockTransport(respond_native)),
+        )
     monkeypatch.setattr(runner, "open_builtin_runtime", runtime_with_embedding)
     monkeypatch.setattr(
-        runner.httpx,
-        "AsyncClient",
-        lambda: original_client(
-            transport=httpx.MockTransport(
-                lambda _: httpx.Response(
-                    200,
-                    json={
-                        "model": "jev-1.13.0",
-                        "answers": {"useful": {"type": "noul", "noul": 0.9}},
-                        "usage": {"input_tokens": 10, "output_tokens": 1},
-                    },
+        runner,
+        "httpx",
+        SimpleNamespace(
+            AsyncClient=lambda: original_client(
+                transport=httpx.MockTransport(
+                    lambda _: httpx.Response(
+                        200,
+                        json={
+                            "model": "jev-1.13.0",
+                            "answers": {"useful": {"type": "noul", "noul": 0.9}},
+                            "usage": {"input_tokens": 10, "output_tokens": 1},
+                        },
+                    )
                 )
             )
         ),
@@ -364,7 +502,15 @@ def test_jev_evaluation_runs_persisted_candidates_through_answer_and_judge(tmp_p
     dataset = load_locomo(path)
     settings = ServerSettings(
         database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'evaluation.db'}"),
-        inference=InferenceConfig(generation_model="test"),
+        inference=InferenceConfig(
+            generation_model=(
+                "test"
+                if provider == "function"
+                else "openai-chat:gpt-4o"
+                if provider == "openai-chat"
+                else "anthropic:claude-haiku-4-5"
+            )
+        ),
         runtime=RuntimeConfig(artifact_processing_families=()),
     )
 
@@ -399,7 +545,7 @@ def test_jev_evaluation_runs_persisted_candidates_through_answer_and_judge(tmp_p
             top_k=3,
             answer_k=1,
             answer_max_bytes=2048,
-            rerank_mode=MemoryRerankMode.JEV,
+            rerank_mode=MemoryRerankMode(mode),
             categories=(1,),
             conversation_limit=1,
             question_limit=1,
@@ -413,18 +559,33 @@ def test_jev_evaluation_runs_persisted_candidates_through_answer_and_judge(tmp_p
             top_k=3,
             answer_k=1,
             answer_max_bytes=2048,
-            rerank_mode=MemoryRerankMode.JEV,
+            rerank_mode=MemoryRerankMode(mode),
             conversation_limit=1,
             question_limit=1,
             operation_retries=1,
             progress=lambda _: None,
         )
         observation = json.loads((tmp_path / "observations.jsonl").read_text())
+        if provider_failure in {"timeout", "missing-usage", "partial-usage"}:
+            assert observation["status"] == "error", observation
+            assert observation["error_stage"] == ("search" if mode == "llm" else "answer")
+            assert len(model_requests) == 1
+            runs = _runs(tmp_path)
+            for directory in runs.values():
+                (directory / "observations.jsonl").write_text(json.dumps(observation) + "\n")
+            report = _compare(runs)
+            assert report["results"]["jev"]["cost_complete"] is False
+            assert report["results"]["jev"]["pipeline_cost_usd"] is None
+            assert report["recommendation"] != "adopt"
+            return
         assert observation["status"] == "ok", observation
-        assert observation["rerank"]["mode"] == "jev" and not observation["rerank"]["used_fallback"]
+        assert observation["rerank"]["mode"] == mode and not observation["rerank"]["used_fallback"]
         assert observation["usage"]["rerank"]["requests"] == 1
         assert observation["candidate_digest"]
         assert observation["answer_context"]["utf8_bytes"] <= 2048
         assert observation["hits"][0]["artifact_ref"] == observation["candidate_hits"][0]["artifact_ref"]
+        if provider != "function":
+            assert observation["usage"]["answer"]["input_tokens"] == 100
+            assert observation["usage"]["judge"]["output_tokens"] == 10
 
     asyncio.run(scenario())
