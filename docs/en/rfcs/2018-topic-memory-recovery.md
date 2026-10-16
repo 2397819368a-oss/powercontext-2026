@@ -6,7 +6,7 @@ title: Topic Memory blocked processing recovery
 - Start Date: 2026-10-15
 - RFC PR: [oceanbase/powercontext#2018](https://github.com/oceanbase/powercontext/pull/2018)
 - Tracking Issue: [#1885](https://github.com/oceanbase/powercontext/issues/1885)
-- Implementation PR: [#1966](https://github.com/oceanbase/powercontext/pull/1966)
+- Implementation PR: [#1966](https://github.com/oceanbase/powercontext/pull/1966); conformance is verified against this design before merge.
 - Amends: [RFC 1417](1417_topic_memory.md), [RFC 1515](1515_artifact_processing_supervisor.md)
 - Related: [RFC 1549](1549_artifact_family_unification.md), [RFC 1771](1771-unified-database-migrations.md)
 
@@ -64,10 +64,20 @@ operations from changing the recovery record; enforce Scope inspection/admin per
 revision needed for replay through cleanup and backup. Reusing a publicly writable Family or deleting its head must
 not erase authorization evidence.
 
-This RFC chooses a small operational record instead: a block has no user-authored content, independent publication,
-retrieval projection, or merge lifecycle. Extending the Artifact capability boundary to represent this one-way state
-transition costs more semantics than it reuses. This is a lifecycle decision, not a claim that Artifact transactions or
-access control are incapable of supporting it.
+The concrete lifecycle is create-on-block → exact read → accept retry once → exact read/replay indefinitely. Both
+storage options can join the budget-reset/intent transaction; neither gains an atomicity advantage.
+
+| Concern | Private Artifact Family | Topic-owned block table |
+| --- | --- | --- |
+| Identity and acceptance | Use `block_id` as Artifact ID and revision/head CAS; preserve the accepted revision and current head. | One stable primary key and a one-way nullable acceptance pair. |
+| Permissions | Register a private typed Family; prevent generic writes, publication, merge and lifecycle changes; expose only Scope-authorized recovery operations. | The recovery service owns reads and mutations, with `scope.read` and `scope.admin` at its boundary. |
+| Atomicity | Caller-owned repository connections commit acceptance, budget reset and intent creation together. | The same connection commits the block update, budget reset and intent creation. |
+| Cleanup | Exempt the required head and exact revisions from generic deletion, compaction and Family cleanup. | No expiry or normal delete operation; back up the row with processing state. |
+| Maintenance | Maintain a private content schema, capability restrictions and revision retention for a record without publication, merge or retrieval needs. | Maintain one frozen relational format and offline conversion; no additional Artifact capabilities or revision lifecycle. |
+
+Choose the dedicated table: this one-way operational transition needs fewer independent lifecycle rules. This is an
+overall complexity decision, not a claim that Artifact transactions or access control cannot support recovery. Current
+execution metadata stays on the existing budget; successful and superseded attempts create no retained history.
 
 Topic Memory owns Source ranges, terminality, allowances, and request/token ceilings. The Supervisor owns execution,
 fencing, and controlled Worker failure classification; a bounded metadata callback lets the domain retain a stopped
@@ -97,7 +107,7 @@ Add `pc_topic_memory_work_blocks` with one row per distinct terminal block, not 
 | Field group | Required evidence |
 | --- | --- |
 | Identity | Server-generated `block_id`; `scope_id`, `binding_name`, Cursor `source_after`, and final `attempt_id`. |
-| Range and target | Nullable exact selected `source_through`; separate `budget_source_through` cumulative coverage; `target_source_through` captured from the retained target at block observation. |
+| Range and target | Nullable exact selected `source_through`; separate nullable `budget_source_through` cumulative coverage; nullable `legacy_source_through` preserving an ambiguous imported value; `target_source_through` captured from the retained target at block observation. |
 | Diagnosis | Reserved `attempts`, `requests`, `tokens`; terminal `error_code`; nullable controlled `last_error_code`; first `blocked_at` observation. |
 | Acceptance | Initially null `retried_at` and `retry_request_generation`; set together exactly once on acceptance. |
 
@@ -145,12 +155,18 @@ Status exposes current Cursor/head/target and `idle`, `pending`, or `blocked`. B
 acceptance; retry returns that same accepted record. Use 409 for a stale unretried block and 404 for an unknown or
 cross-Scope block after authorization. Replaying an accepted retry must work even if processing is now disabled.
 
-`source_through` is nullable when the exact selected end is unknown; `budget_source_through` always names the recorded
-cumulative coverage. Do not label cumulative legacy coverage as an exact attempted range. OpenAPI owns the precise wire
-schema; regenerate HTTP models, SDK/host operation metadata, and desktop types together in the implementation.
+`source_through` is null when the exact selected end is unknown. `budget_source_through` reports recorded cumulative
+coverage; it is non-null for new blocks and may be null only for imported historical blocks whose allowance is no longer
+available. `legacy_source_through` is null for new blocks and preserves the original ambiguous range of imported
+attempt-table blocks. It asserts neither an exact selected end nor cumulative coverage. Clients must distinguish these
+fields and support null. Never infer an old allowance from today's budget or attempt history. OpenAPI owns the precise
+wire schema; regenerate HTTP models, SDK/host operation metadata, and desktop types together in the implementation.
 
 ## Retention, cleanup, and storage growth
 
+Permanent exact block lookup and replay of the original accepted retry are product guarantees within the retained
+database, including after progress, restart and disabled processing. Returning 404 for an expired accepted ID prevents
+a second allowance but breaks this guarantee; this RFC deliberately chooses durable replay and its storage commitment.
 Retain every block snapshot and acceptance indefinitely within the retained database. No TTL, per-attempt history,
 successful-attempt history, bulk purge, or automatic receipt compaction is introduced. Unaccepted blocks also remain
 readable after becoming stale. A backup/restore must preserve budgets, blocks/receipts, Cursor, targets, and processing
@@ -169,9 +185,10 @@ A synthetic SQLite 3.50.4 sizing run used 100,000 rows per layout, 4 KiB pages, 
 and each layout's indexes: primary/unique keys plus the existing frontier index for attempt history. Net database growth
 excluding empty-schema pages was 57,536,512 bytes for successful
 attempt metadata using the table definition at implementation commit `4cdf119b`, and 46,235,648 bytes for the 16-field
-block/accepted-receipt layout above: about 575 and 462 bytes per row. This measures isolated schema storage, not the
+16-field block/accepted-receipt measurement layout: about 575 and 462 bytes per row. This measures isolated schema storage, not the
 runtime, model execution, write latency, OceanBase, or seekDB; active budget columns, WAL, backups, and other tables are
-excluded. Final schemas and backend indexes require their own sizing.
+excluded. The final schema also carries nullable legacy-range provenance; this sample is not its measured width.
+Final schemas and backend indexes require their own sizing.
 
 As an illustrative workload, not a production observation, one million windows/day, `A = 1.1`, and 10,000 blocks/day
 produce 1.1 million history rows versus 10,000 retained block rows per day. Applying those SQLite sample widths gives
@@ -186,12 +203,37 @@ table, constraints, and indexes on every supported backend. Register affected ob
 verification, and backup coverage. Normal startup must not silently alter an existing database. Empty database
 initialization follows the same supported revision chain. This RFC adds no migration code or runtime behavior itself.
 
-Preserve existing budgets, counters, Sources, Cursor, targets, and intents. Existing rows have null current-attempt
-metadata; stopped-writer migration establishes that no pre-upgrade Worker can publish. On first terminal observation,
-keep recorded cumulative coverage, report the exact selected end and unavailable error/owner/time facts as unknown,
-and use observation time for `blocked_at`. Never reconstruct a successful history or guess a model/Worker timeout from
-`processing_failed`. Preserve exact block IDs and accepted receipt identities if a recognized existing format is
-converted. Reject unsupported development schemas before writes rather than silently replacing their identities.
+The versioned Topic recovery bundle uses the existing `server db-migrate` entry point, with explicit selection of the
+`topic-memory-recovery` bundle. Its plan covers only registered domain objects and reports `server_ready=false`; it does
+not turn the partial Artifact migration bundle into complete Server readiness. Reuse maintenance connections, target
+locking, plan/backup declarations and durable recovery evidence. Normal startup checks this recovery shape before any
+business initializer writes. Empty initialization uses the same frozen target revision, without treating an old partial
+database as empty.
+
+Support these finite inputs, verified before mutation:
+
+| Input | Conversion |
+| --- | --- |
+| Empty recovery storage in an empty database | Initialize the frozen target schema. |
+| Recognized pre-recovery budget layout without an attempts table | Preserve budgets and counters; add null current-attempt metadata and an empty block table. |
+| Recognized attempts-table layout used by #1966 | Copy every terminal block and acceptance with its exact IDs, counts, error categories, target, first observation, acceptance time and accepted generation. Copy the matching current attempt's known execution metadata into its budget without changing allowance. |
+| Target schema | Verify and return a no-op; never reset budgets or remint identities. |
+| Unknown columns/constraints/indexes, partial layouts without matching recovery evidence, invalid acceptance pairs or conflicting block identities | Reject before business or migration writes; never repair by dropping evidence or accepting an unknown format. |
+
+The attempts-table layout did not record range provenance; some accepted historical budgets were already deleted.
+For converted blocks set exact `source_through` to null and preserve the original value as `legacy_source_through`.
+Set `budget_source_through` only from the same still-present allowance with matching frontier and final `attempt_id`,
+otherwise null. Never infer it from a later budget, successful history or the maximum of unrelated attempts. This is an
+explicit wire-contract conversion: the old number retains its original ambiguity, while retry identity and original
+acceptance stay unchanged. Newly admitted attempts always record an exact selected end.
+
+Stop every writer, including Workers, before migration. A backup consistently covers budgets, the old attempts table,
+blocks, Sources, Cursor, targets, pending/intents and leases. Verify copied evidence and unchanged budget costs before
+removing the old attempts table; successful/superseded rows need no runtime history and remain in the recovery point.
+MySQL-compatible DDL can commit independently: persist source/target fingerprints and step evidence outside the database
+before DDL, resume only a recognized prefix, and require the same maintenance target and recovery point after interruption.
+SQLite commits schema and data conversion atomically. Verification gates reopening business access. Never reconstruct
+an absent error/owner/time fact or reinterpret `processing_failed` as a timeout.
 
 Mixed old/new writers and destructive downgrade after accepting retries are unsupported. Any rollback must preserve
 accepted authorization evidence; a backup rollback to before acceptance cannot claim continuous idempotency across
@@ -208,7 +250,7 @@ the Supervisor never resets a Topic budget.
   request without granting another allowance; stale, cross-Scope, unknown, and unauthorized requests cannot reset work.
 - Success creates no retained execution history. Repeated observation preserves one block ID and immutable evidence;
   acceptance changes only its receipt fields.
-- Supported legacy budgets migrate without resetting costs or inventing historical facts; file-backed restart, backup
+- Supported legacy budgets and attempts-table blocks/receipts migrate without resetting costs, changing identities or inventing historical facts; file-backed restart, backup
   restoration, and actual supported backend transactions preserve identities and recovery semantics.
 - OpenAPI, Python SDK, CLI, desktop, and advertised host management surfaces agree; MCP remains unchanged. SQLite-only
   tests or mocked inputs do not establish real OceanBase/seekDB or native host acceptance.

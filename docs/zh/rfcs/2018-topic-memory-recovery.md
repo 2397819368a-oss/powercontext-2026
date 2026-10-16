@@ -6,7 +6,7 @@ title: Topic Memory 阻塞处理的诊断与恢复
 - Start Date: 2026-10-15
 - RFC PR: [oceanbase/powercontext#2018](https://github.com/oceanbase/powercontext/pull/2018)
 - Tracking Issue: [#1885](https://github.com/oceanbase/powercontext/issues/1885)
-- Implementation PR: [#1966](https://github.com/oceanbase/powercontext/pull/1966)
+- Implementation PR: [#1966](https://github.com/oceanbase/powercontext/pull/1966)；合并前按本设计验证实现一致性。
 - 修订：[RFC 1417](1417_topic_memory.md)、[RFC 1515](1515_artifact_processing_supervisor.md)
 - 相关：[RFC 1549](1549_artifact_family_unification.md)、[RFC 1771](1771-unified-database-migrations.md)
 
@@ -57,9 +57,19 @@ Artifact 方案是以 `block_id` 为身份，通过 revision/head CAS，在同�
 还必须注册带类型的内容模型；防止通用写入、发布、合并和生命周期操作改变恢复记录；执行 Scope 查询与管理员权限；
 在清理和备份中保留回放需要的准确 revision。复用可公开改写的 Family 或删除 head，不能抹去授权证据。
 
-本 RFC 选择范围更小的运维记录：阻塞没有用户编写的内容、独立发布、检索投影或合并生命周期。为了表达这一次性的
-状态转换而扩展 Artifact 能力边界，引入的语义多于复用的语义。这是生命周期取舍，不表示 Artifact 的事务或权限机制
-无法支持恢复记录。
+具体生命周期为：阻塞时创建 → 准确查询 → 仅接受一次 retry → 无限期准确查询和回放。两种存储都能加入预算重置和
+intent 创建事务，原子性没有区别。
+
+| 关注点 | 私有 Artifact Family | Topic 专用阻塞表 |
+| --- | --- | --- |
+| 身份与受理 | 以 `block_id` 为 Artifact ID，通过 revision/head CAS 更新；保留受理 revision 和当前 head。 | 一个稳定主键和一对只能转换一次的可空受理字段。 |
+| 权限 | 注册私有 typed Family，限制通用写入、发布、合并和生命周期操作；仅提供 Scope 授权的恢复操作。 | 恢复 service 拥有读写边界，执行 `scope.read` 和 `scope.admin`。 |
+| 原子性 | 调用方 connection 让受理、预算重置和 intent 创建在同一事务完成。 | 同一 connection 提交阻塞更新、预算重置和 intent 创建。 |
+| 清理 | 必须让所需 head 和准确 revision 不受通用删除、压缩和 Family 清理影响。 | 不过期、不提供普通删除操作；与处理状态一起备份。 |
+| 维护 | 为没有发布、合并和检索需求的记录维护私有内容 schema、capability 限制和 revision 保留规则。 | 维护一份冻结的关系格式及离线转换，不新增 Artifact 能力和 revision 生命周期。 |
+
+选择专用表：表达这一次性的运维状态转换需要维护的独立生命周期规则更少。这是整体复杂度取舍，不表示 Artifact
+事务或权限能力不足。当前执行 metadata 留在现有预算，成功和被取代尝试不形成保留历史。
 
 Topic Memory 拥有 Source 范围、终止判断、额度和请求/token 上限。Supervisor 拥有执行、fencing 和受控 Worker
 错误分类；通过有界 metadata 回调，让领域保留已停止 Worker 的诊断，不发放额度。不新增公共执行历史表或通用
@@ -85,7 +95,7 @@ holder/group/generation、受控的最后错误。现有 `attempt_id` 和累计�
 | 字段组 | 必需证据 |
 | --- | --- |
 | 身份 | 服务端生成的 `block_id`；`scope_id`、`binding_name`、Cursor `source_after` 和最后 `attempt_id`。 |
-| 范围与目标 | 可空的准确选择终点 `source_through`；独立的累计覆盖 `budget_source_through`；观察阻塞时从保留目标捕获的 `target_source_through`。 |
+| 范围与目标 | 可空的准确选择终点 `source_through`；独立且可空的累计覆盖 `budget_source_through`；保留导入歧义原值的可空 `legacy_source_through`；观察阻塞时从保留目标捕获的 `target_source_through`。 |
 | 诊断 | 预留的 `attempts`、`requests`、`tokens`；终止 `error_code`；可空的受控 `last_error_code`；首次观察时间 `blocked_at`。 |
 | 受理 | 初始为空的 `retried_at` 和 `retry_request_generation`；受理时一并设置且只能设置一次。 |
 
@@ -128,12 +138,16 @@ holder/group/generation、受控的最后错误。现有 `attempt_id` 和累计�
 retry 返回同一已受理记录。鉴权后，过期但未重试的阻塞返回 409；未知或跨 Scope 阻塞返回 404。禁用处理后仍必须
 能回放已经受理的 retry。
 
-实际选择终点未知时，`source_through` 为 null；`budget_source_through` 始终表示已记录的累计覆盖。不能把旧记录
-的累计范围标为准确尝试范围。精确 wire schema 由 OpenAPI 定义；实现时同步重新生成 HTTP 模型、SDK/宿主
+实际选择终点未知时，`source_through` 为 null。`budget_source_through` 表示已记录的累计覆盖，新阻塞必有值；仅在
+导入的历史阻塞已没有原额度时允许为 null。`legacy_source_through` 在新阻塞中为 null，导入时保留旧尝试表含义
+不明确的原始范围，既不声明准确选择终点，也不声明累计覆盖。客户端必须区分这些字段并支持 null，不能从今天的
+预算或尝试历史推测旧额度。精确 wire schema 由 OpenAPI 定义；实现时同步重新生成 HTTP 模型、SDK/宿主
 operation metadata 和桌面类型。
 
 ## 保留、清理与存储增长
 
+在保留的数据库中，永久准确查询阻塞和回放原 retry 受理结果是产品保证，处理进展、重启和禁用处理后仍成立。
+对过期的已受理 ID 返回 404 虽能阻止再次发额度，却不满足回放保证；本 RFC 明确选择持久回放并承担其存储成本。
 在保留的数据库中无限期保存每个阻塞快照和受理结果。不引入 TTL、逐次执行历史、成功历史、批量 purge 或回执自动
 压缩。尚未重试的阻塞在过期后仍可查询。备份/恢复必须一致地保留预算、阻塞/回执、Cursor、target 和处理状态。
 部分恢复或删除单条记录不属于受支持的恢复操作。
@@ -148,9 +162,9 @@ operation metadata 和桌面类型。
 一次 SQLite 3.50.4 合成存储测量对每种布局分别写入 100,000 行，使用 4 KiB page、1,000 个 32 字符 Scope ID、
 随机 UUID，以及各布局的索引：主键/唯一键，尝试历史还包含现有 frontier 索引。扣除空 schema 页面后，使用实现提交
 `4cdf119b` 表定义的成功尝试 metadata 增长
-57,536,512 字节，上述 16 字段阻塞/已受理回执布局增长 46,235,648 字节，约为每行 575 和 462 字节。这仅测量
+57,536,512 字节，测量所用的 16 字段阻塞/已受理回执布局增长 46,235,648 字节，约为每行 575 和 462 字节。这仅测量
 隔离 schema 的存储，不验证运行时、模型执行、写入延迟、OceanBase 或 seekDB；不含预算新增列、WAL、备份和其他
-表。最终 schema 与各后端索引仍需独立测量。
+表。最终 schema 还包含可空的旧范围来源字段，该样本不是最终行宽测量。最终 schema 与各后端索引仍需独立测量。
 
 作为示例而非生产观测，若每天一百万窗口、`A = 1.1`、每天一万次阻塞，则完整历史每天新增 110 万行，本方案新增
 一万条保留记录。套用上述 SQLite 样本宽度，额外保留记录约为每天 633 MB 与 4.6 MB。即使一份额度最多三次尝试，
@@ -162,10 +176,31 @@ operation metadata 和桌面类型。
 已识别基线、验证和备份范围。正常启动不得静默修改已有库。空库初始化遵守同一受支持 revision 链。本 RFC 本身
 不引入迁移代码或运行时行为。
 
-保留现有预算、计数、Source、Cursor、target 和 intent。旧预算的当前尝试 metadata 为 null；迁移停写保证升级前
-Worker 不再具备发布权。首次观察到终止时保留已记录的累计范围，将准确选择终点和缺失的错误/owner/时间事实标记为
-未知，以观察时间作为 `blocked_at`。不重建成功历史，不从 `processing_failed` 猜测模型或 Worker 超时。若转换已
-识别的现有格式，必须保留准确 block ID 和已受理回执身份。对不支持的开发 schema，在写入前拒绝，不能静默换身份。
+版本化 Topic 恢复 bundle 使用现有 `server db-migrate` 维护入口，显式选择 `topic-memory-recovery` bundle。
+plan 仅覆盖本领域登记对象，并报告 `server_ready=false`，不把局部 Artifact 迁移 bundle 当作完整 Server 就绪保证。
+复用维护 connection、目标锁、plan/备份声明和持久恢复证据。普通启动在任何业务初始化写入前检查恢复 schema。
+空库使用同一冻结目标 revision 初始化，不能把旧的部分数据库当作空库。
+
+写入前只接受以下已验证输入：
+
+| 输入 | 转换 |
+| --- | --- |
+| 空数据库中的空恢复存储 | 初始化冻结的目标 schema。 |
+| 已识别的恢复功能之前的预算布局，没有 attempts 表 | 保留预算和计数，增加值为 null 的当前尝试 metadata 和空阻塞表。 |
+| #1966 使用的已识别 attempts 表布局 | 复制每个终止阻塞和受理的准确 ID、计数、错误类别、target、首次观察、受理时间和 generation；把匹配当前尝试的已知执行 metadata 复制到预算，不改变额度。 |
+| 目标 schema | 验证并返回无变更，不重置预算、不重新生成身份。 |
+| 未知列/约束/索引、没有匹配恢复证据的部分布局、无效受理字段对或冲突阻塞身份 | 在业务和迁移写入前拒绝；不能靠删表或接纳未知格式修复证据。 |
+
+旧 attempts 布局没有记录范围来源，部分历史已受理额度也已删除。转换后的准确 `source_through` 为 null，原数值
+保留在 `legacy_source_through`；只有相同 frontier 和最后 `attempt_id` 仍匹配的原额度才能提供
+`budget_source_through`，否则为 null。不能从后续预算、成功历史或无关尝试的最大值推断。这是显式 wire 契约
+转换：旧数值及其原有歧义仍可读取，retry 身份和原受理保持不变。新准入尝试始终记录准确选择终点。
+
+迁移前停止包括 Worker 在内的所有写入者。备份一致覆盖预算、旧 attempts 表、阻塞、Source、Cursor、target、
+pending/intent 和 lease。验证复制证据和预算成本未变后才移除旧 attempts 表；成功和被取代行不需要运行时历史，
+仍保存在恢复点中。MySQL 兼容 DDL 可能独立提交：执行前在库外保存源/目标指纹和步骤证据，只允许恢复已识别前缀，
+中断后必须使用同一维护目标和恢复点。SQLite 原子提交 schema 和数据转换。通过验证后才能重新开放业务。缺失的
+错误/owner/时间事实不能重建，也不能把 `processing_failed` 解释为超时。
 
 不支持新旧写入者混跑，也不支持接受重试后的破坏性 downgrade。任何回退都必须保留已接受授权证据；如果恢复到
 受理前的备份，不能声称幂等性仍跨越了已丢弃的数据库历史。对 RFC 1417 中 retry/reset API 与持久 Job history 的
@@ -180,7 +215,7 @@ Worker 不再具备发布权。首次观察到终止时保留已记录的累计�
 - 重复/并发 retry、响应丢失、重启、后续新阻塞和禁用处理均回放同一受理，不再发额度；过期、跨 Scope、未知和未
   授权请求不能重置工作。
 - 成功不新增保留的执行历史；重复观察保持同一 block ID 和不可变证据，受理仅改变回执字段。
-- 支持的旧预算迁移不重置成本、不编造历史；文件数据库重启、备份恢复以及受支持后端的实际事务均保持身份和恢复语义。
+- 支持的旧预算和 attempts 表阻塞/回执迁移不重置成本、不改变身份、不编造历史；文件数据库重启、备份恢复以及受支持后端的实际事务均保持身份和恢复语义。
 - OpenAPI、Python SDK、CLI、桌面与声明支持管理操作的宿主契约一致，MCP 目录不扩展。仅 SQLite 或 mock 输入的测试
   不代表真实 OceanBase/seekDB 或原生宿主验收。
 
