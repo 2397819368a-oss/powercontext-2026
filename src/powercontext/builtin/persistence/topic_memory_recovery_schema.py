@@ -52,6 +52,14 @@ def recovery_statements(shape: str, dialect: str) -> list[str]:
     return recovery_resource()["schemas"][shape][dialect]
 
 
+@lru_cache
+def recovery_initialization_prefixes(dialect: str) -> tuple[dict[str, Any], ...]:
+    prefixes: list[dict[str, Any]] = [{}]
+    for shape in recovery_resource()["initialization"]:
+        prefixes.append({**prefixes[-1], **recovery_shape(shape, dialect)})
+    return tuple(prefixes)
+
+
 def _expression(value: str) -> str:
     return re.sub(r'[\s`"\[\]]', "", value).lower()
 
@@ -135,6 +143,14 @@ def recovery_inventory(connection: Connection, *, include_leases: bool = False) 
 def recovery_layout(connection: Connection) -> str:
     actual = recovery_inventory(connection)
     dialect = connection.dialect.name
+    if actual and recovery_matches(actual, recovery_initialization_prefixes(dialect)[1], dialect):
+        names = set(inspect(connection).get_table_names())
+        if (
+            names <= (_ACCESS_BOOTSTRAP | {BLOCKS})
+            and connection.exec_driver_sql("SELECT 1 FROM pc_topic_memory_work_blocks LIMIT 1").first() is None
+        ):
+            return "empty"
+        raise MigrationError("unknown_baseline", "An incomplete recovery database contains existing evidence.")
     if not actual:
         if set(inspect(connection).get_table_names()) - _ACCESS_BOOTSTRAP:
             raise MigrationError("unknown_baseline", "An existing partial database has no registered Topic budget.")
@@ -168,9 +184,19 @@ async def prepare_topic_memory_recovery_schema(engine: AsyncEngine, *, initializ
             return
         layout = await connection.run_sync(recovery_layout)
         if layout == "empty" and initialize:
-            for shape in ("budget_v1", "blocks_v1"):
+            if connection.dialect.name == "sqlite":
+                await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            actual = await connection.run_sync(recovery_inventory)
+            for shape in recovery_resource()["initialization"]:
+                name = {"blocks_v1": BLOCKS, "budget_v1": BUDGET}[shape]
+                if name in actual:
+                    continue
                 for statement in recovery_statements(shape, connection.dialect.name):
                     await connection.exec_driver_sql(statement)
+            if await connection.run_sync(recovery_layout) != "ready":
+                raise MigrationError(
+                    "recovery_required", "Empty Topic recovery initialization did not reach its target."
+                )
         elif layout not in {"empty", "ready"}:
             raise MigrationError(
                 "migration_required",

@@ -48,6 +48,7 @@ from powercontext.builtin.persistence.topic_memory_recovery_schema import (
     LEASES,
     OBJECTS,
     RESOURCE,
+    recovery_initialization_prefixes,
     recovery_inventory,
     recovery_layout,
     recovery_matches,
@@ -202,8 +203,7 @@ def _prefix(connection: Connection, source: str) -> int:
     """Only exact, ordered MySQL DDL prefixes are eligible for journaled recovery."""
     actual = recovery_inventory(connection)
     if source == "empty":
-        budget = recovery_shape("budget_v1", "mysql")
-        for number, expected in enumerate(({}, budget, {**budget, **recovery_shape("blocks_v1", "mysql")})):
+        for number, expected in enumerate(recovery_initialization_prefixes("mysql")):
             if recovery_matches(actual, expected, "mysql"):
                 return number
         raise MigrationError("recovery_required", "Empty initialization is not a registered DDL prefix.")
@@ -573,7 +573,7 @@ class TopicMemoryRecoveryMigrationRunner:
     def _expand(self, connection, evidence, path, verify):
         if evidence["source"] == "empty":
             actual = recovery_inventory(connection)
-            for shape in ("budget_v1", "blocks_v1"):
+            for shape in recovery_resource()["initialization"]:
                 name = next(iter(recovery_shape(shape, connection.dialect.name)))
                 if name not in actual:
                     verify()

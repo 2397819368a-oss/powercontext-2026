@@ -247,6 +247,31 @@ def test_consumed_allowance_change_invalidates_the_reviewed_migration_plan(tmp_p
     assert not runner.directory.exists()
 
 
+@pytest.mark.parametrize("table", ["pc_topic_memory_work_budgets", "pc_topic_memory_work_blocks"])
+def test_interrupted_empty_sqlite_initialization_rolls_back_before_retry(tmp_path, table):
+    path = tmp_path / "empty.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}")
+
+    def interrupt(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().startswith("CREATE TABLE " + table):
+            raise RuntimeError("injected initialization interruption")  # noqa: TRY003 - interrupt real transactional DDL
+
+    event.listen(Engine, "before_cursor_execute", interrupt)
+    try:
+        with pytest.raises(RuntimeError, match="injected initialization interruption"):
+            asyncio.run(_repositories(config))
+    finally:
+        event.remove(Engine, "before_cursor_execute", interrupt)
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT name FROM sqlite_schema WHERE type='table'").fetchall() == []
+
+    async def reopen():
+        manager, _, _, _ = await _repositories(config)
+        await manager.__aexit__(None, None, None)
+
+    asyncio.run(reopen())
+
+
 @pytest.mark.parametrize("with_attempts", [False, True])
 def test_upgrade_revokes_an_unfinished_old_worker_without_waiting_for_a_new_supervisor(tmp_path, with_attempts):
     path = tmp_path / "stopped-worker.db"
@@ -288,6 +313,38 @@ def test_upgrade_revokes_an_unfinished_old_worker_without_waiting_for_a_new_supe
             await manager.__aexit__(None, None, None)
 
     asyncio.run(inspect_without_supervisor())
+
+
+@pytest.mark.parametrize("state", ["pristine", "receipt", "business"])
+def test_only_pristine_block_first_initialization_can_resume_without_migration_evidence(tmp_path, state):
+    path = tmp_path / "prefix.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}")
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(recovery_statements("blocks_v1", "sqlite")[0])
+        if state == "receipt":
+            connection.execute(
+                "INSERT INTO pc_topic_memory_work_blocks "
+                "(block_id,attempt_id,scope_id,binding_name,source_after,source_through,budget_source_through,legacy_source_through,"
+                "target_source_through,attempts,requests,tokens,error_code,last_error_code,blocked_at,retried_at,retry_request_generation) "
+                "VALUES ('accepted','old','scope-a','topic-memory-source-window',0,NULL,NULL,1,3,3,9,1000,"
+                "'window_attempt_limit',NULL,'2026-10-01 12:00:00','2026-10-01 12:01:00',7)"
+            )
+        elif state == "business":
+            connection.execute(
+                "CREATE TABLE pc_source_journal_heads(scope_id TEXT PRIMARY KEY, position INTEGER NOT NULL)"
+            )
+
+    async def reopen():
+        manager, _, _, _ = await _repositories(config)
+        await manager.__aexit__(None, None, None)
+
+    if state == "pristine":
+        asyncio.run(reopen())
+    else:
+        original = path.read_bytes()
+        with pytest.raises(MigrationError, match="unknown_baseline"):
+            asyncio.run(reopen())
+        assert path.read_bytes() == original
 
 
 @pytest.mark.parametrize("backend", ["seekdb", "oceanbase"])

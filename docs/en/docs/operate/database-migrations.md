@@ -60,6 +60,10 @@ retains its successful/superseded rows. Unknown or inconsistent layouts are reje
 requires the target format; it does not upgrade an existing database. Exact block lookup and accepted-retry replay have
 no automatic expiry.
 
+Empty initialization creates blocks before budgets. SQLite commits both tables atomically. Only a frozen empty
+block-table prefix without other business state can resume initialization; a prefix with receipts or business tables
+is rejected before writes. Missing budget storage is never silently recreated beside retained recovery evidence.
+
 The conversion revokes every old processing lease once by advancing its generation, expiring it in UTC, and assigning
 the maintenance-window holder. Repeating an interrupted conversion does not advance that holder again. This follows
 the existing processing-maintenance fence transition and requires all workflows sharing those leases to be stopped.
