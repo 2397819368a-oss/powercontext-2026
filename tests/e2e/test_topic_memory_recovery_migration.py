@@ -214,16 +214,29 @@ def test_interrupted_sqlite_conversion_rolls_back_and_resumes_with_original_reco
     assert runner.verify().state == "ready"
 
 
-@pytest.mark.parametrize("invalid", ["shape", "acceptance"])
+@pytest.mark.parametrize("invalid", ["shape", "acceptance", "collation", "expression_index"])
 def test_unknown_schema_or_invalid_receipt_is_rejected_before_writes(tmp_path, invalid):
     path = tmp_path / "unsupported.db"
     config, _ = _legacy(path)
     with closing(sqlite3.connect(path)) as connection, connection:
         if invalid == "shape":
             connection.execute("ALTER TABLE pc_topic_memory_work_attempts ADD COLUMN unexpected TEXT")
-        else:
+        elif invalid == "acceptance":
             connection.execute(
                 "UPDATE pc_topic_memory_work_attempts SET retry_request_generation=NULL WHERE block_id='legacy-accepted'"
+            )
+        elif invalid == "collation":
+            connection.execute("ALTER TABLE pc_topic_memory_work_budgets RENAME TO fixture_budget")
+            connection.execute(
+                recovery_statements("budget_v0", "sqlite")[0].replace(
+                    "scope_id VARCHAR(256)", "scope_id VARCHAR(256) COLLATE NOCASE"
+                )
+            )
+            connection.execute("INSERT INTO pc_topic_memory_work_budgets SELECT * FROM fixture_budget")
+            connection.execute("DROP TABLE fixture_budget")
+        else:
+            connection.execute(
+                "CREATE UNIQUE INDEX unexpected_identity ON pc_topic_memory_work_budgets(lower(scope_id))"
             )
     original = path.read_bytes()
     runner = TopicMemoryRecoveryMigrationRunner(config)

@@ -67,6 +67,17 @@ def _expression(value: str) -> str:
 def _sqlite_table(connection: Connection, name: str) -> dict[str, Any]:
     inspector = inspect(connection)
     return {
+        "sql": _expression(
+            connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)
+            ).scalar_one()
+        ),
+        "index_sql": sorted(
+            _expression(row[0])
+            for row in connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_schema WHERE type='index' AND tbl_name=? AND sql IS NOT NULL", (name,)
+            )
+        ),
         "columns": [
             (item["name"], str(item["type"]).lower(), item["nullable"], item["default"])
             for item in inspector.get_columns(name)
