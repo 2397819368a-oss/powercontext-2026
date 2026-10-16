@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from time import time
 from typing import TYPE_CHECKING
 
@@ -98,34 +99,52 @@ def _histogram(
     return metric
 
 
+@dataclass(frozen=True)
+class OperationalMetricsSnapshot:
+    metrics: tuple[Metric, ...]
+    collected_at: float
+
+
 class OperationalMetricsCollector:
     """Copy bounded in-memory snapshots, never query a dependency during collection."""
 
     def __init__(self, *, role: str) -> None:
         self._role = role if role in {"server", "all", "api", "background"} else "server"
-        self._snapshot: tuple[Metric, ...] = ()
-        self._collected_at = 0.0
+        self._snapshot = OperationalMetricsSnapshot((), 0.0)
         self._failures = 0
 
     def replace(self, runtime: BuiltinRuntime | None) -> None:
         """Publish an entire snapshot atomically; a failure preserves the last observation."""
+        self.publish(self.prepare(runtime))
+
+    def prepare(
+        self,
+        runtime: BuiltinRuntime | None,
+        *,
+        families: Mapping[str, Mapping[str, int | float | str]] | None = None,
+    ) -> OperationalMetricsSnapshot:
+        """Build an observation without changing the published snapshot."""
         readiness = None if runtime is None else runtime.readiness_snapshot()
         supervisor = None if runtime is None else runtime.artifact_processing_supervisor
-        snapshot = [*_readiness_metrics(readiness), *_processing_metrics(supervisor)]
+        snapshot = [*_readiness_metrics(readiness), *_processing_metrics(supervisor, families)]
         merged: dict[str, Metric] = {}
         for metric in snapshot:
             if metric.name in merged:
                 merged[metric.name].samples.extend(metric.samples)
             else:
                 merged[metric.name] = metric
-        self._snapshot = tuple(merged.values())
-        self._collected_at = time()
+        return OperationalMetricsSnapshot(tuple(merged.values()), time())
+
+    def publish(self, snapshot: OperationalMetricsSnapshot) -> None:
+        """Commit an already prepared observation without further collection work."""
+        self._snapshot = snapshot
 
     def collection_failed(self) -> None:
         """Record collection failure without logging recursively or dropping business work."""
         self._failures += 1
 
     def collect(self) -> Iterator[Metric]:
+        snapshot = self._snapshot
         yield _gauge(
             "service_role_info",
             "Configured process role; identify instances using scrape target labels.",
@@ -136,7 +155,7 @@ class OperationalMetricsCollector:
             "telemetry_collection_timestamp_seconds",
             "UNIX time of the latest successful passive snapshot collection; zero before collection.",
             {},
-            self._collected_at,
+            snapshot.collected_at,
         )
         for name, description, value in (
             (
@@ -151,7 +170,7 @@ class OperationalMetricsCollector:
             ),
         ):
             yield CounterMetricFamily(_PREFIX + name, description, value=value)
-        yield from self._snapshot
+        yield from snapshot.metrics
 
 
 def _valid_family(family: str) -> bool:
@@ -210,7 +229,10 @@ def _readiness_metrics(readiness: RuntimeReadinessSnapshot | None) -> list[Metri
     return snapshot
 
 
-def _processing_metrics(supervisor: ArtifactProcessingSupervisors | None) -> list[Metric]:  # noqa: C901
+def _processing_metrics(  # noqa: C901
+    supervisor: ArtifactProcessingSupervisors | None,
+    families: Mapping[str, Mapping[str, int | float | str]] | None,
+) -> list[Metric]:
     snapshot: list[Metric] = []
     snapshot.append(
         _gauge(
@@ -221,7 +243,7 @@ def _processing_metrics(supervisor: ArtifactProcessingSupervisors | None) -> lis
         )
     )
     if supervisor is not None:
-        for family, values in supervisor.family_status.items():
+        for family, values in (supervisor.family_status if families is None else families).items():
             if not _valid_family(family):
                 continue
             labels = {"family": family}

@@ -120,12 +120,7 @@ class _MetricsEndpoint:
                 ),
             )
         runtime = request.app.state.application
-        try:
-            supervisor = None if runtime is None else runtime.artifact_processing_supervisor
-            self._metrics.set_processing_families({} if supervisor is None else supervisor.family_status)
-            self._metrics.operational.replace(runtime)
-        except Exception:
-            self._metrics.operational.collection_failed()
+        self._metrics.refresh_runtime(runtime)
         return Response(self._metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
 

@@ -21,8 +21,9 @@ import math
 import re
 from collections.abc import Iterator, Mapping
 from contextlib import suppress
+from threading import RLock
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from prometheus_client import (
@@ -43,6 +44,9 @@ from typing_extensions import override
 from powercontext.limits import MAX_ARTIFACT_FAMILY_LENGTH
 from powercontext.server.context import is_internal_bridge
 from powercontext.server.operational_metrics import OperationalMetricsCollector
+
+if TYPE_CHECKING:
+    from powercontext.builtin.runtime.application import BuiltinRuntime
 
 _PROCESSING_INSTRUMENTS = (
     ("max_workers", "Configured Worker capacity for this Artifact Family.", False),
@@ -106,7 +110,7 @@ class ServerMetrics:
     def __init__(self, *, role: str = "server") -> None:
         self.registry = CollectorRegistry()
         self.operational = OperationalMetricsCollector(role=role)
-        self.registry.register(self.operational)
+        self._snapshot_lock = RLock()
         ProcessCollector(registry=self.registry)
         PlatformCollector(registry=self.registry)
         GCCollector(registry=self.registry)
@@ -158,7 +162,7 @@ class ServerMetrics:
             registry=self.registry,
         )
         self._processing = _ProcessingMetricsCollector()
-        self.registry.register(self._processing)
+        self.registry.register(self)
         self.set_runtime_scopes(0, 0)
 
     def start_transport(self, transport: str, operation: str) -> float:
@@ -206,8 +210,30 @@ class ServerMetrics:
     def set_processing_families(self, families: Mapping[str, Mapping[str, int | float | str]]) -> None:
         """Refresh bounded scheduler observations using only registered Family labels."""
 
-        with suppress(Exception):
+        with self._snapshot_lock, suppress(Exception):
             self._processing.replace(families)
+
+    def refresh_runtime(self, runtime: BuiltinRuntime | None) -> None:
+        """Stage counts and freshness together; retain both on collection failure."""
+        with self._snapshot_lock:
+            try:
+                supervisor = None if runtime is None else runtime.artifact_processing_supervisor
+                families = {} if supervisor is None else supervisor.family_status
+                processing = _ProcessingMetricsCollector()
+                processing.replace(families)
+                operational = self.operational.prepare(runtime, families=families)
+            except Exception:
+                self.operational.collection_failed()
+                return
+            self._processing = processing
+            self.operational.publish(operational)
+
+    def collect(self) -> Iterator[Metric]:
+        # Capture the pair before yielding: registry readers in other threads must
+        # never combine processing counts with a different freshness observation.
+        with self._snapshot_lock:
+            snapshot = (*self.operational.collect(), *self._processing.collect())
+        yield from snapshot
 
     def render(self) -> bytes:
         return generate_latest(self.registry)
