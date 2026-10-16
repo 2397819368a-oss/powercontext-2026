@@ -215,6 +215,7 @@ def test_fts_keeps_domain_constraints_and_explicit_policy_queries(query, text) -
         "`AND` `OR` precedence",
         "“AND” “OR” precedence",
         "‘AND’ ‘OR’ precedence",  # noqa: RUF001 - quoted identifiers use typographic single quotes.
+        "‘AND’and‘OR’ precedence",  # noqa: RUF001 - adjacent quoted identifiers remain distinct.
     ],
 )
 def test_quoted_function_words_remain_lexical_evidence(query) -> None:
@@ -222,6 +223,21 @@ def test_quoted_function_words_remain_lexical_evidence(query) -> None:
     arithmetic = channel_hit("arithmetic", text="Multiplication has precedence over addition.")
 
     assert admit_fts_candidates(query, (operators, arithmetic)) == (operators,)
+
+
+@pytest.mark.parametrize(
+    ("query", "text"),
+    [
+        ("'I'm'", "I'm"),
+        ("'we're'", "we're"),
+        ("‘don’t’", "don't"),  # noqa: RUF001 - real query quotes and apostrophe.
+    ],
+)
+def test_quoted_contractions_remain_lexical_evidence(query, text) -> None:
+    contraction = channel_hit("contraction", text=text)
+    unrelated = channel_hit("unrelated", text="Deployment evidence.")
+
+    assert admit_fts_candidates(query, (contraction, unrelated)) == (contraction,)
 
 
 def test_vector_admission_converts_unit_l2_distance_to_cosine_threshold() -> None:

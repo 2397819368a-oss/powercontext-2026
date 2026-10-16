@@ -70,6 +70,15 @@ Thresholds are applied after admission and score calculation, before the final l
 scoring candidates to fill a result after `min_score` removes hits. Enabling scores changes only response metadata;
 it does not change candidate admission, identities, ordering, or thresholds.
 
+## Shared word analysis
+
+Chinese text is segmented into words; Latin words and identifiers remain whole. Unquoted queries omit common English
+and Chinese stopwords while retaining negations. Quote a stopword to search for it; quotations do not request phrase matching.
+
+Record formats remain v1. Before upgrading, stop existing Server and Worker processes. The first startup after a
+document analyzer upgrade updates searchable text without changing record content, history or vectors.
+This startup can take longer as stored data grows.
+
 ## Experience and Skill text search
 
 Both Families search one `text` channel. Their admission fields are:

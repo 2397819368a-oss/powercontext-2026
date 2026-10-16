@@ -1404,6 +1404,12 @@ wheels = [
 ]
 
 [[package]]
+name = "jieba"
+version = "0.42.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/cb/18eeb235f833b726522d7ebed54f2278ce28ba9438e3135ab0278d9792a2/jieba-0.42.1.tar.gz", hash = "sha256:055ca12f62674fafed09427f176506079bc135638a14e23e25be909131928db2", size = 19214172, upload-time = "2020-01-20T14:27:23.5Z" }
+
+[[package]]
 name = "jinja2"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -2731,6 +2737,7 @@ builtin = [
     { name = "alembic" },
     { name = "apscheduler" },
     { name = "filelock" },
+    { name = "jieba" },
     { name = "jsonschema" },
     { name = "packaging" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "openai"] },
@@ -2772,6 +2779,7 @@ seekdb = [
     { name = "alembic" },
     { name = "apscheduler" },
     { name = "filelock" },
+    { name = "jieba" },
     { name = "jsonschema" },
     { name = "packaging" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "openai"] },
@@ -2792,6 +2800,7 @@ server = [
     { name = "fastmcp" },
     { name = "filelock" },
     { name = "httpx" },
+    { name = "jieba" },
     { name = "jinja2" },
     { name = "jsonschema" },
     { name = "markdown-it-py" },
@@ -2870,6 +2879,9 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], marker = "extra == 'cli'", specifier = ">=0.28,<1" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'client'", specifier = ">=0.28,<1" },
     { name = "inquirerpy", marker = "extra == 'cli'", specifier = ">=0.3,<1" },
+    { name = "jieba", marker = "extra == 'builtin'", specifier = "==0.42.1" },
+    { name = "jieba", marker = "extra == 'seekdb'", specifier = "==0.42.1" },
+    { name = "jieba", marker = "extra == 'server'", specifier = "==0.42.1" },
     { name = "jinja2", marker = "extra == 'server'", specifier = ">=3.1.6,<4" },
     { name = "jsonschema", marker = "extra == 'builtin'", specifier = ">=4.23,<5" },
     { name = "jsonschema", marker = "extra == 'seekdb'", specifier = ">=4.23,<5" },

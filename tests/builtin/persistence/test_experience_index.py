@@ -307,12 +307,42 @@ def test_sqlite_experience_fts_tracks_only_approved_current_heads_and_rebuilds()
                     .values(searchable_text=None)
                 )
                 await connection.exec_driver_sql("DELETE FROM pc_artifact_fts")
+                await connection.exec_driver_sql(
+                    "INSERT INTO pc_artifact_fts (scope_id, family, artifact_id, revision, searchable_text) "
+                    "SELECT scope_id, family, artifact_id, revision, searchable_text FROM pc_artifact_heads "
+                    "WHERE family = 'skill'"
+                )
+                await connection.exec_driver_sql(
+                    "INSERT INTO pc_artifact_fts (scope_id, family, artifact_id, revision, searchable_text) "
+                    "SELECT scope_id, family, artifact_id, revision, searchable_text FROM pc_artifact_heads "
+                    "WHERE family = 'skill'"
+                )
+                await connection.exec_driver_sql(
+                    "INSERT INTO pc_artifact_fts (scope_id, family, artifact_id, revision, searchable_text) "
+                    "SELECT scope_id, family, artifact_id, revision - 1, 'staleprojection' FROM pc_artifact_heads "
+                    "WHERE family = 'experience'"
+                )
+                await connection.exec_driver_sql(
+                    "INSERT INTO pc_artifact_fts VALUES (?, 'experience', 'orphan', 1, 'orphanprojection')",
+                    (scope_id,),
+                )
             assert await contexts.search_experience(scope_id, "falconcurrent", 8) == ()
 
             async with contexts.database.transaction() as connection:
                 await contexts.experience_index.initialize(connection)
             rebuilt = await contexts.search_experience(scope_id, "falconcurrent", 8)
             assert tuple(hit.artifact_ref for hit in rebuilt) == (replaced.result_artifact,)
+            assert await contexts.search_experience(scope_id, "staleprojection", 8) == ()
+            assert await contexts.search_experience(scope_id, "orphanprojection", 8) == ()
+            assert tuple(hit.artifact_ref for hit in await contexts.search_skills(scope_id, "regenerate", 8)) == (
+                skill_approval.result_artifact,
+            )
+
+            async with contexts.database.transaction() as connection:
+                await contexts.experience_index.initialize(connection)
+            assert tuple(
+                hit.artifact_ref for hit in await contexts.search_experience(scope_id, "falconcurrent", 8)
+            ) == (replaced.result_artifact,)
 
     asyncio.run(scenario())
 
