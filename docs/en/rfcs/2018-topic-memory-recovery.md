@@ -213,8 +213,9 @@ database as empty.
 
 Empty initialization creates the block table before the budget. SQLite wraps both in an explicit write transaction.
 After nontransactional DDL interruption, only that exact empty block-table prefix, with no other business tables except
-Access bootstrap storage, can resume without maintenance evidence. A prefix containing a receipt or other business
-state is rejected; it cannot silently recreate a missing allowance or discard recovery evidence.
+the known Access bootstrap and independent Code graph storage, can resume without maintenance evidence. These companion
+tables may precede initial recovery storage and remain untouched. A prefix containing a receipt or other business state
+is rejected; it cannot silently recreate a missing allowance or discard recovery evidence.
 
 Support these finite inputs, verified before mutation:
 
