@@ -15,8 +15,9 @@
 """Durable block observation and conditional, idempotent Topic recovery."""
 
 from datetime import UTC
+from uuid import uuid4
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.artifacts.topic_memory.processing import (
@@ -35,14 +36,13 @@ from powercontext.builtin.persistence.tables import (
     TOPIC_MEMORY_PROCESSING_TARGETS_TABLE as TARGETS,
 )
 from powercontext.builtin.persistence.tables import (
-    TOPIC_MEMORY_WORK_ATTEMPTS_TABLE as ATTEMPTS,
+    TOPIC_MEMORY_WORK_BLOCKS_TABLE as BLOCKS,
 )
 from powercontext.builtin.persistence.tables import (
     TOPIC_MEMORY_WORK_BUDGETS_TABLE as BUDGETS,
 )
 from powercontext.builtin.persistence.topic_memory_budget import (
     exhausted_reason,
-    load_or_create_topic_memory_work_attempt,
     load_topic_memory_work_budget,
 )
 
@@ -61,33 +61,12 @@ async def observe_topic_memory_block(
     row = await load_topic_memory_work_budget(connection, scope_id, binding_name, after)
     if row is None or not exhausted_reason(row):
         return None
-    observed_attempt = None
+    observed_attempt = row
     lease = None
-    if not worker_stopped:
-        observed_attempt = (
-            (
-                await connection.execute(
-                    select(ATTEMPTS).where(
-                        ATTEMPTS.c.scope_id == scope_id,
-                        ATTEMPTS.c.binding_name == binding_name,
-                        ATTEMPTS.c.source_after == after,
-                        ATTEMPTS.c.attempt_id == row["attempt_id"],
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if (
-            observed_attempt is not None
-            and observed_attempt["started_at"] is not None
-            and observed_attempt["finished_at"] is None
-        ):
-            # A current locking read avoids a stale expired lease in MySQL's
-            # repeatable-read snapshot. Match publication's lease -> head order.
-            lease = await ArtifactProcessingLeaseRepository().load(
-                connection, observed_attempt["supervisor_group"], for_update=True
-            )
+    if not worker_stopped and row["started_at"] is not None and row["finished_at"] is None:
+        # A current locking read avoids a stale expired lease in MySQL's
+        # repeatable-read snapshot. Match publication's lease -> head order.
+        lease = await ArtifactProcessingLeaseRepository().load(connection, row["supervisor_group"], for_update=True)
     # Serialize observation with capture, begin, publication and explicit retry.
     await connection.execute(update(HEADS).where(HEADS.c.scope_id == scope_id).values(position=HEADS.c.position))
     cursor = await SourceCursorRepository().load(connection, scope_id, binding_name, for_update=True)
@@ -104,54 +83,76 @@ async def observe_topic_memory_block(
     through = head if target is None else target
     if through is None or through <= after:
         return None
-    attempt = await load_or_create_topic_memory_work_attempt(connection, row)
-    if attempt["blocked_at"] is not None:
-        return _block(attempt)
-    if not worker_stopped and attempt["started_at"] is not None and attempt["finished_at"] is None:
-        if observed_attempt is None or observed_attempt["block_id"] != attempt["block_id"]:
+    existing = (
+        (
+            await connection.execute(
+                select(BLOCKS)
+                .where(
+                    BLOCKS.c.scope_id == scope_id,
+                    BLOCKS.c.binding_name == binding_name,
+                    BLOCKS.c.source_after == after,
+                    BLOCKS.c.attempt_id == row["attempt_id"],
+                )
+                .with_for_update()
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if existing is not None:
+        return _block(existing)
+    if not worker_stopped and row["started_at"] is not None and row["finished_at"] is None:
+        if observed_attempt["attempt_id"] != row["attempt_id"]:
             # A replacement attempt appeared while acquiring the locks. Its
             # owner was not inspected, so it must remain pending on this read.
             return None
         now = await database_utc_now(connection)
         if (
             lease is not None
-            and lease.holder_id == attempt["holder_id"]
-            and lease.supervisor_generation == attempt["supervisor_generation"]
+            and lease.holder_id == row["holder_id"]
+            and lease.supervisor_generation == row["supervisor_generation"]
             and (lease.lease_expires_at is None or lease.lease_expires_at > now)
         ):
             return None
     now = await database_utc_now(connection)
+    block_id = str(uuid4())
     await connection.execute(
-        update(ATTEMPTS)
-        .where(ATTEMPTS.c.block_id == attempt["block_id"])
-        .values(
-            blocked_code=reason,
+        insert(BLOCKS).values(
+            block_id=block_id,
+            **{
+                name: row[name]
+                for name in (
+                    "scope_id",
+                    "binding_name",
+                    "source_after",
+                    "attempt_id",
+                    "attempts",
+                    "requests",
+                    "tokens",
+                    "last_error_code",
+                )
+            },
+            source_through=row["attempt_source_through"],
+            budget_source_through=row["source_through"],
+            target_source_through=through,
+            error_code=reason,
             blocked_at=now,
-            finished_at=attempt["finished_at"] or now,
-            requests=row["requests"],
-            tokens=row["tokens"],
         )
     )
-    return await get_topic_memory_block(connection, scope_id, binding_name, attempt["block_id"])
+    return await get_topic_memory_block(connection, scope_id, binding_name, block_id)
 
 
 async def get_topic_memory_block(
-    connection: AsyncConnection, scope_id: str, binding_name: str, block_id: str
+    connection: AsyncConnection, scope_id: str, binding_name: str, block_id: str, *, for_update: bool = False
 ) -> TopicMemoryWorkBlock:
-    row = (
-        (
-            await connection.execute(
-                select(ATTEMPTS).where(
-                    ATTEMPTS.c.block_id == block_id,
-                    ATTEMPTS.c.scope_id == scope_id,
-                    ATTEMPTS.c.binding_name == binding_name,
-                    ATTEMPTS.c.blocked_at.is_not(None),
-                )
-            )
-        )
-        .mappings()
-        .one_or_none()
+    statement = select(BLOCKS).where(
+        BLOCKS.c.block_id == block_id,
+        BLOCKS.c.scope_id == scope_id,
+        BLOCKS.c.binding_name == binding_name,
     )
+    if for_update:
+        statement = statement.with_for_update()
+    row = (await connection.execute(statement)).mappings().one_or_none()
     if row is None:
         raise TopicMemoryBlockNotFoundError
     return _block(row)
@@ -161,10 +162,13 @@ async def retry_topic_memory_block(
     connection: AsyncConnection, scope_id: str, binding_name: str, block_id: str
 ) -> TopicMemoryWorkBlock:
     """Grant one new allowance for an observed block, retaining its audit record."""
-    await connection.execute(update(HEADS).where(HEADS.c.scope_id == scope_id).values(position=HEADS.c.position))
     block = await get_topic_memory_block(connection, scope_id, binding_name, block_id)
     if block.retried_at is not None:
-        # A lost HTTP response must never reset a later attempt at the same Cursor.
+        return block
+    await connection.execute(update(HEADS).where(HEADS.c.scope_id == scope_id).values(position=HEADS.c.position))
+    # The first read may have pinned an older MySQL repeatable-read snapshot.
+    block = await get_topic_memory_block(connection, scope_id, binding_name, block_id, for_update=True)
+    if block.retried_at is not None:
         return block
     cursor = await SourceCursorRepository().load(connection, scope_id, binding_name, for_update=True)
     after = 0 if cursor is None else cursor.cursor.sequence
@@ -189,8 +193,8 @@ async def retry_topic_memory_block(
         raise TopicMemoryBlockConflictError
     intent = await ArtifactProcessingIntentRepository().request(connection, scope_id, binding_name)
     await connection.execute(
-        update(ATTEMPTS)
-        .where(ATTEMPTS.c.block_id == block_id)
+        update(BLOCKS)
+        .where(BLOCKS.c.block_id == block_id)
         .values(
             retried_at=await database_utc_now(connection),
             retry_request_generation=intent.requested_generation,
@@ -210,6 +214,8 @@ def _block(row) -> TopicMemoryWorkBlock:
                 "binding_name",
                 "source_after",
                 "source_through",
+                "budget_source_through",
+                "legacy_source_through",
                 "target_source_through",
                 "attempts",
                 "requests",
@@ -218,7 +224,7 @@ def _block(row) -> TopicMemoryWorkBlock:
                 "retry_request_generation",
             )
         },
-        error_code=row["blocked_code"],
+        error_code=row["error_code"],
         blocked_at=row["blocked_at"].replace(tzinfo=UTC),
         retried_at=None if row["retried_at"] is None else row["retried_at"].replace(tzinfo=UTC),
     )

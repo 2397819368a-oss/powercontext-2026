@@ -34,8 +34,7 @@ from powercontext.builtin.persistence.supervision import (
 )
 from powercontext.builtin.persistence.tables import (
     SOURCE_JOURNAL_HEADS_TABLE,
-    TOPIC_MEMORY_PROCESSING_TARGETS_TABLE,
-    TOPIC_MEMORY_WORK_ATTEMPTS_TABLE,
+    TOPIC_MEMORY_WORK_BLOCKS_TABLE,
     TOPIC_MEMORY_WORK_BUDGETS_TABLE,
 )
 
@@ -96,53 +95,6 @@ async def require_topic_memory_work_available(
         raise TopicMemoryGenerationError(reason)
 
 
-async def load_or_create_topic_memory_work_attempt(connection: AsyncConnection, row: Mapping[Any, Any]):
-    """Retain an exact attempt snapshot under the caller's Source-head lock.
-
-    Legacy rows have no trustworthy start time, owner or last error. Observation
-    must not invent these historical facts.
-    """
-    table = TOPIC_MEMORY_WORK_ATTEMPTS_TABLE
-    key = (
-        table.c.attempt_id == row["attempt_id"],
-        table.c.scope_id == row["scope_id"],
-        table.c.binding_name == row["binding_name"],
-        table.c.source_after == row["source_after"],
-    )
-    existing = (await connection.execute(select(table).where(*key).with_for_update())).mappings().one_or_none()
-    if existing is not None:
-        return existing
-    target = await connection.scalar(
-        select(TOPIC_MEMORY_PROCESSING_TARGETS_TABLE.c.source_through)
-        .where(
-            TOPIC_MEMORY_PROCESSING_TARGETS_TABLE.c.scope_id == row["scope_id"],
-            TOPIC_MEMORY_PROCESSING_TARGETS_TABLE.c.binding_name == row["binding_name"],
-        )
-        .with_for_update()
-    )
-    await connection.execute(
-        insert(table).values(
-            block_id=str(uuid4()),
-            **{
-                name: row[name]
-                for name in (
-                    "attempt_id",
-                    "scope_id",
-                    "binding_name",
-                    "source_after",
-                    "source_through",
-                    "attempts",
-                    "requests",
-                    "tokens",
-                )
-            },
-            target_source_through=max(row["source_through"], target or 0),
-            last_error_code=str(row["failure_code"]) or None,
-        )
-    )
-    return (await connection.execute(select(table).where(*key))).mappings().one()
-
-
 async def record_topic_memory_work_failure(
     connection: AsyncConnection, scope_id: str, binding_name: str, error_code: str, *, attempt_id: str | None = None
 ) -> None:
@@ -158,16 +110,28 @@ async def record_topic_memory_work_failure(
     )
     if row is None or (attempt_id is not None and row["attempt_id"] != attempt_id):
         return
-    attempt = await load_or_create_topic_memory_work_attempt(connection, row)
-    table = TOPIC_MEMORY_WORK_ATTEMPTS_TABLE
+    blocks = TOPIC_MEMORY_WORK_BLOCKS_TABLE
+    if await connection.scalar(
+        select(blocks.c.block_id).where(
+            blocks.c.scope_id == scope_id,
+            blocks.c.binding_name == binding_name,
+            blocks.c.source_after == row["source_after"],
+            blocks.c.attempt_id == row["attempt_id"],
+        )
+    ):
+        return
+    table = TOPIC_MEMORY_WORK_BUDGETS_TABLE
     await connection.execute(
         update(table)
-        .where(table.c.block_id == attempt["block_id"])
+        .where(
+            table.c.scope_id == scope_id,
+            table.c.binding_name == binding_name,
+            table.c.source_after == row["source_after"],
+            table.c.attempt_id == row["attempt_id"],
+        )
         .values(
-            finished_at=attempt["finished_at"] or await database_utc_now(connection),
-            last_error_code=attempt["last_error_code"] or error_code,
-            requests=row["requests"],
-            tokens=row["tokens"],
+            finished_at=row["finished_at"] or await database_utc_now(connection),
+            last_error_code=row["last_error_code"] or error_code,
         )
     )
 
@@ -190,7 +154,6 @@ class TopicMemoryWorkBudget:
         source_through: int,
         cursor_generation: int | None,
         fence: ArtifactProcessingFence,
-        target_source_through: int | None = None,
     ) -> None:
         self.database = database
         self.scope_id = scope_id
@@ -199,7 +162,6 @@ class TopicMemoryWorkBudget:
         self.source_through = source_through
         self.cursor_generation = cursor_generation
         self.fence = fence
-        self.target_source_through = source_through if target_source_through is None else target_source_through
         self.attempt_id = str(uuid4())
 
     def _key(self):
@@ -261,21 +223,14 @@ class TopicMemoryWorkBudget:
                     )
                 )
             if not reason:
-                current = await self._current(connection)
                 await connection.execute(
-                    insert(TOPIC_MEMORY_WORK_ATTEMPTS_TABLE).values(
-                        block_id=str(uuid4()),
-                        attempt_id=self.attempt_id,
-                        scope_id=self.scope_id,
-                        binding_name=self.binding_name,
-                        source_after=self.source_after,
-                        # The frontier range is cumulative; the audit range belongs to this attempt.
-                        source_through=self.source_through,
-                        target_source_through=max(self.target_source_through, current["source_through"]),
-                        attempts=current["attempts"],
-                        requests=current["requests"],
-                        tokens=current["tokens"],
+                    update(table)
+                    .where(*self._key())
+                    .values(
+                        attempt_source_through=self.source_through,
                         started_at=await database_utc_now(connection),
+                        finished_at=None,
+                        last_error_code=None,
                         supervisor_group=self.fence.supervisor_group,
                         supervisor_generation=self.fence.supervisor_generation,
                         holder_id=self.fence.holder_id,
@@ -353,18 +308,4 @@ class TopicMemoryWorkBudget:
         code = str(row["failure_code"])
         if code and code not in RECOVERABLE_TOPIC_MEMORY_REJECTIONS:
             raise TopicMemoryGenerationError(code)
-        await connection.execute(
-            update(TOPIC_MEMORY_WORK_ATTEMPTS_TABLE)
-            .where(
-                TOPIC_MEMORY_WORK_ATTEMPTS_TABLE.c.attempt_id == self.attempt_id,
-                TOPIC_MEMORY_WORK_ATTEMPTS_TABLE.c.scope_id == self.scope_id,
-                TOPIC_MEMORY_WORK_ATTEMPTS_TABLE.c.binding_name == self.binding_name,
-                TOPIC_MEMORY_WORK_ATTEMPTS_TABLE.c.source_after == self.source_after,
-            )
-            .values(
-                finished_at=await database_utc_now(connection),
-                requests=row["requests"],
-                tokens=row["tokens"],
-            )
-        )
         await connection.execute(delete(TOPIC_MEMORY_WORK_BUDGETS_TABLE).where(*self._key()))

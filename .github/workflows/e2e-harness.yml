@@ -133,6 +133,7 @@ jobs:
           mkdir -p .powercontext/recall-effort-ci
           uv run --locked pytest \
             tests/builtin/persistence/test_oceanbase_profile.py::test_live_oceanbase_profile_smoke \
+            tests/e2e/test_topic_memory_recovery_migration.py \
             'tests/builtin/persistence/test_recall_effort_statistics.py::test_recall_effort_schema_upgrade_and_atomic_daily_scope_accounting[oceanbase]' \
             tests/builtin/persistence/test_oceanbase_profile.py::test_live_oceanbase_profile_rejects_old_schema_collation \
             --junitxml=.powercontext/recall-effort-ci/oceanbase.xml -q -rs

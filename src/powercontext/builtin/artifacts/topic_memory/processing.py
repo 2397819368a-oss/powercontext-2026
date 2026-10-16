@@ -28,7 +28,9 @@ class TopicMemoryWorkBlock(BaseModel):
     scope_id: str
     binding_name: str
     source_after: int
-    source_through: int
+    source_through: int | None
+    budget_source_through: int | None
+    legacy_source_through: int | None = None
     target_source_through: int
     attempts: int
     requests: int

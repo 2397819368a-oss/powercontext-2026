@@ -99,7 +99,12 @@ powercontext --json topic-memory status --scope-id "$SCOPE_ID"
 状态为 `idle`、`pending` 或 `blocked`。阻塞记录包含准确的 `block_id`、已尝试范围、保留的 target、尝试/请求/token
 计数、终止原因 `error_code`、最后错误类别 `last_error_code` 和 UTC 时间 `blocked_at`。仍在执行的第三次尝试可能
 成功，因此显示为 pending。旧预算的 `blocked_at` 表示首次观察到阻塞的时间，无法追溯的最后错误类别为 null。
-旧预算没有逐次审计记录时，范围保留预算中已有的累计覆盖范围，不能从该预算重建最后一次尝试的实际范围。
+`source_through` 表示准确选择终点，未知时为 null；`budget_source_through` 独立保留累计额度覆盖，导入的历史阻塞
+已经没有原预算时也可能为 null。`legacy_source_through` 保留旧 attempts 表中无法证明含义的范围原值，新阻塞中为
+null。成功和被取代尝试不形成保留历史；阻塞快照和已接受回执永久可查询，不自动过期。
+
+已有数据库须先执行显式的 [Topic 恢复迁移](../operate/database-migrations.md#topic-memory-恢复-bundle)。普通启动在业务
+写入前检查格式，不执行迁移。
 
 修复失败原因后，将返回的阻塞 ID 填入 `BLOCK_ID`。Scope 管理员可显式申请一次新的有限额度，并请求后台处理：
 

@@ -27,14 +27,19 @@ from powercontext.client import PowerContextClient
 
 @pytest.mark.parametrize("command", ["status", "block", "retry"])
 @pytest.mark.parametrize("json_output", [False, True])
-def test_topic_processing_cli_preserves_exact_block_identity_and_diagnostics(monkeypatch, command, json_output):
+@pytest.mark.parametrize("imported", [False, True])
+def test_topic_processing_cli_preserves_exact_block_identity_and_diagnostics(
+    monkeypatch, command, json_output, imported
+):
     block = {
         "block_id": "c6561f56-1a60-4888-adf3-14b341ce66d5",
         "attempt_id": "59527d38-c24d-4396-a595-32116ddc5c1f",
         "scope_id": "project",
         "binding_name": "topic-memory-source-window",
         "source_after": 2,
-        "source_through": 3,
+        "source_through": None if imported else 3,
+        "budget_source_through": None if imported else 3,
+        "legacy_source_through": 3 if imported else None,
         "target_source_through": 7,
         "attempts": 3,
         "requests": 9,

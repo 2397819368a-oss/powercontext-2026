@@ -3959,7 +3959,12 @@ export interface components {
             scope_id: string;
             binding_name: string;
             source_after: number;
-            source_through: number;
+            /** @description Exact selected Source end; null when historical selection is unknown. */
+            source_through: number | null;
+            /** @description Cumulative coverage of the original allowance; null only for imported blocks without that allowance. */
+            budget_source_through: number | null;
+            /** @description Original ambiguous range of an imported attempts-table block; neither exact selection nor cumulative coverage. */
+            legacy_source_through: number | null;
             target_source_through: number;
             attempts: number;
             requests: number;

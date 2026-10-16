@@ -26,10 +26,13 @@ from powercontext.builtin.artifacts.topic_memory.processing import (
     TopicMemoryBlockNotFoundError,
 )
 from powercontext.builtin.inference import InferenceTimeoutError, character_token_estimator
+from powercontext.builtin.persistence.migrations import MigrationError
+from powercontext.builtin.persistence.migrations.topic_memory_recovery import TopicMemoryRecoveryMigrationRunner
 from powercontext.builtin.persistence.processing import ArtifactProcessingPendingRepository
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import TOPIC_MEMORY_WORK_BUDGETS_TABLE as BUDGETS
 from powercontext.builtin.persistence.topic_memory_budget import record_topic_memory_work_failure
+from powercontext.builtin.persistence.topic_memory_recovery_schema import recovery_statements
 from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingBinding, ArtifactProcessingSupervisor
 from powercontext.builtin.runtime.topic_memory_processing import (
     TopicMemoryAtomicPublisher,
@@ -136,6 +139,7 @@ def test_attempt_range_stays_exact_after_context_window_shrinks_and_database_reo
             assert budget["source_through"] == 2 and budget["attempts"] == 3
             assert block.attempt_id == budget["attempt_id"]
             assert (block.source_after, block.source_through, block.target_source_through) == (0, 1, 3)
+            assert block.budget_source_through == 2 and block.legacy_source_through is None
             assert block.attempts == 3 and block.error_code == "window_attempt_limit"
             assert block.last_error_code == "probe_unavailable"
             assert await service.get_block("scope-a", block.block_id) == block
@@ -148,6 +152,10 @@ def test_attempt_range_stays_exact_after_context_window_shrinks_and_database_reo
             assert (await service.status("scope-a")).block == block
             assert await service.get_block("scope-a", block.block_id) == block
             assert await _budget(profile.database) == budget
+            accepted = await service.retry("scope-a", block.block_id)
+            assert accepted.block.budget_source_through == 2
+            assert await service.get_block("scope-a", block.block_id) == accepted.block
+            assert await service.retry("scope-a", block.block_id) == accepted
         finally:
             await manager.__aexit__(None, None, None)
 
@@ -469,7 +477,7 @@ def test_concurrent_retries_from_independent_database_connections_grant_one_allo
     asyncio.run(scenario())
 
 
-def test_startup_adds_attempt_table_and_preserves_legacy_budget(tmp_path):
+def test_startup_requires_offline_migration_and_preserves_legacy_budget(tmp_path):
     database_path = tmp_path / "legacy.db"
     config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database_path}")
 
@@ -484,7 +492,37 @@ def test_startup_adds_attempt_table_and_preserves_legacy_budget(tmp_path):
 
     before = asyncio.run(seed())
     with sqlite3.connect(database_path) as connection:
-        connection.execute("DROP TABLE pc_topic_memory_work_attempts")
+        connection.execute("DROP TABLE pc_topic_memory_work_blocks")
+        connection.execute("DROP TABLE pc_topic_memory_work_budgets")
+        connection.execute(recovery_statements("budget_v0", "sqlite")[0])
+        names = tuple(
+            name
+            for name in before
+            if name
+            not in {
+                "attempt_source_through",
+                "started_at",
+                "finished_at",
+                "supervisor_group",
+                "supervisor_generation",
+                "holder_id",
+                "last_error_code",
+            }
+        )
+        connection.execute(
+            f"INSERT INTO pc_topic_memory_work_budgets ({','.join(names)}) VALUES ({','.join(':' + name for name in names)})",  # noqa: S608 - fixed fixture fields, bound values
+            before,
+        )
+
+    original = database_path.read_bytes()
+    with pytest.raises(MigrationError, match="migration_required"):
+        asyncio.run(_repositories(config))
+    assert database_path.read_bytes() == original
+    runner = TopicMemoryRecoveryMigrationRunner(config)
+    plan = runner.plan()
+    result = runner.apply(plan_id=plan.plan_id, accepted=True, maintenance_confirmed=True)
+    assert result.changed and result.backup_state == "completed"
+    assert runner.verify().state == "ready"
 
     async def inspect():
         manager, profile, _, _ = await _repositories(config)
@@ -492,9 +530,59 @@ def test_startup_adds_attempt_table_and_preserves_legacy_budget(tmp_path):
             service = TopicMemoryRecoveryService(profile.database)
             block = (await service.status("scope-a")).block
             assert block is not None and block.last_error_code is None
+            assert block.source_through is None and block.budget_source_through == 1
+            assert block.legacy_source_through is None
             assert await _budget(profile.database) == before
             assert (await service.status("scope-a")).block == block
         finally:
             await manager.__aexit__(None, None, None)
 
     asyncio.run(inspect())
+
+
+def test_success_leaves_no_retained_attempt_or_block_history_after_reopen(tmp_path):
+    path = tmp_path / "successful.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}")
+
+    async def scenario():
+        manager, profile, sources, topics = await _repositories(config)
+        try:
+            await _capture(profile, sources, 1)
+            result = await _processor(profile, sources, topics, _Probe()).process(await _assignment(profile))
+            assert result.outcome.value == "succeeded"
+            assert (await TopicMemoryRecoveryService(profile.database).status("scope-a")).state == "idle"
+        finally:
+            await manager.__aexit__(None, None, None)
+        manager, profile, _, _ = await _repositories(config)
+        try:
+            assert (await TopicMemoryRecoveryService(profile.database).status("scope-a")).state == "idle"
+        finally:
+            await manager.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT count(*) FROM pc_topic_memory_work_budgets").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM pc_topic_memory_work_blocks").fetchone() == (0,)
+        assert (
+            connection.execute("SELECT name FROM sqlite_schema WHERE name='pc_topic_memory_work_attempts'").fetchall()
+            == []
+        )
+
+
+def test_late_worker_failure_does_not_rewrite_frozen_block():
+    async def scenario():
+        manager, profile, sources, _ = await _repositories()
+        try:
+            await _capture(profile, sources, 1)
+            await _seed(profile.database)
+            service = TopicMemoryRecoveryService(profile.database)
+            block = (await service.status("scope-a")).block
+            assert block is not None
+            async with profile.database.transaction() as connection:
+                await record_topic_memory_work_failure(connection, "scope-a", BINDING, "worker_timeout")
+            assert (await service.status("scope-a")).block == block
+            assert await service.get_block("scope-a", block.block_id) == block
+        finally:
+            await manager.__aexit__(None, None, None)
+
+    asyncio.run(scenario())

@@ -9425,7 +9425,50 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "binding_name": {"type": "string"},
                     "source_after": {"type": "integer", "minimum": 0.0},
-                    "source_through": {"type": "integer", "minimum": 1.0},
+                    "source_through": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "Exact selected Source end; null when historical selection is unknown.",
+                        "nullable": True,
+                    },
+                    "budget_source_through": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "Cumulative "
+                        "coverage "
+                        "of "
+                        "the "
+                        "original "
+                        "allowance; "
+                        "null "
+                        "only "
+                        "for "
+                        "imported "
+                        "blocks "
+                        "without "
+                        "that "
+                        "allowance.",
+                        "nullable": True,
+                    },
+                    "legacy_source_through": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "Original "
+                        "ambiguous "
+                        "range "
+                        "of "
+                        "an "
+                        "imported "
+                        "attempts-table "
+                        "block; "
+                        "neither "
+                        "exact "
+                        "selection "
+                        "nor "
+                        "cumulative "
+                        "coverage.",
+                        "nullable": True,
+                    },
                     "target_source_through": {"type": "integer", "minimum": 1.0},
                     "attempts": {"type": "integer", "minimum": 1.0},
                     "requests": {"type": "integer", "minimum": 0.0},
@@ -9445,6 +9488,8 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "binding_name",
                     "source_after",
                     "source_through",
+                    "budget_source_through",
+                    "legacy_source_through",
                     "target_source_through",
                     "attempts",
                     "requests",

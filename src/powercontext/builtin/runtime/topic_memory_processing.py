@@ -528,7 +528,6 @@ class TopicMemoryProcessor:
             source_through=assignment.source_through,
             cursor_generation=assignment.cursor_generation,
             fence=assignment.fence,
-            target_source_through=assignment.wave_target,
         )
         token = self._work_budget.set(budget)
         vector_token = self._document_vectors.set({})

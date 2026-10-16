@@ -85,8 +85,9 @@ async def topic_memory_processing_block(
         stage="topic_memory",
         error_code=block.error_code,
         details=tuple(
-            (name, int(getattr(block, name)))
+            (name, value)
             for name in ("source_after", "source_through", "attempts", "requests", "tokens")
+            if (value := getattr(block, name)) is not None
         ),
     )
 

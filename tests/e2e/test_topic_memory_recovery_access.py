@@ -101,6 +101,8 @@ def test_processing_status_is_scoped_and_only_admin_can_grant_retry(tmp_path, mo
             observed = await client.post(status_path, json={"scope_id": scope})
             assert observed.status_code == 200, observed.text
             block = observed.json()["block"]
+            assert block["source_through"] is None and block["budget_source_through"] == 1
+            assert block["legacy_source_through"] is None
             payload = {"scope_id": scope, "block_id": block["block_id"]}
             await _grant(client, scope, "reader", "scope.viewer")
             await _grant(client, scope, "writer", "scope.contributor")

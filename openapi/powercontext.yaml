@@ -9841,14 +9841,28 @@ components:
     TopicMemoryProcessingBlock:
       type: object
       additionalProperties: false
-      required: [block_id, attempt_id, scope_id, binding_name, source_after, source_through, target_source_through, attempts, requests, tokens, error_code, last_error_code, blocked_at, retried_at, retry_request_generation]
+      required: [block_id, attempt_id, scope_id, binding_name, source_after, source_through, budget_source_through, legacy_source_through, target_source_through, attempts, requests, tokens, error_code, last_error_code, blocked_at, retried_at, retry_request_generation]
       properties:
         block_id: {type: string}
         attempt_id: {type: string}
         scope_id: {type: string, minLength: 1, maxLength: 256, pattern: '.*\S.*'}
         binding_name: {type: string}
         source_after: {type: integer, minimum: 0}
-        source_through: {type: integer, minimum: 1}
+        source_through:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Exact selected Source end; null when historical selection is unknown.
+        budget_source_through:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Cumulative coverage of the original allowance; null only for imported blocks without that allowance.
+        legacy_source_through:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Original ambiguous range of an imported attempts-table block; neither exact selection nor cumulative coverage.
         target_source_through: {type: integer, minimum: 1}
         attempts: {type: integer, minimum: 1}
         requests: {type: integer, minimum: 0}

@@ -1705,7 +1705,24 @@ class TopicMemoryProcessingBlock(BaseModel):
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     binding_name: StrictStr
     source_after: Annotated[StrictInt, Field(ge=0)]
-    source_through: Annotated[StrictInt, Field(ge=1)]
+    source_through: Annotated[
+        StrictInt | None,
+        Field(description="Exact selected Source end; null when historical selection is unknown.", ge=1),
+    ]
+    budget_source_through: Annotated[
+        StrictInt | None,
+        Field(
+            description="Cumulative coverage of the original allowance; null only for imported blocks without that allowance.",
+            ge=1,
+        ),
+    ]
+    legacy_source_through: Annotated[
+        StrictInt | None,
+        Field(
+            description="Original ambiguous range of an imported attempts-table block; neither exact selection nor cumulative coverage.",
+            ge=1,
+        ),
+    ]
     target_source_through: Annotated[StrictInt, Field(ge=1)]
     attempts: Annotated[StrictInt, Field(ge=1)]
     requests: Annotated[StrictInt, Field(ge=0)]
