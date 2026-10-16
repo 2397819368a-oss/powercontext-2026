@@ -2423,7 +2423,7 @@ async def flush_profile(
 async def get_source(
     scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
     source_type: Annotated[Literal["content"], Path()],
-    source_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r"^[\x21-\x7E]+$")],
+    source_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
     http_request: Request,
     application: Annotated[ServerApplication, Depends(_require_application)],
 ) -> SourceRecord:

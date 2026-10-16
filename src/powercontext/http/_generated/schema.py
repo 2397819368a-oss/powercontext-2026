@@ -3904,7 +3904,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "name": "source_id",
                         "in": "path",
                         "required": True,
-                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[\\x21-\\x7E]+$"},
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
                     },
                 ],
                 "responses": {
@@ -11229,7 +11229,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     },
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "source_type": {"type": "string", "enum": ["content"]},
-                    "source_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "source_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "content": {"description": "Persisted canonical JSON content."},
                     "position": {"type": "integer", "minimum": 1.0},
                     "content_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},

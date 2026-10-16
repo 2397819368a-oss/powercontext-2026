@@ -3892,7 +3892,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 256
-            pattern: '^[\x21-\x7E]+$'
+            pattern: '.*\S.*'
       responses:
         "200":
           description: The exact Source.
@@ -11644,7 +11644,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[\x21-\x7E]+$'
+          pattern: '.*\S.*'
         content:
           description: Persisted canonical JSON content.
         position:
