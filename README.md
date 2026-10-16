@@ -10,134 +10,14 @@
 
 [Website](https://powercontext.oceanbase.io/) · [Quickstart](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) · [Integrations](https://powercontext.oceanbase.io/en/docs/integrations/) · [Benchmarks](https://powercontext.oceanbase.io/en/benchmarks/) · [Interfaces](https://powercontext.oceanbase.io/en/docs/develop/interfaces/)
 
-## What is PowerContext?
-
-**PowerContext is an open-source context service for AI agents.** It keeps the durable part of your work — decisions,
-constraints, evidence, progress — outside any single conversation, so the next session, the next agent, or the next
-person can pick up from the current state instead of rereading the transcript.
-
-Work rarely ends with whoever starts it. You hand a task to an agent, the agent gets part of the way, and later you or
-someone else takes over. The reasoning and current state often stay behind in that conversation. PowerContext moves them
-out of the conversation and into revisioned artifacts you can inspect:
-
-![You and agents hand work off and continue with stored context](docs/assets/readme-workflow.svg)
-
-Everything belongs to a **Scope** — one isolated Source journal, Memory lifecycle, review inbox, and Handoff history.
-A Scope ID selects data; it does not prove user identity, grant tool access, or authorize execution.
-
-```text
-Scope
-├── Source journal    # evidence: prompts, documents, work contracts, task outcomes
-├── Memory            # atomic-memory/ARTIFACT_ID@REVISION — decisions, constraints, next steps
-├── Review Inbox      # pending Experience and Skill candidates awaiting a decision
-├── Handoff history   # handoff/ARTIFACT_ID@REVISION — work continuity across sessions
-└── Topic Memory      # extracted in the background from eligible Sources
-```
-
-*The Dashboard screenshots below use synthetic demonstration records.*
-
-### Memory — decisions and constraints that outlive a session
-
-Memory is a revisioned Artifact family for reusable decisions, constraints, facts, state, and next steps. An entry is
-`active`, `forgotten`, `merged`, or `retired`. Forgetting one through `POST /v1/atomic-memory/lifecycle` takes it out of
-active recall while its content and history stay available and restorable, without advancing the content revision.
-Explicit Memory writes need no model at all; extraction from captured Sources needs a configured generation pipeline.
-
-> "Don't refactor the old auth module — mobile is still using it."
-> Context this expensive shouldn't depend on someone repeating it in every session.
-
-![Dashboard showing active decisions and constraints for one Scope with their Artifact and Source references](docs/assets/readme-dashboard-memories.png)
-
-### Handoff — the current state, not the whole transcript
-
-Handoff records work continuity as a four-step loop:
-
-```text
-Work Contract → Prepared Handoff → Acknowledgement → Task Outcome
-```
-
-`handoff_current_work` captures an inspected boundary and returns a temporary Prepared Handoff. Committing it creates a
-durable Revision only when the user wants a milestone. The receiver resolves the Handoff and records an Acknowledgement;
-a Task Outcome preserves the final status and checks as Source evidence. The
-[Handoff Report](https://powercontext.oceanbase.io/en/docs/workflows/use-handoff-report/) projects the latest Revision in
-each selected Scope — read-only, and it never rewrites Memory.
-
-![Dashboard showing a committed Handoff Revision with recorded progress, next action, and linked source evidence](docs/assets/readme-dashboard-handoff.png)
-
-### Experience — what worked, reviewed before it is reused
-
-An Experience records a situation, an action, an observed outcome, and a reusable lesson. It enters a scope-local Review
-Inbox as a pending Candidate. Review writes use `expected_version`, so a decision cannot silently apply after another
-writer changes the proposal. Approval writes an immutable Revision; rejection records a reason. Both are terminal, and
-only the approved current head takes part in recall — pending, rejected, and historical Revisions are excluded.
-
-### Skill — a reviewed procedure, exported on purpose
-
-A managed Skill holds a name, a discovery description, instructions, validation checks, and lineage. Approval does not
-install or execute it: an exact approved Revision must be exported explicitly before an Agent host can discover the
-host-local projection.
-
-## Why PowerContext?
-
-- **Context lives outside the conversation.** Memory, Handoff, Experience, and Skill are server-side artifacts, not
-  files inside one agent's home directory. Switch from Codex to Claude Code — or hand the work to a teammate — and the
-  work travels with you.
-- **Everything is revisioned and traceable.** Each Artifact is addressed as `FAMILY/ARTIFACT_ID@REVISION`. The Artifact
-  ID stays stable while approved replacements create later Revisions, and reading an exact reference returns that
-  historical snapshot even after the family head advances.
-- **Generation, review, and execution are separate steps.** A model proposes content, review approves a Revision, and
-  export creates a host-local copy. None of those steps grants an Agent permission to execute instructions. See
-  [Interfaces](https://powercontext.oceanbase.io/en/docs/develop/interfaces/) for what each surface exposes today.
-- **Recall is bounded, not dumped.** `PreparedContext` selects active Memory and approved Experience heads for one Agent
-  turn, applies a shared byte budget, and returns `ready` content or `empty`. Recalled content is history, not an
-  instruction authority: the receiving Agent still follows current instructions and checks live workspace state.
-- **Review before reuse.** Experience and Skill pass through a review decision that is terminal either way. The model
-  proposes rather than silently promoting its own output.
-- **One Server, several views of the same contract.** HTTP is the complete remote application contract. The Python Client
-  gives typed access, MCP is a curated Agent-facing projection, and Core protocols let an application assemble its own
-  Source, Artifact, and Trigger implementations.
-
-### How it compares
-
-| | Re-reading chat history | RAG over transcripts | Host-local memory files | PowerContext |
-|---|---|---|---|---|
-| Survives a new session | manual | yes | yes | yes |
-| Survives switching agents | no | no | no | yes |
-| Handing work to a person | manual | manual | manual | Handoff, first-class |
-| Reusable procedure | no | no | prose only | Experience / Skill |
-| Earlier revisions kept | no | depends on the index | only via git | immutable Revisions |
-| Review before reuse | n/a | no | no | Review Inbox |
-| Bounded recall for one turn | no | partial | no | `PreparedContext` byte budget |
-| Inspectable outside the Agent | no | no | yes | yes |
-
-## Proof it works
-
-![Compact comparison of PowerContext results on LoCoMo and SWE-bench Pro](docs/assets/readme-benchmark-summary.svg)
-
-- **Long-conversation memory (LoCoMo): 90.78% accuracy**, against 87.79% for PowerMem and 52.9% for full-context replay
-  — **+37.88 points** over full context.
-- **Coding tasks (SWE-bench Pro): 86.73% task resolution with PowerContext on, 82.35% with it off** — **+4.38 points**
-  and 32 more tasks resolved in a 731-task paired run.
-- **Retrieval quality (LoCoMo Plus)**, native PowerContext against PowerContext with Jev candidate filtering after
-  retrieval. Each model is used for both Memory extraction and answering; embeddings use `qwen3.7-text-embedding`
-  (1024 dimensions):
-
-  | Model | PowerContext | PowerContext + Jev | Difference |
-  |---|---|---|---|
-  | GPT-4o-mini | 40.855% | 49.78% | +8.925 points |
-  | Qwen3.7-plus | 60.37% | 68.947% | +8.577 points |
-  | GPT-4o | 65.082% | 69.28% | +4.198 points |
-
-Full methods, results, and limitations: [benchmarks](https://powercontext.oceanbase.io/en/benchmarks/). Two caveats we
-would rather state than bury: the six LoCoMo Plus scores above were supplied by the project owner, and their run
-artifacts are not publicly available for verification — the published instructions reproduce the harness, not those
-scores. Windows support is `experimental`.
-
 ## Quick start
 
-PowerContext 1.3.0 includes an interactive setup wizard. You need Git,
-[uv](https://docs.astral.sh/uv/getting-started/installation/), and your Agent's CLI. Python 3.11+ is required; uv can
-provision it. macOS and Linux are supported; Windows support is `experimental`.
+PowerContext 1.3.0 includes an interactive setup wizard. You need Python 3.11+, Git, and
+[uv](https://docs.astral.sh/uv/getting-started/installation/); uv can provision Python when needed. To connect an Agent,
+also install its CLI. In the wizard, choose Basic memory for explicit saves and recall without model APIs; Full memory
+requires separate Generation and Embedding API credentials. For a local Server without model APIs, see
+[Install and run](docs/en/docs/get-started/install-and-run.md).
+macOS and Linux are supported; Windows support is `experimental`.
 
 <details open>
 <summary><strong>Run the wizard in a dedicated directory</strong></summary>
@@ -146,11 +26,13 @@ provision it. macOS and Linux are supported; Windows support is `experimental`.
 uv tool install --force "powercontext[cli,server]==1.3.0"
 mkdir -p powercontext-config && cd powercontext-config
 powercontext config init --language en --output .env
+powercontext config validate --env-file .env
 powercontext server run --env-file .env      # keep this terminal open
 ```
 
-The wizard writes one `.env` environment file and `.env.next-steps.md`. Keep Server running; in another terminal, return
-to `powercontext-config`, load only the client settings, and check the connection:
+The wizard writes one `.env` environment file and `.env.next-steps.md`. These files can contain credentials; do not
+commit them. Keep Server running; in another terminal, return to `powercontext-config`, reload the generated environment
+file, and check the connection:
 
 ```bash
 set -a
@@ -192,8 +74,9 @@ model or API key.
 <details>
 <summary><strong>Before you ask "why isn't it working?"</strong></summary>
 
-- `doctor` verifies integration setup. To verify automatic memory, check that a real prompt becomes a Source, produces a
-  Topic, evolves after a related prompt, and can be recalled in a new session using the same Scope.
+- `doctor codex` verifies Codex installation and connectivity. To verify automatic memory, check that a real prompt
+  becomes a Source, produces a Topic, evolves after a related prompt, and can be recalled in a new session using the
+  same Scope.
 - If Python dependency downloads are slow or fail, configure a package index for
   [uv](https://docs.astral.sh/uv/configuration/indexes/) and retry.
 - Choose **Full memory capabilities** to test automatic Memory and Topic Memory; this requires separate Generation and
@@ -208,6 +91,133 @@ model or API key.
   or environment variables and asks for explicit consent; automated setup uses `--allow-insecure-http`.
 
 </details>
+
+## What is PowerContext?
+
+**PowerContext is an open-source context service for AI agents.** It keeps the durable part of your work — decisions,
+constraints, evidence, progress — outside any single conversation, so the next session, the next agent, or the next
+person can pick up from the current state instead of rereading the transcript.
+
+Work rarely ends with whoever starts it. You hand a task to an agent, the agent gets part of the way, and later you or
+someone else takes over. The reasoning and current state often stay behind in that conversation. PowerContext moves them
+out of the conversation and into versioned artifacts you can inspect:
+
+![You and agents hand work off and continue with stored context](docs/assets/readme-workflow.svg)
+
+Everything belongs to a **Scope** — one isolated Source journal, Memory lifecycle, Review Inbox, and Handoff history.
+A Scope ID selects data; it does not prove user identity, grant tool access, or authorize execution.
+
+```text
+Scope
+├── Source journal    # evidence: prompts, documents, work contracts, task outcomes
+├── Memory            # atomic-memory/ARTIFACT_ID@REVISION — decisions, constraints, next steps
+├── Review Inbox      # pending Experience and Skill candidates awaiting a decision
+├── Handoff history   # handoff/ARTIFACT_ID@REVISION — work continuity across sessions
+└── Topic Memory      # extracted in the background from eligible Sources
+```
+
+*The Dashboard screenshots below use synthetic demonstration records.*
+
+### Memory — decisions and constraints that outlive a session
+
+Memory is an Artifact family with immutable revisions for reusable decisions, constraints, facts, state, and next steps.
+An entry is `active`, `forgotten`, `merged`, or `retired`. Forgetting one through `POST /v1/atomic-memory/lifecycle`
+takes it out of
+active recall while its content and history stay available and restorable, without advancing the content revision.
+Explicit Memory writes need no model at all; extraction from captured Sources needs a configured generation pipeline.
+
+> "Don't refactor the old auth module — mobile is still using it."
+> This context is too costly to reconstruct in every session.
+
+![Dashboard showing active decisions and constraints for one Scope with their Artifact and Source references](docs/assets/readme-dashboard-memories.png)
+
+### Handoff — the current state, not the whole transcript
+
+Handoff records work continuity as a four-step loop:
+
+```text
+Work Contract → Prepared Handoff → Acknowledgement → Task Outcome
+```
+
+`handoff_current_work` captures an inspected boundary and returns a temporary Prepared Handoff. Committing it creates a
+durable Revision only when the user wants a milestone. The receiver resolves the Handoff and records an Acknowledgement;
+a Task Outcome preserves the final status and checks as Source evidence. The
+[Handoff Report](https://powercontext.oceanbase.io/en/docs/workflows/use-handoff-report/) projects the latest Revision in
+each selected Scope — read-only, and it never rewrites Memory.
+
+![Dashboard showing a committed Handoff Revision with recorded progress, next action, and linked source evidence](docs/assets/readme-dashboard-handoff.png)
+
+### Experience — what worked, reviewed before it is reused
+
+An Experience records a situation, an action, an observed outcome, and a reusable lesson. It enters a scope-local Review
+Inbox as a pending Candidate. Review writes use `expected_version`, so a decision cannot silently apply after another
+writer changes the proposal. Approval writes an immutable Revision; rejection records a reason. Both are terminal, and
+only the approved current head takes part in recall — pending, rejected, and historical Revisions are excluded.
+
+### Skill — a reviewed procedure, exported on purpose
+
+A managed Skill holds a name, a discovery description, instructions, validation checks, and lineage. Approval does not
+install or execute it: an exact approved Revision must be exported explicitly before an Agent host can discover the
+host-local projection.
+
+## Why PowerContext?
+
+- **Context lives outside the conversation.** Memory, Handoff, Experience, and Skill are server-side artifacts, not
+  files inside one agent's home directory. Switch from Codex to Claude Code — or hand the work to a teammate — and the
+  work travels with you.
+- **Everything is versioned and traceable.** Each Artifact is addressed as `FAMILY/ARTIFACT_ID@REVISION`. The Artifact
+  ID stays stable while approved replacements create later Revisions, and reading an exact reference returns that
+  historical snapshot even after the family head advances.
+- **Generation, review, and execution are separate steps.** A model proposes content, review approves a Revision, and
+  export creates a host-local copy. None of those steps grants an Agent permission to execute instructions. See
+  [Interfaces](https://powercontext.oceanbase.io/en/docs/develop/interfaces/) for what each surface exposes today.
+- **Recall is bounded, not dumped.** `PreparedContext` selects configured sections from active Memory and approved
+  Experience, with optional Profile snapshots and Topic Memory, then applies a shared byte budget and returns `ready`
+  content or `empty`. Recalled content is history, not an instruction authority: the receiving Agent still follows
+  current instructions and checks live workspace state.
+- **Review before reuse.** Experience and Skill pass through a review decision that is terminal either way. The model
+  proposes rather than silently promoting its own output.
+- **One Server, several views of the same contract.** HTTP is the complete remote application contract. The Python Client
+  gives typed access, MCP is a curated Agent-facing projection, and Core protocols let an application assemble its own
+  Source, Artifact, and Trigger implementations.
+
+### How it compares
+
+The comparison assumes typical single-agent or host-local setups; exact behavior depends on how each system is deployed.
+
+| | Re-reading chat history | RAG over transcripts | Host-local memory files | PowerContext |
+|---|---|---|---|---|
+| Survives a new session | manual | yes | yes | yes |
+| Survives switching agents | no | no | no | yes |
+| Handing work to a person | manual | manual | manual | Handoff, first-class |
+| Reusable procedure | no | no | prose only | Experience / Skill |
+| Earlier revisions kept | no | depends on the index | only via git | immutable Revisions |
+| Review before reuse | n/a | no | no | Review Inbox |
+| Bounded recall for one turn | no | partial | no | `PreparedContext` byte budget |
+| Inspectable outside the Agent | no | no | yes | yes |
+
+## Evaluation results
+
+![Compact comparison of PowerContext results on LoCoMo and SWE-bench Pro](docs/assets/readme-benchmark-summary.svg)
+
+- **Long-conversation memory (LoCoMo; 1,540 scored questions across categories 1–4): 90.78% accuracy**, against 87.79%
+  for PowerMem and 52.9% for full-context replay — **+37.88 points** over full context.
+- **Coding tasks (SWE-bench Pro; a paired project run on all 731 public v2 tasks, not an official submission): 86.73%
+  task resolution with PowerContext on, 82.35% with it off** — **+4.38 points** and 32 more tasks resolved.
+- **Retrieval quality (LoCoMo Plus)**, native PowerContext against PowerContext with Jev candidate filtering after
+  retrieval. Each model is used for both Memory extraction and answering; embeddings use `qwen3.7-text-embedding`
+  (1024 dimensions):
+
+  | Model | PowerContext | PowerContext + Jev | Difference |
+  |---|---|---|---|
+  | GPT-4o-mini | 40.855% | 49.78% | +8.925 points |
+  | Qwen3.7-plus | 60.37% | 68.947% | +8.577 points |
+  | GPT-4o | 65.082% | 69.28% | +4.198 points |
+
+Full methods, results, and limitations: [benchmarks](https://powercontext.oceanbase.io/en/benchmarks/). Two caveats we
+would rather state than bury: the six LoCoMo Plus scores above were supplied by the project owner, and their run
+artifacts are not publicly available for verification — the published instructions reproduce the harness, not those
+scores. Windows support is `experimental`.
 
 ## Connect your Agent
 
