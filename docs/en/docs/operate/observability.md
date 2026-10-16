@@ -83,27 +83,138 @@ not a durable audit or billing ledger. The identity/error fields are additive; c
 
 ## Metrics and readiness
 
-Metrics are enabled by default at `/metrics`. In `enforced` mode, `/metrics` and `capabilities` require a Principal with
-the `server.observe` permission. See [Troubleshoot](troubleshoot.md) for authentication and permission configuration.
-Liveness at `/health/live` and readiness at `/health/ready` remain public.
+Metrics are enabled by default at `/metrics` in Prometheus format. In `enforced` mode, `/metrics` and `capabilities`
+require authentication as a Principal with `server.observe`. See [Troubleshoot](troubleshoot.md).
+On API hosts, `/health/live` and `/health/ready` remain public.
 
-`/metrics` exposes Prometheus-format metrics. Common metrics include:
+The `background` role exposes a metrics-only HTTP listener using `POWERCONTEXT_SERVER_HTTP_HOST` and
+`POWERCONTEXT_SERVER_HTTP_PORT`. It has the same metrics authentication and authorization as the API host, but no
+API, MCP, Dashboard, OpenAPI, or health routes. Give API and background processes different ports when sharing a host.
+`POWERCONTEXT_SERVER_METRICS_ENABLED=false` removes `/metrics`; for `background` it also prevents opening the listener.
+Scraping this listener does not run API-host model readiness probes.
 
-| Metric | Use |
+### Passive observations and freshness
+
+A scrape copies existing, bounded, process-local Runtime/Supervisor observations. It does not query the database,
+scan backlog, refresh readiness, invoke a model, or wait for a worker. The regular discovery and readiness owners
+produce the observations. A successful scrape therefore proves neither current dependency health nor fresh backlog data.
+
+All metric names below start with `powercontext_server_`. Timestamps are UNIX seconds; durations and ages are seconds;
+counts count the named unit. State metrics are one-hot: the matching `state` is `1`, the other supported states are `0`.
+Absent observations are not healthy zeroes. Counters and histogram buckets are cumulative for the owning process or
+Runtime/Supervisor instance and reset when that owner is recreated; scrapes do not reset them. Use counter-aware
+`rate`/`increase` functions and preserve scrape target labels such as `instance` and deployment identity.
+
+| Metric suffix | Labels and meaning |
 | --- | --- |
-| `powercontext_server_transport_requests_total` | Count requests by transport, operation, and outcome |
-| `powercontext_server_transport_request_duration_seconds` | Observe request duration |
-| `powercontext_server_application_operations_total` | Observe successful and failed application operations |
-| `powercontext_server_runtime_ready` | Determine whether the Runtime can accept operations |
+| `transport_requests_total`, `transport_request_duration_seconds` | `transport`, `operation`, `outcome`: external requests and duration |
+| `application_operations_total`, `application_operation_duration_seconds` | `operation`, `outcome`: application operations and duration |
+| `service_role_info` | `role`: `all`, `api`, `background`, or `server`; value `1` identifies this process |
+| `runtime_ready` | Compatibility gauge: Runtime admission, not full model availability |
+| `runtime_readiness_state` | `state`: `unobserved`, `ready`, `degraded`, `not_ready` |
+| `runtime_readiness_observed_timestamp_seconds` | Last completed readiness evaluation; absent before evaluation; may include cached results |
+| `dependency_state` | `dependency`, `state`: `unobserved`, `disabled`, `ready`, `unavailable`, `timeout`, `misconfigured` |
+| `dependency_blocking` | `dependency`: `1` when this dependency blocks readiness |
+| `dependency_observed_timestamp_seconds` | `dependency`: last completed actual probe; absent before a completed probe |
+| `dependency_last_success_timestamp_seconds` | `dependency`: last actual successful probe; absent before success |
+| `dependency_probe_duration_seconds` | `dependency`, `outcome`: actual probes, excluding cache hits |
+| `telemetry_collection_timestamp_seconds` | Last successful passive snapshot collection; `0` before collection |
+| `telemetry_collection_failures_total` | Failed passive collection attempts; the previous observation is retained |
+| `telemetry_log_records_dropped_total` | Records that the process-owned log handler failed to deliver |
 
-`powercontext_server_runtime_ready=1` means only that the Runtime can accept operations. It may still be `1` while the
-Server is `degraded`, so it does not prove that model capabilities are fully available. Combine it with the `status` from
-`/health/ready` and `powercontext capabilities`.
+Dependency labels are limited to `database`, `inference.generation`, `inference.rerank`, `inference.decision`, and
+`inference.embedding`. Disabled dependencies have no probe timestamps or samples. Probe outcomes are `ready`,
+`unavailable`, `timeout`, `misconfigured`, or `cancelled`; cancellation contributes duration but does not replace the
+last completed state/timestamp. A cache hit updates neither actual probe timestamps nor histogram counts. One sample is one complete probe refresh;
+provider-internal retries, if any, remain inside that duration and are not counted as separate network attempts.
+Built-in cached probes normally retain results for 300 seconds, or 30 seconds for `timeout`/`unavailable`; cache expiry
+alone does not run a probe. The aggregate evaluation timestamp, probe timestamps, collection timestamp, and Prometheus
+scrape timestamp answer different freshness questions.
 
-To disable `/metrics`, set `POWERCONTEXT_SERVER_METRICS_ENABLED=false`; see [Configuration](configuration.md).
+`runtime_ready=1` may coexist with `degraded`: it means operations can be admitted, not that all models are available.
+Use `runtime_readiness_state` with dependency states and freshness, or request `powercontext ready` and
+`powercontext capabilities` to diagnose an unavailable database versus an optional model failure. A background-only
+process may legitimately retain `unobserved` readiness; `/metrics` does not turn it into a readiness checker.
 
-Use `powercontext ready` and `powercontext capabilities` to distinguish an unavailable database from a degraded
-optional model provider. See [Troubleshoot](troubleshoot.md) for status definitions and recovery steps.
+### Processing metrics
+
+The following suffixes have the prefix `powercontext_server_artifact_processing_`. All per-Family series use `family`;
+additional labels are listed explicitly. Only registered, validated Family names are exported. No scope, worker,
+request, trace, content, provider error text, or database URL is a metric label.
+
+| Metric suffix | Meaning |
+| --- | --- |
+| `supervisor_present` | Process-level `0`/`1`; API-only absence is not Supervisor failure |
+| `supervisor_running`, `automatic_processing_enabled` | Per-Family `0`/`1` lifecycle/configuration observations |
+| `supervisor_role` | Additional `state`: `leader`, `standby` |
+| `status` | Additional `state`: `disabled`, `leader`, `standby`, `degraded` |
+| `max_workers`, `available_workers`, `used_workers` | Configured capacity and current worker slots |
+| `ready`, `retry_wait`, `blocked_wait` | Local ready queue, retained waiting retries (including blocked entries), and retained blocked scopes |
+| `unacknowledged_requests` | Scope count from the latest requested-work discovery snapshot, not a live scrape-time query |
+| `requested_snapshot_timestamp_seconds` | Time of that requested-work count observation; `0` before observation |
+| `observed_pending_scopes` | Number of retained first-observed pending keys, bounded to 1000 |
+| `oldest_observed_pending_age_seconds` | Age of the oldest retained first-observed pending generation; `0` if none retained |
+| `last_acknowledgement_timestamp_seconds` | Last verified durable acknowledgement; `0` before any acknowledgement |
+| `discovery_seconds`, `last_invocation_seconds` | Legacy latest discovery/invocation duration gauges |
+| `completed_total`, `failed_total`, `timeouts_total` | Legacy acknowledged, failed, and timed-out invocation counters |
+| `attempt_duration_seconds` | Additional `outcome`: duration of each worker attempt, including retries |
+| `discovery_duration_seconds` | Additional `outcome`: duration of each discovery pass |
+| `errors_total` | Additional `category`: bounded error categories listed in the log contract above |
+| `retries_total` | Additional `reason`: `failure`, `conflict`, `blocked`; retry scheduling decisions, including block rechecks and overflow |
+| `admission_blocks_total` | Observed blocked admission decisions; repeated decisions may count again |
+
+The pending age is only a **lower bound**, measured from first local observation of up to 1000 retained admitted keys.
+It tracks locally observed pending generations, not durable request creation time. Pending membership may be stale
+between discovery passes even while the local age advances. It is not the oldest durable pending age, queue latency,
+or a complete backlog census. Unseen keys can be older;
+keys can be removed or re-observed after acknowledgement, eviction, leadership changes, or restart. The durable intent
+schema has no request timestamp, so a global durable oldest-pending age is unavailable. Never interpret `0` as proof
+that the durable backlog is empty; inspect the pending count, its timestamp, and observation coverage together.
+
+Attempt outcomes are `success`, `hold`, `noop`, `failure`, `cancelled`, `blocked`, `cursor_conflict`, `head_conflict`,
+and `leadership_lost`. Discovery outcomes are `success`, `failure`, `cancelled`, and `leadership_lost`. The duration
+histograms expose `_bucket`, `_count`, and `_sum`; bucket boundaries are 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
+2.5, 5, 10, 30, 60, and `+Inf` seconds. `_count` counts attempts/passes, not unique requests or business successes.
+A retry contributes another attempt. `hold` and `noop` remain distinct from business success. The legacy
+`completed_total` counts verified durable acknowledgements and can include acknowledged holds/no-ops; it is not an
+attempt-success or produced-artifact counter. Neither histogram nor acknowledgement counter is a billing ledger.
+
+### Dashboards and alert rules
+
+Choose and record explicit operator thresholds for scrape failure, collection age, probe age, requested-snapshot age,
+pending age, and time without acknowledgement. These are deployment-specific alert policies, not built-in defaults.
+For example, an operator may select 120 seconds for collection freshness, 600 seconds for probe freshness, and 900
+seconds without acknowledgement while pending work exists; validate those choices against scrape cadence, readiness
+traffic, schedules, and expected worker duration. Do not apply a 600-second probe rule to a host that never runs probes.
+
+- First check Prometheus `up`, collection freshness, and collection failures. A fresh scrape can contain an old snapshot
+  after collection failure. Missing or zero timestamps need an explicit unobserved branch, separate from stale data
+- For dependency alerts, require an observed, sufficiently fresh state. Treat `disabled`, `unobserved`, stale, degraded,
+  and unavailable separately; optional-provider failure should not automatically page as database failure
+- Separate stopped processing from stalled processing. With a fresh collection, `supervisor_present=1` and
+  `supervisor_running=0`, alert on stopped processing when retained local work or a sufficiently fresh positive
+  `unacknowledged_requests` snapshot establishes pending work. Do not require a running Leader for this rule. If only
+  stale last-known pending evidence remains, report stopped processing with uncertain backlog and investigate;
+  a missing target is handled separately through `up`
+- For a running Leader, gate stalled-processing alerts on a fresh collection and pending-work evidence: current
+  `observed_pending_scopes>0` or `used_workers>0`, or a sufficiently fresh `unacknowledged_requests>0` snapshot.
+  Then evaluate time without acknowledgement or the pending-age lower bound against your chosen limit. Discovery
+  may pause when all worker slots are occupied, so a stale requested-work snapshot must not suppress a stall alert
+  supported by current retained work. The durable count is last-known discovery state; local retained keys and worker
+  slots describe current local work, not a complete durable backlog. A zero acknowledgement timestamp means never
+  acknowledged, not a UNIX-era outage; handle it separately with a startup grace period and sustained pending work
+- Keep idle healthy instances quiet. Automatic processing disabled is configuration, standby is expected, and missing
+  API-only Supervisor data is not a zero-capacity outage. Stale pending snapshots without current local evidence merit a freshness diagnostic, not a
+  fabricated backlog conclusion. Watch blocked waits, admission blocks, retry reasons, errors, and worker utilization
+- Scrape API and background targets separately. Do not add API and background backlog snapshots or leader and standby
+  counts for the same deployment/Family. Select the current running leader for backlog/capacity dashboards; preserve
+  deployment/group boundaries when combining Families. Counter rates are process-local and may need aggregation
+  across role transitions, but the same target must never be scraped twice into the same total
+- Alert on increasing collection failures and dropped log records. OTLP SDK queue occupancy and exporter drop counts
+  are unsupported here: their absence means unavailable telemetry, not zero pressure or zero loss. Inspect the
+  collector/backend's own diagnostics when investigating trace delivery
+
+See [Configuration](configuration.md) for endpoint settings and [Troubleshoot](troubleshoot.md) for recovery.
 
 ## Tracing
 

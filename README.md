@@ -113,6 +113,8 @@ These tags describe PowerContext integration maintenance and use. See the
 
 Applications can use PowerContext through the async Python client, HTTP API, MCP, or the in-process Core SDK. See the [interface reference](https://powercontext.oceanbase.io/en/docs/develop/interfaces/) to choose an entry point.
 
+[Operational metrics](docs/en/docs/operate/observability.md) expose dependency observations, processing freshness, and attempt latency, including a protected metrics-only endpoint for standalone background deployments.
+
 Explore the [22 Chinese Jupyter tutorials and a complete team workflow](examples/jupyter/README.md) to run Memory, context preparation, Handoff, Experience, Skill, and a real Agent step by step. The first seven tutorials need no model or API key.
 
 ## What changes with PowerContext

@@ -80,26 +80,124 @@ Identity 和 error 字段为新增字段；console 行现在包含 identity。
 
 ## 指标与就绪状态
 
-默认在 `/metrics` 提供指标。在 `enforced` 模式下，`/metrics` 和 `capabilities` 请求需要以具备
-`server.observe` 权限的 Principal 认证。具体认证和权限配置请参见[诊断与恢复](troubleshoot.md)。
-`/health/live` 存活检查和 `/health/ready` 就绪检查保持公开。
+默认通过 `/metrics` 输出 Prometheus 格式指标。在 `enforced` 模式下，`/metrics` 与 `capabilities` 需要
+具备 `server.observe` 权限的 Principal 认证，参见[诊断与恢复](troubleshoot.md)。API 宿主的
+`/health/live` 与 `/health/ready` 保持公开。
 
-`/metrics` 输出 Prometheus 格式的指标。常用指标包括：
+`background` 角色使用 `POWERCONTEXT_SERVER_HTTP_HOST` 和 `POWERCONTEXT_SERVER_HTTP_PORT` 启动仅提供指标的
+HTTP listener，指标认证与授权规则和 API 宿主一致，不提供 API、MCP、Dashboard、OpenAPI 或健康检查路由。
+API 与后台进程同机部署时应使用不同端口。设置 `POWERCONTEXT_SERVER_METRICS_ENABLED=false` 会移除 `/metrics`；
+对 `background` 还会阻止启动 listener。抓取后台指标不会执行 API 宿主的模型就绪探测。
 
-| 指标 | 用途 |
+### 被动观察与新鲜度
+
+抓取只复制 Runtime/Supervisor 已有的、有界的进程内观察，不查询数据库、不扫描积压、不刷新就绪状态、
+不调用模型，也不等待 Worker。观察由正常的发现与就绪检查流程产生。因此，抓取成功既不能证明依赖当前健康，
+也不能证明积压数据足够新。
+
+下表指标名均以 `powercontext_server_` 开头。时间戳单位为 UNIX 秒，耗时和年龄单位为秒；计数单位见各行。
+状态指标采用 one-hot 表示：当前 `state` 为 `1`，其他支持的状态为 `0`。缺少观察不等于健康的零值。
+计数器与直方图桶在所属进程或 Runtime/Supervisor 实例生命周期内累计，实例重建时重置，抓取不会重置。
+应使用能处理重置的 `rate`/`increase`，并保留 `instance` 和部署身份等抓取目标标签。
+
+| 指标后缀 | 标签与含义 |
 | --- | --- |
-| `powercontext_server_transport_requests_total` | 按传输方式、操作和结果统计请求量 |
-| `powercontext_server_transport_request_duration_seconds` | 观察请求耗时 |
-| `powercontext_server_application_operations_total` | 观察应用操作的成功与失败 |
-| `powercontext_server_runtime_ready` | 判断 Runtime 是否可以接收操作 |
+| `transport_requests_total`、`transport_request_duration_seconds` | `transport`、`operation`、`outcome`：外部请求数量与耗时 |
+| `application_operations_total`、`application_operation_duration_seconds` | `operation`、`outcome`：应用操作数量与耗时 |
+| `service_role_info` | `role`：`all`、`api`、`background` 或 `server`；值为 `1`，标识当前进程 |
+| `runtime_ready` | 兼容性指标：Runtime 是否允许操作，不表示模型能力完整可用 |
+| `runtime_readiness_state` | `state`：`unobserved`、`ready`、`degraded`、`not_ready` |
+| `runtime_readiness_observed_timestamp_seconds` | 最近完成的就绪评估时间；评估可能使用缓存，首次评估前不存在 |
+| `dependency_state` | `dependency`、`state`：`unobserved`、`disabled`、`ready`、`unavailable`、`timeout`、`misconfigured` |
+| `dependency_blocking` | `dependency`：该依赖阻止就绪时为 `1` |
+| `dependency_observed_timestamp_seconds` | `dependency`：最近一次实际完成探测的时间；首次完成前不存在 |
+| `dependency_last_success_timestamp_seconds` | `dependency`：最近一次实际成功探测的时间；首次成功前不存在 |
+| `dependency_probe_duration_seconds` | `dependency`、`outcome`：实际探测耗时，不包含缓存命中 |
+| `telemetry_collection_timestamp_seconds` | 最近成功复制被动快照的时间；首次采集前为 `0` |
+| `telemetry_collection_failures_total` | 被动采集失败次数；失败保留先前观察 |
+| `telemetry_log_records_dropped_total` | 进程自有日志 handler 未能交付的记录数 |
 
-`powercontext_server_runtime_ready=1` 只表示 Runtime 可以接收操作。即使 Server 处于 `degraded` 状态，该指标也可能为
-`1`，不能据此判断模型能力完整可用。请结合 `/health/ready` 返回的 `status` 和 `powercontext capabilities` 一起判断。
+依赖标签限于 `database`、`inference.generation`、`inference.rerank`、`inference.decision` 和
+`inference.embedding`。禁用依赖没有探测时间戳或样本。探测结果为 `ready`、`unavailable`、`timeout`、
+`misconfigured` 或 `cancelled`；取消只增加耗时观察，不替换最近完成的状态与时间戳。
+缓存命中既不更新实际探测时间戳，也不增加直方图计数。每个样本代表一次完整的探测刷新；提供方内部重试
+（若有）包含在这次耗时中，不计为独立网络尝试。内置缓存通常保留结果 300 秒，`timeout`/`unavailable`
+保留 30 秒；仅缓存到期不会自动执行探测。总体评估时间、实际探测时间、快照采集时间和 Prometheus 抓取时间
+分别回答不同的新鲜度问题。
 
-如需关闭 `/metrics`，请设置 `POWERCONTEXT_SERVER_METRICS_ENABLED=false`，具体配置方式见[配置选项](configuration.md)。
+`runtime_ready=1` 可以与 `degraded` 并存，只表示可以接收操作。结合 `runtime_readiness_state`、依赖状态及
+新鲜度判断，也可通过 `powercontext ready` 和 `powercontext capabilities` 区分数据库不可用与可选模型故障。
+纯后台进程可能正常保持 `unobserved`；`/metrics` 不会使它执行就绪检查。
 
-通过 `powercontext ready` 与 `powercontext capabilities` 区分数据库不可用和可选模型 Provider 降级。
-状态定义与恢复步骤见[诊断与恢复](troubleshoot.md)。
+### 后台处理指标
+
+下表后缀均以 `powercontext_server_artifact_processing_` 开头。逐 Family 指标使用 `family` 标签，额外标签
+在表中注明。只导出已注册且名称合法的 Family。Scope、Worker、请求、Trace、内容、Provider 错误文本或
+数据库 URL 均不作为指标标签。
+
+| 指标后缀 | 含义 |
+| --- | --- |
+| `supervisor_present` | 进程级 `0`/`1`；纯 API 实例没有 Supervisor 不代表故障 |
+| `supervisor_running`、`automatic_processing_enabled` | 逐 Family 的 `0`/`1` 生命周期与配置观察 |
+| `supervisor_role` | 额外 `state`：`leader`、`standby` |
+| `status` | 额外 `state`：`disabled`、`leader`、`standby`、`degraded` |
+| `max_workers`、`available_workers`、`used_workers` | 配置容量与当前 Worker 槽位 |
+| `ready`、`retry_wait`、`blocked_wait` | 本地就绪队列、保留的等待重试数（含阻塞项）和被阻塞 Scope 数 |
+| `unacknowledged_requests` | 最近请求工作发现快照中的 Scope 数，不是抓取时的实时查询 |
+| `requested_snapshot_timestamp_seconds` | 上述请求工作计数的观察时间；首次观察前为 `0` |
+| `observed_pending_scopes` | 保留的首次观察 pending key 数，最多 1000 |
+| `oldest_observed_pending_age_seconds` | 最早保留的 pending generation 从首次观察起的年龄；没有保留 key 时为 `0` |
+| `last_acknowledgement_timestamp_seconds` | 最近验证的持久确认时间；尚未确认时为 `0` |
+| `discovery_seconds`、`last_invocation_seconds` | 原有最近发现/调用耗时 gauge |
+| `completed_total`、`failed_total`、`timeouts_total` | 原有已确认、失败、超时调用计数器 |
+| `attempt_duration_seconds` | 额外 `outcome`：每次 Worker attempt 的耗时，包含重试 |
+| `discovery_duration_seconds` | 额外 `outcome`：每次发现流程的耗时 |
+| `errors_total` | 额外 `category`：上文日志契约中的有限错误类别 |
+| `retries_total` | 额外 `reason`：`failure`、`conflict`、`blocked`；重试调度决策数，包含阻塞复查与溢出 |
+| `admission_blocks_total` | 观察到的准入阻塞决策数；重复决策可再次计数 |
+
+Pending age 只是一个**下界**，从本地首次观察最多 1000 个保留的已准入 key 起计算。它不是持久队列中最老请求的
+年龄，不是排队延迟，也不是全量积压普查。它跟踪本地观察到的 pending generation，不是持久请求的创建时间。
+两次发现之间 pending 集合可能陈旧，即使本地年龄仍在增长。未观察的 key 可能更老；确认、淘汰、Leader 切换或重启后，key 可能
+被移除或重新观察。持久 intent schema 没有请求时间戳，因此无法提供全局持久 oldest-pending age。
+不能将 `0` 解释为持久积压为空；应结合 pending count、观察时间及覆盖范围判断。
+
+Attempt outcome 为 `success`、`hold`、`noop`、`failure`、`cancelled`、`blocked`、`cursor_conflict`、
+`head_conflict`、`leadership_lost`。Discovery outcome 为 `success`、`failure`、`cancelled`、`leadership_lost`。
+耗时直方图输出 `_bucket`、`_count`、`_sum`；桶边界为 0.005、0.01、0.025、0.05、0.1、0.25、0.5、1、2.5、5、
+10、30、60 和 `+Inf` 秒。`_count` 统计 attempt/发现次数，不统计唯一请求或业务成功数；一次重试增加一次 attempt。
+`hold` 和 `noop` 与业务成功分开。原有 `completed_total` 统计已验证持久确认的调用，可能包含已确认的 hold/noop，
+不是 attempt-success 或产出 Artifact 的计数器。直方图与确认计数器都不是计费账本。
+
+### Dashboard 与告警规则
+
+运维方应明确选择并记录抓取失败、快照采集年龄、探测年龄、请求快照年龄、pending age 和未确认时长的阈值。
+这些是部署专用的告警策略，不是内置默认值。例如可选择采集新鲜度 120 秒、探测新鲜度 600 秒、存在 pending work
+时超过 900 秒未确认；必须根据抓取频率、就绪检查流量、调度间隔和 Worker 预期耗时验证这些选择。
+不执行探测的宿主不应直接套用 600 秒探测规则。
+
+- 先检查 Prometheus `up`、采集新鲜度和采集失败。采集失败后，即使抓取很新，返回的仍可能是旧快照。
+  缺失或为零的时间戳需要单独的未观察分支，不能与陈旧数据混为一谈
+- 依赖告警应以已观察且足够新的状态为前提。分别处理 `disabled`、`unobserved`、陈旧、降级和不可用；
+  可选模型故障不应自动触发数据库故障级别的告警
+- 将停止处理与运行停滞分开。在采集足够新、`supervisor_present=1` 且 `supervisor_running=0` 时，
+  若本地保留工作或足够新的 `unacknowledged_requests>0` 快照证明存在 pending work，应触发停止处理告警，
+  不能要求此规则满足运行中 Leader 条件。若只有陈旧的最后已知 pending 证据，应报告处理已停止但积压未知并排查；
+  抓取目标失联则通过 `up` 单独处理
+- 对运行中的 Leader，停滞告警要求足够新的采集，以及 pending work 证据：当前 `observed_pending_scopes>0`、
+  `used_workers>0`，或足够新的 `unacknowledged_requests>0` 快照。再将未确认时长或 pending-age 下界与所选阈值比较。
+  Worker 槽位占满时发现可能暂停，因此请求工作快照陈旧不能压制已有当前本地工作证据支持的停滞告警。
+  持久计数是最后已知的发现状态；本地保留 key 与 Worker 槽位描述当前本地工作，不是全量持久积压。
+  确认时间为零表示从未确认，不是从 UNIX 纪元起故障；应单独结合启动宽限期与持续 pending work 判断
+- 健康空闲实例不应告警。禁用自动处理是配置，Standby 是预期角色，纯 API 缺失 Supervisor 数据不是零容量故障。
+  没有当前本地证据的陈旧 pending 快照应触发新鲜度诊断，不能据此编造积压结论。结合阻塞等待、准入阻塞、重试原因、错误与 Worker 利用率排查
+- 分别抓取 API 与后台目标。同一部署/Family 的 API 与后台积压快照、Leader 与 Standby 计数不能相加。
+  积压与容量面板选取当前运行的 Leader；跨 Family 汇总仍保留部署/group 边界。计数器速率属于各进程，
+  角色切换时可能需要汇总，但不能将同一目标重复抓取后计入同一总量
+- 监控采集失败与日志丢弃计数的增长。此处不支持 OTLP SDK 队列占用和 exporter 丢弃计数；缺失表示不可用的遥测，
+  不是零压力或零丢失。排查 Trace 交付时应查看 Collector/backend 自身诊断
+
+端点配置参见[配置选项](configuration.md)，恢复步骤参见[诊断与恢复](troubleshoot.md)。
 
 ## Tracing
 

@@ -42,6 +42,7 @@ from typing_extensions import override
 
 from powercontext.limits import MAX_ARTIFACT_FAMILY_LENGTH
 from powercontext.server.context import is_internal_bridge
+from powercontext.server.operational_metrics import OperationalMetricsCollector
 
 _PROCESSING_INSTRUMENTS = (
     ("max_workers", "Configured Worker capacity for this Artifact Family.", False),
@@ -102,8 +103,10 @@ class _ProcessingMetricsCollector:
 class ServerMetrics:
     """Own one Server instance's Prometheus registry and instruments."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, role: str = "server") -> None:
         self.registry = CollectorRegistry()
+        self.operational = OperationalMetricsCollector(role=role)
+        self.registry.register(self.operational)
         ProcessCollector(registry=self.registry)
         PlatformCollector(registry=self.registry)
         GCCollector(registry=self.registry)

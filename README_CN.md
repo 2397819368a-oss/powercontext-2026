@@ -104,6 +104,8 @@ Codex 标为 `official`，其他宿主及 Python Agent 框架标为 `community`�
 
 应用还可以通过异步 Python Client、HTTP API、MCP 或进程内 Core SDK 使用 PowerContext。请参考[接口说明](https://powercontext.oceanbase.io/zh/docs/develop/interfaces/)选择入口。
 
+[运行指标](docs/zh/docs/operate/observability.md)提供依赖状态观察、处理进度新鲜度和执行尝试延迟；独立后台部署也可使用受保护的专用指标端点。
+
 想用 Python 逐步体验？从 [22 篇 Jupyter 教程与完整团队工作流](examples/jupyter/README.md)开始，亲手运行 Memory、上下文、交接、Experience、Skill 和真实 Agent。前七篇不需要模型或 API Key。
 
 ## 使用 PowerContext 后有什么变化
