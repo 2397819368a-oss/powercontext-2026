@@ -421,3 +421,54 @@ AuthenticationProvider maps credentials to Principals. Local deployment can prep
 | External system | Stored and interpreted by plugins, optionally referenced in Config |
 
 Before business execution, the startup loading flow verifies actual identities, registers Definitions, grants Scope permissions, records instance scope and connection identities, and checks access using execution credentials. Server checks deployment authority before forwarding instance registration to management, which stores the instance connection credential digest. Management authenticates Runtime connections directly without consulting Server on each connection. Existing identity and Access interfaces are reused. Instances may be registered without Scope authorization but cannot accept work for that Scope. write has no separate execution credentials and does not borrow deployment authority for daily saves. Credentials are excluded from command arguments, catalogs, and ordinary logs; cross-machine connections use TLS or equivalent security.
+
+# 6. Drawbacks
+
+**The main cost is greater framework complexity than the initial independent-plugin-process design.** That design handled loading, background start/stop, and the data pipeline, leaving target management to plugins. This proposal adds a common capability catalog, persistent targets and control state, and synchronization, authentication, and disconnection handling between management and Runtime. Developers maintain more protocols, deployers manage additional components and storage, and troubleshooting spans more steps.
+
+These costs provide consistent discovery and management of built-in and custom Sources across hosts, reducing per-plugin integration. Target and lifecycle management behind that interface needs an explicit owner; this proposal assigns it to the framework. An independent management service is an architectural choice, not the only way to provide a common interface; section 7 compares alternatives. Users needing only autonomous collection with fixed configuration also bear this general management cost.
+
+**The first release executes only plugin code trusted by the deployer; it provides no sandbox for untrusted code, automatic signature verification, or automatic capability reduction.** The first release provides no plugin distribution system. Plugins supplied with the PowerContext repository and their dependencies are covered by project code review, testing, and release processes. User-supplied plugins remain loadable; deployers review their provenance and dependencies. Administrator approval to load code does not prove it safe. PC Access restricts data operations through standard interfaces, not arbitrary Python code's system access.
+
+| Path | Execution identity and impact |
+| --- | --- |
+| write | Standard saves use the host's PC identity, but plugin code runs with the Server process's operating-system permissions and access to its resources. Blocking, resource exhaustion, or process-level failure may affect the entire Server |
+| collect | Worker uses the instance PC identity for authorized Scopes; code runs with the Runtime process's operating-system permissions. Separate processes reduce direct process-failure propagation, but shared-machine resource contention and excessive submissions can still affect other components |
+
+Deployers needing stronger isolation can use separate system users, containers, or machines; these deployment measures are not a framework sandbox guarantee. Process separation does not guarantee high availability or resource quotas.
+
+# 7. Rationale and alternatives
+
+**write reduces execution components while accepting the risk of trusted code running inside Server.** When the host already has complete content, a Server-local implementation can validate, transform, and save it without a separately managed execution process. External execution can also return synchronously, so synchronous semantics do not require execution inside Server. This path reuses data contracts and persistence rules but extends #1400's boundary where custom implementations execute in Worker.
+
+**collect provides a common management interface.** The initial independent-plugin-process design already supported one background process per directory, local run / stop, multiple Scopes, and plugin-defined target updates through files, configuration services, or events; the process exited when apply ended. Its limitation was that each plugin defined its target format and update interface, requiring hosts to integrate with plugins individually.
+
+For example, a Yuque plugin already collecting document A should accept document B created by a host through the same instance. The initial design could do this, but the host needed to understand the plugin's target interface. This proposal requires a consistent entry point for built-in and custom Sources and shared management capabilities across hosts. The framework therefore accepts and persists targets and controls, while plugins retain control of collection timing.
+
+| collect alternative | Benefits | Costs or limitations |
+| --- | --- | --- |
+| Add only discovery and loading to existing Worker | Few components; reuses collection and submission pipelines | Plugins or external systems still provide dynamic targets and common management |
+| Initial design: one background process per directory, plugin-managed targets | Background start/stop, resource cleanup, and multiple Scopes; plugins can refresh targets dynamically | No common target interface across plugins; no outer Runtime receives controls after apply ends |
+| Place collect management inside Server | One fewer service and less management communication; remote Runtimes remain possible | Collection management and data service share a process lifecycle |
+| Independent plugin management service and Runtime | Multiple instances share a management entry point; management deploys independently | Additional service, storage, and communication costs |
+
+A common MCP does not inherently require a separate management process. This proposal also requires one service shared by multiple instances, deployable on any network-reachable machine and separate from the PC Server process. It therefore selects an independent service, still serving only one Server. write execution placement and collect management structure are independent choices. The lighter independent-process design remains suitable when only autonomous plugin collection is needed.
+
+# 8. Prior art
+
+[#1400: Source Definition and Connector contracts](1400_source_definition_and_observation_model.md) provides data definitions, Projections, remote registration and submission, receipts, and checkpoint rules. Its remote ingestion boundary executes custom implementations in Worker while Server validates and persists results; definition registration does not transfer executable code. collect reuses this pipeline and adds capability discovery and target management; write adds Server-local implementation loading. User authorization continues to reuse existing Access. Plugin management does not replace these data and authorization contracts.
+
+# 9. Unresolved questions
+
+Implementers must propose and validate the following in implementation PRs, with maintainer confirmation before the first release. Changes to this RFC's public semantics require a design update first.
+
+| Question | Established boundary and remaining decisions |
+| --- | --- |
+| Plugin API compatibility support | The first release loads only explicitly supported plugin_api_version values and rejects unsupported versions at load time. It provides no multi-version compatibility layer or commitment to support periods for older versions. Repository-supplied plugins are maintained alongside the framework. Implementation PRs must list and validate supported versions and rejection behavior; Definition and checkpoint compatibility rules still apply |
+| Server resource protection | Scope permissions and process separation do not provide resource quotas. Input-size, concurrency, and submission-load limits and their failure behavior need to be specified and validated. This proposal does not yet promise an upper bound on a plugin's resource impact on Server |
+
+Section 6 defines plugin maintenance and trust boundaries for the first release. Plugin distribution and automatic signature and supply-chain verification are outside this proposal’s scope.
+
+# 10. Future possibilities
+
+Future work may evaluate isolated write execution, sandboxes for untrusted code, plugin signatures and dependency verification, and per-instance resource quotas. These are not first-release commitments. Changes to execution placement, the trust model, or public invocation semantics require separate design review.
