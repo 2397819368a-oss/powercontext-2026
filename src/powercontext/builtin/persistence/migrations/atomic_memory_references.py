@@ -225,6 +225,8 @@ class _Context:
     decisions: dict[tuple[str, str, int], CandidateDecision]
     write: bool
     citation_tables: frozenset[str] = frozenset()
+    candidate_versions: str = "pc_candidate_versions"
+    candidate_heads: str = "pc_candidate_heads"
     errors: list[str] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
     used_decisions: set[tuple[str, str, int]] = field(default_factory=set)
@@ -789,10 +791,10 @@ def _candidate_label(key: Mapping[str, Any]) -> str:
 
 
 async def _candidates(context: _Context, units: _Units) -> None:
-    cited = "pc_artifact_candidate_versions" in context.citation_tables
+    cited = context.candidate_versions in context.citation_tables
     keys = await _keys(
         units,
-        "SELECT scope_id, candidate_id, version FROM pc_artifact_candidate_versions WHERE family <> 'memory' AND "  # noqa: S608
+        f"SELECT scope_id, candidate_id, version FROM {context.candidate_versions} WHERE family <> 'memory' AND "  # noqa: S608
         + (
             "((memory_citations IS NOT NULL AND LENGTH(memory_citations) > 2) "
             "OR CAST(artifact_refs AS CHAR) LIKE '%\"memory\"%')"
@@ -805,7 +807,7 @@ async def _candidates(context: _Context, units: _Units) -> None:
         row = (
             await rows(
                 connection,
-                "pc_artifact_candidate_versions",
+                context.candidate_versions,
                 ("source_refs", "artifact_refs", *((LEGACY_CITATION_COLUMN,) if cited else ())),
                 "WHERE scope_id = :scope_id AND candidate_id = :candidate_id AND version = :version",
                 **key,
@@ -862,7 +864,7 @@ async def _candidates(context: _Context, units: _Units) -> None:
             )
         await connection.execute(
             text(
-                "UPDATE pc_artifact_candidate_versions SET artifact_refs = :refs"  # noqa: S608
+                f"UPDATE {context.candidate_versions} SET artifact_refs = :refs"  # noqa: S608
                 + (", memory_citations = :citations" if cited else "")
                 + " WHERE scope_id = :scope_id AND candidate_id = :candidate_id AND version = :version"
             ),
@@ -1076,9 +1078,9 @@ async def _dream_runs(context: _Context, units: _Units) -> None:
 
 async def _unsupported(context: _Context, units: _Units, tables: set[str]) -> None:
     async with units.unit() as connection:
-        if "pc_artifact_candidate_heads" in tables:
+        if context.candidate_heads in tables:
             for row in await rows(
-                connection, "pc_artifact_candidate_heads", ("scope_id", "candidate_id"), "WHERE family = 'memory'"
+                connection, context.candidate_heads, ("scope_id", "candidate_id"), "WHERE family = 'memory'"
             ):
                 context.errors.append(
                     f"Candidate {row['scope_id']}/{row['candidate_id']}: legacy Memory Candidate is unsupported"
@@ -1099,11 +1101,11 @@ async def _unsupported(context: _Context, units: _Units, tables: set[str]) -> No
 async def _decision_applied(context: _Context, units: _Units, decision: CandidateDecision) -> bool:
     """A committed replacement lets the same decision file be reused for a rerun."""
 
-    cited = "pc_artifact_candidate_versions" in context.citation_tables
+    cited = context.candidate_versions in context.citation_tables
     async with units.unit() as connection:
         found = await rows(
             connection,
-            "pc_artifact_candidate_versions",
+            context.candidate_versions,
             ("artifact_refs", *((LEGACY_CITATION_COLUMN,) if cited else ())),
             "WHERE scope_id = :scope_id AND candidate_id = :candidate_id AND version = :version",
             scope_id=decision.scope_id,
@@ -1131,9 +1133,19 @@ async def convert_references(
     async with units.unit() as current:
         tables = await table_names(current)
         citation_tables = frozenset(await legacy_citation_columns(current, tables))
-    context = _Context(collections, decisions, write=database is not None, citation_tables=citation_tables)
+    prefix = "pc_artifact_candidate" if "pc_artifact_candidate_versions" in tables else "pc_candidate"
+    if "pc_artifact_candidate_versions" in tables and "pc_candidate_versions" in tables:
+        return {}, ("ambiguous Candidate tables; finish or recover the Dream migration first",)
+    context = _Context(
+        collections,
+        decisions,
+        write=database is not None,
+        citation_tables=citation_tables,
+        candidate_versions=prefix + "_versions",
+        candidate_heads=prefix + "_heads",
+    )
     await _unsupported(context, units, tables)
-    if "pc_artifact_candidate_versions" in tables:
+    if context.candidate_versions in tables:
         await _candidates(context, units)
     if "pc_dream_runs" in tables:
         await _dream_runs(context, units)
@@ -1275,9 +1287,9 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
             "SELECT COUNT(*) FROM pc_artifacts WHERE memory_citations IS NOT NULL AND LENGTH(memory_citations) > 2",
             "Artifacts still hold legacy Memory citations",
         ),
-        "pc_artifact_candidate_versions": (
-            "SELECT COUNT(*) FROM pc_artifact_candidate_versions WHERE "  # noqa: S608
-            + (cited if "pc_artifact_candidate_versions" in citation_tables else "")
+        "pc_candidate_versions": (
+            "SELECT COUNT(*) FROM pc_candidate_versions WHERE "  # noqa: S608
+            + (cited if "pc_candidate_versions" in citation_tables else "")
             + "CAST(artifact_refs AS CHAR) LIKE '%\"memory\"%'",
             "Candidates still hold legacy Memory references",
         ),
@@ -1287,6 +1299,12 @@ async def residual_issues(  # noqa: C901 - One flat list of independent residual
             "terminal Dream runs still use the executable legacy format",
         ),
     }
+    checks["pc_artifact_candidate_versions"] = (
+        "SELECT COUNT(*) FROM pc_artifact_candidate_versions WHERE "  # noqa: S608 - fixed table and predicates
+        + (cited if "pc_artifact_candidate_versions" in citation_tables else "")
+        + "CAST(artifact_refs AS CHAR) LIKE '%\"memory\"%'",
+        "Candidates still hold legacy Memory references",
+    )
     if "pc_dream_runs" in tables and await count(
         "SELECT COUNT(*) FROM pc_dream_runs WHERE status NOT IN ('succeeded', 'failed') "
         "AND CAST(payload AS CHAR) LIKE '%memory_citations%'"

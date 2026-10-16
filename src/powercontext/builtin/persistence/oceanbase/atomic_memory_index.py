@@ -180,7 +180,8 @@ class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                 rows = (
                     await connection.execute(
                         text(
-                            f"SELECT {_HIT_COLUMNS}, MATCH(searchable_text) AGAINST (:fts_query) AS score "  # noqa: S608
+                            f"SELECT {_HIT_COLUMNS}, MATCH(searchable_text) AGAINST (:fts_query) AS score, "  # noqa: S608
+                            "MATCH(searchable_text) AGAINST (:fts_query) AS raw_score, 'oceanbase_match' AS score_metric "
                             "FROM pc_atomic_memory_current WHERE scope_id = :scope_id "
                             f"AND ({eligibility}) AND MATCH(searchable_text) AGAINST (:fts_query) > 0 "
                             f"AND ({' + '.join(coverage)}) >= :fts_required "

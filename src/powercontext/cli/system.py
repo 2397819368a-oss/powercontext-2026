@@ -75,7 +75,8 @@ _CODEX_FULL_MCP_TOOLS = frozenset({
     "generate_experience",
     "generate_skill",
     "get_artifact",
-    "get_artifact_candidate",
+    "get_candidate",
+    "get_candidate_history",
     "get_artifact_revision",
     "get_atomic_memory_state",
     "get_experience",
@@ -86,7 +87,7 @@ _CODEX_FULL_MCP_TOOLS = frozenset({
     "get_topic_memory",
     "handoff_current_work",
     "import_external_skill",
-    "list_artifact_candidates",
+    "list_candidates",
     "list_atomic_memories",
     "list_external_skills",
     "list_managed_skills",
@@ -689,13 +690,28 @@ def setup_kimi_code(
 @doctor_app.command("kimi-code")
 def doctor_kimi_code(
     json_output: Annotated[bool, typer.Option("--json", help="Write diagnostics as JSON.")] = False,
+    runtime: Annotated[bool, typer.Option("--runtime", help="Inspect local Hook history for this workspace.")] = False,
+    cwd: Annotated[
+        Path | None, typer.Option(help="Workspace for runtime history; defaults to the current directory.")
+    ] = None,
+    session_id: Annotated[
+        str | None, typer.Option(help="Exact Kimi session; omission selects workspace history.")
+    ] = None,
 ) -> None:
     """Check Kimi plugin declarations and readonly Server/Scope connectivity."""
     from powercontext.cli.kimi_code import run_kimi_diagnostics
 
-    diagnostics = run_kimi_diagnostics()
-    _write_diagnostics(diagnostics, json_output=json_output)
-    if _diagnostics_status(diagnostics) is not DiagnosticStatus.OK:
+    if (cwd is not None or session_id is not None) and not runtime:
+        raise typer.BadParameter("--cwd and --session-id require --runtime")  # noqa: TRY003 - CLI option validation.
+    diagnostics = run_kimi_diagnostics(runtime=runtime, cwd=cwd, session_id=session_id)
+    required = {
+        name: value
+        for name, value in diagnostics.items()
+        if name != "runtime" or value.status is DiagnosticStatus.FAILED
+    }
+    status = _diagnostics_status(required)
+    _write_diagnostics(diagnostics, json_output=json_output, summary_status=status)
+    if status is not DiagnosticStatus.OK:
         raise typer.Exit(code=1)
 
 

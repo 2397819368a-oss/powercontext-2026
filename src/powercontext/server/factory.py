@@ -49,6 +49,7 @@ from powercontext.builtin.runtime.config import BuiltinConfig
 from powercontext.builtin.runtime.processing_registry import processing_capabilities
 from powercontext.builtin.sources import CONTENT_SOURCE_NAME
 from powercontext.http import (
+    ArtifactDreamingOperationCapability,
     Capabilities,
     ExtractionStatus,
     MemorySearchMode,
@@ -80,6 +81,7 @@ from powercontext.server.dashboard import mount_dashboard
 from powercontext.server.dream_access import DreamAccess
 from powercontext.server.identity import ServerIdentityRepository
 from powercontext.server.info import server_info
+from powercontext.server.logging import WorkerLogging
 from powercontext.server.mcp import mount_mcp
 from powercontext.server.metrics import CONTENT_TYPE_LATEST, HttpMetricsMiddleware, ServerMetrics
 from powercontext.server.middleware import AuthenticationMiddleware
@@ -164,7 +166,9 @@ def create_server_app(  # noqa: C901
         external_skills=resolved.external_skills,
     )
     metrics = ServerMetrics() if resolved.metrics.enabled else None
-    resolved_tracing = ServerTracing.context_only() if tracing is None else tracing
+    resolved_tracing = (
+        ServerTracing.context_only(role=resolved.runtime.artifact_processing_role) if tracing is None else tracing
+    )
     if metrics is not None:
         metrics.set_ready(False)
     readiness_probe = _ServerReadinessProbe(metrics, tracing=resolved_tracing)
@@ -222,6 +226,7 @@ def create_server_app(  # noqa: C901
                     if dream_access is None
                     else dream_access.access.defer_decision_audit,
                     dream_candidate_attester=None if dream_access is None else dream_access.attest_candidate,
+                    dream_candidate_authorizer=None if dream_access is None else dream_access.authorize_candidate,
                     external_skill_provider=external_skill_provider,
                     handoff_pipeline=handoff_pipeline,
                     embedding_model=embedding_model,
@@ -232,6 +237,7 @@ def create_server_app(  # noqa: C901
                     scheduled_source_runner=scheduled_source_runner,
                     scheduled_experience_runner=scheduled_experience_runner,
                     worker_security=worker_security,
+                    worker_initializer=WorkerLogging(resolved.logging),
                     scheduled_profile_runner=_scheduled_profile_runner(
                         resolved,
                         active_access_control,
@@ -628,6 +634,10 @@ async def _server_capabilities(runtime: BuiltinRuntime) -> Capabilities:
         experience_generation=capabilities.experience_generation,
         managed_skill_generation=capabilities.managed_skill_generation,
         artifact_dreaming=capabilities.artifact_dreaming,
+        artifact_dreaming_operations=[
+            ArtifactDreamingOperationCapability.model_validate(value.model_dump())
+            for value in capabilities.artifact_dreaming_operations
+        ],
         external_skill_registry=capabilities.external_skill_registry,
         handoff_generation=capabilities.handoff_generation,
         search_modes=[MemorySearchMode(mode) for mode in capabilities.memory_search_modes],

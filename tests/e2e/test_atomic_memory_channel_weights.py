@@ -129,6 +129,26 @@ def test_http_atomic_search_applies_deployment_weights_only_to_hybrid(
                     "alpha lexical" if fts_weight > vector_weight else "unrelated semantic"
                 )
             assert all("score_upper_bound" not in item for item in results)
+            for params, expected in (
+                ({}, {"alpha lexical": 0.5, "unrelated semantic": 0.5}),
+                ({"weights": {"vector": 0}}, {"alpha lexical": 1.0}),
+                ({"rank_constant": 10**400}, {"alpha lexical": 0.5, "unrelated semantic": 0.5}),
+            ):
+                override = await client.post(
+                    f"/v1/scopes/{scope_id}/artifacts/atomic-memory/search",
+                    json={
+                        "query": "alpha",
+                        "mode": "hybrid",
+                        "fusion": {"method": "rrf", "params": params},
+                        "include_scores": True,
+                    },
+                )
+                assert override.status_code == 200, override.text
+                scored = override.json()["results"]
+                assert {item["content"]["text"]: item["scores"]["retrieval"] for item in scored} == pytest.approx(
+                    expected
+                )
+                assert all(item["scores"]["channels"] for item in scored)
 
     asyncio.run(scenario())
 

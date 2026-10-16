@@ -1,6 +1,6 @@
 # PowerContext
 
-Context for work that humans and agents hand off and continue.
+**Context that stays with the work — across sessions, agents, and people.**
 
 [![PyPI version](https://img.shields.io/pypi/v/powercontext)](https://pypi.org/project/powercontext/)
 [![License Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -8,57 +8,149 @@ Context for work that humans and agents hand off and continue.
 
 *[English](README.md) · [中文](README_CN.md) · [日本語](README_JP.md)*
 
-Work rarely ends with whoever starts it. You hand a task to an agent, the agent gets part of the way, and later you or someone else takes over. The reasoning and current state often stay behind in that conversation.
+[Website](https://powercontext.oceanbase.io/) · [Quickstart](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) · [Integrations](https://powercontext.oceanbase.io/en/docs/integrations/) · [Benchmarks](https://powercontext.oceanbase.io/en/benchmarks/) · [Interfaces](https://powercontext.oceanbase.io/en/docs/develop/interfaces/)
 
-PowerContext keeps context with the work across conversations. When you return, you can see what happened and continue from the current state. A new agent can do the same.
+## What is PowerContext?
+
+**PowerContext is an open-source context service for AI agents.** It keeps the durable part of your work — decisions,
+constraints, evidence, progress — outside any single conversation, so the next session, the next agent, or the next
+person can pick up from the current state instead of rereading the transcript.
+
+Work rarely ends with whoever starts it. You hand a task to an agent, the agent gets part of the way, and later you or
+someone else takes over. The reasoning and current state often stay behind in that conversation. PowerContext moves them
+out of the conversation and into revisioned artifacts you can inspect:
 
 ![You and agents hand work off and continue with stored context](docs/assets/readme-workflow.svg)
 
-[Website](https://powercontext.oceanbase.io/) · [Installation walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)
+Everything belongs to a **Scope** — one isolated Source journal, Memory lifecycle, review inbox, and Handoff history.
+A Scope ID selects data; it does not prove user identity, grant tool access, or authorize execution.
 
-PowerContext 1.3.0 includes the guided setup. The commands below install this version and connect
-the matching Agent integration.
+```text
+Scope
+├── Source journal    # evidence: prompts, documents, work contracts, task outcomes
+├── Memory            # atomic-memory/ARTIFACT_ID@REVISION — decisions, constraints, next steps
+├── Review Inbox      # pending Experience and Skill candidates awaiting a decision
+├── Handoff history   # handoff/ARTIFACT_ID@REVISION — work continuity across sessions
+└── Topic Memory      # extracted in the background from eligible Sources
+```
 
-## Pick up where the work left off
+*The Dashboard screenshots below use synthetic demonstration records.*
 
-You see the context the work needs now: confirmed decisions, constraints, progress, evidence, and next steps. You can continue from there or hand the work to another person or agent without rereading the full history.
+### Memory — decisions and constraints that outlive a session
 
-You decide what will matter later and what needs to move with the task. PowerContext stores durable information as Memory and organizes the current objective and state into a Handoff. You can record reusable approaches as Experience or Skill. PowerContext keeps every item within the scope of the work and preserves its sources and earlier revisions.
+Memory is a revisioned Artifact family for reusable decisions, constraints, facts, state, and next steps. An entry is
+`active`, `forgotten`, `merged`, or `retired`. Forgetting one through `POST /v1/atomic-memory/lifecycle` takes it out of
+active recall while its content and history stay available and restorable, without advancing the content revision.
+Explicit Memory writes need no model at all; extraction from captured Sources needs a configured generation pipeline.
 
-The optional recall-sufficiency gate records scope-local daily search effort and budget omissions for later policy
-evaluation. See the [configuration reference](docs/en/docs/operate/configuration.md) for its recording and failure behavior.
+> "Don't refactor the old auth module — mobile is still using it."
+> Context this expensive shouldn't depend on someone repeating it in every session.
 
-## Install, configure, and connect your Agent
+![Dashboard showing active decisions and constraints for one Scope with their Artifact and Source references](docs/assets/readme-dashboard-memories.png)
 
-You need Git, [uv](https://docs.astral.sh/uv/getting-started/installation/), and your Agent's CLI.
-Python 3.11+ is required; uv can provision it. macOS and Linux are supported; Windows support is `experimental`.
+### Handoff — the current state, not the whole transcript
 
-Install 1.3.0 and open the interactive configuration wizard in a dedicated directory:
+Handoff records work continuity as a four-step loop:
+
+```text
+Work Contract → Prepared Handoff → Acknowledgement → Task Outcome
+```
+
+`handoff_current_work` captures an inspected boundary and returns a temporary Prepared Handoff. Committing it creates a
+durable Revision only when the user wants a milestone. The receiver resolves the Handoff and records an Acknowledgement;
+a Task Outcome preserves the final status and checks as Source evidence. The
+[Handoff Report](https://powercontext.oceanbase.io/en/docs/workflows/use-handoff-report/) projects the latest Revision in
+each selected Scope — read-only, and it never rewrites Memory.
+
+![Dashboard showing a committed Handoff Revision with recorded progress, next action, and linked source evidence](docs/assets/readme-dashboard-handoff.png)
+
+### Experience — what worked, reviewed before it is reused
+
+An Experience records a situation, an action, an observed outcome, and a reusable lesson. It enters a scope-local Review
+Inbox as a pending Candidate. Review writes use `expected_version`, so a decision cannot silently apply after another
+writer changes the proposal. Approval writes an immutable Revision; rejection records a reason. Both are terminal, and
+only the approved current head takes part in recall — pending, rejected, and historical Revisions are excluded.
+
+### Skill — a reviewed procedure, exported on purpose
+
+A managed Skill holds a name, a discovery description, instructions, validation checks, and lineage. Approval does not
+install or execute it: an exact approved Revision must be exported explicitly before an Agent host can discover the
+host-local projection.
+
+## Why PowerContext?
+
+- **Context lives outside the conversation.** Memory, Handoff, Experience, and Skill are server-side artifacts, not
+  files inside one agent's home directory. Switch from Codex to Claude Code — or hand the work to a teammate — and the
+  work travels with you.
+- **Everything is revisioned and traceable.** Each Artifact is addressed as `FAMILY/ARTIFACT_ID@REVISION`. The Artifact
+  ID stays stable while approved replacements create later Revisions, and reading an exact reference returns that
+  historical snapshot even after the family head advances.
+- **Generation, review, and execution are separate steps.** A model proposes content, review approves a Revision, and
+  export creates a host-local copy. None of those steps grants an Agent permission to execute instructions. See
+  [Interfaces](https://powercontext.oceanbase.io/en/docs/develop/interfaces/) for what each surface exposes today.
+- **Recall is bounded, not dumped.** `PreparedContext` selects active Memory and approved Experience heads for one Agent
+  turn, applies a shared byte budget, and returns `ready` content or `empty`. Recalled content is history, not an
+  instruction authority: the receiving Agent still follows current instructions and checks live workspace state.
+- **Review before reuse.** Experience and Skill pass through a review decision that is terminal either way. The model
+  proposes rather than silently promoting its own output.
+- **One Server, several views of the same contract.** HTTP is the complete remote application contract. The Python Client
+  gives typed access, MCP is a curated Agent-facing projection, and Core protocols let an application assemble its own
+  Source, Artifact, and Trigger implementations.
+
+### How it compares
+
+| | Re-reading chat history | RAG over transcripts | Host-local memory files | PowerContext |
+|---|---|---|---|---|
+| Survives a new session | manual | yes | yes | yes |
+| Survives switching agents | no | no | no | yes |
+| Handing work to a person | manual | manual | manual | Handoff, first-class |
+| Reusable procedure | no | no | prose only | Experience / Skill |
+| Earlier revisions kept | no | depends on the index | only via git | immutable Revisions |
+| Review before reuse | n/a | no | no | Review Inbox |
+| Bounded recall for one turn | no | partial | no | `PreparedContext` byte budget |
+| Inspectable outside the Agent | no | no | yes | yes |
+
+## Proof it works
+
+![Compact comparison of PowerContext results on LoCoMo and SWE-bench Pro](docs/assets/readme-benchmark-summary.svg)
+
+- **Long-conversation memory (LoCoMo): 90.78% accuracy**, against 87.79% for PowerMem and 52.9% for full-context replay
+  — **+37.88 points** over full context.
+- **Coding tasks (SWE-bench Pro): 86.73% task resolution with PowerContext on, 82.35% with it off** — **+4.38 points**
+  and 32 more tasks resolved in a 731-task paired run.
+- **Retrieval quality (LoCoMo Plus)**, native PowerContext against PowerContext with Jev candidate filtering after
+  retrieval. Each model is used for both Memory extraction and answering; embeddings use `qwen3.7-text-embedding`
+  (1024 dimensions):
+
+  | Model | PowerContext | PowerContext + Jev | Difference |
+  |---|---|---|---|
+  | GPT-4o-mini | 40.855% | 49.78% | +8.925 points |
+  | Qwen3.7-plus | 60.37% | 68.947% | +8.577 points |
+  | GPT-4o | 65.082% | 69.28% | +4.198 points |
+
+Full methods, results, and limitations: [benchmarks](https://powercontext.oceanbase.io/en/benchmarks/). Two caveats we
+would rather state than bury: the six LoCoMo Plus scores above were supplied by the project owner, and their run
+artifacts are not publicly available for verification — the published instructions reproduce the harness, not those
+scores. Windows support is `experimental`.
+
+## Quick start
+
+PowerContext 1.3.0 includes an interactive setup wizard. You need Git,
+[uv](https://docs.astral.sh/uv/getting-started/installation/), and your Agent's CLI. Python 3.11+ is required; uv can
+provision it. macOS and Linux are supported; Windows support is `experimental`.
+
+<details open>
+<summary><strong>Run the wizard in a dedicated directory</strong></summary>
 
 ```bash
 uv tool install --force "powercontext[cli,server]==1.3.0"
-mkdir -p powercontext-config
-cd powercontext-config
+mkdir -p powercontext-config && cd powercontext-config
 powercontext config init --language en --output .env
+powercontext server run --env-file .env      # keep this terminal open
 ```
 
-If Python dependency downloads are slow or fail, follow the [mirror retry instructions](https://powercontext.oceanbase.io/en/docs/get-started/install-and-run/#retry-dependency-downloads-with-a-mirror).
-
-The wizard asks about storage, local or remote access, memory capabilities, Dashboard, model APIs, and Agent
-connections. Choose **Full memory capabilities** to test automatic Memory and Topic Memory; this requires separate
-Generation and Embedding API credentials. An Agent subscription does not provide those Server credentials.
-Choose **Basic memory** to save and retrieve memories explicitly without additional model APIs.
-
-The wizard writes one `.env` environment file and `.env.next-steps.md`.
-If seekdb needs installing, it asks once and installs the dependency in the background. Follow the printed
-connection details and start Server in this terminal:
-
-```bash
-powercontext server run --env-file .env
-```
-
-Keep Server running. In another terminal, return to `powercontext-config`, load only the client settings,
-and check the connection:
+The wizard writes one `.env` environment file and `.env.next-steps.md`. Keep Server running; in another terminal, return
+to `powercontext-config`, load only the client settings, and check the connection:
 
 ```bash
 set -a
@@ -68,26 +160,61 @@ powercontext ready
 powercontext capabilities
 ```
 
-Continue with `.env.next-steps.md` to create and bind the selected Scopes, install the matching plugins, and launch
-a new Agent session. The [complete walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)
-covers Codex and Claude Code, Dashboard login, SSH forwarding, HTTPS prerequisites, and observable acceptance checks.
-For example, the matching Codex installation is:
+Continue with `.env.next-steps.md` to create and bind the selected Scopes, install the matching plugins, and launch a new
+Agent session. The [complete walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) covers Codex
+and Claude Code, Dashboard login, SSH forwarding, HTTPS prerequisites, and observable acceptance checks. For example, the
+matching Codex installation is:
 
 ```bash
 powercontext setup codex --ref powercontext-v1.3.0
 powercontext doctor codex
 ```
 
-`doctor` verifies integration setup. To verify automatic memory, check that a real prompt becomes a Source,
-produces a Topic, evolves after a related prompt, and can be recalled in a new session using the same Scope.
+</details>
 
-For a Server on another machine, use HTTPS or follow the
-[remote connection guide](docs/en/docs/operate/connect-remote-server.md). Setup recognizes remote HTTP URLs from
-flags or environment variables and asks for explicit consent; automated setup uses `--allow-insecure-http`.
+<details>
+<summary><strong>Explore in Python first — no API key</strong></summary>
 
-Codex is `official`; other hosts and Python Agent frameworks are `community`; Bub is `evaluation` only.
-These tags describe PowerContext integration maintenance and use. See the
-[capability matrix](https://powercontext.oceanbase.io/en/docs/integrations/capabilities/) for supported features and availability.
+The tutorials run from a repository checkout and take their dependencies from a `uv` dependency group, so they are not
+part of the `powercontext` package. From the repository root:
+
+```bash
+uv sync --locked --group notebooks
+uv run --locked --group notebooks jupyter lab --notebook-dir=examples/jupyter
+```
+
+Then work through the [22 Chinese Jupyter tutorials and a complete team workflow](examples/jupyter/README.md) to run
+Memory, context preparation, Handoff, Experience, Skill, and a real Agent step by step. The first seven tutorials need no
+model or API key.
+
+</details>
+
+<details>
+<summary><strong>Before you ask "why isn't it working?"</strong></summary>
+
+- `doctor` verifies integration setup. To verify automatic memory, check that a real prompt becomes a Source, produces a
+  Topic, evolves after a related prompt, and can be recalled in a new session using the same Scope.
+- If Python dependency downloads are slow or fail, configure a package index for
+  [uv](https://docs.astral.sh/uv/configuration/indexes/) and retry.
+- Choose **Full memory capabilities** to test automatic Memory and Topic Memory; this requires separate Generation and
+  Embedding API credentials. An Agent subscription does not provide those Server credentials. Choose **Basic memory** to
+  save and retrieve memories explicitly without additional model APIs.
+- If seekdb needs installing, the wizard asks once and installs the dependency in the background.
+- The optional recall-sufficiency gate records scope-local daily search effort and budget omissions for later policy
+  evaluation. See the [configuration reference](docs/en/docs/operate/configuration.md) for its recording and failure
+  behavior.
+- For a Server on another machine, use HTTPS or follow the
+  [remote connection guide](docs/en/docs/operate/connect-remote-server.md). Setup recognizes remote HTTP URLs from flags
+  or environment variables and asks for explicit consent; automated setup uses `--allow-insecure-http`.
+
+</details>
+
+## Connect your Agent
+
+Codex is `official`; other maintained hosts and Python Agent frameworks are `community`; Bub is `evaluation` only.
+These tags describe PowerContext integration maintenance and use. The
+[capability matrix](https://powercontext.oceanbase.io/en/docs/integrations/capabilities/) records which hosts are
+qualified, along with their supported features and availability.
 
 <table>
 <tr>
@@ -111,23 +238,8 @@ These tags describe PowerContext integration maintenance and use. See the
 </tr>
 </table>
 
-Applications can use PowerContext through the async Python client, HTTP API, MCP, or the in-process Core SDK. See the [interface reference](https://powercontext.oceanbase.io/en/docs/develop/interfaces/) to choose an entry point.
-
-Explore the [22 Chinese Jupyter tutorials and a complete team workflow](examples/jupyter/README.md) to run Memory, context preparation, Handoff, Experience, Skill, and a real Agent step by step. The first seven tutorials need no model or API key.
-
-## What changes with PowerContext
-
-![Compact comparison of PowerContext results on LoCoMo and SWE-bench Pro](docs/assets/readme-benchmark-summary.svg)
-
-See the [methods, full results, and limitations](https://powercontext.oceanbase.io/en/benchmarks/) behind these comparisons.
-
-### LoCoMo Plus: comparison with Jev
-
-![LoCoMo Plus scores for native PowerContext and PowerContext + Jev across GPT-4o-mini, Qwen3.7-plus, and GPT-4o](docs/assets/readme-locomo-plus.svg)
-
-*LoCoMo Plus scores with and without Jev candidate filtering after retrieval. Each model is used for both Memory extraction and answering; embeddings use qwen3.7-text-embedding (1024 dimensions). Jev score differences are +8.925, +8.577, and +4.198 percentage points, respectively.*
-
-These six scores were supplied by the project owner; the run artifacts are not publicly available for verification. The reproducibility instructions describe the evaluation harness, not verification of these scores.
+Applications can use PowerContext through the async Python client, HTTP API, MCP, or the in-process Core SDK. See the
+[interface reference](https://powercontext.oceanbase.io/en/docs/develop/interfaces/) to choose an entry point.
 
 ## Build PowerContext
 

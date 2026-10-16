@@ -40,6 +40,29 @@ from powercontext.sources import SourceRef
 from .e2e.zcode_acceptance.protocol import CaptureResponseGate, HostModelFixture, ObserveServer, WireEvidence
 
 
+@pytest.mark.parametrize("tool", ["pc_work_contract", "Bash", "mcp__powercontext__create_work_contract"])
+def test_controlled_model_drives_native_catalog_names(tool: str) -> None:
+    async def check() -> None:
+        model = HostModelFixture()
+        operation = "create_work_contract" if tool.startswith("mcp__") else tool
+        model.plan([(operation, {"source_id": "synthetic-contract"})])
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=model.app), base_url="http://fixture") as client:
+            response = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "fixture",
+                    "messages": [],
+                    "tools": [{"type": "function", "function": {"name": tool}}],
+                },
+            )
+        response.raise_for_status()
+        call = response.json()["choices"][0]["message"]["tool_calls"][0]
+        assert call["function"]["name"] == tool
+        assert json.loads(call["function"]["arguments"]) == {"source_id": "synthetic-contract"}
+
+    asyncio.run(check())
+
+
 def capture_app(writes: list[str], *, reject: bool = False) -> ASGIApp:
     async def app(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["path"] == "/health/ready":

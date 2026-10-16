@@ -125,6 +125,14 @@ pub enum AccessRole {
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
+pub struct ArtifactDreamingOperationCapability {
+    pub r#operation: DreamOperation,
+    pub r#output_kind: String,
+    pub r#effect: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactFamilyAccessCapability {
     pub r#family: String,
     pub r#enabled: bool,
@@ -225,6 +233,9 @@ pub struct Capabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub r#artifact_dreaming: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub r#artifact_dreaming_operations: Option<Vec<ArtifactDreamingOperationCapability>>,
     pub r#source_types: Vec<String>,
     pub r#artifact_families: Vec<String>,
     pub r#memory_extraction: bool,
@@ -243,6 +254,28 @@ pub struct Capabilities {
     pub r#handoff_generation: bool,
     pub r#search_modes: Vec<MemorySearchMode>,
     pub r#context_versions: Vec<PreparedContextSchema>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize, ts_rs::TS)]
+pub enum DreamOperation {
+    #[serde(rename = "refine_experience")]
+    RefineExperience,
+    #[serde(rename = "derive_skill")]
+    DeriveSkill,
+    #[serde(rename = "revise_skill")]
+    ReviseSkill,
+    #[serde(rename = "revise_profile")]
+    ReviseProfile,
+    #[serde(rename = "revise_memory")]
+    ReviseMemory,
+    #[serde(rename = "revise_topic_memory")]
+    ReviseTopicMemory,
+    #[serde(rename = "refresh_handoff")]
+    RefreshHandoff,
+    #[serde(rename = "revise_prompt")]
+    RevisePrompt,
+    #[serde(rename = "revise_tags")]
+    ReviseTags,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize, ts_rs::TS)]
@@ -460,6 +493,7 @@ pub fn declarations(config: &ts_rs::Config) -> Vec<String> {
         <AccessProviderCapabilities as ts_rs::TS>::decl(config),
         <AccessResourceType as ts_rs::TS>::decl(config),
         <AccessRole as ts_rs::TS>::decl(config),
+        <ArtifactDreamingOperationCapability as ts_rs::TS>::decl(config),
         <ArtifactFamilyAccessCapability as ts_rs::TS>::decl(config),
         <ArtifactReadFamily as ts_rs::TS>::decl(config),
         <ArtifactReference as ts_rs::TS>::decl(config),
@@ -469,6 +503,7 @@ pub fn declarations(config: &ts_rs::Config) -> Vec<String> {
         <AtomicMemorySearchMode as ts_rs::TS>::decl(config),
         <AtomicMemoryState as ts_rs::TS>::decl(config),
         <Capabilities as ts_rs::TS>::decl(config),
+        <DreamOperation as ts_rs::TS>::decl(config),
         <ExtractionBackground as ts_rs::TS>::decl(config),
         <ExtractionFailure as ts_rs::TS>::decl(config),
         <ExtractionObservation as ts_rs::TS>::decl(config),

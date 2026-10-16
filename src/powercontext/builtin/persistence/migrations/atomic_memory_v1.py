@@ -233,6 +233,8 @@ _PROCESSING_TABLES = (
     "pc_artifact_processing_intents",
     "pc_artifact_processing_sequences",
     "pc_topic_memory_processing_targets",
+    "pc_candidate_heads",
+    "pc_candidate_versions",
     "pc_artifact_candidate_heads",
     "pc_artifact_candidate_versions",
 )
@@ -282,7 +284,7 @@ _PROCESSING_COLUMNS = {
         "captured_flush_generation",
         "observed_dirty_generation",
     },
-    "pc_artifact_candidate_heads": {
+    "pc_candidate_heads": {
         "scope_id",
         "candidate_id",
         "family",
@@ -293,7 +295,7 @@ _PROCESSING_COLUMNS = {
         "result_revision",
         "decision_reason",
     },
-    "pc_artifact_candidate_versions": {
+    "pc_candidate_versions": {
         "scope_id",
         "candidate_id",
         "version",
@@ -308,6 +310,10 @@ _PROCESSING_COLUMNS = {
         "reason",
     },
 }
+
+_PROCESSING_COLUMNS["pc_artifact_candidate_heads"] = set(_PROCESSING_COLUMNS["pc_candidate_heads"])
+_PROCESSING_COLUMNS["pc_artifact_candidate_versions"] = set(_PROCESSING_COLUMNS["pc_candidate_versions"])
+_PROCESSING_COLUMNS["pc_candidate_heads"].update({"candidate_kind", "result_payload"})
 
 
 async def _merge_schema_errors(connection: AsyncConnection, tables: set[str]) -> tuple[str, ...]:
@@ -483,7 +489,10 @@ async def _processing_snapshot(connection: AsyncConnection, tables: set[str], er
         for row in records:
             values = dict(row)
             # Completion drops the emptied legacy citation column from Candidate revisions.
-            if set(values) - {LEGACY_CITATION_COLUMN} != _PROCESSING_COLUMNS[name] - {LEGACY_CITATION_COLUMN}:
+            optional = {LEGACY_CITATION_COLUMN} | (
+                {"consecutive_dream_attempts"} if name == "pc_artifact_processing_intents" else set()
+            )
+            if set(values) - optional != _PROCESSING_COLUMNS[name] - optional:
                 errors.append(f"{name}: unsupported persisted task columns; complete processing schema migration first")
             if name == "pc_source_cursors":
                 try:
@@ -495,7 +504,7 @@ async def _processing_snapshot(connection: AsyncConnection, tables: set[str], er
                 except (TypeError, ValueError, KeyError):
                     errors.append(f"{name}: undecodable cursor")
             if (
-                name == "pc_artifact_candidate_heads"
+                name in {"pc_candidate_heads", "pc_artifact_candidate_heads"}
                 and values.get("family") == "memory"
                 and values.get("status") == "pending"
             ):

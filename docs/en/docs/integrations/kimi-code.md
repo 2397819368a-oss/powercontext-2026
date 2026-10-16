@@ -61,6 +61,30 @@ doctor is readonly: it checks registration/enablement, Node, MCP/Hook declaratio
 
 Use Kimi's /plugins remove powercontext to remove registration. Kimi keeps the managed copy on disk. Delete only the PowerContext-owned managed directory after verifying its .powercontext-owned marker and removal of its registration. No global Hook or project configuration is added.
 
+## Inspect Hook observations
+
+Run from the workspace where the problem occurred:
+
+```text
+powercontext doctor kimi-code --runtime --json
+# Select one exact session; omission selects the workspace's latest history:
+powercontext doctor kimi-code --runtime --cwd /path/to/workspace --session-id <Kimi session ID> --json
+```
+
+`runtime` reports the matching Scope, start time and `scope`, `prepare`, `capture`, and `injection` stages. Prepare `ready` means validated context was returned; `empty` is normal. Capture `accepted` confirms only the Source receipt, not Memory generation. Injection `emitted` confirms local historical-context output, not host/model receipt or adoption. Failures retain safe codes. A sent capture whose response cannot be confirmed remains `unknown`, without automatic retry.
+
+Missing history is `not_observed`; changed configuration is `configuration_mismatch`. Attempts older than five minutes are `stale`; attempts without a completion marker are `incomplete`. These optional results do not fail otherwise healthy installation/connectivity checks. Records do not establish that the current window loaded the plugin, and workspace history does not identify the current session. Corrupt, unreadable or over-capacity storage reports a separate failure.
+
+Observations live under `<Kimi home>/powercontext/runtime`, isolated by workspace, session and configuration fingerprints. Configuration covers endpoint, Scope, capture preference and authentication mode, excluding tokens. Independent files prevent late completion from overwriting newer attempts. They contain no prompts, context bodies, answers, raw workspace/session/endpoint identities or credentials, and survive plugin updates. Writes use bounded directory enumeration; at 64 records, retain the latest 32 completed records and unfinished attempts. Concurrent writes may temporarily exceed this retention threshold; within the scan budget, history stays readable and the next write prunes completed records. Enumeration stops at 128 directory entries and reads at most 4 KiB per record. Unowned files are preserved. Storage failures degrade observation while existing prepare/capture continues.
+
+The local status script needs neither Server nor runtime token and never maintains or deletes records:
+
+```text
+node "<Kimi home>/plugins/managed/powercontext/scripts/status.mjs" --cwd /path/to/workspace --session-id <Kimi session ID>
+```
+
+Doctor still probes current Server/Scope connectivity. `--runtime` adds local history without capture or flush; successful current probes do not rewrite historical outcomes.
+
 ## Verification
 
 Windows, Kimi 2.1.1 (npm CLI), Node 24.15.0 passed the real CLI + real Server + SQLite chain, including native MCP save/read/search, actual prompt injection, scheduler worker Generation with exact Source evidence, capture disablement, incorrect credentials and Server outage. Both model services in this repeatable acceptance test used controlled inference.
@@ -76,4 +100,4 @@ uv run pytest tests/test_cli_kimi_code.py
 
 Set KIMI_CLI_BIN to the installed real binary or built main.mjs, then run uv run pytest tests/e2e/test_kimi_code_host.py. This opt-in test uses disposable Kimi homes, workspaces, Server database and local inference; it needs no live model key and does not modify the user's Kimi profile. An unset variable skips host acceptance and is not a passing qualification.
 
-The [Kimi Code acceptance workflow](https://github.com/oceanbase/powercontext/actions/workflows/kimi-code-acceptance.yml) pins Kimi 2.1.1 and Node 24.15.0 and runs Hook tests plus real-host acceptance on Linux and Windows for pull requests and master updates. Both inference services are controlled; no live provider key is required. A skipped host test fails CI. Artifacts contain CLI provenance, JUnit results and acceptance summaries, excluding Kimi profiles and databases.
+The [Kimi Code acceptance workflow](https://github.com/oceanbase/powercontext/actions/workflows/kimi-code-acceptance.yml) pins Kimi 2.1.1 and Node 24.21.0 and runs Hook tests plus real-host acceptance on Linux and Windows for pull requests and master updates. Both inference services are controlled; no live provider key is required. A skipped host test fails CI. Artifacts contain CLI provenance, JUnit results and acceptance summaries, excluding Kimi profiles and databases.

@@ -28,8 +28,9 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import Artifact, ArtifactRef
+from powercontext.artifacts import Artifact, ArtifactRef, StableHandle
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
+from powercontext.builtin.persistence.artifact_handles import ArtifactHandleRepository
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
 from powercontext.builtin.persistence.database import AsyncDatabase
@@ -119,6 +120,7 @@ class RelationalRecordService:
         cursor_ttl_seconds: int = _DEFAULT_CURSOR_TTL_SECONDS,
         processing_pending: ArtifactProcessingPendingRepository | None = None,
         source_processing_bindings: tuple[str, ...] = (),
+        tags: RelationalTagService | None = None,
         atomic_memory_tag_hook=None,
         atomic_memory_tag_authorizer=None,
         topic_memory_list_reader: ArtifactListReader | None = None,
@@ -138,7 +140,8 @@ class RelationalRecordService:
         self._processing_pending = processing_pending
         self._source_processing_bindings = source_processing_bindings
         self._topic_memory_list_reader = topic_memory_list_reader
-        self._tags = RelationalTagService(
+        self._artifact_handles = ArtifactHandleRepository(database)
+        self._tags = tags or RelationalTagService(
             database,
             artifacts,
             cursor_secret=self._cursor_secret,
@@ -147,6 +150,26 @@ class RelationalRecordService:
             projection_hook=atomic_memory_tag_hook,
             atomic_write_authorizer=atomic_memory_tag_authorizer,
         )
+
+    async def bind_artifact_handle(
+        self,
+        scope_id: str,
+        handle: StableHandle,
+        target: ArtifactRef,
+        /,
+    ) -> ArtifactRef:
+        try:
+            return await self._artifact_handles.bind(scope_id, handle, target)
+        except RepositoryNotFoundError as error:
+            raise BaseValueNotFoundError(error.kind, error.identity) from None
+        except StoredPayloadConflictError as error:
+            raise BaseValueConflictError(error.kind, error.identity) from None
+
+    async def resolve_artifact_handle(self, scope_id: str, handle: StableHandle, /) -> ArtifactRef:
+        try:
+            return await self._artifact_handles.resolve(scope_id, handle)
+        except RepositoryNotFoundError as error:
+            raise BaseValueNotFoundError(error.kind, error.identity) from None
 
     async def get_tags(self, scope_id: str, target: TagTarget) -> ArtifactTagSet:
         return await self._tags.get(scope_id, target)
@@ -394,8 +417,12 @@ class RelationalRecordService:
                 created.append(_artifact_created(scope_id, artifact))
         return tuple(created)
 
-    async def get_artifact(self, scope_id: str, family: str, artifact_id: str, /) -> ArtifactRecord:
+    async def get_artifact(
+        self, scope_id: str, family: str, artifact_id: str, /, *, execution_context=None
+    ) -> ArtifactRecord:
         self._require_family(family)
+        if family == "atomic-memory" and execution_context is not None:
+            return await self._get_authorized_atomic_artifact(scope_id, artifact_id, None, execution_context)
         async with self._database.transaction() as connection:
             try:
                 artifact = await self._artifacts.latest(connection, scope_id, family, artifact_id)
@@ -410,8 +437,12 @@ class RelationalRecordService:
         artifact_id: str,
         revision: int,
         /,
+        *,
+        execution_context=None,
     ) -> ArtifactRecord:
         self._require_family(family)
+        if family == "atomic-memory" and execution_context is not None:
+            return await self._get_authorized_atomic_artifact(scope_id, artifact_id, revision, execution_context)
         async with self._database.transaction() as connection:
             try:
                 artifact = await self._artifacts.get(
@@ -422,6 +453,21 @@ class RelationalRecordService:
             except RepositoryNotFoundError:
                 raise BaseValueNotFoundError("artifact", (scope_id, family, artifact_id, revision)) from None
             return _artifact_record(scope_id, artifact)
+
+    async def _get_authorized_atomic_artifact(
+        self, scope_id: str, artifact_id: str, revision: int | None, execution_context
+    ) -> ArtifactRecord:
+        writer = cast(AtomicMemoryManagementWriter, self._family_writers.get("atomic-memory"))
+        try:
+            record = await writer.application.for_scope(scope_id).get(
+                artifact_id, revision=revision, context=execution_context
+            )
+        except RepositoryNotFoundError:
+            identity = (scope_id, "atomic-memory", artifact_id)
+            if revision is not None:
+                identity = (*identity, revision)
+            raise BaseValueNotFoundError("artifact", identity) from None
+        return _artifact_record(scope_id, record.artifact)
 
     async def list_artifact_revisions(
         self,

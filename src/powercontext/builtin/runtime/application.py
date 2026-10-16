@@ -33,7 +33,7 @@ from uuid import uuid4
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactLineage, ArtifactRef
+from powercontext.artifacts import ArtifactLineage, ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchOutcome,
@@ -123,6 +123,9 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemorySearchMode,
     TopicMemorySearchResult,
 )
+from powercontext.builtin.catalog_changes.application import CatalogChangeApplication
+from powercontext.builtin.catalog_changes.models import CatalogChangeProposal, TagDreamTarget
+from powercontext.builtin.catalog_changes.service import CatalogChangeService
 from powercontext.builtin.code.application import CodeApplication
 from powercontext.builtin.code.errors import CodeError
 from powercontext.builtin.code.models import CodeConfig, CodeQueryRequest, CodeQueryResult
@@ -161,7 +164,9 @@ from powercontext.builtin.records import (
     SourceRecord,
     SourceRecordPage,
 )
+from powercontext.builtin.review.errors import InvalidCandidateError
 from powercontext.builtin.review.generation import GeneratedCandidateResult, ReviewedGenerationService
+from powercontext.builtin.review.models import Candidate
 from powercontext.builtin.review.service import ReviewService
 from powercontext.builtin.runtime._scope_cache import (
     DEFAULT_SCOPE_CACHE_SIZE,
@@ -181,7 +186,7 @@ from powercontext.builtin.runtime.decision_model import DecisionModel
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
 from powercontext.builtin.runtime.extraction_diagnostics import ExtractionDiagnostics
 from powercontext.builtin.runtime.models import (
-    ApproveArtifactCandidateRequest,
+    ApproveCandidateRequest,
     BootstrapContext,
     BootstrapContextItem,
     BootstrapContextRequest,
@@ -198,12 +203,12 @@ from powercontext.builtin.runtime.models import (
     ExtractionStatus,
     GenerateExperienceRequest,
     GenerateSkillRequest,
-    GetArtifactCandidateRequest,
+    GetCandidateRequest,
     GetExperienceRequest,
     GetSkillRequest,
     GetTopicMemoryRequest,
     ImportExternalSkillRequest,
-    ListArtifactCandidatesRequest,
+    ListCandidatesRequest,
     ListExternalSkillsRequest,
     MemoryFlushResult,
     PrepareContextRequest,
@@ -211,11 +216,11 @@ from powercontext.builtin.runtime.models import (
     ProposeExperienceRequest,
     ProposeSkillRequest,
     RecordBootstrapDeliveryRequest,
-    RejectArtifactCandidateRequest,
+    RejectCandidateRequest,
     ResolveExternalSkillRequest,
     ReviewedCandidate,
     ReviewedCandidatePage,
-    ReviseArtifactCandidateRequest,
+    ReviseCandidateRequest,
     RuntimeCapabilities,
     SearchTopicMemoryRequest,
     SkillCandidate,
@@ -592,9 +597,19 @@ class ScopedRecordApplication:
                 self.scope_id, family, write, execution_context=execution_context
             )
 
-    async def get_artifact(self, family: str, artifact_id: str, /) -> ArtifactRecord:
+    async def bind_artifact_handle(self, handle: StableHandle, target: ArtifactRef, /) -> ArtifactRef:
+        async with self._runtime._scope_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            return await self._runtime._records().bind_artifact_handle(self.scope_id, handle, target)
+
+    async def resolve_artifact_handle(self, handle: StableHandle, /) -> ArtifactRef:
         async with self._runtime._scope_operation(self.scope_id):
-            return await self._runtime._records().get_artifact(self.scope_id, family, artifact_id)
+            return await self._runtime._records().resolve_artifact_handle(self.scope_id, handle)
+
+    async def get_artifact(self, family: str, artifact_id: str, /, *, execution_context: Any = None) -> ArtifactRecord:
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._runtime._records().get_artifact(
+                self.scope_id, family, artifact_id, execution_context=execution_context
+            )
 
     async def get_artifact_revision(
         self,
@@ -602,6 +617,8 @@ class ScopedRecordApplication:
         artifact_id: str,
         revision: int,
         /,
+        *,
+        execution_context: Any = None,
     ) -> ArtifactRecord:
         async with self._runtime._scope_operation(self.scope_id):
             return await self._runtime._records().get_artifact_revision(
@@ -609,6 +626,7 @@ class ScopedRecordApplication:
                 family,
                 artifact_id,
                 revision,
+                execution_context=execution_context,
             )
 
     async def list_artifact_revisions(
@@ -2916,42 +2934,100 @@ class ScopedReviewApplication:
         self._runtime = runtime
         self.scope_id = validate_scope_id(scope_id)
 
-    async def list(self, request: ListArtifactCandidatesRequest, /) -> ReviewedCandidatePage:
+    async def list(self, request: ListCandidatesRequest, /) -> ReviewedCandidatePage:
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._runtime._review(self.scope_id).list_candidates(
+            identities = await self._runtime._review(self.scope_id).candidate_identities(
                 status=request.status,
                 family=request.family,
+                candidate_kind=request.candidate_kind,
                 cursor=request.cursor,
                 limit=request.limit,
             )
-
-    async def get(self, request: GetArtifactCandidateRequest, /) -> ReviewedCandidate:
-        async with self._runtime._scoped_operation(self.scope_id):
-            return await self._runtime._review(self.scope_id).get_candidate(request.candidate_id)
-
-    async def inspect_evidence(self, candidate_id: str, expected_version: int):
-        """Expand the selected Candidate version, including exact entry provenance."""
-
-        async with self._runtime._scoped_operation(self.scope_id):
-            return await self._runtime._review(self.scope_id).inspect_evidence(candidate_id, expected_version)
-
-    async def approve(self, request: ApproveArtifactCandidateRequest, /) -> ReviewedCandidate:
-        async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
-            return await self._runtime._review(self.scope_id).approve(
-                request.candidate_id,
-                request.expected_version,
+            return ReviewedCandidatePage(
+                candidates=tuple([
+                    await self.get(GetCandidateRequest(candidate_id=identity))
+                    for identity in identities[: request.limit]
+                ]),
+                next_cursor=identities[request.limit - 1] if len(identities) > request.limit else None,
             )
 
-    async def reject(self, request: RejectArtifactCandidateRequest, /) -> ReviewedCandidate:
+    async def get(self, request: GetCandidateRequest, /) -> ReviewedCandidate:
+        from powercontext.builtin.review.errors import CandidateNotFoundError
+
+        async with self._runtime._scoped_operation(self.scope_id):
+            try:
+                return await self._runtime._review(self.scope_id).get_candidate(request.candidate_id)
+            except CandidateNotFoundError:
+                if self._runtime.catalog_changes is None:
+                    raise
+                return await self._runtime._catalog_review(self.scope_id).get(request.candidate_id)
+
+    async def history(self, request: GetCandidateRequest, /):
+        async with self._runtime._scoped_operation(self.scope_id):
+            candidate = await self.get(request)
+            if candidate.candidate_kind == "tag":
+                return await self._runtime._catalog_review(self.scope_id).history(request.candidate_id)
+            return await self._runtime._review(self.scope_id).history(request.candidate_id)
+
+    async def inspect_evidence(self, candidate_id: str, expected_version: int):
+        async with self._runtime._scoped_operation(self.scope_id):
+            candidate = await self.get(GetCandidateRequest(candidate_id=candidate_id))
+            if candidate.candidate_kind == "tag":
+                if candidate.version != expected_version:
+                    from powercontext.builtin.review.errors import CandidateConflictError
+
+                    raise CandidateConflictError(candidate_id, expected_version, candidate.version)
+                return await self._runtime._catalog_review(self.scope_id).evidence(candidate_id)
+            return await self._runtime._review(self.scope_id).inspect_evidence(candidate_id, expected_version)
+
+    async def approve(self, request: ApproveCandidateRequest, /) -> ReviewedCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            current = await self.get(GetCandidateRequest(candidate_id=request.candidate_id))
+            if current.candidate_kind == "tag":
+                return await self._runtime._catalog_review(self.scope_id).approve(
+                    request.candidate_id, request.expected_version
+                )
+            async with self._runtime._scoped_operation(
+                self.scope_id,
+                embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING if current.family == "atomic-memory" else None,
+            ):
+                return await self._runtime._review(self.scope_id).approve(
+                    request.candidate_id,
+                    request.expected_version,
+                )
+
+    async def reject(self, request: RejectCandidateRequest, /) -> ReviewedCandidate:
+        async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            current = await self.get(GetCandidateRequest(candidate_id=request.candidate_id))
+            if current.candidate_kind == "tag":
+                return await self._runtime._catalog_review(self.scope_id).reject(
+                    request.candidate_id, request.expected_version, request.reason
+                )
             return await self._runtime._review(self.scope_id).reject(
                 request.candidate_id,
                 request.expected_version,
                 request.reason,
             )
 
-    async def revise(self, request: ReviseArtifactCandidateRequest, /) -> ReviewedCandidate:
+    async def revise(self, request: ReviseCandidateRequest, /) -> ReviewedCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            current = await self.get(GetCandidateRequest(candidate_id=request.candidate_id))
+            if current.candidate_kind == "tag":
+                if not isinstance(request.proposal, CatalogChangeProposal) or request.target is not None:
+                    raise InvalidCandidateError("proposal", "Tag review requires its complete Tag proposal")
+                if request.reason is None:
+                    raise InvalidCandidateError("reason", "Tag revision requires a reason")
+                return await self._runtime._catalog_review(self.scope_id).revise(
+                    request.candidate_id,
+                    request.expected_version,
+                    after_tags=request.proposal.after_tags,
+                    proposal=request.proposal,
+                    reason=request.reason,
+                    sources=request.sources,
+                    artifacts=request.artifacts,
+                )
+            if isinstance(request.proposal, CatalogChangeProposal):
+                raise InvalidCandidateError("proposal", "Artifact review cannot accept a Tag proposal")
             return await self._runtime._review(self.scope_id).revise(
                 request.candidate_id,
                 request.expected_version,
@@ -3428,6 +3504,7 @@ class BuiltinRuntime:
         scope_cache_observer: ScopeCacheObserver | None = None,
         scope_ids: ScopeIds | None = None,
         review_service: ReviewServiceFactory | None = None,
+        catalog_change_service: Callable[[str], CatalogChangeService] | None = None,
         profiles: RelationalProfileService | None = None,
         subject_sources: SubjectSourceService | None = None,
         generation_service: GenerationServiceFactory | None = None,
@@ -3486,10 +3563,13 @@ class BuiltinRuntime:
         self._capabilities = capabilities
         self._extraction_diagnostics = extraction_diagnostics
         self._review_service = review_service
+        self._catalog_change_service = catalog_change_service
         self.profiles = profiles
         self.subject_sources = subject_sources
         self._generation_service = generation_service
         self._dream_service = dream_service
+        self._review_action_authorizer: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
+        self._catalog_action_authorizer: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None
         self._review_evidence_authorizer: ScopedEvidenceAuthorizer | None = None
         self._review_authorization_context: AuthorizationContext = nullcontext
         self._generation_slots = asyncio.Semaphore(generation_concurrency)
@@ -3583,6 +3663,9 @@ class BuiltinRuntime:
         self.topic_memory = TopicMemoryApplication(self)
         self.records = RecordApplication(self)
         self.prompts = PromptApplication(self)
+        self.catalog_changes = (
+            None if catalog_change_service is None else CatalogChangeApplication(self._catalog_review)
+        )
         self.review = ReviewApplication(self)
         self.skill = SkillApplication(self)
         self.remote_skills = RemoteSkillApplication(self)
@@ -3733,15 +3816,21 @@ class BuiltinRuntime:
         review: ScopedEvidenceAuthorizer,
         context: AuthorizationContext,
         attest_candidate: CandidateAttester,
+        authorize_candidate: CandidateAttester | None = None,
+        catalog_action: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None,
+        review_action: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None,
     ) -> None:
         """Bind a trusted Server adapter's current authorization policy."""
 
+        self._review_action_authorizer = review_action
+        self._catalog_action_authorizer = catalog_action
         self._review_evidence_authorizer = review
         self._review_authorization_context = context
         if self._dream_service is not None:
             self._dream_service.authorize = dream
             self._dream_service.authorization_context = context
             self._dream_service.attest_candidate = attest_candidate
+            self._dream_service.authorize_candidate = authorize_candidate
 
     async def close(self) -> None:
         """Stop accepting work and await in-flight operations without closing the provider."""
@@ -3927,6 +4016,18 @@ class BuiltinRuntime:
             raise _RuntimeStateError("review")
         scope = validate_scope_id(scope_id)
         service = self._review_service(scope)
+        service.authorize_action = self._review_action_authorizer
+        authorizer = self._review_evidence_authorizer
+        if authorizer is not None:
+            service.configure_authorization(lambda ref: authorizer(scope, ref), self._review_authorization_context)
+        return service
+
+    def _catalog_review(self, scope_id: str) -> CatalogChangeService:
+        if self._catalog_change_service is None:
+            raise _RuntimeStateError("catalog-review")
+        scope = validate_scope_id(scope_id)
+        service = self._catalog_change_service(scope)
+        service.authorize_action = self._catalog_action_authorizer
         authorizer = self._review_evidence_authorizer
         if authorizer is not None:
             service.configure_authorization(lambda ref: authorizer(scope, ref), self._review_authorization_context)

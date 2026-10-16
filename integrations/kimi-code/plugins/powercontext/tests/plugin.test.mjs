@@ -15,19 +15,23 @@
  */
 
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { execFile, spawn } from 'node:child_process'
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 const plugin = fileURLToPath(new URL('..', import.meta.url))
 const prompt = 'The deployment color is teal-731.'
 async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1') {
   const root = await mkdtemp(join(tmpdir(), 'pc-kimi-'))
   const installed = join(root, 'plugin')
+  const home = join(root, 'home')
+  const workspace = join(root, 'workspace')
   await cp(plugin, installed, { recursive: true, filter: path => !path.includes('tests') })
   const captures = []
   const requests = []
@@ -55,9 +59,9 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
     server_url: 'http://' + listenHost + ':' + server.address().port, scope_id: 'scope-test', capture_prompts: true, use_token: false, ...settings,
   }))
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }) })
-  async function invoke(input = { hook_event_name: 'UserPromptSubmit', session_id: 'session-test', cwd: '/workspace', prompt },
+  async function invoke(input = { hook_event_name: 'UserPromptSubmit', session_id: 'session-test', cwd: workspace, prompt },
     environment = {}) {
-    const env = { ...process.env, ...environment }
+    const env = { ...process.env, KIMI_CODE_HOME: home, ...environment }
     if (!Object.hasOwn(environment, 'POWERCONTEXT_KIMI_TOKEN')) delete env.POWERCONTEXT_KIMI_TOKEN
     const child = spawn(process.execPath, [join(installed, 'hooks/user_prompt_submit.mjs')], { cwd: installed,
       env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -69,7 +73,14 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
     assert.equal(code, 0, stderr)
     return { output: JSON.parse(stdout), stderr }
   }
-  return { captures, requests, invoke, installed }
+  async function status(session = 'session-test', cwd = workspace) {
+    const args = [join(installed, 'scripts/status.mjs'), '--cwd', cwd]
+    if (session !== undefined) args.push('--session-id', session)
+    const result = await promisify(execFile)(process.execPath, args,
+      { env: { ...process.env, KIMI_CODE_HOME: home }, windowsHide: true }).catch(error => error)
+    return { exit_code: result.code ?? 0, ...JSON.parse(result.stdout) }
+  }
+  return { captures, requests, invoke, installed, home, status }
 }
 
 test('context and capture use the explicit Scope and shared runtime token', async t => {
@@ -162,4 +173,160 @@ test('non-loopback plaintext settings are rejected before sending requests', asy
   assert.deepEqual(output, {})
   assert.match(stderr, /invalid_settings/)
   assert.deepEqual(f.requests, [])
+})
+
+test('runtime history records stages, stays private and queries without credentials or network', async t => {
+  const f = await fixture(t, {}, { use_token: true })
+  assert.equal((await f.status()).status, 'not_observed')
+  await f.invoke(undefined, { POWERCONTEXT_KIMI_TOKEN: 'synthetic-token' })
+  const count = f.requests.length
+  const result = await f.status()
+  assert.equal(result.status, 'observed')
+  assert.equal(result.selection, 'session')
+  assert.equal(result.freshness, 'recent')
+  assert.equal(result.stages.scope.state, 'resolved')
+  assert.equal(result.stages.prepare.state, 'ready')
+  assert.equal(result.stages.capture.state, 'accepted')
+  assert.equal(result.stages.injection.state, 'emitted')
+  assert.equal(f.requests.length, count)
+  assert.equal((await f.status('another-session')).status, 'not_observed')
+  assert.equal((await f.status('session-test', '/another-workspace')).status, 'not_observed')
+  const directory = join(f.home, 'powercontext/runtime')
+  const files = await readdir(directory)
+  const stored = await readFile(join(directory, files[0]), 'utf8')
+  assert.doesNotMatch(stored, /teal-731|synthetic-token|session-test|\/workspace|Historical context|127\.0\.0\.1/)
+  await writeFile(join(f.installed, 'powercontext.json'), JSON.stringify({
+    server_url: 'http://127.0.0.1:1', scope_id: 'scope-test', capture_prompts: true, use_token: true,
+  }))
+  assert.equal((await f.status()).status, 'configuration_mismatch')
+})
+
+test('independent stages preserve preparation failure, capture unknown and disabled capture', async t => {
+  const f = await fixture(t, {
+    '/v1/context/prepare': (_req, res) => { res.writeHead(503); res.end('{}') },
+    '/v1/sources/content': (req, _res) => req.socket.destroy(),
+  })
+  await f.invoke()
+  const first = await f.status()
+  assert.equal(first.stages.prepare.state, 'failed')
+  assert.equal(first.stages.prepare.code, 'server_unavailable')
+  assert.equal(first.stages.capture.state, 'unknown')
+  assert.equal(first.stages.injection.state, 'skipped')
+  const disabled = await fixture(t, {}, { capture_prompts: false })
+  await disabled.invoke()
+  assert.equal((await disabled.status()).stages.capture.reason, 'disabled')
+})
+
+test('runtime storage failure leaves context and capture usable', async t => {
+  const f = await fixture(t)
+  await mkdir(f.home)
+  await writeFile(join(f.home, 'powercontext'), 'Not a directory')
+  const result = await f.invoke()
+  assert.match(result.output.message, /Historical context/)
+  assert.equal(f.captures.length, 1)
+  assert.match(result.stderr, /runtime_unavailable/)
+  assert.equal((await f.status()).code, 'runtime_unavailable')
+})
+
+test('stale and incomplete history remain historical; corrupt records fail without leaking fields', async t => {
+  const f = await fixture(t)
+  await f.invoke()
+  const directory = join(f.home, 'powercontext/runtime')
+  const [name] = await readdir(directory)
+  const path = join(directory, name)
+  const value = JSON.parse(await readFile(path, 'utf8'))
+  value.started_at -= 300001
+  await writeFile(path, JSON.stringify(value))
+  assert.equal((await f.status()).freshness, 'stale')
+  value.completed_at = null
+  value.private = 'private-answer'
+  value.stages.prepare.private = 'private-answer'
+  await writeFile(path, JSON.stringify(value))
+  const incomplete = await f.status()
+  assert.equal(incomplete.freshness, 'incomplete')
+  assert.doesNotMatch(JSON.stringify(incomplete), /private-answer/)
+  value.stages.prepare.state = 'private-body'
+  await writeFile(path, JSON.stringify(value))
+  const invalid = await f.status()
+  assert.equal(invalid.status, 'failed')
+  assert.equal(invalid.code, 'invalid_state')
+  assert.doesNotMatch(JSON.stringify(invalid), /private-body/)
+})
+
+test('a later attempt stays latest when an earlier capture completes afterward', async t => {
+  let release
+  let signalArrival
+  const arrived = new Promise(resolve => { signalArrival = resolve })
+  let count = 0
+  const f = await fixture(t, { '/v1/sources/content': (_req, res, body) => {
+    const position = ++count
+    const complete = () => { res.writeHead(202); res.end(JSON.stringify({
+      status: 'accepted', source: { name: 'content', source_id: body.source_id }, position,
+    })) }
+    if (position === 1) { release = complete; signalArrival() } else complete()
+  } })
+  const first = f.invoke()
+  await arrived
+  try { await f.invoke() } finally { release() }
+  await first
+  assert.equal((await f.status()).stages.capture.source_position, 2)
+})
+
+test('overflowed history stays readable and concurrent Hooks recover without deleting unfinished or unowned files', async t => {
+  const f = await fixture(t)
+  await f.invoke()
+  const directory = join(f.home, 'powercontext/runtime')
+  const [name] = await readdir(directory)
+  const value = JSON.parse(await readFile(join(directory, name), 'utf8'))
+  let incomplete, oldest
+  // Persist the 65-record state left by concurrent admissions below the retention threshold.
+  for (let index = 0; index < 64; index++) {
+    const copy = { ...value, attempt_id: randomUUID(), started_at: value.started_at - index - 1,
+      completed_at: index === 63 ? null : value.completed_at }
+    const path = join(directory, `attempt-${copy.attempt_id}.json`)
+    await writeFile(path, JSON.stringify(copy))
+    if (index === 63) incomplete = path
+    if (index === 62) oldest = path
+  }
+  const unfinished = await readFile(incomplete, 'utf8')
+  await writeFile(join(directory, 'unrelated.txt'), 'Keep me.')
+  const before = (await readdir(directory)).sort()
+  assert.equal((await f.status()).status, 'observed')
+  assert.deepEqual((await readdir(directory)).sort(), before)
+  const results = await Promise.all([f.invoke(), f.invoke()])
+  for (const result of results) {
+    assert.equal(result.stderr, '')
+    assert.match(result.output.message, /Historical context/)
+  }
+  assert.equal((await f.status()).status, 'observed')
+  assert.equal(await readFile(incomplete, 'utf8'), unfinished)
+  assert.equal(await readFile(join(directory, 'unrelated.txt'), 'utf8'), 'Keep me.')
+  assert.equal(await readFile(join(directory, name), 'utf8'), JSON.stringify(value))
+  await assert.rejects(readFile(oldest), { code: 'ENOENT' })
+})
+
+test('retention preserves unowned files and incomplete attempts; capacity failures stay bounded', async t => {
+  const f = await fixture(t)
+  await f.invoke()
+  const directory = join(f.home, 'powercontext/runtime')
+  const [name] = await readdir(directory)
+  const value = JSON.parse(await readFile(join(directory, name), 'utf8'))
+  await writeFile(join(directory, 'unrelated.txt'), 'Keep me.')
+  for (let index = 0; index < 63; index++) {
+    const copy = { ...value, attempt_id: randomUUID(), started_at: value.started_at - index - 1,
+      completed_at: index === 62 ? null : value.completed_at }
+    await writeFile(join(directory, `attempt-${copy.attempt_id}.json`), JSON.stringify(copy))
+  }
+  await f.invoke()
+  assert.equal((await f.status()).status, 'observed')
+  assert.equal(await readFile(join(directory, 'unrelated.txt'), 'utf8'), 'Keep me.')
+  const retained = await Promise.all((await readdir(directory)).filter(name => name.endsWith('.json'))
+    .map(async name => JSON.parse(await readFile(join(directory, name), 'utf8'))))
+  assert.ok(retained.some(item => item.completed_at === null))
+  for (let index = 0; index < 128; index++) await writeFile(join(directory, `attempt-${randomUUID()}.json`), '{}')
+  const failure = await f.status()
+  assert.equal(failure.code, 'runtime_capacity_exceeded')
+  const result = await f.invoke()
+  assert.match(result.output.message, /Historical context/)
+  assert.match(result.stderr, /runtime_unavailable/)
 })

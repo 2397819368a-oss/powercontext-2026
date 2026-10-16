@@ -203,7 +203,8 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                 rows = (
                     await connection.execute(
                         text(
-                            f"SELECT {_HIT_COLUMNS}, -bm25({_FTS_TABLE}) AS score FROM {_FTS_TABLE} "  # noqa: S608
+                            f"SELECT {_HIT_COLUMNS}, -bm25({_FTS_TABLE}) AS score, "  # noqa: S608
+                            f"bm25({_FTS_TABLE}) AS raw_score, 'sqlite_bm25' AS score_metric FROM {_FTS_TABLE} "
                             "WHERE searchable_text MATCH :fts_query AND scope_id = :scope_id "
                             f"AND ({eligibility}) AND {coverage} >= :fts_required "
                             f"ORDER BY score DESC, artifact_id{limit_sql}"
