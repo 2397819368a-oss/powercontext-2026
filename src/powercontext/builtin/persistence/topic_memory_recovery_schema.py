@@ -34,12 +34,15 @@ ATTEMPTS = "pc_topic_memory_work_attempts"
 BLOCKS = "pc_topic_memory_work_blocks"
 LEASES = "pc_artifact_processing_leases"
 OBJECTS = (BUDGET, ATTEMPTS, BLOCKS)
-_ACCESS_BOOTSTRAP = frozenset({
+_BOOTSTRAP_COMPANIONS = frozenset({
     "pc_access_relationship_heads",
     "pc_access_relationships",
     "pc_access_owners",
     "pc_access_idempotency",
     "pc_access_audit",
+    "pc_code_generations",
+    "pc_code_nodes",
+    "pc_code_edges",
 })
 
 
@@ -157,13 +160,13 @@ def recovery_layout(connection: Connection) -> str:
     if actual and recovery_matches(actual, recovery_initialization_prefixes(dialect)[1], dialect):
         names = set(inspect(connection).get_table_names())
         if (
-            names <= (_ACCESS_BOOTSTRAP | {BLOCKS})
+            names <= (_BOOTSTRAP_COMPANIONS | {BLOCKS})
             and connection.exec_driver_sql("SELECT 1 FROM pc_topic_memory_work_blocks LIMIT 1").first() is None
         ):
             return "empty"
         raise MigrationError("unknown_baseline", "An incomplete recovery database contains existing evidence.")
     if not actual:
-        if set(inspect(connection).get_table_names()) - _ACCESS_BOOTSTRAP:
+        if set(inspect(connection).get_table_names()) - _BOOTSTRAP_COMPANIONS:
             raise MigrationError("unknown_baseline", "An existing partial database has no registered Topic budget.")
         return "empty"
     for name, shapes in (

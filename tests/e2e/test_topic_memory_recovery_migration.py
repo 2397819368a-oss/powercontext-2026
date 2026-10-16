@@ -360,6 +360,26 @@ def test_only_pristine_block_first_initialization_can_resume_without_migration_e
         assert path.read_bytes() == original
 
 
+@pytest.mark.parametrize("block_prefix", [False, True])
+def test_initialization_preserves_an_independent_code_database(tmp_path, block_prefix):
+    path = tmp_path / "code-first.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}")
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("CREATE TABLE pc_code_generations(id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO pc_code_generations VALUES ('existing-generation')")
+        if block_prefix:
+            connection.execute(recovery_statements("blocks_v1", "sqlite")[0])
+
+    async def reopen():
+        manager, _, _, _ = await _repositories(config)
+        await manager.__aexit__(None, None, None)
+
+    asyncio.run(reopen())
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT id FROM pc_code_generations").fetchall() == [("existing-generation",)]
+        assert connection.execute("SELECT COUNT(*) FROM pc_topic_memory_work_budgets").fetchone() == (0,)
+
+
 @pytest.mark.parametrize("backend", ["seekdb", "oceanbase"])
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_real_mysql_recovery_upgrade_preserves_receipt_and_resumes_registered_ddl_prefix(
