@@ -1215,8 +1215,6 @@ class ArtifactProcessingSupervisor:
                                 else "success",
                             },
                         )
-                    elif span is not None:
-                        span.set_outcome(completion.outcome.value)
                     attempt_outcome = (
                         ("hold" if completion.held_count else "noop" if completion.noop else "success")
                         if completion.outcome is ArtifactProcessingWorkerOutcome.SUCCEEDED
