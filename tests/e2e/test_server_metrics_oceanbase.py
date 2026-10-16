@@ -39,7 +39,7 @@ from sqlalchemy.engine import make_url
 
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
-from powercontext.builtin.persistence.tables import ARTIFACT_PROCESSING_REQUESTS_TABLE, SHARED_TABLES
+from powercontext.builtin.persistence.tables import ARTIFACT_PROCESSING_REQUESTS_TABLE, BUILTIN_TABLES
 
 
 @pytest.fixture
@@ -175,7 +175,7 @@ def test_real_oceanbase_pending_age_survives_reopen_and_partial_ack(oceanbase_ur
         intents = ArtifactProcessingIntentRepository()
         binding = "memory-source-window"
         table = ARTIFACT_PROCESSING_REQUESTS_TABLE
-        async with OceanBaseProfile.open(config, tables=SHARED_TABLES) as profile:
+        async with OceanBaseProfile.open(config, tables=BUILTIN_TABLES) as profile:
             times = []
             for _ in range(3):
                 async with profile.database.transaction() as connection:
@@ -198,7 +198,7 @@ def test_real_oceanbase_pending_age_survives_reopen_and_partial_ack(oceanbase_ur
                 assert observed.unknown_count == 0
                 assert observed.oldest_requested_at == times[0]
                 assert observed.observed_at >= times[-1]
-        async with OceanBaseProfile.open(config, tables=SHARED_TABLES) as profile:
+        async with OceanBaseProfile.open(config, tables=BUILTIN_TABLES) as profile:
             async with profile.database.transaction() as connection:
                 await intents.acknowledge(connection, "pending-scope", binding, 1)
             async with profile.database.transaction(consistent_snapshot=True) as connection:
