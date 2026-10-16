@@ -364,9 +364,18 @@ def test_target_identity_respects_server_identifier_case_rules(case_mode: int) -
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("parameter", ["db", "database"])
-def test_oceanbase_rejects_conflicting_query_database_selection(parameter: str) -> None:
-    with pytest.raises(ValidationError, match="URL path"):
-        OceanBaseConfig(
-            url=SecretStr(f"mysql+aoceanbase://user:password@host:2881/custom?charset=utf8mb4&{parameter}=other")
-        )
+@pytest.mark.parametrize(
+    "options",
+    [
+        "db=private-secret",
+        "database=private-secret",
+        "db=first&db=private-secret",
+        "database=first&database=private-secret",
+    ],
+)
+def test_oceanbase_rejects_conflicting_query_database_selection(options: str) -> None:
+    with pytest.raises(ValidationError, match="URL path") as error:
+        OceanBaseConfig.model_validate({
+            "url": f"mysql+aoceanbase://user:password@host:2881/custom?charset=utf8mb4&{options}"
+        })
+    assert "private-secret" not in str(error.value)
