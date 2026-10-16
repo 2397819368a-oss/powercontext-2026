@@ -181,18 +181,19 @@ Let `W` be processed windows, `A` mean admitted attempts per window, and `B` dis
 accepted retry. Full attempt history retains roughly `W × A` rows; this design retains `B` rows plus current budget rows.
 Reads and mutations address an exact key; no normal observation, acceptance, or completion scans or rewrites history.
 
-A synthetic SQLite 3.50.4 sizing run used 100,000 rows per layout, 4 KiB pages, 1,000 32-character Scope IDs, random UUIDs,
-and each layout's indexes: primary/unique keys plus the existing frontier index for attempt history. Net database growth
-excluding empty-schema pages was 57,536,512 bytes for successful
-attempt metadata using the table definition at implementation commit `4cdf119b`, and 46,235,648 bytes for the 16-field
-16-field block/accepted-receipt measurement layout: about 575 and 462 bytes per row. This measures isolated schema storage, not the
-runtime, model execution, write latency, OceanBase, or seekDB; active budget columns, WAL, backups, and other tables are
-excluded. The final schema also carries nullable legacy-range provenance; this sample is not its measured width.
-Final schemas and backend indexes require their own sizing.
+A synthetic SQLite 3.50.4 sizing run used the frozen recovery schemas at implementation commit `358b0b59`, 100,000 rows
+per layout, 4 KiB pages, 1,000 32-character Scope IDs, the `topic-memory-source-window` binding and UUIDs generated with
+seed 2018. Each layout included its indexes: primary/unique keys plus the historical frontier index for attempt history.
+The successful-attempt sample populated both timestamps and execution identity; the accepted-block sample populated
+both receipt timestamps, three attempts, nine requests, 1,000 tokens, `window_attempt_limit` and `model_timeout`, with
+null legacy provenance. Net database growth excluding empty-schema pages was 52,895,744 bytes for the 20-field
+attempt layout and 42,901,504 bytes for the final 17-field block/receipt layout: about 529 and 429 bytes per row.
+This measures isolated schema storage, not runtime performance, model execution, write latency, OceanBase or seekDB.
+Active budget columns, WAL, backups and other tables are excluded; deployments and backend indexes need their own sizing.
 
 As an illustrative workload, not a production observation, one million windows/day, `A = 1.1`, and 10,000 blocks/day
 produce 1.1 million history rows versus 10,000 retained block rows per day. Applying those SQLite sample widths gives
-about 633 MB versus 4.6 MB/day of additional retained records. Successful-attempt history is therefore an explicit
+about 582 MB versus 4.3 MB/day of additional retained records. Successful-attempt history is therefore an explicit
 storage commitment even though a single allowance admits at most three attempts; the per-allowance ceiling is not a
 historical retention bound. No backend performance improvement or acceptable deployment capacity is claimed.
 
@@ -209,6 +210,11 @@ not turn the partial Artifact migration bundle into complete Server readiness. R
 locking, plan/backup declarations and durable recovery evidence. Normal startup checks this recovery shape before any
 business initializer writes. Empty initialization uses the same frozen target revision, without treating an old partial
 database as empty.
+
+Empty initialization creates the block table before the budget. SQLite wraps both in an explicit write transaction.
+After nontransactional DDL interruption, only that exact empty block-table prefix, with no other business tables except
+Access bootstrap storage, can resume without maintenance evidence. A prefix containing a receipt or other business
+state is rejected; it cannot silently recreate a missing allowance or discard recovery evidence.
 
 Support these finite inputs, verified before mutation:
 
@@ -234,6 +240,12 @@ MySQL-compatible DDL can commit independently: persist source/target fingerprint
 before DDL, resume only a recognized prefix, and require the same maintenance target and recovery point after interruption.
 SQLite commits schema and data conversion atomically. Verification gates reopening business access. Never reconstruct
 an absent error/owner/time fact or reinterpret `processing_failed` as a timeout.
+
+Before reopening, revoke every pre-upgrade processing lease using the existing maintenance fence transition: advance
+its generation, expire it in UTC, and set a maintenance-window holder. Updating only holders different from that window
+makes recovery idempotent. All workflows sharing those leases must be stopped. Preserve known attempt owner metadata
+and leave unknown finish times null; a status read must be able to finalize stopped work without waiting for a new
+Supervisor, including while processing remains disabled. No pre-upgrade fence may publish after conversion.
 
 Mixed old/new writers and destructive downgrade after accepting retries are unsupported. Any rollback must preserve
 accepted authorization evidence; a backup rollback to before acceptance cannot claim continuous idempotency across
