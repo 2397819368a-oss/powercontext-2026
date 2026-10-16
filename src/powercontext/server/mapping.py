@@ -72,6 +72,7 @@ from powercontext.builtin.review.generation import SkillGenerationOrigin as Runt
 from powercontext.builtin.runtime import (
     ActivateHandoff,
     CaptureSource,
+    CaptureWorkingNote,
     Handoff,
     HandoffActivation,
     HandoffArtifactCitation,
@@ -144,6 +145,7 @@ from powercontext.builtin.runtime import (
 from powercontext.builtin.runtime import (
     SubmitSourceObservation as RuntimeSubmitSourceObservation,
 )
+from powercontext.builtin.runtime import WorkingNoteKind as RuntimeWorkingNoteKind
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryPage, AtomicMemorySearchPage
 from powercontext.builtin.sources import ExternalSkillImportMode as RuntimeExternalSkillImportMode
 from powercontext.builtin.work import (
@@ -184,6 +186,7 @@ from powercontext.http import (
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
     CaptureStatus,
+    CaptureWorkingNoteRequest,
     CatalogChangeProposal,
     CommitConnectorCheckpointRequest,
     CommittedHandoff,
@@ -371,6 +374,19 @@ def capture_request(value: CaptureContentSourceRequest) -> CaptureSource:
         content=value.content,
         metadata={} if value.metadata is None else value.metadata,
     )
+
+
+def working_note_capture_request(value: CaptureWorkingNoteRequest) -> CaptureWorkingNote:
+    try:
+        return CaptureWorkingNote(
+            source_id=value.source_id,
+            content=value.content,
+            session_id=value.session_id,
+            note_kind=RuntimeWorkingNoteKind(value.note_kind.value),
+            expires_at=value.expires_at,
+        )
+    except (TypeError, ValueError, ValidationError) as error:
+        raise InvalidRuntimeRequestError("working-note") from error
 
 
 def create_work_contract_request(value: CreateWorkContractRequest) -> RuntimeCreateWorkContract:

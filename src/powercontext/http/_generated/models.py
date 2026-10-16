@@ -1001,7 +1001,45 @@ class CaptureContentSourceRequest(BaseModel):
             min_length=1,
         ),
     ]
-    metadata: dict[str, Any] | None = None
+    metadata: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description="Caller metadata. The reserved kind value `working_note` is rejected; use the dedicated Working Note capture operation instead."
+        ),
+    ] = None
+
+
+class WorkingNoteKind(StrEnum):
+    INSPECTION = "inspection"
+    ABANDONED_APPROACH = "abandoned_approach"
+    VALIDATION = "validation"
+    UNRESOLVED = "unresolved"
+    HOST_CONTEXT = "host_context"
+
+
+class CaptureWorkingNoteRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    source_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    content: Annotated[StrictStr, Field(max_length=200000, min_length=1, pattern=".*\\S.*")]
+    session_id: Annotated[
+        StrictStr,
+        Field(
+            description="Host/session correlation only; it is not an authorization boundary.",
+            max_length=256,
+            min_length=1,
+            pattern=".*\\S.*",
+        ),
+    ]
+    note_kind: WorkingNoteKind
+    expires_at: Annotated[
+        AwareDatetime | None,
+        Field(
+            description="Optional logical expiry. It must be in the future when captured. Expiry makes the note unavailable to new Handoff evidence resolution but does not physically delete or rewrite the Source."
+        ),
+    ] = None
 
 
 class SourceProjectionKey(BaseModel):

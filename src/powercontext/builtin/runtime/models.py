@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from enum import StrEnum
 from hashlib import sha256
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -95,6 +96,27 @@ class CaptureSource(BaseModel):
     source_id: str
     content: str
     metadata: Mapping[str, JsonValue]
+
+
+class WorkingNoteKind(StrEnum):
+    """Classify one bounded kind of session-local work state."""
+
+    INSPECTION = "inspection"
+    ABANDONED_APPROACH = "abandoned_approach"
+    VALIDATION = "validation"
+    UNRESOLVED = "unresolved"
+    HOST_CONTEXT = "host_context"
+
+
+class CaptureWorkingNote(BaseModel):
+    """Explicitly capture short-lived, non-Memory work state."""
+
+    source_id: str
+    content: str
+    session_id: str
+    note_kind: WorkingNoteKind
+    expires_at: datetime | None = None
+    metadata: Mapping[str, JsonValue] = Field(default_factory=dict)
 
 
 class SourceReceipt(BaseModel):

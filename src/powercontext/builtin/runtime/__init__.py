@@ -156,6 +156,7 @@ from powercontext.builtin.runtime.models import (
     BootstrapContextRequest,
     BootstrapDeliveryReceipt,
     CaptureSource,
+    CaptureWorkingNote,
     CommitConnectorCheckpoint,
     ConnectorCheckpointState,
     ContextAssembly,
@@ -200,6 +201,7 @@ from powercontext.builtin.runtime.models import (
     SourceReceipt,
     SubmitSourceObservation,
     TopicMemoryFlushResult,
+    WorkingNoteKind,
 )
 from powercontext.builtin.runtime.protocols import PowerContextProvider, RemoteIngestion
 from powercontext.builtin.runtime.readiness import (
@@ -267,6 +269,7 @@ __all__ = [
     "CandidateFamilyCount",
     "CandidateInventoryStatistics",
     "CaptureSource",
+    "CaptureWorkingNote",
     "CommitConnectorCheckpoint",
     "ConnectorCheckpointState",
     "ContextAssembly",
@@ -433,6 +436,7 @@ __all__ = [
     "TopicMemoryProcessingUnavailableError",
     "UsageStatistics",
     "WorkApplication",
+    "WorkingNoteKind",
     "apply_decision_request_sanitizer",
     "assess_decision_result",
     "build_memory_write_gate",

@@ -112,6 +112,7 @@ from powercontext.http._generated.models import (
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
     CaptureStatus,
+    CaptureWorkingNoteRequest,
     CatalogChangeProposal,
     CatalogTagResult,
     ClearScopeBindingRequest,
@@ -463,6 +464,7 @@ from powercontext.http._generated.models import (
     WorkClaim,
     WorkClaimBasis,
     WorkContract,
+    WorkingNoteKind,
     WorkSourceKind,
     WorkSourceReceipt,
 )
@@ -565,6 +567,7 @@ __all__ = [
     "CaptureContentSourceRequest",
     "CaptureContentSourceResponse",
     "CaptureStatus",
+    "CaptureWorkingNoteRequest",
     "CatalogChangeProposal",
     "CatalogTagResult",
     "ClearScopeBindingRequest",
@@ -918,4 +921,5 @@ __all__ = [
     "WorkContract",
     "WorkSourceKind",
     "WorkSourceReceipt",
+    "WorkingNoteKind",
 ]

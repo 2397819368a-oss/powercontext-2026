@@ -1590,6 +1590,14 @@ class _RelationalSources:
         except RepositoryNotFoundError:
             raise SourceNotFoundError(source) from None
 
+    async def entry(self, ref: SourceRef, /) -> SourceJournalEntry | None:
+        try:
+            async with self._database.connection(self._bound_connection) as connection:
+                row = await self._repository.get(connection, self._scope_id, ref)
+        except RepositoryNotFoundError:
+            return None
+        return SourceJournalEntry(source_ref=row.ref, source=row.value, position=row.journal_position)
+
     async def entries(self) -> tuple[SourceJournalEntry, ...]:
         async with self._database.connection(self._bound_connection) as connection:
             rows = await self._repository.list(connection, self._scope_id)
@@ -1632,12 +1640,13 @@ class _RelationalTriggers:
                         connection,
                         self._services.scope_id,
                         (request.boundary_source,),
+                        allow_working_notes=True,
                     )
                 except RepositoryNotFoundError:
                     raise HandoffEvidenceUnavailableError(
                         HandoffSourceCitation(source_ref=request.boundary_source)
                     ) from None
-                require_source_eligible(request.boundary_source, source.value)
+                require_source_eligible(request.boundary_source, source.value, allow_working_notes=True)
                 state_row = await self._services.repositories.cursors.load(
                     connection,
                     self._services.scope_id,

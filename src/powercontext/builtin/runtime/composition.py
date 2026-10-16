@@ -103,6 +103,7 @@ from powercontext.builtin.persistence.atomic_memory_readiness import (
 )
 from powercontext.builtin.persistence.bootstrap_receipts import BootstrapReceiptRepository
 from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
+from powercontext.builtin.persistence.lexical_projection import refresh_lexical_projections
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.oceanbase.experience_index import OceanBaseExperienceFTSIndex
 from powercontext.builtin.persistence.oceanbase.profile import OceanBaseConfig, OceanBaseProfile
@@ -1113,6 +1114,9 @@ async def open_builtin_contexts(
                 if not _topic_memory_worker:
                     await _initialize_atomic_memory_authority(connection)
                     await atomic_index.initialize(connection)
+                    await refresh_lexical_projections(
+                        connection, atomic_index.table if atomic_index.table in atomic_index.tables else None
+                    )
                     await ensure_artifact_head_searchable_text(connection)
                     await assert_atomic_memory_migration_ready(connection)
                     await experience_index.initialize(connection)
@@ -1189,6 +1193,9 @@ async def open_builtin_contexts(
             if not _topic_memory_worker:
                 await _initialize_atomic_memory_authority(connection)
                 await atomic_index.initialize(connection)
+                await refresh_lexical_projections(
+                    connection, atomic_index.table if atomic_index.table in atomic_index.tables else None
+                )
                 await ensure_artifact_head_searchable_text(connection)
                 await assert_atomic_memory_migration_ready(connection)
                 await experience_index.initialize(connection)

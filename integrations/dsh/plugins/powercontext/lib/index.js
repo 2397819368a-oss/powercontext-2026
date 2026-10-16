@@ -467,6 +467,17 @@ const OPERATIONS = {
 		successStatuses: [202],
 		emptyStatuses: []
 	},
+	capture_working_note: {
+		method: "POST",
+		path: "/v1/sources/working-notes",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [202],
+		emptyStatuses: []
+	},
 	register_source_definition: {
 		method: "POST",
 		path: "/v1/source-definitions/register",
@@ -2597,6 +2608,7 @@ const SECRET_MARKERS = [
 const PAYLOAD_WRITES = new Set([
 	"remember_memory",
 	"capture_content_source",
+	"capture_working_note",
 	"revise_memory_entry",
 	"replace_artifact",
 	"change_atomic_memory_lifecycle"
@@ -3308,6 +3320,7 @@ const MCP_OPERATIONS = {
 	"activate_handoff": { "readOnly": false },
 	"approve_candidate": { "readOnly": false },
 	"capture_content_source": { "readOnly": false },
+	"capture_working_note": { "readOnly": false },
 	"change_atomic_memory_lifecycle": { "readOnly": false },
 	"clear_scope_binding": { "readOnly": false },
 	"commit_handoff": { "readOnly": false },

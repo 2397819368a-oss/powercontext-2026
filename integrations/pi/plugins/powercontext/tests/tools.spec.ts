@@ -94,6 +94,7 @@ describe('Pi native tool surface', () => {
       'pc_memory_retire',
       'pc_prepare_context',
       'pc_capture_source',
+      'pc_capture_working_note',
       'pc_handoff_activate',
       'pc_work_contract',
       'pc_handoff_current',
@@ -182,6 +183,52 @@ describe('Pi native tool surface', () => {
       ['http://127.0.0.1:8000/v1/scopes/project%3Ademo/artifacts/atomic-memory/atomic-7/state', {}],
       ['http://127.0.0.1:8000/v1/stats', { period: '7d', selection: { mode: 'exact', scope_ids: ['project:demo'] } }],
     ])
+  })
+
+  it('routes Working Note capture as a scoped, confirmed write', async () => {
+    const registered: Array<Record<string, unknown>> = []
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => (
+      new Response(JSON.stringify({ status: 'accepted', source: { name: 'content', source_id: 'note-1' }, position: 1 }), { status: 202 })
+    ))
+    registerTools(
+      { registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never,
+      createRuntime(fetch),
+    )
+    const confirm = vi.fn(async () => true)
+
+    const result = await registeredTool<{
+      source_id: string
+      content: string
+      session_id: string
+      note_kind: string
+      expires_at?: string
+    }>(registered, 'pc_capture_working_note').execute(
+      'call-note',
+      {
+        source_id: 'note-1',
+        content: 'Parser validation is still in progress.',
+        session_id: 'session-1',
+        note_kind: 'validation',
+        expires_at: '2030-01-02T00:00:00Z',
+      },
+      new AbortController().signal,
+      () => undefined,
+      { cwd: '/workspace/repo', hasUI: true, ui: { confirm } },
+    )
+
+    expect(result.details).toMatchObject({ ok: true })
+    expect(confirm).toHaveBeenCalled()
+    expect(fetch.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([[
+      'http://127.0.0.1:8000/v1/sources/working-notes',
+      {
+        source_id: 'note-1',
+        content: 'Parser validation is still in progress.',
+        session_id: 'session-1',
+        note_kind: 'validation',
+        expires_at: '2030-01-02T00:00:00Z',
+        scope_id: 'project:demo',
+      },
+    ]])
   })
 
   it('keeps the read-only tool schemas within the API contract', () => {

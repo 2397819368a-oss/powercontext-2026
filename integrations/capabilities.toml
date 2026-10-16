@@ -100,6 +100,9 @@ capabilities = ["memory_write"]
 id = "capture_content_source"
 capabilities = ["source_capture"]
 [[toolsets.tools]]
+id = "capture_working_note"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
 id = "create_work_contract"
 capabilities = ["work_contract"]
 [[toolsets.tools]]
@@ -307,6 +310,9 @@ id = "mcp__powercontext__restore_atomic_memory"
 capabilities = ["memory_write"]
 [[toolsets.tools]]
 id = "mcp__powercontext__capture_content_source"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "mcp__powercontext__capture_working_note"
 capabilities = ["source_capture"]
 [[toolsets.tools]]
 id = "mcp__powercontext__create_work_contract"
@@ -668,6 +674,9 @@ capabilities = ["context_injection"]
 id = "pc_capture_source:capture_content_source"
 capabilities = ["source_capture"]
 [[toolsets.tools]]
+id = "pc_capture_working_note:capture_working_note"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
 id = "pc_handoff_activate:activate_handoff"
 capabilities = ["handoff"]
 [[toolsets.tools]]
@@ -733,6 +742,9 @@ id = "pc_prepare_context:prepare_context"
 capabilities = ["context_injection"]
 [[toolsets.tools]]
 id = "pc_capture_source:capture_content_source"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "pc_capture_working_note:capture_working_note"
 capabilities = ["source_capture"]
 [[toolsets.tools]]
 id = "pc_handoff_activate:activate_handoff"

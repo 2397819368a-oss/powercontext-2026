@@ -97,6 +97,7 @@ def test_mcp_exposes_only_data_plane_and_integration_control_operations() -> Non
         "acknowledge_handoff",
         "approve_candidate",
         "capture_content_source",
+        "capture_working_note",
         "clear_scope_binding",
         "commit_handoff",
         "continue_handoff",

@@ -91,6 +91,10 @@ function secretArguments(operation, scopeId) {
       content: { schema: 'powercontext.handoff.v1', ...draft },
     } }
     case 'capture_content_source': return { scope_id: scopeId, source_id: source.source_id, content: text }
+    case 'capture_working_note': return {
+      scope_id: scopeId, source_id: source.source_id, content: text,
+      session_id: 'secret-fixture-session', note_kind: 'validation',
+    }
     case 'replace_artifact': return { scope_id: scopeId, family: 'atomic-memory', artifact_id: 'secret-fixture',
       'If-Match': '"revision:1"', content: { schema: 'powercontext.atomic-memory.v1', kind: 'decision', text } }
     case 'create_work_contract': return { scope_id: scopeId, source_id: source.source_id, contract: {

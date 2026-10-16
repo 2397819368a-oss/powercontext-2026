@@ -147,7 +147,7 @@ test('real DSH rejects secret native writes including nested work, candidate and
   const env = await environment()
   try {
     const { instance } = env.harness({ capturePrompts: false })
-    for (const operation of ['remember_memory', 'replace_artifact', 'capture_content_source',
+    for (const operation of ['remember_memory', 'replace_artifact', 'capture_content_source', 'capture_working_note',
       'handoff_current_work', 'activate_handoff', 'finalize_handoff', 'commit_handoff',
       'create_work_contract', 'record_task_outcome', 'propose_experience', 'propose_skill', 'revise_candidate']) {
       assert.ok((await instance.run(`RUN_PC_SECRET:${operation}`)).finalResponse)
@@ -156,6 +156,7 @@ test('real DSH rejects secret native writes including nested work, candidate and
       assert.ok(!env.mcpCalls.some(call => call.body?.method === 'tools/call' && call.body.params?.name === operation))
     }
     assert.ok(!env.calls.some(call => call.path === '/v1/sources/content'))
+    assert.ok(!env.calls.some(call => call.path === '/v1/sources/working-notes'))
     const memory = await env.api('/v1/memory/entries/list', { scope_id: env.scopeId })
     assert.ok(!JSON.stringify(memory).includes('FAKE_REVIEW_MARKER'))
   } finally { await env.close() }

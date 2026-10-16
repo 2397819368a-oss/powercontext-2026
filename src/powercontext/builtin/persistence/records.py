@@ -211,6 +211,7 @@ class RelationalRecordService:
         /,
         *,
         handoff_receipt: bool = False,
+        working_note: bool = False,
     ) -> SourceRecord:
         """Preserve the caller-stable identity used by the existing capture API."""
 
@@ -225,7 +226,9 @@ class RelationalRecordService:
         return await self._store_source(
             scope_id,
             source_type,
-            (await CONTENT_SOURCE_ADAPTER.resolve(capture)).model_copy(update={"handoff_receipt": handoff_receipt}),
+            (await CONTENT_SOURCE_ADAPTER.resolve(capture)).model_copy(
+                update={"handoff_receipt": handoff_receipt, "working_note": working_note}
+            ),
         )
 
     async def _store_source(

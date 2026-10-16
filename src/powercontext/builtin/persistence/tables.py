@@ -1319,6 +1319,13 @@ RECURRENCE_OBSERVATION_TABLE = Table(
 
 RECURRENCE_TABLES = (RECURRENCE_MATCH_TABLE, RECURRENCE_OBSERVATION_TABLE)
 
+LEXICAL_PROJECTION_VERSIONS_TABLE = Table(
+    "pc_lexical_projection_versions",
+    SHARED_METADATA,
+    Column("projection", String(128), primary_key=True),
+    Column("analyzer_version", String(64), nullable=False),
+)
+
 BUILTIN_TABLES = (
     SCOPE_TABLES
     + SHARED_TABLES
@@ -1332,5 +1339,6 @@ BUILTIN_TABLES = (
         DREAM_RUNS_TABLE,
         RECEIPT_MIGRATION_REVIEW_TABLE,
         CONTEXT_BOOTSTRAP_RECEIPTS_TABLE,
+        LEXICAL_PROJECTION_VERSIONS_TABLE,
     )
 )

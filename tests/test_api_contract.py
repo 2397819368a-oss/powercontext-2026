@@ -34,6 +34,7 @@ from powercontext.http import (
     Candidate,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
+    CaptureWorkingNoteRequest,
     CommitHandoffRequest,
     CommittedHandoff,
     ContinueHandoffRequest,
@@ -97,6 +98,7 @@ from powercontext.http._generated.operations import (
     ACTIVATE_HANDOFF,
     APPROVE_CANDIDATE,
     CAPTURE_CONTENT_SOURCE,
+    CAPTURE_WORKING_NOTE,
     COMMIT_HANDOFF,
     CONTINUE_HANDOFF,
     CREATE_ARTIFACT,
@@ -348,6 +350,9 @@ def test_capture_operation_declares_its_typed_accepted_exchange() -> None:
     assert CAPTURE_CONTENT_SOURCE.request_type is CaptureContentSourceRequest
     assert CAPTURE_CONTENT_SOURCE.response_type is CaptureContentSourceResponse
     assert CAPTURE_CONTENT_SOURCE.success_status == 202
+    assert CAPTURE_WORKING_NOTE.request_type is CaptureWorkingNoteRequest
+    assert CAPTURE_WORKING_NOTE.response_type is CaptureContentSourceResponse
+    assert CAPTURE_WORKING_NOTE.success_status == 202
 
 
 def test_topic_memory_operations_use_strict_public_shapes_without_retrieval_controls() -> None:
