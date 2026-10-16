@@ -238,6 +238,7 @@ def _read_state(backend: _BackendTarget):
             if "pc_schema_revision" in tables
             else None
         )
+        # The frozen p0001-p0003 bundle predates the unified Candidate table names.
         columns = {
             name: {row[0] for row in connection.exec_driver_sql(f"SHOW COLUMNS FROM {name}")}
             for name in ("pc_artifacts", "pc_artifact_candidate_versions")

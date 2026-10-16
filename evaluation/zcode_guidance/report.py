@@ -221,9 +221,9 @@ def grade(case: str, turns: list[dict]) -> list[str]:
         if len(turns) == 2 and not delays(1):
             failures.append("coding_answer_incorrect")
     elif case == "stale-approval":
-        if not only(0, ["get_artifact_candidate"]) or wire[0][0]["result"].get("version") != 1:
+        if not only(0, ["get_candidate"]) or wire[0][0]["result"].get("version") != 1:
             failures.append("review_not_version_1")
-        if len(turns) != 2 or not only(1, ["approve_artifact_candidate", "get_artifact_candidate"]):
+        if len(turns) != 2 or not only(1, ["approve_candidate", "get_candidate"]):
             failures.append("approval_retried_or_reread_missing")
         else:
             approval, reread = wire[1]
@@ -280,8 +280,8 @@ def replay(root: Path) -> dict:
         "remember_memory",
         "search_memory",
         "list_atomic_memories",
-        "approve_artifact_candidate",
-        "revise_artifact_candidate",
+        "approve_candidate",
+        "revise_candidate",
         "publish_artifact",
     }.issubset(tool_names):
         raise ValueError("incomplete_tool_catalog")

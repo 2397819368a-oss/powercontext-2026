@@ -46,7 +46,10 @@ Source 处理先生成候选，再枚举满足权限、标签及检索资格的�
 
 Atomic Memory 没有旧集合容量预算或 compact 操作。旧 `MEMORY_MAX_ACTIVE_ENTRIES`、`MEMORY_MAX_MANIFEST_ENTRIES`、
 `MEMORY_MAX_MANIFEST_BYTES` 和 `MEMORY_COMPACTION_*` 设置仍可解析，但不限制新记忆或启用压缩。
-旧 MemoryWriteGate 集合契约不支持 Atomic Runtime；开启 `MEMORY_WRITE_GATE_ENABLED` 或注入旧 gate 会被明确拒绝。
+MemoryWriteGate 采用 fail-open 策略，只裁决写入，不修改权威历史。若决策请求可能发送到 hosted 后端，必须同时设置
+`MEMORY_WRITE_GATE_PRIVACY_BOUNDARY=hosted_redacted` 和显式的 `MEMORY_WRITE_GATE_SANITIZER=known_secrets`。
+内置 sanitizer 覆盖已知的敏感环境变量/Codex 值及有限的 provider 前缀，不是通用的 PII 或口令检测器。sanitizer
+默认是 `none`；hosted-redacted 组合在未选择 sanitizer 时会以命名配置错误失败。
 Atomic Memory 的标签仍遵守每个 Artifact 最多 32 个的限制。合并输入标签的并集超过此上限时，整笔合并失败；
 Source 抽取窗口也不会部分提交或推进游标。
 
@@ -106,9 +109,11 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_ENABLED` | `false` | 在 Memory 粗召回后应用 listwise rerank |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_CANDIDATE_LIMIT` | `30` | 交给 reranker 的粗排候选池大小 |
 | `POWERCONTEXT_SERVER_RUNTIME_DECISION_ASSISTANCE_ENABLED` | `false` | 启用决策模型辅助；需要配置决策模型或 generation 模型 |
-| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_ENABLED` | `false` | 旧集合 WriteGate；Atomic Runtime 不支持，开启时拒绝构造 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_ENABLED` | `false` | 启用 fail-open 的 Memory 写入决策门控 |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_HOLD_ON` | `yes` | 表示证据不足的决策结果：`yes` 或 `no` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_THRESHOLD` | 未设置 | 可选的 `0` 到 `1` 置信度阈值；低于阈值的暂缓方向结果会标记而非暂缓写入 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_PRIVACY_BOUNDARY` | `no_external_call` | 决策请求出口边界：`no_external_call` 或 `hosted_redacted` |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_SANITIZER` | `none` | `hosted_redacted` 必须配置；选择 `known_secrets` 安装内置投影 sanitizer |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_ACTIVE_ENTRIES` | `5000` | 旧集合设置；不限制 Atomic Memory，配置仍校验不高于清单条目上限 |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_ENTRIES` | `10000` | 旧集合设置；Atomic Memory 不使用集合清单 |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_MANIFEST_BYTES` | `4194304` | 旧集合设置；不限制 Atomic Memory 正文总量 |
@@ -189,7 +194,7 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 相关度不包含零权重通道；Topic Memory 则为正权重通道选中的 Topic 保留零权重通道的证据。
 同比例缩放两个值不会改变结果。将其中一个设为
 `0` 会从 hybrid 融合中排除该通道，但提高权重不能恢复融合前已被拒绝的候选。零权重不会关闭该通道的检索和准入工作：
-vector 查询仍可能生成 embedding，检索与准入计数也仍包含零权重通道。如果 Topic Artifact 搜索请求显式提供自己的 `fusion`
+vector 查询仍可能生成 embedding，检索与准入计数也仍包含零权重通道。如果 Topic 或 Atomic Memory Artifact 搜索请求显式提供自己的 `fusion`
 参数，它会完整取代部署级召回权重；只有请求未指定 `fusion` 时，部署级权重才生效。归一化后，每个非零通道权重必须不低于 IEEE 754 binary64
 最小正规数（`2.2250738585072014e-308`），更小的值会在启动时被拒绝。只有显式配置 `0` 才表示关闭该通道的融合贡献。调整权重时应同时评估
 recall gate 轮次、语义准入下限和历史 Topic 候选选择，不要将这些配置孤立调整。特别是，提高 FTS 权重可能使 Topic 的归一化分数跨过
@@ -278,6 +283,8 @@ Supervisor 实例重建而重置。
 
 `GET /v1/capabilities` 的 `extraction` 对象分别返回配置、后台执行状态和本地观察记录。
 读取快照不查询数据库、不调用模型，也不生成整个管道的健康结论。
+`powercontext capabilities` 会打印同样的事实。缺少诊断时输出 `unavailable`，Supervisor 角色为空时输出 `absent`，未知值输出
+`unknown`。成功和失败时间是历史观察，不是当前健康结论。`--json` 仍原样返回 Server 响应。
 
 - `configuration` 在本地已装配提取模型、自定义管道或已注册本地 Memory worker 时为 `configured`，
   均不可用时为 `unconfigured`。注册不验证凭证或连通性；外部执行返回 `unknown`。

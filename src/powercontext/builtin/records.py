@@ -261,6 +261,7 @@ class RecordService(Protocol):
         /,
         *,
         handoff_receipt: bool = False,
+        working_note: bool = False,
     ) -> SourceRecord: ...
 
     async def get_source(self, scope_id: str, source_type: str, source_id: str, /) -> SourceRecord: ...
@@ -299,7 +300,9 @@ class RecordService(Protocol):
 
     async def resolve_artifact_handle(self, scope_id: str, handle: StableHandle, /) -> ArtifactRef: ...
 
-    async def get_artifact(self, scope_id: str, family: str, artifact_id: str, /) -> ArtifactRecord: ...
+    async def get_artifact(
+        self, scope_id: str, family: str, artifact_id: str, /, *, execution_context: Any = None
+    ) -> ArtifactRecord: ...
 
     async def get_artifact_revision(
         self,
@@ -308,6 +311,8 @@ class RecordService(Protocol):
         artifact_id: str,
         revision: int,
         /,
+        *,
+        execution_context: Any = None,
     ) -> ArtifactRecord: ...
 
     async def list_artifact_revisions(

@@ -375,6 +375,17 @@ const OPERATIONS = {
 		successStatuses: [202],
 		emptyStatuses: []
 	},
+	capture_working_note: {
+		method: "POST",
+		path: "/v1/sources/working-notes",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [202],
+		emptyStatuses: []
+	},
 	register_source_definition: {
 		method: "POST",
 		path: "/v1/source-definitions/register",
@@ -1018,9 +1029,9 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	list_artifact_candidates: {
+	list_candidates: {
 		method: "POST",
-		path: "/v1/artifact-candidates/list",
+		path: "/v1/candidates/list",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -1029,9 +1040,9 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	get_artifact_candidate: {
+	get_candidate: {
 		method: "POST",
-		path: "/v1/artifact-candidates/get",
+		path: "/v1/candidates/get",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -1040,9 +1051,9 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	approve_artifact_candidate: {
+	approve_candidate: {
 		method: "POST",
-		path: "/v1/artifact-candidates/approve",
+		path: "/v1/candidates/approve",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -1051,9 +1062,9 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	reject_artifact_candidate: {
+	reject_candidate: {
 		method: "POST",
-		path: "/v1/artifact-candidates/reject",
+		path: "/v1/candidates/reject",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -1062,9 +1073,20 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	revise_artifact_candidate: {
+	revise_candidate: {
 		method: "POST",
-		path: "/v1/artifact-candidates/revise",
+		path: "/v1/candidates/revise",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	get_candidate_history: {
+		method: "POST",
+		path: "/v1/candidates/history",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -1683,6 +1705,7 @@ var PowerContextClient = class {
 	}
 	init(spec, request, signal) {
 		const headers = {
+			"X-PowerContext-Dream-Contract": "2",
 			Accept: "application/json",
 			"User-Agent": PLUGIN_USER_AGENT,
 			...request.headers
@@ -1800,6 +1823,7 @@ function containsSecret(text) {
 const WRITE_OPERATIONS = new Set([
 	"remember_memory",
 	"capture_content_source",
+	"capture_working_note",
 	"revise_memory_entry",
 	"retire_memory_entry",
 	"replace_artifact",
@@ -1909,7 +1933,7 @@ async function call(runtime, scopeId, operationId, payload, signal) {
 }
 async function handleReview(tokens, runtime, scopeId, signal) {
 	const action = tokens[1];
-	if (!action) return call(runtime, scopeId, "list_artifact_candidates", { status: "pending" }, signal);
+	if (!action) return call(runtime, scopeId, "list_candidates", { status: "pending" }, signal);
 	if (action === "approve") {
 		const candidateId = tokens[2];
 		const version = Number(tokens[3]);
@@ -1917,7 +1941,7 @@ async function handleReview(tokens, runtime, scopeId, signal) {
 			kind: "error",
 			text: "Usage: /pc review approve <candidate_id> <expected_version>"
 		};
-		return call(runtime, scopeId, "approve_artifact_candidate", {
+		return call(runtime, scopeId, "approve_candidate", {
 			candidate_id: candidateId,
 			expected_version: version
 		}, signal);
@@ -1930,7 +1954,7 @@ async function handleReview(tokens, runtime, scopeId, signal) {
 			kind: "error",
 			text: "Usage: /pc review reject <candidate_id> <expected_version> <reason>"
 		};
-		return call(runtime, scopeId, "reject_artifact_candidate", {
+		return call(runtime, scopeId, "reject_candidate", {
 			candidate_id: candidateId,
 			expected_version: version,
 			reason

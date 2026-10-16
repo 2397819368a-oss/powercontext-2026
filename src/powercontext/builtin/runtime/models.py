@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from enum import StrEnum
 from hashlib import sha256
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -25,7 +26,9 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, m
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.artifacts.models import _reject_legacy_memory_citations
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import ExperienceContent
+from powercontext.builtin.artifacts.handoff.models import HandoffContent
 from powercontext.builtin.artifacts.memory.models import (
     MemoryEntryInput,
     MemoryHit,
@@ -34,18 +37,20 @@ from powercontext.builtin.artifacts.memory.models import (
     MemoryUsedSearchMode,
 )
 from powercontext.builtin.artifacts.profile.models import ProfileCandidateProposal, ProfileWriteContent
-from powercontext.builtin.artifacts.prompt import PromptCapability
+from powercontext.builtin.artifacts.prompt import PromptCapability, PromptContent
 from powercontext.builtin.artifacts.skill import (
     ExternalSkillProviderScan,
     ExternalSkillResolution,
     SkillContent,
 )
+from powercontext.builtin.artifacts.topic_memory.models import TopicMemoryContent
+from powercontext.builtin.catalog_changes.models import CatalogChangeCandidate, CatalogChangeProposal
 from powercontext.builtin.review import (
     DEFAULT_CANDIDATE_PAGE_SIZE,
     MAX_CANDIDATE_EVIDENCE,
     MAX_CANDIDATE_PAGE_SIZE,
-    ArtifactCandidate,
-    ArtifactCandidatePage,
+    Candidate,
+    CandidatePage,
     CandidateStatus,
 )
 from powercontext.builtin.review.generation import SkillGenerationOrigin
@@ -55,6 +60,15 @@ from powercontext.sources import ConnectorBinding, SourceObservation, SourceRef
 
 PreparedContextSchema: TypeAlias = Literal["powercontext.prepared-context.v1"]
 PreparedContextStatus: TypeAlias = Literal["ready", "empty"]
+ReviewedProposal: TypeAlias = (
+    ExperienceContent
+    | SkillContent
+    | ProfileCandidateProposal
+    | AtomicMemoryContent
+    | TopicMemoryContent
+    | HandoffContent
+    | PromptContent
+)
 BootstrapContextSchema: TypeAlias = Literal["powercontext.bootstrap-context.v1"]
 BootstrapContextProfile: TypeAlias = Literal["powercontext.scope-bootstrap.v1"]
 BootstrapContextLifecycle: TypeAlias = Literal["startup", "resume", "clear", "compact", "restore", "fork"]
@@ -66,7 +80,6 @@ BootstrapSkipReason: TypeAlias = Literal[
     "already_delivered",
     "preparation_failed",
 ]
-ReviewedProposal: TypeAlias = ExperienceContent | SkillContent | ProfileCandidateProposal
 
 PREPARED_CONTEXT_SCHEMA: PreparedContextSchema = "powercontext.prepared-context.v1"
 BOOTSTRAP_CONTEXT_SCHEMA: BootstrapContextSchema = "powercontext.bootstrap-context.v1"
@@ -83,6 +96,27 @@ class CaptureSource(BaseModel):
     source_id: str
     content: str
     metadata: Mapping[str, JsonValue]
+
+
+class WorkingNoteKind(StrEnum):
+    """Classify one bounded kind of session-local work state."""
+
+    INSPECTION = "inspection"
+    ABANDONED_APPROACH = "abandoned_approach"
+    VALIDATION = "validation"
+    UNRESOLVED = "unresolved"
+    HOST_CONTEXT = "host_context"
+
+
+class CaptureWorkingNote(BaseModel):
+    """Explicitly capture short-lived, non-Memory work state."""
+
+    source_id: str
+    content: str
+    session_id: str
+    note_kind: WorkingNoteKind
+    expires_at: datetime | None = None
+    metadata: Mapping[str, JsonValue] = Field(default_factory=dict)
 
 
 class SourceReceipt(BaseModel):
@@ -112,6 +146,16 @@ class CommitConnectorCheckpoint(BaseModel):
     binding: ConnectorBinding
     expected: JsonValue | None
     checkpoint: JsonValue | None
+
+
+class DreamOperationCapability(BaseModel):
+    operation: str
+    output_kind: Literal["candidate", "tag_candidate"] = "candidate"
+    effect: Literal[
+        "review_then_publish",
+        "review_then_publish_configuration",
+        "review_then_replace_tags",
+    ] = "review_then_publish"
 
 
 class ExtractionBackground(BaseModel):
@@ -157,6 +201,7 @@ class RuntimeCapabilities(BaseModel):
     experience_generation: bool = False
     managed_skill_generation: bool = False
     artifact_dreaming: bool = False
+    artifact_dreaming_operations: tuple[DreamOperationCapability, ...] = ()
     external_skill_registry: bool = False
     memory_search_modes: tuple[MemorySearchMode, ...]
     handoff_generation: bool = False
@@ -533,40 +578,57 @@ ExternalSkillScanResult = ExternalSkillProviderScan
 ExternalSkillList = tuple[ExternalSkillResolution, ...]
 
 
-class ListArtifactCandidatesRequest(BaseModel):
+class ListCandidatesRequest(BaseModel):
     """Filter and page the current Review Inbox."""
 
+    candidate_kind: Literal["artifact", "tag"] | None = None
     status: CandidateStatus = CandidateStatus.PENDING
-    family: Literal["experience", "skill", "profile"] | None = None
+    family: Literal["experience", "skill", "profile", "atomic-memory", "topic-memory", "handoff", "prompt"] | None = (
+        None
+    )
     cursor: str | None = None
     limit: Annotated[int, Field(ge=1, le=MAX_CANDIDATE_PAGE_SIZE)] = DEFAULT_CANDIDATE_PAGE_SIZE
 
 
-class GetArtifactCandidateRequest(BaseModel):
+class GetCandidateRequest(BaseModel):
     candidate_id: str
 
 
-class ApproveArtifactCandidateRequest(BaseModel):
+class ApproveCandidateRequest(BaseModel):
     candidate_id: str
     expected_version: Annotated[int, Field(ge=1)]
 
 
-class RejectArtifactCandidateRequest(ApproveArtifactCandidateRequest):
+class RejectCandidateRequest(ApproveCandidateRequest):
     reason: Annotated[str, Field(min_length=1, max_length=2_000)]
 
 
-class ReviseArtifactCandidateRequest(ApproveArtifactCandidateRequest):
+class ReviseCandidateRequest(ApproveCandidateRequest):
     _reject_legacy_citations = model_validator(mode="before")(_reject_legacy_memory_citations)
 
-    proposal: ExperienceContent | SkillContent | ProfileWriteContent
-    sources: tuple[SourceRef, ...] = ()
-    artifacts: tuple[ArtifactRef, ...] = ()
+    proposal: (
+        CatalogChangeProposal
+        | ExperienceContent
+        | SkillContent
+        | ProfileWriteContent
+        | AtomicMemoryContent
+        | TopicMemoryContent
+        | HandoffContent
+        | PromptContent
+    )
+    sources: tuple[SourceRef, ...] | None = None
+    artifacts: tuple[ArtifactRef, ...] | None = None
+
     target: ArtifactRef | None = None
     reason: str | None = None
 
 
-ExperienceCandidate = ArtifactCandidate[ExperienceContent]
-ExperienceCandidatePage = ArtifactCandidatePage[ExperienceContent]
-SkillCandidate = ArtifactCandidate[SkillContent]
-ReviewedCandidate = ArtifactCandidate[ReviewedProposal]
-ReviewedCandidatePage = ArtifactCandidatePage[ReviewedProposal]
+ExperienceCandidate = Candidate[ExperienceContent]
+ExperienceCandidatePage = CandidatePage[ExperienceContent]
+SkillCandidate = Candidate[SkillContent]
+ReviewedCandidate = Candidate[ReviewedProposal] | CatalogChangeCandidate
+
+
+class ReviewedCandidatePage(BaseModel):
+    candidates: tuple[ReviewedCandidate, ...]
+    next_cursor: str | None = None

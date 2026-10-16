@@ -207,13 +207,13 @@ use the same policy enforcement point; MCP tool visibility is not permission.
 | Topic Memory | `/v1/topic-memory/*`, `/v1/scopes/{scope_id}/artifacts/*` (`family=topic-memory`) | Request background processing, search, and expand topics; create, read, and revise content and inspect history |
 | Profile | `/v1/profile/*`, `/v1/scopes/{scope_id}/profile-policy`, `/v1/scopes/{scope_id}/artifacts/*` (`family=profile`) | Process Profile generation, configure generation policy, read and write Profiles, and inspect history |
 | Experience and Skill | `/v1/experience/*`, `/v1/skill/*`, `/v1/skills/*` | Propose, review, package, govern, distribute, and read managed Skill revisions |
-| Review | `/v1/artifact-candidates/*` | List, inspect, revise, approve, or reject pending Candidates |
+| Review | `/v1/candidates/*` | List, inspect, revise, approve, or reject pending Candidates |
 | External Skills | `/v1/external-skills/*` | Scan configured targets and resolve or import packages |
 | Handoff Reports | `/v1/handoff-reports/*` | Generate a read-only report for a Scope selection |
 | Statistics | `/v1/stats` | Read scoped usage statistics |
 
 Create an Artifact with `POST /v1/scopes/{scope_id}/artifacts`, specifying `family` in the request body.
-Profile candidate review uses `/v1/artifact-candidates/*`.
+Profile candidate review uses `/v1/candidates/*`.
 
 The OpenAPI contract defines the complete path list, schemas, limits, and status codes. The higher-level workflow and
 Python examples are in [Interfaces](interfaces.md).

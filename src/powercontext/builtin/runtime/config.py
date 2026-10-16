@@ -126,6 +126,8 @@ class RuntimeConfig(BaseModel):
         "topic_memory_max_workers",
         "experience_max_workers",
         "skill_max_workers",
+        "handoff_max_workers",
+        "prompt_max_workers",
         "profile_max_workers",
         "profile_max_concurrency",
         "artifact_processing_max_workers",
@@ -147,6 +149,7 @@ class RuntimeConfig(BaseModel):
     memory_write_gate_enabled: bool = False
     memory_write_gate_mode: DecisionPolicyMode = DecisionPolicyMode.SHADOW
     memory_write_gate_privacy_boundary: DecisionPrivacyBoundary = DecisionPrivacyBoundary.NO_EXTERNAL_CALL
+    memory_write_gate_sanitizer: Literal["none", "known_secrets"] = "none"
     # Direction only: which verdict means "evidence is insufficient". The strength threshold
     # stays unset until a calibration probe establishes it, so a hold never depends on a made-up
     # number.
@@ -164,8 +167,6 @@ class RuntimeConfig(BaseModel):
     def validate_memory_capacity_order(self) -> RuntimeConfig:
         if self.memory_max_active_entries > self.memory_max_manifest_entries:
             raise ValueError("memory_max_active_entries cannot exceed memory_max_manifest_entries")  # noqa: TRY003
-        if self.memory_write_gate_privacy_boundary is DecisionPrivacyBoundary.HOSTED_REDACTED:
-            raise ValueError("memory_write_gate_privacy_boundary does not support hosted_redacted without a sanitizer")  # noqa: TRY003
         return self
 
     recall_gate_enabled: bool = False
@@ -256,11 +257,15 @@ class RuntimeConfig(BaseModel):
     topic_memory_max_workers: int = Field(default=10, ge=1)
     experience_max_workers: int = Field(default=1, ge=1)
     skill_max_workers: int = Field(default=1, ge=1)
+    handoff_max_workers: int = Field(default=1, ge=1)
+    prompt_max_workers: int = Field(default=1, ge=1)
     profile_max_workers: int = Field(default=4, ge=1)
     memory_worker_timeout_seconds: float = Field(default=600, gt=0)
     topic_memory_worker_timeout_seconds: float = Field(default=600, gt=0)
     experience_worker_timeout_seconds: float = Field(default=600, gt=0)
     skill_worker_timeout_seconds: float = Field(default=600, gt=0)
+    handoff_worker_timeout_seconds: float = Field(default=600, gt=0)
+    prompt_worker_timeout_seconds: float = Field(default=600, gt=0)
     profile_worker_timeout_seconds: float = Field(default=600, gt=0)
     model_usage_queue_capacity: int = Field(default=256, ge=1, le=16_384)
     model_usage_write_timeout_seconds: float = Field(default=1.0, gt=0, le=30)

@@ -37,6 +37,7 @@ const MAX_TIMESTAMP = 253402300800000
 // directory scan budget leaves bounded room to read and prune that overflow.
 const LIMIT = 64
 const STALE_MS = 300000
+const TRANSIENT_REMOVE_CODES = new Set(['EACCES', 'EBUSY', 'EPERM'])
 const hash = value => createHash('sha256').update(value).digest('hex')
 
 function identity(input, settings) {
@@ -133,6 +134,15 @@ async function publish(record) {
   } finally { await unlink(temporary).catch(() => {}) }
 }
 
+async function removeCompleted(attemptId) {
+  try { await rm(join(directory(), `attempt-${attemptId}.json`), { force: true }) }
+  catch (error) {
+    // A concurrent Hook can still be reading this owned record on Windows. Retention is
+    // best-effort here; the capacity check below still rejects a persistently full directory.
+    if (!TRANSIENT_REMOVE_CODES.has(error.code)) throw error
+  }
+}
+
 export function startObservation(input, settings, onFailure) {
   const record = { schema: SCHEMA, attempt_id: randomUUID(), identity: identity(input, settings),
     scope_id: settings.scopeId, started_at: Date.now(), completed_at: null,
@@ -144,7 +154,7 @@ export function startObservation(input, settings, onFailure) {
     if (existing.length >= LIMIT) {
       const completed = (await records()).filter(item => item.completed_at !== null)
       for (const item of completed.slice(32)) {
-        await rm(join(directory(), `attempt-${item.attempt_id}.json`), { force: true })
+        await removeCompleted(item.attempt_id)
       }
       if ((await names()).length >= LIMIT) throw new Error('runtime_capacity_exceeded')
     }

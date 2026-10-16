@@ -61,7 +61,10 @@ def exact_memory_text(server: httpx.Client, scope: str, reference: dict[str, Any
     value = response.json()
     if value["scope_id"] != scope or any(value[key] != reference[key] for key in ("family", "artifact_id", "revision")):
         raise HarnessFailure("installed_independent_exact_read_mismatch")
-    return value["content"]["text"]
+    content = value["content"]
+    if content["schema"] != "powercontext.atomic-memory.v1" or not isinstance(content["text"], str):
+        raise HarnessFailure("installed_exact_atomic_content_mismatch")
+    return content["text"]
 
 
 def wait_ready(client: httpx.Client, process: subprocess.Popen[bytes]) -> None:

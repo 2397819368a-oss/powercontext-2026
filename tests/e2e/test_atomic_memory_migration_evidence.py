@@ -36,6 +36,7 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryGenerationPipeline,
 )
 from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
+    AtomicMemoryArtifactEvidence,
     AtomicMemoryReconciliationContent,
     AtomicMemoryReconciliationOutput,
 )
@@ -74,12 +75,12 @@ from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
 from powercontext.builtin.persistence.recurrence import RecurrenceRepository
 from powercontext.builtin.persistence.schema import create_tables
 from powercontext.builtin.persistence.tables import (
-    ARTIFACT_CANDIDATE_HEADS_TABLE,
-    ARTIFACT_CANDIDATE_VERSIONS_TABLE,
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_LINEAGE_ARTIFACTS_TABLE,
     ARTIFACT_LINEAGE_SOURCES_TABLE,
     ARTIFACTS_TABLE,
+    CANDIDATE_HEADS_TABLE,
+    CANDIDATE_VERSIONS_TABLE,
     DREAM_RUNS_TABLE,
     MEMORY_ENTRY_HEADS_TABLE,
     MEMORY_ENTRY_VERSIONS_TABLE,
@@ -495,6 +496,10 @@ def test_source_flush_supplies_the_migrated_related_entry_current_content(migrat
             candidate_pipeline=pipeline,
         ) as contexts:
             context = await contexts.get(SCOPE)
+            memory = contexts.atomic_memory.for_scope(SCOPE)
+            original = await memory.get(_atomic("alpha", 2).artifact_id)
+            async with contexts.database.transaction() as connection:
+                imported = await _imported_snapshot(connection)
             await contexts.records.capture_source(SCOPE, "content", "migration-trigger", "Recheck task A and C.", {})
             await context.triggers.flush(limit=20)
             observed = []
@@ -505,8 +510,20 @@ def test_source_flush_supplies_the_migrated_related_entry_current_content(migrat
                         observed.append(tuple(evidence[key] for key in related.evidence_ids))
             assert observed, "The public flush must compare the imported alpha identity."
             for (published,) in observed:
+                assert isinstance(published, AtomicMemoryArtifactEvidence)
                 assert published.artifact_ref == _atomic("alpha", 2)
+                assert published.content.kind == original.artifact.content.kind
                 assert published.content.text == "Tasks A and C were completed."
+            assert await memory.get(original.ref.artifact_id) == original
+            assert (
+                await memory.get(original.ref.artifact_id, revision=original.ref.revision)
+            ).artifact == original.artifact
+            async with contexts.database.transaction() as connection:
+                resolved = await _resolver(contexts).resolve(connection, artifacts=(original.ref,))
+                assert _projected_sources(resolved) == (A, C)
+                assert EA in _projected_artifacts(resolved)
+                assert EB not in _projected_artifacts(resolved)
+                assert await _imported_snapshot(connection) == imported
 
     asyncio.run(scenario())
 
@@ -604,7 +621,7 @@ async def _set_citations(connection, table: str, where: str, citations: list[Any
 
 async def _candidate(connection, candidate_id: str, *, artifact_refs: list[Any], citations: list[Any] | None) -> None:
     await connection.execute(
-        insert(ARTIFACT_CANDIDATE_VERSIONS_TABLE).values(
+        insert(CANDIDATE_VERSIONS_TABLE).values(
             scope_id=SCOPE,
             candidate_id=candidate_id,
             version=1,
@@ -617,14 +634,14 @@ async def _candidate(connection, candidate_id: str, *, artifact_refs: list[Any],
     if citations is not None:
         await _set_citations(
             connection,
-            "pc_artifact_candidate_versions",
+            "pc_candidate_versions",
             "scope_id = :scope AND candidate_id = :candidate",
             citations,
             scope=SCOPE,
             candidate=candidate_id,
         )
     await connection.execute(
-        insert(ARTIFACT_CANDIDATE_HEADS_TABLE).values(
+        insert(CANDIDATE_HEADS_TABLE).values(
             scope_id=SCOPE, candidate_id=candidate_id, family="experience", version=1, status="pending"
         )
     )
@@ -718,6 +735,7 @@ async def _legacy_references(contexts, connection) -> None:
             upstream_revision=1,
         )
     )
+    await _scope_row(connection)
     await _candidate(connection, "cited-candidate", artifact_refs=[], citations=[ALPHA_2])
     await _insert_handoff(connection, "legacy-handoff", _handoff_content(ALPHA_2_CITATION))
     await connection.execute(
@@ -735,7 +753,6 @@ async def _legacy_references(contexts, connection) -> None:
     await connection.execute(
         insert(ARTIFACT_HEADS_TABLE).values(scope_id=SCOPE, family="handoff", artifact_id="legacy-handoff", revision=1)
     )
-    await _scope_row(connection)
     stored = await _work_source(
         contexts, connection, OUTCOME, "task-outcome", "powercontext.task-outcome.v1", LEGACY_OUTCOME
     )
@@ -791,7 +808,7 @@ def test_migration_converts_exact_citations_and_archives_collection_relationship
             assert not await _public_collection_rows(connection)
             report = await verify_atomic_memory_migration(connection, index=contexts.atomic_memory.index)
             assert report.ready, report.errors
-            for table in ("pc_artifacts", "pc_artifact_candidate_versions"):
+            for table in ("pc_artifacts", "pc_candidate_versions"):
                 columns = await connection.run_sync(lambda sync, name=table: inspect(sync).get_columns(name))
                 assert "memory_citations" not in {column["name"] for column in columns}
 
@@ -866,6 +883,7 @@ def test_candidate_left_without_evidence_blocks_until_an_explicit_replacement(
     config = migration_backend.config
 
     async def blocked(_contexts, connection) -> None:
+        await _scope_row(connection)
         await _candidate(connection, "collection-candidate", artifact_refs=[_collection(1)], citations=None)
 
     async def scenario() -> None:
@@ -893,8 +911,8 @@ def test_candidate_left_without_evidence_blocks_until_an_explicit_replacement(
         assert applied.ready, applied.errors
         async with migration_profile(config) as profile, profile.database.transaction() as connection:
             refs = await connection.scalar(
-                select(ARTIFACT_CANDIDATE_VERSIONS_TABLE.c.artifact_refs).where(
-                    ARTIFACT_CANDIDATE_VERSIONS_TABLE.c.candidate_id == "collection-candidate"
+                select(CANDIDATE_VERSIONS_TABLE.c.artifact_refs).where(
+                    CANDIDATE_VERSIONS_TABLE.c.candidate_id == "collection-candidate"
                 )
             )
             assert isinstance(refs, bytes) and json.loads(refs) == [EA.model_dump(mode="json")]

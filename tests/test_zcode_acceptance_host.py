@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.e2e.zcode_acceptance.host import NativeHost
+from tests.e2e.zcode_acceptance.runner import AcceptanceRun
 
 
 def make_host(tmp_path, source: str) -> NativeHost:
@@ -121,3 +122,50 @@ def test_normal_shutdown_does_not_emit_host_failure_evidence(tmp_path):
     host.close()
     assert host.process.returncode == 0
     assert not (tmp_path / "evidence").exists()
+
+
+@pytest.mark.parametrize(
+    ("native_assertion", "result_emitted", "truncated"),
+    [
+        ("libuv_async_handle_closing", False, True),
+        ("libuv_async_handle_closing", True, False),
+        ("libuv_fs_event_path_mismatch", False, False),
+        (None, True, False),
+    ],
+)
+def test_nonzero_cli_exit_stays_failed_and_retains_only_safe_diagnostics(
+    tmp_path, native_assertion, result_emitted, truncated
+):
+    cli = tmp_path / "host.py"
+    diagnostic = "private-provider-token private-profile-path\n"
+    if native_assertion == "libuv_async_handle_closing":
+        diagnostic += "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\\win\\async.c, line 76\n"
+    elif native_assertion == "libuv_fs_event_path_mismatch":
+        diagnostic += "Assertion failed: !_wcsnicmp(filename, dir, dirlen), file src\\win\\fs-event.c, line 72\n"
+    cli.write_text(
+        "import json, sys\n"
+        f"sys.stderr.write({diagnostic!r})\n"
+        + (
+            "print(json.dumps({'type': 'result', 'sessionId': 'private-session', 'response': 'private-response'}))\n"
+            if result_emitted
+            else ""
+        )
+        + ("print('{\"type\":')\n" if truncated else "")
+        + "sys.exit(7)\n",
+        encoding="utf-8",
+    )
+    run = AcceptanceRun(tmp_path / "runs", live=False, model_config=None, generation_env=None)
+    run.workspace.mkdir(parents=True)
+    run.node = getattr(sys, "_base_executable", sys.executable)
+    run.cli = cli
+    run.model = None
+
+    with pytest.raises(AssertionError, match=r"^host_process_exit_7$"):
+        run.invoke("private-prompt")
+
+    assert run.summary["host_process_exit"] == {
+        "returncode": 7,
+        "result_event_count": int(result_emitted),
+        "native_assertion": native_assertion,
+    }
+    assert "private" not in json.dumps(run.summary)

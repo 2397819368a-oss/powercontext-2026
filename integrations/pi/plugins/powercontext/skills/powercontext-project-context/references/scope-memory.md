@@ -4,6 +4,17 @@
 
 ## Read context
 
+Form one short search query from the topic, entity or exact identifier supplied by the current question.
+Preserve its language and technical terms; do not append guessed synonyms, translations or project names.
+Leave answer-format and fallback instructions out of the query, while preserving domain qualifiers, negations,
+versions and exact values. If the topic is unclear, ask for clarification instead of guessing a query.
+
+A successful empty search means this query found no matching Memory, not that no Memory exists.
+It does not authorize broader queries, another Scope, an inventory, local memory files or another retrieval channel.
+Make additional searches only when the current user request authorizes them. Report failed, denied, unavailable
+and unknown operations separately from a successful empty result.
+
+
 - Use `pc_search` with a focused query, `mode: "auto"`, and no more than eight results.
 - Use `pc_memory_list` for an explicitly requested inventory of active entries in the current Scope.
 - Use `pc_memory_get` with the exact Atomic Memory artifact returned by search or list.

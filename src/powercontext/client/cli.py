@@ -68,12 +68,14 @@ from powercontext.client.skill_receiver import (
 )
 from powercontext.http import (
     AllScopeSelection,
-    ApproveArtifactCandidateRequest,
-    ArtifactCandidate,
-    ArtifactCandidatePage,
+    ApproveCandidateRequest,
     ArtifactPage,
     ArtifactReference,
+    Candidate,
     CandidateFamily,
+    CandidateHistory,
+    CandidateKind,
+    CandidatePage,
     CandidateStatus,
     Capabilities,
     CreateDreamRunRequest,
@@ -88,19 +90,20 @@ from powercontext.http import (
     ExperienceProposal,
     ExternalSkillImportMode,
     ExternalSkillResolution,
+    ExtractionStatus,
     FamilyCount,
     GeneratedCandidateResponse,
     GenerateExperienceRequest,
     GenerateSkillRequest,
-    GetArtifactCandidateRequest,
+    GetCandidateRequest,
     GetExperienceRequest,
     GetSkillPackageRequest,
     GetSkillRequest,
     GetStatsRequest,
     HealthResponse,
     ImportExternalSkillRequest,
-    ListArtifactCandidatesRequest,
     ListArtifactsRequest,
+    ListCandidatesRequest,
     ListDreamRunsRequest,
     ListExternalSkillsRequest,
     ListExternalSkillsResponse,
@@ -109,14 +112,14 @@ from powercontext.http import (
     ModelUsageValue,
     PublishRemoteSkillRequest,
     ReadinessResponse,
-    RejectArtifactCandidateRequest,
+    RejectCandidateRequest,
     RemoteAgentKind,
     RemoteSkillPublication,
     RemoteSkillTarget,
     RemoteSkillTargetStatus,
     RenameRemoteSkillTargetRequest,
     ResolveExternalSkillRequest,
-    ReviseArtifactCandidateRequest,
+    ReviseCandidateRequest,
     RevokeRemoteSkillTargetRequest,
     ScanExternalSkillsRequest,
     ScanExternalSkillsResponse,
@@ -135,10 +138,11 @@ from powercontext.http import (
 
 HELP_OPTION_NAMES = ("-h", "--help")
 _ClientResponse: TypeAlias = (
-    ArtifactCandidate
+    Candidate
+    | CandidateHistory
     | DreamRun
     | DreamRunPage
-    | ArtifactCandidatePage
+    | CandidatePage
     | ArtifactPage
     | Capabilities
     | ExperienceArtifact
@@ -329,19 +333,21 @@ def list_candidates(
     scope_id: Annotated[str, typer.Option(help="Application scope containing the Review Inbox.")],
     status: Annotated[CandidateStatus, typer.Option(help="Candidate lifecycle state.")] = CandidateStatus.PENDING,
     family: Annotated[CandidateFamily | None, typer.Option(help="Optional Artifact Family filter.")] = None,
+    candidate_kind: Annotated[str | None, typer.Option(help="artifact or tag; omit for both.")] = None,
     cursor: Annotated[str | None, typer.Option(help="Opaque cursor from the previous page.")] = None,
     limit: Annotated[int, typer.Option(min=1, max=100, help="Maximum Candidate heads to return.")] = 50,
 ) -> None:
     """List current Candidate heads; pending is the default Inbox view."""
 
-    request = ListArtifactCandidatesRequest(
+    request = ListCandidatesRequest(
         scope_id=scope_id,
+        candidate_kind=None if candidate_kind is None else CandidateKind(candidate_kind),
         status=status,
         family=family,
         cursor=cursor,
         limit=limit,
     )
-    asyncio.run(_execute(context, lambda client: client.list_artifact_candidates(request)))
+    asyncio.run(_execute(context, lambda client: client.list_candidates(request)))
 
 
 @candidate_app.command("show")
@@ -352,8 +358,8 @@ def show_candidate(
 ) -> None:
     """Show the current exact Candidate version and evidence."""
 
-    request = GetArtifactCandidateRequest(scope_id=scope_id, candidate_id=candidate_id)
-    asyncio.run(_execute(context, lambda client: client.get_artifact_candidate(request)))
+    request = GetCandidateRequest(scope_id=scope_id, candidate_id=candidate_id)
+    asyncio.run(_execute(context, lambda client: client.get_candidate(request)))
 
 
 @candidate_app.command("approve")
@@ -365,12 +371,12 @@ def approve_candidate(
 ) -> None:
     """Approve one exact pending Candidate version."""
 
-    request = ApproveArtifactCandidateRequest(
+    request = ApproveCandidateRequest(
         scope_id=scope_id,
         candidate_id=candidate_id,
         expected_version=expected_version,
     )
-    asyncio.run(_execute(context, lambda client: client.approve_artifact_candidate(request)))
+    asyncio.run(_execute(context, lambda client: client.approve_candidate(request)))
 
 
 @candidate_app.command("reject")
@@ -383,13 +389,42 @@ def reject_candidate(
 ) -> None:
     """Reject one exact pending Candidate version."""
 
-    request = RejectArtifactCandidateRequest(
+    request = RejectCandidateRequest(
         scope_id=scope_id,
         candidate_id=candidate_id,
         expected_version=expected_version,
         reason=reason,
     )
-    asyncio.run(_execute(context, lambda client: client.reject_artifact_candidate(request)))
+    asyncio.run(_execute(context, lambda client: client.reject_candidate(request)))
+
+
+@candidate_revise_app.command("json")
+def revise_candidate_json(
+    context: typer.Context,
+    request_file: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="UTF-8 JSON ReviseCandidateRequest for any supported family.",
+        ),
+    ],
+) -> None:
+    """Revise a complete proposal; the result remains pending human review."""
+    try:
+        request = ReviseCandidateRequest.model_validate_json(request_file.read_text(encoding="utf-8"))
+    except ValidationError as error:
+        _raise_invalid_request("Candidate revision", error)
+    asyncio.run(_execute(context, lambda client: client.revise_candidate(request)))
+
+
+@candidate_app.command("history")
+def candidate_history(
+    context: typer.Context, scope_id: Annotated[str, typer.Option()], candidate_id: Annotated[str, typer.Argument()]
+) -> None:
+    request = GetCandidateRequest(scope_id=scope_id, candidate_id=candidate_id)
+    asyncio.run(_execute(context, lambda client: client.get_candidate_history(request)))
 
 
 @candidate_revise_app.command("experience")
@@ -421,7 +456,7 @@ def revise_experience_candidate(
     try:
         sources, artifacts, target_ref = _evidence_references(source_ref, artifact_ref, target)
         _require_target_family(target_ref, family="experience")
-        request = ReviseArtifactCandidateRequest(
+        request = ReviseCandidateRequest(
             scope_id=scope_id,
             candidate_id=candidate_id,
             expected_version=expected_version,
@@ -438,7 +473,7 @@ def revise_experience_candidate(
         )
     except ValidationError as error:
         _raise_invalid_request("Experience Candidate revision", error)
-    asyncio.run(_execute(context, lambda client: client.revise_artifact_candidate(request)))
+    asyncio.run(_execute(context, lambda client: client.revise_candidate(request)))
 
 
 @candidate_revise_app.command("skill")
@@ -485,7 +520,7 @@ def revise_skill_candidate(
     try:
         sources, artifacts, target_ref = _evidence_references(source_ref, artifact_ref, target)
         _require_target_family(target_ref, family="skill")
-        request = ReviseArtifactCandidateRequest(
+        request = ReviseCandidateRequest(
             scope_id=scope_id,
             candidate_id=candidate_id,
             expected_version=expected_version,
@@ -502,7 +537,7 @@ def revise_skill_candidate(
         )
     except ValidationError as error:
         _raise_invalid_request("managed Skill Candidate revision", error)
-    asyncio.run(_execute(context, lambda client: client.revise_artifact_candidate(request)))
+    asyncio.run(_execute(context, lambda client: client.revise_candidate(request)))
 
 
 @skill_app.command("show")
@@ -1729,8 +1764,9 @@ def _print_human_response(response: _ClientResponse) -> None:
     if isinstance(
         response,
         (
-            ArtifactCandidate,
-            ArtifactCandidatePage,
+            Candidate,
+            CandidateHistory,
+            CandidatePage,
             ExperienceArtifact,
             ExternalSkillResolution,
             GeneratedCandidateResponse,
@@ -1743,15 +1779,7 @@ def _print_human_response(response: _ClientResponse) -> None:
         return
     match response:
         case Capabilities():
-            typer.echo(f"Source types: {_items(response.source_types)}")
-            typer.echo(f"Artifact families: {_items(response.artifact_families)}")
-            typer.echo(f"Memory extraction: {'enabled' if response.memory_extraction else 'disabled'}")
-            typer.echo(f"Experience generation: {'enabled' if response.experience_generation else 'disabled'}")
-            typer.echo(f"Managed Skill generation: {'enabled' if response.managed_skill_generation else 'disabled'}")
-            typer.echo(f"External Skill Registry: {'enabled' if response.external_skill_registry else 'disabled'}")
-            typer.echo(f"Handoff generation: {'enabled' if response.handoff_generation else 'disabled'}")
-            typer.echo(f"Search modes: {_items(response.search_modes)}")
-            typer.echo(f"Context versions: {_items(response.context_versions)}")
+            _print_capabilities(response)
         case ReadinessResponse():
             typer.echo(f"Status: {response.status}")
             for name, status in sorted(response.checks.items()):
@@ -1762,6 +1790,58 @@ def _print_human_response(response: _ClientResponse) -> None:
             _print_stats(response)
         case ArtifactPage():
             _print_artifact_page(response)
+
+
+def _print_capabilities(response: Capabilities) -> None:
+    """Print Server capabilities, including extraction facts already in the response."""
+
+    typer.echo(f"Source types: {_items(response.source_types)}")
+    typer.echo(f"Artifact families: {_items(response.artifact_families)}")
+    typer.echo(f"Memory extraction: {'enabled' if response.memory_extraction else 'disabled'}")
+    _print_extraction_diagnostics(response.extraction)
+    typer.echo(f"Experience generation: {'enabled' if response.experience_generation else 'disabled'}")
+    typer.echo(f"Managed Skill generation: {'enabled' if response.managed_skill_generation else 'disabled'}")
+    typer.echo(f"External Skill Registry: {'enabled' if response.external_skill_registry else 'disabled'}")
+    typer.echo(f"Handoff generation: {'enabled' if response.handoff_generation else 'disabled'}")
+    typer.echo(f"Search modes: {_items(response.search_modes)}")
+    typer.echo(f"Context versions: {_items(response.context_versions)}")
+
+
+def _print_extraction_diagnostics(status: ExtractionStatus | None) -> None:
+    """Print extraction configuration, background state, and historical observations.
+
+    A missing status is unavailable. Unknown fields stay unknown. Success and failure
+    records are evidence from the observation window, not a current health verdict.
+    """
+
+    if status is None:
+        typer.echo("Extraction diagnostics: unavailable")
+        return
+    background = status.background
+    role = "absent" if background.role is None else background.role.value
+    if background.automatic_processing_enabled is None:
+        automatic_processing = "unknown"
+    elif background.automatic_processing_enabled:
+        automatic_processing = "enabled"
+    else:
+        automatic_processing = "disabled"
+    observation = status.observation
+    typer.echo(f"Extraction configuration: {status.configuration.value}")
+    typer.echo(
+        "Extraction background: "
+        f"location={background.location.value}, "
+        f"role={role}, "
+        f"state={background.state.value}, "
+        f"automatic processing={automatic_processing}"
+    )
+    typer.echo(f"Extraction observation: {observation.status.value} since {observation.since.isoformat()}")
+    if observation.last_success_at is not None:
+        typer.echo(f"Extraction last success: {observation.last_success_at.isoformat()}")
+    if observation.last_failure is not None:
+        failure = observation.last_failure
+        typer.echo(
+            f"Extraction last failure: {failure.code} at {failure.stage.value}, {failure.occurred_at.isoformat()}"
+        )
 
 
 def _print_remote_response(

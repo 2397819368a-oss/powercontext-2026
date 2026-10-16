@@ -83,7 +83,11 @@ from powercontext.builtin.artifacts.prompt import (
     PromptError,
 )
 from powercontext.builtin.artifacts.prompt.service import PromptService
-from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor, analyze_text
+from powercontext.builtin.artifacts.search import (
+    AdmissionCounts,
+    AdmissionFloor,
+    analyze_text,
+)
 from powercontext.builtin.artifacts.skill import (
     AgentKind,
     AgentSkillTarget,
@@ -123,6 +127,10 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemorySearchMode,
     TopicMemorySearchResult,
 )
+from powercontext.builtin.artifacts.topic_memory.search import bounded_topic_memory_query
+from powercontext.builtin.catalog_changes.application import CatalogChangeApplication
+from powercontext.builtin.catalog_changes.models import CatalogChangeProposal, TagDreamTarget
+from powercontext.builtin.catalog_changes.service import CatalogChangeService
 from powercontext.builtin.code.application import CodeApplication
 from powercontext.builtin.code.errors import CodeError
 from powercontext.builtin.code.models import CodeConfig, CodeQueryRequest, CodeQueryResult
@@ -161,7 +169,9 @@ from powercontext.builtin.records import (
     SourceRecord,
     SourceRecordPage,
 )
+from powercontext.builtin.review.errors import InvalidCandidateError
 from powercontext.builtin.review.generation import GeneratedCandidateResult, ReviewedGenerationService
+from powercontext.builtin.review.models import Candidate
 from powercontext.builtin.review.service import ReviewService
 from powercontext.builtin.runtime._scope_cache import (
     DEFAULT_SCOPE_CACHE_SIZE,
@@ -181,7 +191,7 @@ from powercontext.builtin.runtime.decision_model import DecisionModel
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
 from powercontext.builtin.runtime.extraction_diagnostics import ExtractionDiagnostics
 from powercontext.builtin.runtime.models import (
-    ApproveArtifactCandidateRequest,
+    ApproveCandidateRequest,
     BootstrapContext,
     BootstrapContextItem,
     BootstrapContextRequest,
@@ -189,6 +199,7 @@ from powercontext.builtin.runtime.models import (
     BootstrapReceiptState,
     BootstrapSkipReason,
     CaptureSource,
+    CaptureWorkingNote,
     CommitConnectorCheckpoint,
     ConnectorCheckpointState,
     ExperienceCandidate,
@@ -198,12 +209,12 @@ from powercontext.builtin.runtime.models import (
     ExtractionStatus,
     GenerateExperienceRequest,
     GenerateSkillRequest,
-    GetArtifactCandidateRequest,
+    GetCandidateRequest,
     GetExperienceRequest,
     GetSkillRequest,
     GetTopicMemoryRequest,
     ImportExternalSkillRequest,
-    ListArtifactCandidatesRequest,
+    ListCandidatesRequest,
     ListExternalSkillsRequest,
     MemoryFlushResult,
     PrepareContextRequest,
@@ -211,11 +222,11 @@ from powercontext.builtin.runtime.models import (
     ProposeExperienceRequest,
     ProposeSkillRequest,
     RecordBootstrapDeliveryRequest,
-    RejectArtifactCandidateRequest,
+    RejectCandidateRequest,
     ResolveExternalSkillRequest,
     ReviewedCandidate,
     ReviewedCandidatePage,
-    ReviseArtifactCandidateRequest,
+    ReviseCandidateRequest,
     RuntimeCapabilities,
     SearchTopicMemoryRequest,
     SkillCandidate,
@@ -265,7 +276,9 @@ from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.sources import (
+    CONTENT_SOURCE_ADAPTER,
     CONTENT_SOURCE_NAME,
+    WORKING_NOTE_SOURCE_KIND,
     ContentCapture,
     ContentSource,
     ExternalSkillImportMode,
@@ -352,6 +365,7 @@ _CONTEXT_MEMORY_EMBEDDING_TIMEOUT_SECONDS = 0.25
 
 _MEMORY_CAPTURE_STAGE = "memory.capture"
 _MEMORY_CAPTURE_SOURCE_COUNT = "powercontext.memory.capture.source_count"
+_WORKING_NOTE_RESERVED_METADATA = frozenset({"kind", "session_id", "note_kind", "expires_at"})
 _MEMORY_SEARCH_STAGE = "memory.search"
 _MEMORY_SEARCH_REQUESTED_MODE = "powercontext.memory.search.requested_mode"
 _MEMORY_SEARCH_LIMIT = "powercontext.memory.search.limit"
@@ -492,9 +506,61 @@ class ScopedSourceApplication:
         self.scope_id = validate_scope_id(scope_id)
 
     async def capture(self, value: CaptureSource, /) -> SourceReceipt:
+        if value.metadata.get("kind") == WORKING_NOTE_SOURCE_KIND:
+            raise InvalidRuntimeRequestError("working-note-dedicated-api")
         return await self._capture(value)
 
-    async def _capture(self, value: CaptureSource, /, *, handoff_receipt: bool = False) -> SourceReceipt:
+    async def capture_working_note(self, value: CaptureWorkingNote, /) -> SourceReceipt:
+        """Capture explicit session-local work state without Memory promotion."""
+
+        if _WORKING_NOTE_RESERVED_METADATA.intersection(value.metadata):
+            raise InvalidRuntimeRequestError("working-note-metadata")
+        if not value.session_id.strip():
+            raise ValueError("session_id must not be blank")  # noqa: TRY003
+        if not value.note_kind.strip():
+            raise ValueError("note_kind must not be blank")  # noqa: TRY003
+        if value.expires_at is not None and (value.expires_at.tzinfo is None or value.expires_at.utcoffset() is None):
+            raise InvalidRuntimeRequestError("working-note-expiry")
+        metadata = dict(value.metadata)
+        metadata.update({
+            "kind": WORKING_NOTE_SOURCE_KIND,
+            "session_id": value.session_id,
+            "note_kind": value.note_kind,
+        })
+        if value.expires_at is not None:
+            metadata["expires_at"] = value.expires_at.astimezone(UTC).isoformat()
+        capture = CaptureSource(source_id=value.source_id, content=value.content, metadata=metadata)
+        if value.expires_at is not None and value.expires_at <= datetime.now(UTC):
+            replay = await self._replay_working_note(capture)
+            if replay is not None:
+                return replay
+            raise InvalidRuntimeRequestError("working-note-expiry")
+        return await self._capture(capture, working_note=True)
+
+    async def _replay_working_note(self, value: CaptureSource, /) -> SourceReceipt | None:
+        capture = ContentCapture(
+            source_id=value.source_id,
+            content=value.content,
+            metadata=value.model_dump(mode="json")["metadata"],
+        )
+        proposed = (await CONTENT_SOURCE_ADAPTER.resolve(capture)).model_copy(update={"working_note": True})
+        ref = SourceRef(source_type=CONTENT_SOURCE_NAME, source_id=value.source_id)
+        async with self._runtime._context(self.scope_id) as context, self._runtime._locked(self.scope_id):
+            existing = await context.sources.journal.entry(ref)
+            if existing is None:
+                return None
+            if existing.source != proposed:
+                raise SourceConflictError("identity", (self.scope_id, ref))
+            return SourceReceipt(source_ref=ref, sequence=existing.position)
+
+    async def _capture(
+        self,
+        value: CaptureSource,
+        /,
+        *,
+        handoff_receipt: bool = False,
+        working_note: bool = False,
+    ) -> SourceReceipt:
         if self._runtime._record_service is not None:
             try:
                 async with self._runtime._scope_operation(self.scope_id), self._runtime._locked(self.scope_id):
@@ -506,6 +572,7 @@ class ScopedSourceApplication:
                             value.content,
                             value.metadata,
                             handoff_receipt=handoff_receipt,
+                            working_note=working_note,
                         )
                         if span is not None:
                             span.set_attributes({_MEMORY_CAPTURE_SOURCE_COUNT: 1})
@@ -524,6 +591,7 @@ class ScopedSourceApplication:
                         metadata=value.model_dump(mode="json")["metadata"],
                     ),
                     handoff_receipt=handoff_receipt,
+                    working_note=working_note,
                 )
                 if span is not None:
                     span.set_attributes({_MEMORY_CAPTURE_SOURCE_COUNT: 1})
@@ -600,9 +668,11 @@ class ScopedRecordApplication:
         async with self._runtime._scope_operation(self.scope_id):
             return await self._runtime._records().resolve_artifact_handle(self.scope_id, handle)
 
-    async def get_artifact(self, family: str, artifact_id: str, /) -> ArtifactRecord:
+    async def get_artifact(self, family: str, artifact_id: str, /, *, execution_context: Any = None) -> ArtifactRecord:
         async with self._runtime._scope_operation(self.scope_id):
-            return await self._runtime._records().get_artifact(self.scope_id, family, artifact_id)
+            return await self._runtime._records().get_artifact(
+                self.scope_id, family, artifact_id, execution_context=execution_context
+            )
 
     async def get_artifact_revision(
         self,
@@ -610,6 +680,8 @@ class ScopedRecordApplication:
         artifact_id: str,
         revision: int,
         /,
+        *,
+        execution_context: Any = None,
     ) -> ArtifactRecord:
         async with self._runtime._scope_operation(self.scope_id):
             return await self._runtime._records().get_artifact_revision(
@@ -617,6 +689,7 @@ class ScopedRecordApplication:
                 family,
                 artifact_id,
                 revision,
+                execution_context=execution_context,
             )
 
     async def list_artifact_revisions(
@@ -1550,7 +1623,7 @@ class ScopedContextApplication:
         allow_embedding: bool,
     ) -> TopicMemoryRecallOutcome:
         configured = self._runtime._topic_memory_search is not None
-        bounded_query = _bounded_topic_memory_recall_query(query)
+        bounded_query = bounded_topic_memory_query(query)
         with self._runtime._stage(
             "topic_memory.search",
             attributes={
@@ -2924,42 +2997,100 @@ class ScopedReviewApplication:
         self._runtime = runtime
         self.scope_id = validate_scope_id(scope_id)
 
-    async def list(self, request: ListArtifactCandidatesRequest, /) -> ReviewedCandidatePage:
+    async def list(self, request: ListCandidatesRequest, /) -> ReviewedCandidatePage:
         async with self._runtime._scoped_operation(self.scope_id):
-            return await self._runtime._review(self.scope_id).list_candidates(
+            identities = await self._runtime._review(self.scope_id).candidate_identities(
                 status=request.status,
                 family=request.family,
+                candidate_kind=request.candidate_kind,
                 cursor=request.cursor,
                 limit=request.limit,
             )
-
-    async def get(self, request: GetArtifactCandidateRequest, /) -> ReviewedCandidate:
-        async with self._runtime._scoped_operation(self.scope_id):
-            return await self._runtime._review(self.scope_id).get_candidate(request.candidate_id)
-
-    async def inspect_evidence(self, candidate_id: str, expected_version: int):
-        """Expand the selected Candidate version, including exact entry provenance."""
-
-        async with self._runtime._scoped_operation(self.scope_id):
-            return await self._runtime._review(self.scope_id).inspect_evidence(candidate_id, expected_version)
-
-    async def approve(self, request: ApproveArtifactCandidateRequest, /) -> ReviewedCandidate:
-        async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
-            return await self._runtime._review(self.scope_id).approve(
-                request.candidate_id,
-                request.expected_version,
+            return ReviewedCandidatePage(
+                candidates=tuple([
+                    await self.get(GetCandidateRequest(candidate_id=identity))
+                    for identity in identities[: request.limit]
+                ]),
+                next_cursor=identities[request.limit - 1] if len(identities) > request.limit else None,
             )
 
-    async def reject(self, request: RejectArtifactCandidateRequest, /) -> ReviewedCandidate:
+    async def get(self, request: GetCandidateRequest, /) -> ReviewedCandidate:
+        from powercontext.builtin.review.errors import CandidateNotFoundError
+
+        async with self._runtime._scoped_operation(self.scope_id):
+            try:
+                return await self._runtime._review(self.scope_id).get_candidate(request.candidate_id)
+            except CandidateNotFoundError:
+                if self._runtime.catalog_changes is None:
+                    raise
+                return await self._runtime._catalog_review(self.scope_id).get(request.candidate_id)
+
+    async def history(self, request: GetCandidateRequest, /):
+        async with self._runtime._scoped_operation(self.scope_id):
+            candidate = await self.get(request)
+            if candidate.candidate_kind == "tag":
+                return await self._runtime._catalog_review(self.scope_id).history(request.candidate_id)
+            return await self._runtime._review(self.scope_id).history(request.candidate_id)
+
+    async def inspect_evidence(self, candidate_id: str, expected_version: int):
+        async with self._runtime._scoped_operation(self.scope_id):
+            candidate = await self.get(GetCandidateRequest(candidate_id=candidate_id))
+            if candidate.candidate_kind == "tag":
+                if candidate.version != expected_version:
+                    from powercontext.builtin.review.errors import CandidateConflictError
+
+                    raise CandidateConflictError(candidate_id, expected_version, candidate.version)
+                return await self._runtime._catalog_review(self.scope_id).evidence(candidate_id)
+            return await self._runtime._review(self.scope_id).inspect_evidence(candidate_id, expected_version)
+
+    async def approve(self, request: ApproveCandidateRequest, /) -> ReviewedCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            current = await self.get(GetCandidateRequest(candidate_id=request.candidate_id))
+            if current.candidate_kind == "tag":
+                return await self._runtime._catalog_review(self.scope_id).approve(
+                    request.candidate_id, request.expected_version
+                )
+            async with self._runtime._scoped_operation(
+                self.scope_id,
+                embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING if current.family == "atomic-memory" else None,
+            ):
+                return await self._runtime._review(self.scope_id).approve(
+                    request.candidate_id,
+                    request.expected_version,
+                )
+
+    async def reject(self, request: RejectCandidateRequest, /) -> ReviewedCandidate:
+        async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            current = await self.get(GetCandidateRequest(candidate_id=request.candidate_id))
+            if current.candidate_kind == "tag":
+                return await self._runtime._catalog_review(self.scope_id).reject(
+                    request.candidate_id, request.expected_version, request.reason
+                )
             return await self._runtime._review(self.scope_id).reject(
                 request.candidate_id,
                 request.expected_version,
                 request.reason,
             )
 
-    async def revise(self, request: ReviseArtifactCandidateRequest, /) -> ReviewedCandidate:
+    async def revise(self, request: ReviseCandidateRequest, /) -> ReviewedCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            current = await self.get(GetCandidateRequest(candidate_id=request.candidate_id))
+            if current.candidate_kind == "tag":
+                if not isinstance(request.proposal, CatalogChangeProposal) or request.target is not None:
+                    raise InvalidCandidateError("proposal", "Tag review requires its complete Tag proposal")
+                if request.reason is None:
+                    raise InvalidCandidateError("reason", "Tag revision requires a reason")
+                return await self._runtime._catalog_review(self.scope_id).revise(
+                    request.candidate_id,
+                    request.expected_version,
+                    after_tags=request.proposal.after_tags,
+                    proposal=request.proposal,
+                    reason=request.reason,
+                    sources=request.sources,
+                    artifacts=request.artifacts,
+                )
+            if isinstance(request.proposal, CatalogChangeProposal):
+                raise InvalidCandidateError("proposal", "Artifact review cannot accept a Tag proposal")
             return await self._runtime._review(self.scope_id).revise(
                 request.candidate_id,
                 request.expected_version,
@@ -3436,6 +3567,7 @@ class BuiltinRuntime:
         scope_cache_observer: ScopeCacheObserver | None = None,
         scope_ids: ScopeIds | None = None,
         review_service: ReviewServiceFactory | None = None,
+        catalog_change_service: Callable[[str], CatalogChangeService] | None = None,
         profiles: RelationalProfileService | None = None,
         subject_sources: SubjectSourceService | None = None,
         generation_service: GenerationServiceFactory | None = None,
@@ -3494,10 +3626,13 @@ class BuiltinRuntime:
         self._capabilities = capabilities
         self._extraction_diagnostics = extraction_diagnostics
         self._review_service = review_service
+        self._catalog_change_service = catalog_change_service
         self.profiles = profiles
         self.subject_sources = subject_sources
         self._generation_service = generation_service
         self._dream_service = dream_service
+        self._review_action_authorizer: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
+        self._catalog_action_authorizer: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None
         self._review_evidence_authorizer: ScopedEvidenceAuthorizer | None = None
         self._review_authorization_context: AuthorizationContext = nullcontext
         self._generation_slots = asyncio.Semaphore(generation_concurrency)
@@ -3591,6 +3726,9 @@ class BuiltinRuntime:
         self.topic_memory = TopicMemoryApplication(self)
         self.records = RecordApplication(self)
         self.prompts = PromptApplication(self)
+        self.catalog_changes = (
+            None if catalog_change_service is None else CatalogChangeApplication(self._catalog_review)
+        )
         self.review = ReviewApplication(self)
         self.skill = SkillApplication(self)
         self.remote_skills = RemoteSkillApplication(self)
@@ -3741,15 +3879,21 @@ class BuiltinRuntime:
         review: ScopedEvidenceAuthorizer,
         context: AuthorizationContext,
         attest_candidate: CandidateAttester,
+        authorize_candidate: CandidateAttester | None = None,
+        catalog_action: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None,
+        review_action: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None,
     ) -> None:
         """Bind a trusted Server adapter's current authorization policy."""
 
+        self._review_action_authorizer = review_action
+        self._catalog_action_authorizer = catalog_action
         self._review_evidence_authorizer = review
         self._review_authorization_context = context
         if self._dream_service is not None:
             self._dream_service.authorize = dream
             self._dream_service.authorization_context = context
             self._dream_service.attest_candidate = attest_candidate
+            self._dream_service.authorize_candidate = authorize_candidate
 
     async def close(self) -> None:
         """Stop accepting work and await in-flight operations without closing the provider."""
@@ -3935,6 +4079,18 @@ class BuiltinRuntime:
             raise _RuntimeStateError("review")
         scope = validate_scope_id(scope_id)
         service = self._review_service(scope)
+        service.authorize_action = self._review_action_authorizer
+        authorizer = self._review_evidence_authorizer
+        if authorizer is not None:
+            service.configure_authorization(lambda ref: authorizer(scope, ref), self._review_authorization_context)
+        return service
+
+    def _catalog_review(self, scope_id: str) -> CatalogChangeService:
+        if self._catalog_change_service is None:
+            raise _RuntimeStateError("catalog-review")
+        scope = validate_scope_id(scope_id)
+        service = self._catalog_change_service(scope)
+        service.authorize_action = self._catalog_action_authorizer
         authorizer = self._review_evidence_authorizer
         if authorizer is not None:
             service.configure_authorization(lambda ref: authorizer(scope, ref), self._review_authorization_context)
@@ -4014,23 +4170,3 @@ def _unavailable_evidence(resolution: HandoffResolution) -> tuple[HandoffCitatio
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
-
-
-def _bounded_topic_memory_recall_query(query: str) -> str:
-    """Focus internal Prepared Context recall without weakening the public search contract."""
-
-    trimmed = query.strip()
-    terms = tuple(dict.fromkeys(analyze_text(trimmed).split()))
-    if len(terms) <= MAX_TOPIC_MEMORY_QUERY_TERMS:
-        return trimmed
-
-    selected: list[str] = []
-    characters = 0
-    for term in terms[:MAX_TOPIC_MEMORY_QUERY_TERMS]:
-        separator = int(bool(selected))
-        available = MAX_TOPIC_MEMORY_QUERY_LENGTH - characters - separator
-        if available < 1:
-            break
-        selected.append(term[:available])
-        characters += separator + min(len(term), available)
-    return " ".join(selected)

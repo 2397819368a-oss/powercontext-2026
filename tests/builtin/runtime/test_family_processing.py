@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from functools import partial
-from typing import cast
 
 import pytest
 from sqlalchemy import func, select
@@ -35,9 +34,9 @@ from powercontext.builtin.persistence.processing_migration import bootstrap_proc
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.supervision import ArtifactProcessingFence, ArtifactProcessingLeaseRepository
 from powercontext.builtin.persistence.tables import (
-    ARTIFACT_CANDIDATE_HEADS_TABLE,
     ARTIFACT_HEADS_TABLE,
     BUILTIN_TABLES,
+    CANDIDATE_HEADS_TABLE,
     MODEL_USAGE_DAILY_TABLE,
 )
 from powercontext.builtin.runtime.artifact_processing import SpawnArtifactProcessingWorkerLauncher
@@ -109,16 +108,7 @@ class _FakeDecisionModel:
         raise AssertionError
 
 
-class _WorkerProfiles:
-    generator = None
-    max_sources = 0
-
-
-class _WorkerContexts:
-    profiles = _WorkerProfiles()
-
-
-class _HeldMemoryContexts:
+class _HeldMemoryContexts(RelationalContexts):
     async def process_memory(self, *_args, **_kwargs):
         return MemoryFlushResult(
             previous_cursor=0,
@@ -253,7 +243,7 @@ def test_owner_failure_rolls_back_domain_cursor_and_ack_then_retry_owns_result(t
                     )
                     assert cursor is None
                     assert intent is not None and intent.handled_generation == 0
-                    for table in (ARTIFACT_HEADS_TABLE, ARTIFACT_CANDIDATE_HEADS_TABLE, ACCESS_OWNERS_TABLE):
+                    for table in (ARTIFACT_HEADS_TABLE, CANDIDATE_HEADS_TABLE, ACCESS_OWNERS_TABLE):
                         assert await connection.scalar(select(func.count()).select_from(table)) == 0
                 setattr(hook_target, hook_name, original)
                 result = await process_family_invocation(contexts, assignment, config=config, security=security)
@@ -459,8 +449,52 @@ def test_spawned_family_restores_trusted_identity_and_persists_noop_ack(tmp_path
     asyncio.run(scenario())
 
 
-def test_memory_worker_completion_preserves_hold_details(tmp_path):
+def test_spawned_memory_worker_reconstructs_configured_write_gate(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager
+
+    from powercontext.builtin.runtime import composition, family_processing
+    from powercontext.builtin.runtime.processing_contracts import ArtifactProcessingWorkerCompletion
+
+    captured: dict[str, object] = {}
+
+    async def fake_generation_pipelines(*_args, **_kwargs):
+        return (None, MemoryPipeline(), None, None, None, None, None, _FakeDecisionModel(), None, None, None)
+
+    async def fake_embedding_models(*_args, **_kwargs):
+        return object(), None
+
+    def fake_usage_reporting_embedding_model(value):
+        return value
+
+    def fake_prompt_registry(*_args, **_kwargs):
+        return object()
+
+    @asynccontextmanager
+    async def fake_open_builtin_contexts(config, **kwargs):
+        captured.update(kwargs)
+        async with _open_sqlite(config, tables=BUILTIN_TABLES) as profile:
+            yield RelationalContexts(database=profile.database)
+
+    async def fake_process_family_invocation(contexts, assignment, *, config, security=None, dream_generator=None):
+        assert contexts is not None
+        assert assignment.artifact_family == "memory"
+        assert config.runtime.memory_write_gate_enabled is True
+        assert security is None
+        assert dream_generator is None
+        return ArtifactProcessingWorkerCompletion()
+
+    monkeypatch.setattr(composition, "_generation_pipelines", fake_generation_pipelines)
+    monkeypatch.setattr(composition, "_embedding_models", fake_embedding_models)
+    monkeypatch.setattr(composition, "_usage_reporting_embedding_model", fake_usage_reporting_embedding_model)
+    monkeypatch.setattr(composition, "_prompt_registry", fake_prompt_registry)
+    monkeypatch.setattr(composition, "open_builtin_contexts", fake_open_builtin_contexts)
+    monkeypatch.setattr(family_processing, "process_family_invocation", fake_process_family_invocation)
+
     async def scenario():
+        config = BuiltinConfig(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'worker-gate.db'}"),
+            runtime=RuntimeConfig(memory_write_gate_enabled=True),
+        )
         assignment = ArtifactProcessingWorkAssignment(
             binding_name=FAMILY_BINDINGS["memory"],
             scope_id="scope-a",
@@ -474,15 +508,28 @@ def test_memory_worker_completion_preserves_hold_details(tmp_path):
             ),
             worker_id="worker-1",
         )
-        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'held-worker.db'}"))
 
-        result = await _process_family_invocation(
-            cast(RelationalContexts, _HeldMemoryContexts()),
-            assignment,
-            config=config,
-            security=None,
-            dream_generator=None,
-        )
+        result = await family_processing._run_family_worker(FamilyWorkerSpec(config=config), assignment)
+
+        assert result.outcome == ArtifactProcessingWorkerOutcome.SUCCEEDED
+        assert captured["decision_model"] is not None
+        assert captured["memory_write_gate"] is not None
+
+    asyncio.run(scenario())
+
+
+def test_memory_worker_completion_preserves_hold_details(tmp_path):
+    async def scenario():
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'held-worker.db'}"))
+        async with _open_sqlite(config, tables=BUILTIN_TABLES) as profile:
+            _, assignment = await prepare(profile, "memory")
+            result = await _process_family_invocation(
+                _HeldMemoryContexts(database=profile.database),
+                assignment,
+                config=config,
+                security=None,
+                dream_generator=None,
+            )
 
         assert result.outcome == ArtifactProcessingWorkerOutcome.SUCCEEDED
         assert result.held_count == 1
@@ -512,5 +559,73 @@ def test_dedicated_fence_cannot_commit_another_family(tmp_path):
                     connection, assignment.scope_id, assignment.binding_name
                 )
                 assert intent is not None and intent.handled_generation == 0
+
+    asyncio.run(scenario())
+
+
+def test_dream_yields_to_source_after_four_attempts_across_worker_instances(tmp_path):
+    from powercontext.builtin.dream.models import CreateDreamRunRequest, DreamPlan
+    from powercontext.builtin.persistence.dream import DreamRepository
+
+    class NoChangeGenerator:
+        config_id = "fairness-test"
+        calls = 0
+
+        async def generate(self, value):
+            self.calls += 1
+            return GenerationResult(
+                output=DreamPlan(outcome="no_change", reason="No supported change."),
+                usage=InferenceUsage(requests=1),
+            )
+
+    async def scenario():
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'fairness.db'}"))
+        intents = ArtifactProcessingIntentRepository()
+        generator = NoChangeGenerator()
+        async with _open_sqlite(config, tables=BUILTIN_TABLES) as profile:
+            contexts, assignment = await prepare(profile, "profile")
+            await process_family_invocation(contexts, assignment, config=config)
+            async with profile.database.transaction() as connection:
+                target = await contexts.profiles.latest(connection, assignment.scope_id)
+            assert target is not None
+            source = await contexts.records.create_source(assignment.scope_id, "content", "Verify the new setting.")
+            service = contexts.dream(
+                generator,
+                budget=config.runtime.dream_budget,
+                max_pending_per_scope=32,
+                operations=("revise_profile",),
+            )
+            runs = []
+            for index in range(5):
+                runs.append(
+                    await service.create(
+                        assignment.scope_id,
+                        "runtime",
+                        CreateDreamRunRequest(
+                            operation="revise_profile",
+                            target=target.as_ref(),
+                            artifacts=(target.as_ref(),),
+                            sources=(SourceRef(source_type="content", source_id=source.source_id),),
+                            idempotency_key=f"fair-{index}",
+                        ),
+                    )
+                )
+            for index in range(6):
+                # Every invocation uses a fresh worker/service instance.
+                contexts = RelationalContexts(database=profile.database)
+                contexts.profiles.generator = ProfileGenerator()
+                async with profile.database.transaction() as connection:
+                    intent = await intents.load(connection, assignment.scope_id, assignment.binding_name)
+                assert intent is not None and intent.requested_generation > intent.handled_generation
+                work = replace(assignment, claimed_request_generation=intent.requested_generation)
+                await process_family_invocation(contexts, work, config=config, dream_generator=generator)
+                async with profile.database.transaction() as connection:
+                    cursor = await SourceCursorRepository().load(connection, work.scope_id, work.binding_name)
+                assert cursor is not None and cursor.cursor.sequence == (1 if index < 4 else 2)
+                if index == 4:
+                    assert generator.calls == 4
+            async with profile.database.transaction() as connection:
+                for run in runs:
+                    assert (await DreamRepository().get(connection, assignment.scope_id, run.run_id)).run.terminal
 
     asyncio.run(scenario())

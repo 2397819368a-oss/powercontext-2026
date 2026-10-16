@@ -232,7 +232,7 @@ jobs:
 
   atomic-memory-clean-seekdb:
     name: Atomic Memory clean migration (SeekDB)
-    timeout-minutes: 40
+    timeout-minutes: 50
     runs-on: ubuntu-latest
     env:
       POWERCONTEXT_TEST_MIGRATION_SEEKDB: "1"
@@ -257,6 +257,16 @@ jobs:
           mkdir -p "$TMPDIR"
           uv run --locked --extra seekdb python scripts/run_atomic_memory_clean_migration.py \
             seekdb --output "$MIGRATION_REPORTS"
+
+      - name: Test long-query retrieval and admission without skips
+        timeout-minutes: 10
+        env:
+          TMPDIR: ${{ runner.temp }}/am-seekdb
+        run: |
+          uv run --locked --extra seekdb python scripts/run_atomic_memory_clean_migration.py \
+            seekdb --output "$MIGRATION_REPORTS/long-query" --tests \
+            tests/e2e/test_atomic_artifact_search_http.py \
+            tests/e2e/test_atomic_memory_long_fts_query.py
 
       - name: Collect native diagnostics
         if: always()
@@ -470,7 +480,7 @@ jobs:
         run: uv run pytest tests/test_dsh_transport.py --require-dsh-runtime
 
       - name: Verify DSH guidance adapter requests and results
-        run: uv run pytest "tests/test_integration_guidance_evaluation.py::test_native_adapter_handoff_uses_real_request_mapping_and_response_envelopes[dsh]"
+        run: uv run pytest tests/test_integration_guidance_evaluation.py::test_dsh_controlled_native_handoff_uses_only_mcp_tools_and_preserves_complete_carriers
 
   pi-package:
     timeout-minutes: 20

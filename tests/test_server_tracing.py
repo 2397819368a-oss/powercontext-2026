@@ -252,6 +252,28 @@ def test_runtime_stage_records_explicit_noop_and_failure_outcomes() -> None:
     assert failed_span.status.status_code is StatusCode.ERROR
 
 
+@pytest.mark.parametrize("unit", ["stage", "background"])
+@pytest.mark.parametrize("outcome", ["success", "noop"])
+def test_runtime_exception_overrides_a_previously_successful_outcome(unit, outcome) -> None:
+    tracing, exporter = _tracing()
+    manager = (
+        tracing.stage("test.operation", attributes={})
+        if unit == "stage"
+        else tracing.background("test.operation", operation="test.operation", attributes={})
+    )
+    try:
+        with pytest.raises(RuntimeError), manager as span:
+            span.set_outcome(outcome)
+            raise RuntimeError
+        exported = exporter.get_finished_spans()
+        assert len(exported) == 1
+        assert (exported[0].attributes or {})["powercontext.operation.outcome"] == "failure"
+        assert (exported[0].attributes or {})["powercontext.error.category"] == "internal"
+        assert exported[0].status.status_code is StatusCode.ERROR
+    finally:
+        tracing.shutdown()
+
+
 def test_background_stage_starts_a_fresh_trace_outside_an_ambient_span() -> None:
     tracing, exporter = _tracing()
     ambient = tracing.start_span("HTTP flush_memory", kind=SpanKind.SERVER, attributes={})
