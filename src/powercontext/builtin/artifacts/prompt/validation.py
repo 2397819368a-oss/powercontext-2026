@@ -42,7 +42,7 @@ from powercontext.builtin.artifacts.handoff import (
     HandoffStatement,
     PrepareHandoff,
 )
-from powercontext.builtin.artifacts.handoff.generation import HandoffGenerationStatement
+from powercontext.builtin.artifacts.handoff.generation import HandoffGenerationStatement, rollover_draft_violation
 from powercontext.builtin.artifacts.memory import (
     MemoryExtractionInput,
     MemoryExtractionOutput,
@@ -156,7 +156,12 @@ def _handoff(value: HandoffGenerationInput, output: HandoffGenerationOutput) -> 
         evidence_id: HandoffSourceCitation(source_ref=SourceRef(source_type="content", source_id=f"demo-{index}"))
         for index, evidence_id in enumerate(sorted(evidence))
     }
-    PrepareHandoff(objective=value.objective, evidence=tuple(citations.values()), max_bytes=value.max_bytes)
+    PrepareHandoff(
+        objective=value.objective,
+        rollover_reasons=value.rollover_reasons,
+        evidence=tuple(citations.values()),
+        max_bytes=value.max_bytes,
+    )
 
     def statement(item: HandoffGenerationStatement) -> HandoffStatement:
         _require(bool(item.evidence_ids) and set(item.evidence_ids) <= evidence)
@@ -170,13 +175,14 @@ def _handoff(value: HandoffGenerationInput, output: HandoffGenerationOutput) -> 
         omissions.append(
             HandoffOmission(text=item.text, citation=None if item.evidence_id is None else citations[item.evidence_id])
         )
-    HandoffDraft(
+    draft = HandoffDraft(
         objective=value.objective,
         state=tuple(statement(item) for item in output.state),
         disposition=output.disposition,
         next_action=None if output.next_action is None else statement(output.next_action),
         omissions=tuple(omissions),
     )
+    _require(not value.rollover_reasons or rollover_draft_violation(draft) is None)
 
 
 def _topic_memory_probe(value: TopicMemoryProbeInput, output: TopicMemoryProbeOutput) -> None:

@@ -94,6 +94,15 @@ Artifact reference and state version; the hit also has `score` and `matched_by`.
 Ordinary vector search applies eligibility first, computes exact L2, then ranks and limits results. This path does not
 use ANN and does not establish production backend performance or acceptance.
 
+For complete Artifact results and advanced retrieval controls, use
+`POST /v1/scopes/S/artifacts/atomic-memory/search`. This unified route requires `scope.read`, defaults to text,
+and accepts `filters`, admission, RRF rank constant/weights, `min_score`, and optional score metadata.
+Its default limit is 10 and maximum is 100. It returns `results` with immutable `content` and `lineage`, rather than
+the dedicated search's current-state `hits[].memory`. Retrieval scores are normalized to `[0, 1]`; channel metadata
+contains actual BM25/MATCH relevance or L2 distance. Configured reranking stays active; no request `rerank` option is
+exposed. See [Search Artifacts](search-artifacts.md) and [Fusion algorithms and parameters](search-fusion.md).
+Callers with an Artifact-only read grant can continue to use the dedicated Atomic search route.
+
 Submit to `POST /v1/atomic-memory/list`:
 
 ```json

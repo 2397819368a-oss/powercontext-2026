@@ -65,6 +65,7 @@ _CODEX_FULL_MCP_TOOLS = frozenset({
     "activate_handoff",
     "capture_content_source",
     "change_atomic_memory_lifecycle",
+    "capture_working_note",
     "clear_scope_binding",
     "commit_handoff",
     "continue_handoff",
@@ -75,7 +76,8 @@ _CODEX_FULL_MCP_TOOLS = frozenset({
     "generate_experience",
     "generate_skill",
     "get_artifact",
-    "get_artifact_candidate",
+    "get_candidate",
+    "get_candidate_history",
     "get_artifact_revision",
     "get_atomic_memory_state",
     "get_experience",
@@ -86,7 +88,7 @@ _CODEX_FULL_MCP_TOOLS = frozenset({
     "get_topic_memory",
     "handoff_current_work",
     "import_external_skill",
-    "list_artifact_candidates",
+    "list_candidates",
     "list_atomic_memories",
     "list_external_skills",
     "list_managed_skills",
@@ -652,6 +654,66 @@ def setup_dsh(
         if profile == DshProfile.DESKTOP
         else "Next: run `powercontext server run`, then start `dsh web`."
     )
+
+
+@setup_app.command("kimi-code")
+def setup_kimi_code(
+    source: Annotated[Path, typer.Option(help="Local PowerContext checkout or plugin directory.")],
+    server_url: Annotated[
+        str | None, typer.Option(help="Server origin; omission preserves the installed endpoint.")
+    ] = None,
+    scope_id: Annotated[str | None, typer.Option(help="Existing Scope ID; required on first installation.")] = None,
+    capture_prompts: Annotated[
+        bool | None,
+        typer.Option("--capture-prompts/--no-capture-prompts", help="Omission preserves capture preference."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Write installation metadata as JSON.")] = False,
+) -> None:
+    """Install the minimal Kimi Code memory plugin from a local checkout."""
+    from powercontext.cli.kimi_code import install_kimi_plugin
+
+    try:
+        result = install_kimi_plugin(
+            source=source, server_url=server_url, scope_id=scope_id, capture_prompts=capture_prompts
+        )
+    except (SetupError, OSError, ValueError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from error
+    if json_output:
+        typer.echo(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        typer.echo(f"Kimi Code setup complete: {result.plugin_path}")
+        typer.echo(
+            "Open a new Kimi session, then run powercontext doctor kimi-code. Existing disablement is preserved."
+        )
+
+
+@doctor_app.command("kimi-code")
+def doctor_kimi_code(
+    json_output: Annotated[bool, typer.Option("--json", help="Write diagnostics as JSON.")] = False,
+    runtime: Annotated[bool, typer.Option("--runtime", help="Inspect local Hook history for this workspace.")] = False,
+    cwd: Annotated[
+        Path | None, typer.Option(help="Workspace for runtime history; defaults to the current directory.")
+    ] = None,
+    session_id: Annotated[
+        str | None, typer.Option(help="Exact Kimi session; omission selects workspace history.")
+    ] = None,
+) -> None:
+    """Check Kimi plugin declarations and readonly Server/Scope connectivity."""
+    from powercontext.cli.kimi_code import run_kimi_diagnostics
+
+    if (cwd is not None or session_id is not None) and not runtime:
+        raise typer.BadParameter("--cwd and --session-id require --runtime")  # noqa: TRY003 - CLI option validation.
+    diagnostics = run_kimi_diagnostics(runtime=runtime, cwd=cwd, session_id=session_id)
+    required = {
+        name: value
+        for name, value in diagnostics.items()
+        if name != "runtime" or value.status is DiagnosticStatus.FAILED
+    }
+    status = _diagnostics_status(required)
+    _write_diagnostics(diagnostics, json_output=json_output, summary_status=status)
+    if status is not DiagnosticStatus.OK:
+        raise typer.Exit(code=1)
 
 
 @setup_app.command("zcode")

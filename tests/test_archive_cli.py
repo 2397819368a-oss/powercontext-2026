@@ -13,12 +13,17 @@
 # limitations under the License.
 
 import asyncio
+import json
 
+import pytest
 from click.utils import strip_ansi
+from sqlalchemy import update
 from typer.testing import CliRunner
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.builtin.runtime import BuiltinConfig, open_builtin_runtime
+from powercontext.builtin.persistence.tables import SCOPES_TABLE
+from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts, open_builtin_runtime
+from powercontext.builtin.scope import ScopeDraft
 from powercontext.cli import archive as archive_module
 from powercontext.cli.app import create_cli
 from powercontext.cli.archive import archive_app
@@ -109,3 +114,66 @@ def test_archive_cli_dry_run_exits_nonzero_when_target_is_incompatible(tmp_path,
 
     assert result.exit_code == 3
     assert '"compatible": false' in result.output
+
+
+@pytest.mark.parametrize("uri_kind", ["absolute", "relative", "escaped"])
+def test_archive_cli_dry_run_checks_existing_sqlite_uri_target(tmp_path, monkeypatch, uri_kind) -> None:
+    monkeypatch.chdir(tmp_path)
+    target_path = tmp_path / ("target #1.db" if uri_kind == "escaped" else "target.db")
+    archive = tmp_path / "scope.pcb"
+
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def prepare() -> None:
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(ScopeDraft(title="Original", summary="Archive", idempotency_key="uri"))
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{target_path}"))
+        ) as target:
+            await target.portability.restore(archive)
+            async with target.database.transaction() as connection:
+                await connection.execute(
+                    update(SCOPES_TABLE)
+                    .where(SCOPES_TABLE.c.scope_id == scope.scope_id)
+                    .values(title="Target differs", title_search="Target differs", version=2)
+                )
+
+    asyncio.run(prepare())
+    filename = "file:target.db" if uri_kind == "relative" else target_path.as_uri()
+    uri_flag = "on" if uri_kind == "relative" else "true"
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_KIND", "sqlite")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", f"sqlite+aiosqlite:///{filename}?uri={uri_flag}")
+    before = target_path.read_bytes()
+    result = CliRunner().invoke(create_cli([archive_app]), ["archive", "restore", str(archive), "--dry-run"])
+
+    assert result.exit_code == 3, result.output
+    report = json.loads(result.stdout)
+    assert not report["compatible"]
+    assert report["conflicts"] == 1
+    assert target_path.read_bytes() == before
+
+
+def test_archive_cli_dry_run_does_not_create_missing_sqlite_uri_target(tmp_path, monkeypatch) -> None:
+    archive = tmp_path / "scope.pcb"
+
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def prepare() -> None:
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="New", summary="Archive", idempotency_key="missing-uri")
+            )
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+
+    asyncio.run(prepare())
+    target_path = tmp_path / "missing" / "target.db"
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_KIND", "sqlite")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", f"sqlite+aiosqlite:///{target_path.as_uri()}?uri=true")
+    result = CliRunner().invoke(create_cli([archive_app]), ["archive", "restore", str(archive), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["compatible"]
+    assert not target_path.parent.exists()

@@ -40,6 +40,8 @@ from powercontext.artifacts import ArtifactRef
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemory
 from powercontext.builtin.artifacts.atomic_memory.extraction import AtomicMemoryGenerationPipeline
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+from powercontext.builtin.artifacts.atomic_memory.service import AtomicMemoryService
 from powercontext.builtin.artifacts.experience import (
     EXPERIENCE_INCUBATION_CURSOR_NAME,
     Experience,
@@ -54,6 +56,7 @@ from powercontext.builtin.artifacts.handoff import (
     ActivateHandoff,
     Handoff,
     HandoffActivation,
+    HandoffContent,
     HandoffEvidenceUnavailableError,
     HandoffGenerationPipeline,
     HandoffService,
@@ -71,7 +74,7 @@ from powercontext.builtin.artifacts.profile import Profile
 from powercontext.builtin.artifacts.profile.management import ProfileManagementWriter
 from powercontext.builtin.artifacts.profile.models import ProfileCandidateProposal
 from powercontext.builtin.artifacts.profile.service import RelationalProfileService
-from powercontext.builtin.artifacts.prompt import Prompt, PromptRegistry
+from powercontext.builtin.artifacts.prompt import Prompt, PromptContent, PromptRegistry
 from powercontext.builtin.artifacts.prompt.builtin import builtin_prompt_definitions
 from powercontext.builtin.artifacts.prompt.service import (
     DemonstrationGenerator,
@@ -107,6 +110,7 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicArtifactSearchRequest,
     TopicMemory,
     TopicMemoryBrowseCursor,
+    TopicMemoryContent,
     TopicMemoryCurrentItem,
     TopicMemorySearchMode,
     TopicMemorySearchResult,
@@ -166,6 +170,7 @@ from powercontext.builtin.persistence.supervision import (
     ArtifactProcessingLeaseRepository,
 )
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, SOURCE_JOURNAL_HEADS_TABLE
+from powercontext.builtin.persistence.tags import RelationalTagService
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
 from powercontext.builtin.persistence.topic_memory_index import NoTopicMemoryIndex, TopicMemoryIndex
 from powercontext.builtin.persistence.topic_memory_management import TopicMemoryManagementWriter
@@ -177,7 +182,7 @@ from powercontext.builtin.review.generation import (
     ReviewedGenerationService,
     SkillGenerationOrigin,
 )
-from powercontext.builtin.review.models import ArtifactCandidate
+from powercontext.builtin.review.models import Candidate
 from powercontext.builtin.review.service import ReviewService
 from powercontext.builtin.runtime._model_usage import _ModelUsageRecorder
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication
@@ -261,7 +266,7 @@ if TYPE_CHECKING:
     from powercontext.builtin.runtime.processing_execution import ScopeInvocation
 
 
-ExperienceCommitHook = Callable[[AsyncConnection, tuple[ArtifactCandidate[ExperienceContent], ...]], Awaitable[None]]
+ExperienceCommitHook = Callable[[AsyncConnection, tuple[Candidate[ExperienceContent], ...]], Awaitable[None]]
 
 
 def _artifact_identity(ref: ArtifactRef) -> tuple[str, str, int]:
@@ -274,6 +279,15 @@ _MEMORY_COMMIT_ENTRY_VERSION_COUNT = "powercontext.memory.commit.entry_version_c
 
 
 BUILTIN_ARTIFACT_TYPES = (Handoff, AtomicMemory, Experience, Skill, Profile, Prompt, TopicMemory)
+BUILTIN_CANDIDATE_PROPOSAL_TYPES = {
+    Experience.family: ExperienceContent,
+    Skill.family: SkillContent,
+    Profile.family: ProfileCandidateProposal,
+    AtomicMemory.family: AtomicMemoryContent,
+    TopicMemory.family: TopicMemoryContent,
+    Handoff.family: HandoffContent,
+    Prompt.family: PromptContent,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,8 +338,11 @@ class _ScopedServices:
     source_registry: SourceDefinitionRegistry
     prompts: PromptService
     generation_receipts: HandoffGenerationReceipts
+    topic_writer: TopicMemoryManagementWriter
+    handoff_writer: HandoffManagementWriter
     model_usage: _ModelUsageRecorder
     atomic_memory_processor: AtomicMemorySourceWindowProcessor
+    atomic_memory_service: AtomicMemoryService
     statistics_write_timeout_seconds: float
 
     def generation_sources(self) -> GenerationSourceAccess:
@@ -372,6 +389,10 @@ class _ScopedServices:
             id_factory=self.id_factory,
             evidence=self.evidence(),
             connection=connection,
+            memory=self.atomic_memory_service,
+            topic_writer=self.topic_writer,
+            handoff_writer=self.handoff_writer,
+            prompt_registry=self.prompts.registry,
         )
 
     def recurrence_ledger(self) -> RelationalRecurrenceLedger:
@@ -518,13 +539,6 @@ class RelationalContexts:
             BUILTIN_ARTIFACT_TYPES,
             sources=source_repository,
         )
-        self.portability = PortableBundleService(
-            database,
-            projection_rebuilder=self.rebuild_portable_projections,
-            supported_source_types=tuple(definition.name for definition in self.source_registry.definitions),
-            supported_artifact_families=artifact_repository.families,
-            artifact_content_decoder=artifact_repository.decode_content,
-        )
         if atomic_memory_index is None:
             if database.engine.dialect.name == "sqlite":
                 from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
@@ -573,11 +587,7 @@ class RelationalContexts:
             sources=source_repository,
             artifacts=artifact_repository,
             governance=ArtifactGovernanceRepository(),
-            candidates=CandidateRepository({
-                Experience.family: ExperienceContent,
-                Skill.family: SkillContent,
-                Profile.family: ProfileCandidateProposal,
-            }),
+            candidates=CandidateRepository(BUILTIN_CANDIDATE_PROPOSAL_TYPES),
             connector_checkpoints=ConnectorCheckpointRepository(),
             source_definitions=SourceDefinitionManifestRepository(),
             cursors=SourceCursorRepository(),
@@ -592,6 +602,14 @@ class RelationalContexts:
             processing_binding_states=ArtifactProcessingBindingStateRepository(),
             topic_memories=topic_memory_repository,
             decision_observations=DecisionObservationRepository(),
+        )
+        self.portability = PortableBundleService(
+            database,
+            projection_rebuilder=self.rebuild_portable_projections,
+            supported_source_types=tuple(definition.name for definition in self.source_registry.definitions),
+            supported_artifact_families=artifact_repository.families,
+            artifact_content_decoder=artifact_repository.decode_content,
+            candidate_decoder=self.repositories.candidates.decode_candidate,
         )
         self._model_usage = _ModelUsageRecorder(
             database,
@@ -643,6 +661,13 @@ class RelationalContexts:
             usage_reporter=self.model_usage_reporter,
         )
         self._topic_memory_writer = topic_memory_writer
+        handoff_writer = HandoffManagementWriter(
+            database=database,
+            artifacts=self.repositories.artifacts,
+            sources=self.repositories.sources,
+            handoff_artifact_id=handoff_artifact_id,
+        )
+        self._handoff_writer = handoff_writer
         family_writers = FamilyManagementWriterRegistry((
             AtomicMemoryManagementWriter(self.atomic_memory),
             topic_memory_writer,
@@ -654,12 +679,7 @@ class RelationalContexts:
                 self.experience_index,
                 self.repositories.skill_packages,
             ),
-            HandoffManagementWriter(
-                database=database,
-                artifacts=self.repositories.artifacts,
-                sources=self.repositories.sources,
-                handoff_artifact_id=handoff_artifact_id,
-            ),
+            handoff_writer,
         ))
         self.profiles = RelationalProfileService(
             database,
@@ -670,6 +690,13 @@ class RelationalContexts:
             prompt_service=self.prompts,
         )
         self.subject_sources = SubjectSourceService(database, self.repositories.sources)
+        self.tags = RelationalTagService(
+            database,
+            self.repositories.artifacts,
+            cursor_secret=cursor_secret,
+            projection_hook=atomic_memory_index.refresh_tags,
+            atomic_write_authorizer=self._authorize_atomic_tag_write,
+        )
         self.records = RelationalRecordService(
             database,
             self.repositories.sources,
@@ -679,8 +706,7 @@ class RelationalContexts:
             cursor_secret=cursor_secret,
             processing_pending=self.repositories.processing_pending,
             source_processing_bindings=(TOPIC_MEMORY_SOURCE_WINDOW_BINDING,),
-            atomic_memory_tag_hook=atomic_memory_index.refresh_tags,
-            atomic_memory_tag_authorizer=self._authorize_atomic_tag_write,
+            tags=self.tags,
             topic_memory_list_reader=TopicMemoryArtifactListReader(
                 database=database,
                 artifacts=artifact_repository,
@@ -748,6 +774,20 @@ class RelationalContexts:
 
         return self._services_for(scope_id).review()
 
+    def catalog_changes(self, scope_id: str, connection: AsyncConnection | None = None):
+        from powercontext.builtin.catalog_changes.service import CatalogChangeService
+
+        services = self._services_for(scope_id)
+        return CatalogChangeService(
+            database=self.database,
+            scope_id=scope_id,
+            artifacts=self.repositories.artifacts,
+            evidence=services.evidence(),
+            id_factory=services.id_factory,
+            tags=self.tags,
+            connection=connection,
+        )
+
     def dream(
         self,
         generator: DreamGenerator | None,
@@ -757,6 +797,7 @@ class RelationalContexts:
         authorize: DreamAuthorizer | None = None,
         authorization_context: AuthorizationContext = nullcontext,
         attest_candidate: CandidateAttester | None = None,
+        authorize_candidate: CandidateAttester | None = None,
         operations: tuple[DreamOperation, ...] = (),
         processing: ScopeInvocation | None = None,
     ) -> DreamService:
@@ -771,6 +812,8 @@ class RelationalContexts:
             authorize=authorize,
             authorization_context=authorization_context,
             attest_candidate=attest_candidate,
+            authorize_candidate=authorize_candidate,
+            catalog_changes=self.catalog_changes,
             operations=operations,
             processing=processing,
         )
@@ -1222,7 +1265,7 @@ class RelationalContexts:
         reason: str | None,
         target: ArtifactRef | None,
         /,
-    ) -> ArtifactCandidate[SkillContent]:
+    ) -> Candidate[SkillContent]:
         """Canonicalize an explicit upload and create a pending exact-import Candidate."""
 
         scope = validate_scope_id(scope_id)
@@ -1562,8 +1605,11 @@ class RelationalContexts:
             generation_receipts=self._generation_receipts,
             token_estimator=self._token_estimator,
             source_registry=self.source_registry,
+            topic_writer=self._topic_memory_writer,
+            handoff_writer=self._handoff_writer,
             model_usage=self._model_usage,
             atomic_memory_processor=self.atomic_memory_processor,
+            atomic_memory_service=self.atomic_memory.service,
             statistics_write_timeout_seconds=self._statistics_write_timeout_seconds,
         )
 
@@ -1625,6 +1671,14 @@ class _RelationalSources:
         except RepositoryNotFoundError:
             raise SourceNotFoundError(source) from None
 
+    async def entry(self, ref: SourceRef, /) -> SourceJournalEntry | None:
+        try:
+            async with self._database.connection(self._bound_connection) as connection:
+                row = await self._repository.get(connection, self._scope_id, ref)
+        except RepositoryNotFoundError:
+            return None
+        return SourceJournalEntry(source_ref=row.ref, source=row.value, position=row.journal_position)
+
     async def entries(self) -> tuple[SourceJournalEntry, ...]:
         async with self._database.connection(self._bound_connection) as connection:
             rows = await self._repository.list(connection, self._scope_id)
@@ -1667,12 +1721,13 @@ class _RelationalTriggers:
                         connection,
                         self._services.scope_id,
                         (request.boundary_source,),
+                        allow_working_notes=True,
                     )
                 except RepositoryNotFoundError:
                     raise HandoffEvidenceUnavailableError(
                         HandoffSourceCitation(source_ref=request.boundary_source)
                     ) from None
-                require_source_eligible(request.boundary_source, source.value)
+                require_source_eligible(request.boundary_source, source.value, allow_working_notes=True)
                 state_row = await self._services.repositories.cursors.load(
                     connection,
                     self._services.scope_id,
@@ -1831,7 +1886,7 @@ class _RelationalExperienceIncubator:
             prompt_refs = () if selection is None or selection.artifact is None else (selection.artifact,)
             _validate_experience_plans(plans, eligible_rows)
             candidate_ids: list[str] = []
-            candidates: list[ArtifactCandidate[ExperienceContent]] = []
+            candidates: list[Candidate[ExperienceContent]] = []
             async with self._services.database.transaction() as connection:
                 if processing is not None:
                     await processing.guard(connection)

@@ -36,7 +36,9 @@ from powercontext.builtin.artifacts.search import (
     AdmissionCounts,
     AdmissionFloor,
     InvalidSearchScore,
+    admits_fts_projection,
     admits_fts_text,
+    analyze_text,
     lexical_search_score,
 )
 from powercontext.builtin.artifacts.skill import (
@@ -240,6 +242,7 @@ async def rebuild_experience_projections(connection: AsyncConnection, /) -> None
                     ARTIFACT_HEADS_TABLE.c.artifact_id,
                     ARTIFACT_HEADS_TABLE.c.revision,
                     ARTIFACTS_TABLE.c.content,
+                    ARTIFACT_HEADS_TABLE.c.searchable_text,
                 )
                 .join(
                     ARTIFACTS_TABLE,
@@ -254,12 +257,15 @@ async def rebuild_experience_projections(connection: AsyncConnection, /) -> None
         ).mappings()
     )
     for row in rows:
+        searchable = experience_searchable_text(_content(row["content"]))
+        if row["searchable_text"] == searchable:
+            continue
         await _update_searchable_text(
             connection,
             scope_id=str(row["scope_id"]),
             artifact_id=str(row["artifact_id"]),
             revision=int(row["revision"]),
-            searchable_text=experience_searchable_text(_content(row["content"])),
+            searchable_text=searchable,
         )
 
 
@@ -274,6 +280,7 @@ async def rebuild_skill_projections(connection: AsyncConnection, /) -> None:
                     ARTIFACT_HEADS_TABLE.c.artifact_id,
                     ARTIFACT_HEADS_TABLE.c.revision,
                     ARTIFACTS_TABLE.c.content,
+                    ARTIFACT_HEADS_TABLE.c.searchable_text,
                 )
                 .join(
                     ARTIFACTS_TABLE,
@@ -290,13 +297,16 @@ async def rebuild_skill_projections(connection: AsyncConnection, /) -> None:
     for row in rows:
         content = _skill_content(row["content"])
         package = await _load_skill_package(connection, str(row["scope_id"]), content)
+        searchable = skill_searchable_text(content, package)
+        if row["searchable_text"] == searchable:
+            continue
         await _update_searchable_text(
             connection,
             scope_id=str(row["scope_id"]),
             family=Skill.family,
             artifact_id=str(row["artifact_id"]),
             revision=int(row["revision"]),
-            searchable_text=skill_searchable_text(content, package),
+            searchable_text=searchable,
         )
 
 
@@ -424,8 +434,8 @@ def skill_search_hits(
     hits: list[SkillSearchHit] = []
     for row in rows:
         content = _skill_content(row["content"])
-        searchable = row.get("searchable_text") or skill_search_text(content)
-        if not admits_fts_text(query, str(searchable), floor=admission):
+        searchable = row.get("searchable_text") or analyze_text(skill_search_text(content))
+        if not admits_fts_projection(query, str(searchable), floor=admission):
             continue
         retrieval_score, channel_scores = _search_scores(row, required=require_scores or min_score is not None)
         if min_score is not None and (retrieval_score is None or retrieval_score < min_score):

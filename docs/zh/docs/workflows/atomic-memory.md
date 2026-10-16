@@ -91,6 +91,13 @@ Atomic Memory 将每条事实、偏好或决策保存为独立的 `atomic-memory
 `matched_by`。引用结果时保留 `memory.artifact`。普通向量搜索在资格过滤后计算精确 L2，再排序和限制条数；
 当前路径不使用 ANN，不能据此推断生产后端性能或验收结果。
 
+需要完整 Artifact 结果和高级检索参数时，使用 `POST /v1/scopes/S/artifacts/atomic-memory/search`。
+统一入口要求 `scope.read`，默认文本检索，支持 `filters`、准入、RRF 排名常数与权重、`min_score` 和可选评分元数据。
+默认返回上限为 10，最大为 100。响应 `results` 包含不可变的 `content`、`lineage`，与专用搜索返回当前状态的
+`hits[].memory` 不同。检索评分归一化到 `[0, 1]`；通道原分为实际 BM25/MATCH 相关性或 L2 距离。
+已配置的重排器仍会生效，但请求不开放 `rerank` 参数。详见[检索 Artifact](search-artifacts.md)和
+[融合算法与参数](search-fusion.md)。只有单个 Artifact 读取授权的调用者，仍可使用 Atomic 专用搜索入口。
+
 向 `POST /v1/atomic-memory/list` 提交：
 
 ```json

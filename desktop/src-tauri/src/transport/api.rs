@@ -455,6 +455,7 @@ fn valid_atomic_record(record: &AtomicMemoryRecord) -> bool {
         && !record.kind.trim().is_empty()
         && record.kind.chars().count() <= 128
         && !record.text.is_empty()
+        && (record.state == AtomicMemoryState::Merged) == record.merged_into_id.is_some()
 }
 fn invalid_received() -> ApiFailure {
     ApiFailure {

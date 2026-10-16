@@ -189,7 +189,7 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 相关度不包含零权重通道；Topic Memory 则为正权重通道选中的 Topic 保留零权重通道的证据。
 同比例缩放两个值不会改变结果。将其中一个设为
 `0` 会从 hybrid 融合中排除该通道，但提高权重不能恢复融合前已被拒绝的候选。零权重不会关闭该通道的检索和准入工作：
-vector 查询仍可能生成 embedding，检索与准入计数也仍包含零权重通道。如果 Topic Artifact 搜索请求显式提供自己的 `fusion`
+vector 查询仍可能生成 embedding，检索与准入计数也仍包含零权重通道。如果 Topic 或 Atomic Memory Artifact 搜索请求显式提供自己的 `fusion`
 参数，它会完整取代部署级召回权重；只有请求未指定 `fusion` 时，部署级权重才生效。归一化后，每个非零通道权重必须不低于 IEEE 754 binary64
 最小正规数（`2.2250738585072014e-308`），更小的值会在启动时被拒绝。只有显式配置 `0` 才表示关闭该通道的融合贡献。调整权重时应同时评估
 recall gate 轮次、语义准入下限和历史 Topic 候选选择，不要将这些配置孤立调整。特别是，提高 FTS 权重可能使 Topic 的归一化分数跨过
@@ -278,6 +278,8 @@ Supervisor 实例重建而重置。
 
 `GET /v1/capabilities` 的 `extraction` 对象分别返回配置、后台执行状态和本地观察记录。
 读取快照不查询数据库、不调用模型，也不生成整个管道的健康结论。
+`powercontext capabilities` 会打印同样的事实。缺少诊断时输出 `unavailable`，Supervisor 角色为空时输出 `absent`，未知值输出
+`unknown`。成功和失败时间是历史观察，不是当前健康结论。`--json` 仍原样返回 Server 响应。
 
 - `configuration` 在本地已装配提取模型、自定义管道或已注册本地 Memory worker 时为 `configured`，
   均不可用时为 `unconfigured`。注册不验证凭证或连通性；外部执行返回 `unknown`。

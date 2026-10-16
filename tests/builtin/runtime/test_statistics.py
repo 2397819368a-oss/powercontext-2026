@@ -55,7 +55,7 @@ from powercontext.builtin.persistence import RecurrenceRepository
 from powercontext.builtin.persistence.artifacts import ArtifactRepository, RepositoryArtifactDraft
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.runtime import (
-    ApproveArtifactCandidateRequest,
+    ApproveCandidateRequest,
     BuiltinConfig,
     BuiltinRuntime,
     CaptureSource,
@@ -141,7 +141,7 @@ def test_scoped_statistics_reports_current_inventory_and_recall_reduction() -> N
                 )
             )
             await runtime.review.for_scope(scope_id).approve(
-                ApproveArtifactCandidateRequest(
+                ApproveCandidateRequest(
                     candidate_id=candidate.candidate_id,
                     expected_version=candidate.version,
                 )
@@ -208,7 +208,7 @@ def test_recall_estimates_each_source_as_complete_text() -> None:
                 )
             )
             await runtime.review.for_scope(scope_id).approve(
-                ApproveArtifactCandidateRequest(
+                ApproveCandidateRequest(
                     candidate_id=candidate.candidate_id,
                     expected_version=candidate.version,
                 )
@@ -528,7 +528,7 @@ def _statement_tables(statement: str, /) -> set[str]:
 
 _BUDGETED_TABLES = (
     "pc_source_journal_heads",
-    "pc_artifact_candidate_heads",
+    "pc_candidate_heads",
     "pc_source_cursors",
     "pc_model_usage_daily",
     "pc_recall_token_daily",

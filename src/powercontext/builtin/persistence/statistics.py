@@ -30,9 +30,9 @@ from powercontext.builtin.persistence.atomic_memory import atomic_memory_state_e
 from powercontext.builtin.persistence.database import SELECTION_BATCH_SIZE
 from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentError
 from powercontext.builtin.persistence.tables import (
-    ARTIFACT_CANDIDATE_HEADS_TABLE,
     ARTIFACT_HEADS_TABLE,
     ARTIFACTS_TABLE,
+    CANDIDATE_HEADS_TABLE,
     MODEL_USAGE_DAILY_TABLE,
     MYSQL_IDENTITY_COLLATION,
     RECALL_EFFORT_DAILY_TABLE,
@@ -133,21 +133,21 @@ class StatisticsRepository:
             for scope, family, status, total in (
                 await connection.execute(
                     select(
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.scope_id,
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.family,
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.status,
+                        CANDIDATE_HEADS_TABLE.c.scope_id,
+                        CANDIDATE_HEADS_TABLE.c.family,
+                        CANDIDATE_HEADS_TABLE.c.status,
                         func.count(),
                     )
-                    .where(ARTIFACT_CANDIDATE_HEADS_TABLE.c.scope_id.in_(batch))
+                    .where(CANDIDATE_HEADS_TABLE.c.scope_id.in_(batch))
                     .group_by(
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.scope_id,
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.family,
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.status,
+                        CANDIDATE_HEADS_TABLE.c.scope_id,
+                        CANDIDATE_HEADS_TABLE.c.family,
+                        CANDIDATE_HEADS_TABLE.c.status,
                     )
                     .order_by(
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.scope_id,
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.family,
-                        ARTIFACT_CANDIDATE_HEADS_TABLE.c.status,
+                        CANDIDATE_HEADS_TABLE.c.scope_id,
+                        CANDIDATE_HEADS_TABLE.c.family,
+                        CANDIDATE_HEADS_TABLE.c.status,
                     )
                 )
             ).all():

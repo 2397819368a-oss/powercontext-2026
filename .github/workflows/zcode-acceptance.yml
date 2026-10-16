@@ -52,7 +52,8 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.15.0'
+          # Includes Windows shutdown and file-watcher fixes (nodejs/node#61999, #65118).
+          node-version: '24.21.0'
 
       - name: Install the host package manager
         run: npm install --global pnpm@10.33.2
@@ -103,12 +104,22 @@ jobs:
           -m 'zcode_host_acceptance and not zcode_live_model'
           --zcode-acceptance-output "$env:RUNNER_TEMP/zcode-acceptance" -q
 
+      - name: Install the frozen Pi host and plugin dependencies
+        run: pnpm --dir integrations/pi/plugins/powercontext install --frozen-lockfile --ignore-scripts
+
+      - name: Verify actual Pi to ZCode Work Continuity
+        run: >-
+          uv run --locked --no-sync pytest tests/e2e/test_cross_host_work_continuity.py
+          -m cross_host_acceptance
+          --cross-host-acceptance-output "$env:RUNNER_TEMP/cross-host-acceptance" -q
+
       - name: Retain only summaries and selected evidence
         if: always()
         run: |
           $reportDir = Join-Path $env:RUNNER_TEMP 'zcode-ci-evidence'
-          $output = Join-Path $env:RUNNER_TEMP 'zcode-acceptance'
-          if (Test-Path -LiteralPath $output) {
+          foreach ($suite in @('zcode-acceptance', 'cross-host-acceptance')) {
+            $output = Join-Path $env:RUNNER_TEMP $suite
+            if (-not (Test-Path -LiteralPath $output)) { continue }
             foreach ($run in Get-ChildItem -LiteralPath $output -Directory) {
               if ($run.Name -notmatch '^[0-9a-f]{32}$') { continue }
               $summary = Join-Path $run.FullName 'summary.json'
@@ -124,7 +135,7 @@ jobs:
                   Copy-Item -Destination $evidenceTarget
               }
               $result = Get-Content -LiteralPath $summary -Raw | ConvertFrom-Json
-              "### Run $($run.Name): $($result.overall_status)" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+              "### $suite run $($run.Name): $($result.overall_status)" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
               foreach ($scenario in $result.scenarios) {
                 "- $($scenario.id): $($scenario.status)" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
               }

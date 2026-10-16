@@ -52,11 +52,11 @@ the pin check. To evaluate a deliberately updated, committed Skill:
 uv run --locked python -m evaluation.zcode_guidance.pin --revision <committed-revision>
 ```
 
-The current Skill pin is `b5bcfe24bcce9c574ee85175d623bb9963970a41`, using the Atomic Memory contract and generated
-guidance markers and metadata. The lock includes every packaged Skill file, including `.powercontext-guidance.json`.
-This pin has not been rerun with a live model. Offline validation confirms fixture and grader compatibility;
-a new paired live run is required before claiming qualification for this Skill and contract. Changing the pin alone
-grants no qualification.
+The current Skill pin is recorded in `skill-lock.json`. It uses the Atomic Memory and unified Candidate contracts,
+focused text-search guidance, explicit data-workflow routing, and generated markers and metadata. The lock includes
+every packaged Skill file, including `.powercontext-guidance.json`. Offline validation confirms fixture and grader
+compatibility. A fresh paired live run is required before claiming qualification for this Skill and contract;
+changing the pin alone grants no qualification.
 
 ## Run a live evaluation
 
@@ -122,6 +122,24 @@ public contract; retain its report before claiming live qualification. CI does n
 a scripted model.
 
 ## Recorded live execution
+
+A local paired execution on 2026-10-15 used the CLI commit and version above, provider `zai-api`, model
+`GLM-5.3-Flash`, and the current Skill pin. All 14 user turns completed with native model/tool events and controlled
+MCP evidence. The Skill arm passed 5/5 cases and loaded the Skill body for all four data-workflow cases; ordinary
+coding loaded no Skill and called no tools. The no-Skill arm passed 4/5: its empty-search case issued additional
+queries after empty results. The report qualified the Skill arm under the existing gate, which permits completed
+baseline behavior failures. Archive replay verified the same result. This qualifies the listed cases for this exact
+host, model, Skill and contract; one paired run establishes neither statistical improvement nor official Windows
+desktop qualification.
+
+A local paired execution on 2026-10-15 used the CLI commit and version above, provider `zai-api`, model
+`GLM-5.3-Flash`, and Skill pin `b361539df7d35ff296bab69e06c405e6c85d69a1`. All 14 user turns completed with native
+model/tool and controlled MCP evidence. The Skill arm passed 4/5 cases: ordinary coding, explicit save, empty search
+and failed save. The stale-approval
+case performed the expected read, one version-1 approval attempt, conflict readback and stop, but did not load the Skill
+body, so it failed `skill_body_not_observed`. The no-Skill arm passed 4/5; its empty-search case issued three searches,
+including broader queries, and overclaimed the empty results. That pin did not qualify. This single paired
+run does not establish a statistical improvement or qualify official Windows desktop behavior.
 
 A local paired execution on 2026-10-05 used the CLI commit and version above, Node.js `24.15.0`, provider
 `bigmodel-api`, model `GLM-5.3`, and the Skill pinned to `5cf66be6292eba4ad6e05a4e24e409ebfe1da22a`.

@@ -62,6 +62,7 @@ from powercontext.builtin.artifacts.topic_memory.generation import (
     TopicMemoryProbeInput,
     TopicMemoryProbeOutput,
     TopicMemoryProposal,
+    TopicMemoryReconcileOutput,
     TopicMemoryTemporaryInput,
     TopicMemoryTemporaryOutput,
     topic_memory_stage_fixed_prompt,
@@ -80,7 +81,10 @@ from powercontext.builtin.persistence.processing import ArtifactProcessingPendin
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.sources import SourceRepository
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
-from powercontext.builtin.persistence.sqlite.topic_memory_index import SQLiteTopicMemoryFTSIndex
+from powercontext.builtin.persistence.sqlite.topic_memory_index import (
+    SQLiteTopicMemoryFTSIndex,
+    SQLiteTopicMemoryVectorIndex,
+)
 from powercontext.builtin.persistence.supervision import ArtifactProcessingLeaseRepository
 from powercontext.builtin.persistence.tables import (
     BUILTIN_TABLES,
@@ -263,9 +267,16 @@ def _stages(
     )
 
 
-async def _repositories(config: SQLiteConfig | None = None):
-    index = CompositeTopicMemoryIndex(SQLiteTopicMemoryFTSIndex())
-    profile = SQLiteProfile.open(SQLiteConfig() if config is None else config, tables=BUILTIN_TABLES + index.tables)
+async def _repositories(config: SQLiteConfig | None = None, *, embedding_profile: EmbeddingProfile | None = None):
+    index = CompositeTopicMemoryIndex(
+        SQLiteTopicMemoryFTSIndex(),
+        *((SQLiteTopicMemoryVectorIndex(embedding_profile),) if embedding_profile is not None else ()),
+    )
+    profile = SQLiteProfile.open(
+        SQLiteConfig() if config is None else config,
+        tables=BUILTIN_TABLES + index.tables,
+        load_vector_extension=embedding_profile is not None,
+    )
     opened = await profile.__aenter__()
     topics = TopicMemoryRepository(index=index)
     async with opened.database.transaction() as connection:
@@ -321,6 +332,167 @@ def test_processor_create_and_noop_advance_cursor_atomically() -> None:
             assert cursor is not None and cursor.cursor.sequence == stored.journal_position
             probe_input = stages.probe.inputs[0]
             assert "note-1" not in probe_input.model_dump_json()
+        finally:
+            await manager.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("with_vectors", [False, True])
+@pytest.mark.parametrize("bound_candidate", [False, True])
+def test_processor_publishes_stopword_only_content(with_vectors, bound_candidate) -> None:
+    class Embedding:
+        profile = EmbeddingProfile(profile_id="empty-lexical", model="fixture", dimension=2)
+
+        async def embed(self, texts, /):
+            return EmbeddingResult(vectors=tuple((1.0, 0.0) for _ in texts))
+
+    async def scenario() -> None:
+        embedding = Embedding() if with_vectors else None
+        manager, profile, sources, topics = await _repositories(
+            embedding_profile=None if embedding is None else embedding.profile
+        )
+        try:
+            content = TopicMemoryContent(title="New", summary="First", detail="One")
+            leases = ArtifactProcessingLeaseRepository()
+            historical = None
+            async with profile.database.transaction() as connection:
+                source = await sources.add(
+                    connection,
+                    "scope-a",
+                    NoteSource(name="note", materialization=SourceMaterialization.CAPTURED, body="New First One"),
+                )
+                if bound_candidate or with_vectors:
+                    old_content = TopicMemoryContent(
+                        title="historymarker", summary="Prior evidence", detail="Prior state"
+                    )
+                    projection = prepare_topic_memory_projection(old_content)
+                    if embedding is not None:
+                        projection = prepare_topic_memory_projection(
+                            old_content,
+                            topic_embedding=(1.0, 0.0),
+                            chunk_embeddings=((1.0, 0.0),) * len(projection.chunks),
+                            embedding_profile=embedding.profile,
+                        )
+                    historical = await topics.publish_create(
+                        connection,
+                        "scope-a",
+                        "history",
+                        TopicMemoryDraft(content=old_content, sources=(source.ref,)),
+                        projection,
+                    )
+                term = await leases.start_single_process_term(connection, "holder")
+            proposal = TopicMemoryProposal(
+                content=content,
+                evidence_ids=("evidence-0001",),
+                candidate_id="candidate-0001" if bound_candidate else None,
+            )
+            stages = _stages(
+                probe=TopicMemoryProbeOutput(
+                    probes=(
+                        TopicMemoryProbe(
+                            query="historymarker" if bound_candidate else "unmatched", evidence_ids=("evidence-0001",)
+                        ),
+                    )
+                ),
+                global_output=TopicMemoryGlobalOutput(proposals=(proposal,)),
+                reconcile=(
+                    TopicMemoryReconcileOutput(
+                        proposals=(
+                            proposal.model_copy(
+                                update={
+                                    "candidate_id": "candidate-0001",
+                                    "proposal_id": "proposal-0001",
+                                }
+                            ),
+                        )
+                    ),
+                ),
+            )
+            processor = TopicMemoryProcessor(
+                database=profile.database,
+                sources=sources,
+                topics=topics,
+                stages=stages,
+                publisher=TopicMemoryAtomicPublisher(profile.database, sources, topics, leases=leases),
+                embedding_model=embedding,
+                id_factory=lambda: "created",
+            )
+
+            assert (await processor.process(_assignment(term.fence("single-process")))).outcome.value == "succeeded"
+            async with profile.database.transaction() as connection:
+                current = await topics.browse_current(connection, "scope-a", limit=10)
+                ref = current[0].artifact_ref
+                published = await topics.get_exact(connection, "scope-a", ref)
+            assert len(current) == 1
+            assert published.topic.content == content
+            assert ref.artifact_id == ("history" if historical is not None else "created")
+            assert ref.revision == (2 if historical is not None else 1)
+        finally:
+            await manager.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("query", ['"the"', "not"])
+def test_processor_updates_history_from_quoted_stopwords_and_negations(query) -> None:
+    async def scenario() -> None:
+        manager, profile, sources, topics = await _repositories()
+        try:
+            leases = ArtifactProcessingLeaseRepository()
+            content = TopicMemoryContent(title="the not", summary="historical evidence", detail="Historical state")
+            updated = TopicMemoryContent(title="Updated topic", summary="Remembered state", detail="Updated state")
+            async with profile.database.transaction() as connection:
+                await sources.add(
+                    connection,
+                    "scope-a",
+                    NoteSource(
+                        name="note", materialization=SourceMaterialization.CAPTURED, body="Update remembered state"
+                    ),
+                )
+                historical = await topics.publish_create(
+                    connection,
+                    "scope-a",
+                    "history",
+                    TopicMemoryDraft(content=content),
+                    prepare_topic_memory_projection(content),
+                )
+                term = await leases.start_single_process_term(connection, "holder")
+            processor = TopicMemoryProcessor(
+                database=profile.database,
+                sources=sources,
+                topics=topics,
+                stages=_stages(
+                    probe=TopicMemoryProbeOutput(
+                        probes=(TopicMemoryProbe(query=query, evidence_ids=("evidence-0001",)),)
+                    ),
+                    global_output=TopicMemoryGlobalOutput(
+                        proposals=(
+                            TopicMemoryProposal(
+                                content=updated, candidate_id="candidate-0001", evidence_ids=("evidence-0001",)
+                            ),
+                        )
+                    ),
+                    planner=TopicMemoryPlannerOutput(items=(TopicMemoryPlanItem(probe_ids=("probe-0001",)),)),
+                    evolve=(
+                        TopicMemoryEvolveOutput(
+                            proposal=TopicMemoryProposal(content=updated, evidence_ids=("evidence-0001",))
+                        ),
+                    ),
+                ),
+                publisher=TopicMemoryAtomicPublisher(profile.database, sources, topics, leases=leases),
+            )
+
+            assert (await processor.process(_assignment(term.fence("single-process")))).outcome.value == "succeeded"
+            async with profile.database.transaction() as connection:
+                current = await topics.browse_current(connection, "scope-a", limit=10)
+                assert len(current) == 1
+                ref = current[0].artifact_ref
+                published = await topics.get_exact(connection, "scope-a", ref)
+            assert ref.artifact_id == historical.topic.artifact_id
+            assert ref.revision == 2
+            assert published.topic.content == updated
+            assert published.topic.lineage.artifacts == (historical.topic.as_ref(),)
         finally:
             await manager.__aexit__(None, None, None)
 

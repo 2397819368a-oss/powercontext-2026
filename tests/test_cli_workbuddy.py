@@ -96,10 +96,13 @@ def test_setup_workbuddy_installs_from_a_local_checkout(tmp_path: Path, monkeypa
     home = tmp_path / "workbuddy home"
     monkeypatch.setenv("WORKBUDDY_HOME", str(home))
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
+    # --env-file: a developer's repo-root .env must not supply the authorization state under test.
+    env_file = tmp_path / "setup.env"
+    env_file.write_text("", encoding="utf-8")
 
     result = CliRunner().invoke(
         create_cli([setup_app]),
-        ["setup", "workbuddy", "--source", str(checkout), "--json"],
+        ["setup", "--env-file", str(env_file), "workbuddy", "--source", str(checkout), "--json"],
     )
 
     assert result.exit_code == 0
@@ -211,6 +214,9 @@ def test_setup_workbuddy_preserves_remote_authenticated_mcp_configuration(tmp_pa
     home.mkdir()
     monkeypatch.setenv("WORKBUDDY_HOME", str(home))
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
+    # --env-file: a developer's repo-root .env must not override the endpoint preserved here.
+    env_file = tmp_path / "setup.env"
+    env_file.write_text("", encoding="utf-8")
 
     (home / "mcp.json").write_text(
         json.dumps({
@@ -228,7 +234,7 @@ def test_setup_workbuddy_preserves_remote_authenticated_mcp_configuration(tmp_pa
 
     result = CliRunner().invoke(
         create_cli([setup_app]),
-        ["setup", "workbuddy", "--source", str(checkout)],
+        ["setup", "--env-file", str(env_file), "workbuddy", "--source", str(checkout)],
     )
 
     assert result.exit_code == 0

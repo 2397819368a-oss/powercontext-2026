@@ -48,6 +48,7 @@ from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from powercontext.artifacts import StableHandle
 from powercontext.builtin.artifacts.experience.recurrence import (
     RecurrenceMatch,
     RecurrenceObservation,
@@ -58,17 +59,19 @@ from powercontext.builtin.artifacts.experience.recurrence import (
     verdict_key,
 )
 from powercontext.builtin.artifacts.skill.package import SkillPackageError, capture_skill_archive
+from powercontext.builtin.persistence.candidates import decode_candidate_proposal_envelope
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import InvalidStoredPayloadError
 from powercontext.builtin.persistence.tables import (
-    ARTIFACT_CANDIDATE_HEADS_TABLE,
-    ARTIFACT_CANDIDATE_VERSIONS_TABLE,
+    ARTIFACT_HANDLES_TABLE,
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_LINEAGE_ARTIFACTS_TABLE,
     ARTIFACT_LINEAGE_SOURCES_TABLE,
     ARTIFACT_PUBLICATIONS_TABLE,
     ARTIFACT_TAGS_TABLE,
     ARTIFACTS_TABLE,
+    CANDIDATE_HEADS_TABLE,
+    CANDIDATE_VERSIONS_TABLE,
     MEMORY_ENTRY_HEADS_TABLE,
     MEMORY_ENTRY_VERSIONS_TABLE,
     PORTABLE_RESTORE_RECEIPTS_TABLE,
@@ -118,6 +121,7 @@ _EXCLUDED_RECORD_CLASSES = (
     "evaluation_receipts",
     "external_skill_registrations",
     "host_local_installation_state",
+    "legacy_memory_migration_history",
     "restore_receipts",
     "scope_default_selection",
     "search_projections",
@@ -135,6 +139,7 @@ RecordType = Literal[
     "source",
     "skill_package",
     "artifact_revision",
+    "artifact_handle",
     "artifact_lineage_source",
     "artifact_lineage_artifact",
     "artifact_publication",
@@ -228,6 +233,7 @@ class _RecordSpec:
     identity: tuple[str, ...]
     payload: tuple[str, ...]
     scope_field: str | None = "scope_id"
+    schema_version: int = 1
 
 
 _SPECS: dict[RecordType, _RecordSpec] = {
@@ -272,6 +278,11 @@ _SPECS: dict[RecordType, _RecordSpec] = {
         ("scope_id", "family", "artifact_id", "revision"),
         ("content",),
     ),
+    "artifact_handle": _RecordSpec(
+        ARTIFACT_HANDLES_TABLE,
+        ("scope_id", "family", "handle_key"),
+        ("artifact_id", "revision"),
+    ),
     "artifact_lineage_source": _RecordSpec(
         ARTIFACT_LINEAGE_SOURCES_TABLE,
         ("scope_id", "family", "artifact_id", "revision", "ordinal"),
@@ -280,7 +291,8 @@ _SPECS: dict[RecordType, _RecordSpec] = {
     "artifact_lineage_artifact": _RecordSpec(
         ARTIFACT_LINEAGE_ARTIFACTS_TABLE,
         ("scope_id", "family", "artifact_id", "revision", "ordinal"),
-        ("upstream_family", "upstream_artifact_id", "upstream_revision"),
+        ("upstream_family", "upstream_artifact_id", "upstream_revision", "is_merge_input"),
+        schema_version=2,
     ),
     "artifact_publication": _RecordSpec(
         ARTIFACT_PUBLICATIONS_TABLE,
@@ -298,7 +310,8 @@ _SPECS: dict[RecordType, _RecordSpec] = {
     "artifact_head": _RecordSpec(
         ARTIFACT_HEADS_TABLE,
         ("scope_id", "family", "artifact_id"),
-        ("revision", "lifecycle_state", "replacement_artifact_id", "governance_generation"),
+        ("revision", "lifecycle_state", "replacement_artifact_id", "governance_generation", "merged_into_id"),
+        schema_version=2,
     ),
     "memory_entry_version": _RecordSpec(
         MEMORY_ENTRY_VERSIONS_TABLE,
@@ -322,7 +335,7 @@ _SPECS: dict[RecordType, _RecordSpec] = {
         ("family", "head_revision", "entry_version_id", "entry_content_hash"),
     ),
     "candidate_version": _RecordSpec(
-        ARTIFACT_CANDIDATE_VERSIONS_TABLE,
+        CANDIDATE_VERSIONS_TABLE,
         ("scope_id", "candidate_id", "version"),
         (
             "family",
@@ -336,7 +349,7 @@ _SPECS: dict[RecordType, _RecordSpec] = {
         ),
     ),
     "candidate_head": _RecordSpec(
-        ARTIFACT_CANDIDATE_HEADS_TABLE,
+        CANDIDATE_HEADS_TABLE,
         ("scope_id", "candidate_id"),
         (
             "family",
@@ -346,7 +359,10 @@ _SPECS: dict[RecordType, _RecordSpec] = {
             "result_artifact_id",
             "result_revision",
             "decision_reason",
+            "candidate_kind",
+            "result_payload",
         ),
+        schema_version=2,
     ),
     "topic_memory_publication": _RecordSpec(
         TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE,
@@ -425,10 +441,12 @@ class PortableBundleService:
         supported_source_types: Iterable[str] | None = None,
         supported_artifact_families: Iterable[str] | None = None,
         artifact_content_decoder: Callable[[str, bytes], object] | None = None,
+        candidate_decoder: Callable[[Mapping[str, Any]], object] | None = None,
     ) -> None:
         self._database = database
         self._projection_rebuilder = projection_rebuilder
         self._artifact_content_decoder = artifact_content_decoder
+        self._candidate_decoder = candidate_decoder
         self._supported_source_types = None if supported_source_types is None else frozenset(supported_source_types)
         self._supported_artifact_families = (
             None if supported_artifact_families is None else frozenset(supported_artifact_families)
@@ -492,7 +510,7 @@ class PortableBundleService:
             # Reject missing dependencies and size-limit breaches
             # without replacing a previous usable backup at the destination.
             _parse_bundle(archive_path)
-            _validate_dependencies(archive_path)
+            _validate_dependencies(archive_path, candidate_decoder=self._candidate_decoder)
             archive_path.replace(output)
             return BundleReceipt(bundle_id=bundle_id, record_count=count, total_digest=digest)
         finally:
@@ -516,7 +534,7 @@ class PortableBundleService:
         """Verify bundle integrity, dependencies, and optional adapter support."""
 
         inspection = _parse_bundle(source, progress=progress, phase="validate")
-        required_sources, required_families = _validate_dependencies(source)
+        required_sources, required_families = _validate_dependencies(source, candidate_decoder=self._candidate_decoder)
         configured = (
             self._supported_source_types if supported_source_types is None else frozenset(supported_source_types)
         )
@@ -687,7 +705,7 @@ class PortableBundleService:
                 }
             )
             for processed, record in enumerate(_iter_records(source), start=1):
-                self._validate_artifact_content(record)
+                self._validate_target_content(record)
                 table = _SPECS[record.record_type].table
                 if table.name not in existing_tables:
                     _report_progress(progress, "target", processed, total)
@@ -711,7 +729,11 @@ class PortableBundleService:
                 _report_progress(progress, "target", processed, total)
         return already_present, conflicts
 
-    def _validate_artifact_content(self, record: _Record, /) -> None:
+    def _validate_target_content(self, record: _Record, /) -> None:
+        if record.record_type == "candidate_version":
+            if self._candidate_decoder is None:
+                raise BundleFormatError("target cannot validate Candidate proposals")
+            return
         if record.record_type != "artifact_revision" or self._artifact_content_decoder is None:
             return
         family = str(record.identity["family"])
@@ -812,10 +834,19 @@ async def _export_rows(
 ) -> AsyncIterator[Mapping[str, Any]]:
     spec = _SPECS[kind]
     if spec.scope_field is not None:
+        predicate = spec.table.c[spec.scope_field].in_(scopes)
+        if kind in {"memory_entry_version", "memory_entry_head"}:
+            predicate &= (
+                select(ARTIFACTS_TABLE.c.artifact_id)
+                .where(
+                    ARTIFACTS_TABLE.c.scope_id == spec.table.c.scope_id,
+                    ARTIFACTS_TABLE.c.family == spec.table.c.family,
+                    ARTIFACTS_TABLE.c.artifact_id == spec.table.c.memory_artifact_id,
+                )
+                .exists()
+            )
         rows = await connection.stream(
-            select(spec.table)
-            .where(spec.table.c[spec.scope_field].in_(scopes))
-            .order_by(*(spec.table.c[field] for field in spec.identity))
+            select(spec.table).where(predicate).order_by(*(spec.table.c[field] for field in spec.identity))
         )
         async for row in rows.mappings():
             yield cast(Mapping[str, Any], row)
@@ -888,7 +919,12 @@ def _record_from_row(record_type: RecordType, row: Mapping[str, Any]) -> _Record
     spec = _SPECS[record_type]
     identity = {field: _json_value(row[field]) for field in spec.identity}
     payload = {field: _json_value(row[field]) for field in spec.payload}
-    canonical = {"record_type": record_type, "schema_version": 1, "identity": identity, "payload": payload}
+    canonical = {
+        "record_type": record_type,
+        "schema_version": spec.schema_version,
+        "identity": identity,
+        "payload": payload,
+    }
     return _Record(record_type=record_type, identity=identity, payload=payload, digest=_digest(canonical))
 
 
@@ -912,7 +948,7 @@ async def _establish_export_snapshot(connection: AsyncConnection, /) -> None:
 def _record_document(record: _Record) -> dict[str, Any]:
     return {
         "record_type": record.record_type,
-        "schema_version": 1,
+        "schema_version": _SPECS[record.record_type].schema_version,
         "identity": dict(record.identity),
         "payload": dict(record.payload),
         "digest": record.digest,
@@ -1146,7 +1182,7 @@ def _parse_record(value: object) -> _Record:
     if set(value) != {"record_type", "schema_version", "identity", "payload", "digest"}:
         raise BundleFormatError("record has unknown or missing fields")
     record_type = value.get("record_type")
-    if record_type not in _SPECS or value.get("schema_version") != 1:
+    if record_type not in _SPECS or value.get("schema_version") != _SPECS[cast(RecordType, record_type)].schema_version:
         raise BundleFormatError("unsupported record type or schema")
     identity = value.get("identity")
     payload = value.get("payload")
@@ -1164,7 +1200,12 @@ def _parse_record(value: object) -> _Record:
         or not _valid_digest(digest)
     ):
         raise BundleFormatError("record has invalid identity or digest")
-    canonical = {"record_type": typed, "schema_version": 1, "identity": identity, "payload": payload}
+    canonical = {
+        "record_type": typed,
+        "schema_version": spec.schema_version,
+        "identity": identity,
+        "payload": payload,
+    }
     if _digest(canonical) != digest:
         raise BundleFormatError("record digest does not match content")
     record = _Record(record_type=typed, identity=identity, payload=payload, digest=digest)
@@ -1244,22 +1285,43 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             raise BundleFormatError("Skill package has invalid digest")
     elif kind == "artifact_revision":
         bytes_values("content")
+    elif kind == "artifact_handle":
+        strings("artifact_id")
+        integers("revision", positive=True)
+        try:
+            StableHandle(family=str(identity["family"]), key=str(identity["handle_key"]))
+        except ValueError as error:
+            raise BundleFormatError("artifact handle is invalid") from error
     elif kind == "artifact_lineage_source":
         strings("source_type", "source_id")
     elif kind == "artifact_lineage_artifact":
         strings("upstream_family", "upstream_artifact_id")
         integers("upstream_revision", positive=True)
+        if type(payload["is_merge_input"]) is not bool:
+            raise BundleFormatError("artifact lineage has an invalid merge marker")
     elif kind == "artifact_publication":
         strings("source_scope_id", "source_family", "source_artifact_id", "content_digest", "idempotency_key")
         integers("source_revision", positive=True)
     elif kind == "artifact_head":
-        strings("lifecycle_state", "replacement_artifact_id", nullable=("replacement_artifact_id",))
+        strings(
+            "lifecycle_state",
+            "replacement_artifact_id",
+            "merged_into_id",
+            nullable=("replacement_artifact_id", "merged_into_id"),
+        )
         integers("revision", positive=True)
         integers("governance_generation")
         if payload["lifecycle_state"] not in {"active", "deprecated", "retired"} or (
             payload["replacement_artifact_id"] is not None and payload["lifecycle_state"] != "deprecated"
         ):
             raise BundleFormatError("artifact head has invalid governance state")
+        if payload["merged_into_id"] is not None and (
+            payload["lifecycle_state"] != "deprecated"
+            or not payload["merged_into_id"]
+            or payload["merged_into_id"] == identity["artifact_id"]
+            or payload["replacement_artifact_id"] is not None
+        ):
+            raise BundleFormatError("artifact head has invalid merge state")
     elif kind == "memory_entry_version":
         strings(
             "family",
@@ -1294,6 +1356,8 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
         ):
             raise BundleFormatError("candidate version has an incomplete target")
     elif kind == "candidate_head":
+        if payload["candidate_kind"] != "artifact" or payload["result_payload"] is not None:
+            raise BundleFormatError("tag Candidates are not supported by portable archives")
         strings(
             "family",
             "status",
@@ -1475,15 +1539,28 @@ def _validate_safe_value(value: object, key: str | None = None) -> None:
             _validate_safe_value(child, key)
 
 
-def _validate_dependencies(source: Path, /) -> tuple[set[str], set[str]]:
+def _validate_dependencies(
+    source: Path, /, *, candidate_decoder: Callable[[Mapping[str, Any]], object] | None = None
+) -> tuple[set[str], set[str]]:
     """Validate dependencies with disk-backed identities and bounded metadata."""
 
     heads, packages = _dependency_metadata(source)
     required_sources: set[str] = set()
     required_families: set[str] = set()
-    with _identity_index(source) as contains:
+    with _identity_index(source) as index:
+
+        def contains(record_type: str, identity: Mapping[str, object]) -> bool:
+            return (
+                index.execute(
+                    "SELECT 1 FROM identities WHERE record_type = ? AND identity = ?",
+                    (record_type, _identity_key(identity)),
+                ).fetchone()
+                is not None
+            )
+
         for record in _iter_records(source):
             _validate_record_dependencies(record, contains)
+            _validate_candidate_record(record, index, candidate_decoder)
             _validate_skill_package_dependency(record, packages)
             if record.record_type == "source":
                 if int(record.payload["journal_position"]) > heads.get(str(record.identity["scope_id"]), -1):
@@ -1492,6 +1569,39 @@ def _validate_dependencies(source: Path, /) -> tuple[set[str], set[str]]:
                     required_sources.add(str(record.identity["source_type"]))
             required_families.update(_required_artifact_families((record,)))
     return required_sources, required_families
+
+
+def _validate_candidate_record(
+    record: _Record,
+    index: sqlite3.Connection,
+    decoder: Callable[[Mapping[str, Any]], object] | None,
+) -> None:
+    if decoder is None or record.record_type not in {"candidate_version", "candidate_head"}:
+        return
+    version = record
+    if record.record_type == "candidate_head":
+        identity = {**record.identity, "version": record.payload["version"]}
+        document = index.execute(
+            "SELECT document FROM identities WHERE record_type = 'candidate_version' AND identity = ?",
+            (_identity_key(identity),),
+        ).fetchone()
+        if document is None:
+            raise BundleFormatError("candidate head references missing version")
+        version = _parse_record(json.loads(document[0]))
+    values = {
+        **_row_values(version),
+        "status": "pending",
+        "result_family": None,
+        "result_artifact_id": None,
+        "result_revision": None,
+        "decision_reason": None,
+    }
+    if record.record_type == "candidate_head":
+        values.update(_row_values(record))
+    try:
+        decoder(values)
+    except (InvalidStoredPayloadError, ValueError) as error:
+        raise BundleFormatError("Candidate proposal or envelope does not match the target decoder") from error
 
 
 def _validate_record_dependencies(  # noqa: C901 - logical record kinds have distinct dependency edges.
@@ -1656,9 +1766,24 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
             },
         ):
             raise BundleFormatError("memory version references missing previous version")
+    elif record.record_type == "artifact_handle":
+        if not contains(
+            "artifact_revision",
+            {
+                "scope_id": scope,
+                "family": identity["family"],
+                "artifact_id": payload["artifact_id"],
+                "revision": payload["revision"],
+            },
+        ):
+            raise BundleFormatError("artifact handle references missing revision")
     elif record.record_type == "artifact_head":
         if not contains("artifact_revision", {**identity, "revision": payload["revision"]}):
             raise BundleFormatError("artifact head references missing revision")
+        if payload["merged_into_id"] is not None and not contains(
+            "artifact_head", {**identity, "artifact_id": payload["merged_into_id"]}
+        ):
+            raise BundleFormatError("artifact head references missing merge result")
     elif record.record_type == "memory_entry_head":
         if not contains(
             "memory_entry_version",
@@ -1697,6 +1822,11 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
             {"scope_id": scope, "candidate_id": identity["candidate_id"], "version": payload["version"]},
         ):
             raise BundleFormatError("candidate head references missing version")
+        if not contains(
+            "candidate_version_family",
+            {**identity, "version": payload["version"], "family": payload["family"]},
+        ):
+            raise BundleFormatError("candidate head family does not match version")
         result_family = payload["result_family"]
         if result_family is not None and not contains(
             "artifact_revision",
@@ -1764,7 +1894,13 @@ def _validate_skill_package_dependency(
     if record.record_type == "artifact_revision" and record.identity["family"] == "skill":
         content = _decoded_bytes_json(record.payload["content"], "Skill content")
     elif record.record_type == "candidate_version" and record.payload["family"] == "skill":
-        content = _decoded_bytes_json(record.payload["proposal"], "Skill proposal")
+        try:
+            proposal, _audit = decode_candidate_proposal_envelope(
+                cast(bytes, _database_value(record.payload["proposal"]))
+            )
+        except InvalidStoredPayloadError as error:
+            raise BundleFormatError("Candidate proposal envelope is invalid") from error
+        content = json.loads(proposal)
     else:
         return
     package = content.get("package") if isinstance(content, dict) else None
@@ -1824,20 +1960,26 @@ def _unique_identities(record: _Record, /) -> Iterator[dict[str, Any]]:
 
 
 @contextmanager
-def _identity_index(source: Path, /) -> Iterator[Callable[[str, Mapping[str, object]], bool]]:
+def _identity_index(source: Path, /) -> Iterator[sqlite3.Connection]:
     index_path = _temporary_path(Path(tempfile.gettempdir()), suffix=".identities.sqlite3")
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(index_path)
         connection.execute(
-            "CREATE TABLE identities (record_type TEXT NOT NULL, identity TEXT NOT NULL, "
+            "CREATE TABLE identities (record_type TEXT NOT NULL, identity TEXT NOT NULL, document BLOB, "
             "PRIMARY KEY (record_type, identity))"
         )
         for record in _iter_records(source):
             try:
                 connection.execute(
-                    "INSERT INTO identities (record_type, identity) VALUES (?, ?)",
-                    (record.record_type, _identity_key(record.identity)),
+                    "INSERT INTO identities (record_type, identity, document) VALUES (?, ?, ?)",
+                    (
+                        record.record_type,
+                        _identity_key(record.identity),
+                        _canonical_json(_record_document(record))
+                        if record.record_type == "candidate_version"
+                        else None,
+                    ),
                 )
                 for identity in _unique_identities(record):
                     connection.execute(
@@ -1846,6 +1988,14 @@ def _identity_index(source: Path, /) -> Iterator[Callable[[str, Mapping[str, obj
                     )
             except sqlite3.IntegrityError as error:
                 raise BundleFormatError("bundle contains duplicate immutable or unique identity") from error
+            if record.record_type == "candidate_version":
+                connection.execute(
+                    "INSERT INTO identities (record_type, identity) VALUES (?, ?)",
+                    (
+                        "candidate_version_family",
+                        _identity_key({**record.identity, "family": record.payload["family"]}),
+                    ),
+                )
             if record.record_type == "source":
                 connection.execute(
                     "INSERT INTO identities (record_type, identity) VALUES (?, ?)",
@@ -1892,16 +2042,7 @@ def _identity_index(source: Path, /) -> Iterator[Callable[[str, Mapping[str, obj
                 )
         connection.commit()
 
-        def contains(record_type: str, identity: Mapping[str, object]) -> bool:
-            return (
-                connection.execute(
-                    "SELECT 1 FROM identities WHERE record_type = ? AND identity = ?",
-                    (record_type, _identity_key(identity)),
-                ).fetchone()
-                is not None
-            )
-
-        yield contains
+        yield connection
     finally:
         if connection is not None:
             connection.close()
@@ -1968,6 +2109,7 @@ def _required_artifact_families(records: Iterable[_Record]) -> set[str]:
         payload = record.payload
         if record.record_type in {
             "artifact_revision",
+            "artifact_handle",
             "artifact_lineage_source",
             "artifact_lineage_artifact",
             "artifact_head",

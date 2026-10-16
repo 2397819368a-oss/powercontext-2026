@@ -25,33 +25,47 @@ import os
 import zipfile
 from collections import Counter
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from pydantic import JsonValue, SecretStr
-from sqlalchemy import create_engine, event, select, update
+from sqlalchemy import create_engine, event, insert, select, update
 from sqlalchemy.engine import make_url
 
-from powercontext.artifacts import ArtifactRef
+from powercontext.artifacts import ArtifactRef, StableHandle
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
+from powercontext.builtin.artifacts.atomic_memory.errors import InvalidAtomicMemoryStateError
+from powercontext.builtin.artifacts.experience import ExperienceContent
 from powercontext.builtin.artifacts.memory import EmbeddingProfile
+from powercontext.builtin.artifacts.profile.models import ProfileCandidateProposal, SourceWindow
 from powercontext.builtin.artifacts.skill import capture_skill_directory, package_file
 from powercontext.builtin.inference import EmbeddingResult
+from powercontext.builtin.persistence.candidates import attach_candidate_audit, proposal_digest
+from powercontext.builtin.persistence.migrations.atomic_memory_archive import ARCHIVE_TABLE
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.seekdb import SeekDBConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.builtin.persistence.tables import SCOPES_TABLE, SOURCE_JOURNAL_HEADS_TABLE, SOURCES_TABLE
+from powercontext.builtin.persistence.tables import (
+    MEMORY_ENTRY_VERSIONS_TABLE,
+    SCOPES_TABLE,
+    SOURCE_JOURNAL_HEADS_TABLE,
+    SOURCES_TABLE,
+)
 from powercontext.builtin.persistence.topic_memory import TopicMemoryStorageInvariantError
 from powercontext.builtin.portability import BundleConflictError, BundleFormatError, PortableBundleService
 from powercontext.builtin.records import ArtifactWrite
+from powercontext.builtin.review.models import CandidateAudit, CandidateStatus
 from powercontext.builtin.runtime import (
     BuiltinConfig,
     CaptureSource,
+    CaptureWorkingNote,
     HandoffDraft,
     HandoffSourceCitation,
     HandoffStatement,
     SubmitSourceObservation,
+    WorkingNoteKind,
     open_builtin_contexts,
     open_builtin_runtime,
 )
@@ -67,6 +81,8 @@ from powercontext.sources import (
     project_source_for_transport,
 )
 from tests.builtin.persistence.contract import NoteAdapter, NoteInput, NoteSource
+from tests.e2e.atomic_memory_migration_fixture import SCOPE as MIGRATED_SCOPE
+from tests.e2e.atomic_memory_migration_fixture import _seed_and_migrate
 
 
 def test_topic_restore_can_retry_after_projection_failure_and_restart(tmp_path: Path) -> None:
@@ -997,5 +1013,559 @@ def test_archive_rejects_duplicate_journal_positions_before_writing(tmp_path: Pa
                     await connection.scalar(select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == sid))
                     is None
                 )
+
+    asyncio.run(scenario())
+
+
+async def _merged_archive(tmp_path: Path):
+    archive = tmp_path / "merged.pcb"
+
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async with open_builtin_contexts(BuiltinConfig()) as source:
+        scope = await source.scopes.create(ScopeDraft(title="Merge", summary="Recovery", idempotency_key="merge"))
+        memory = source.atomic_memory.for_scope(scope.scope_id)
+        created = await source.records.create_atomic_memories(
+            scope.scope_id,
+            ({"kind": "rule", "text": "Preserve input one."}, {"kind": "rule", "text": "Preserve input two."}),
+        )
+        originals = tuple([await memory.get(item.artifact_id) for item in created])
+        merged = await memory.merge(
+            tuple(item.as_read() for item in originals),
+            AtomicMemoryContent(kind="rule", text="Preserve both inputs."),
+        )
+        expected = tuple([await memory.get(item.ref.artifact_id) for item in originals])
+        exported = await source.portability.export([scope.scope_id], archive, authorize=authorize)
+    return archive, scope.scope_id, expected, merged.primary, exported
+
+
+def test_archive_preserves_merge_state_and_undo_after_restart(tmp_path: Path, target_config: BuiltinConfig) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive, scope_id, originals, merged, exported = await _merged_archive(tmp_path)
+        async with open_builtin_contexts(target_config) as target:
+            assert (await target.portability.restore(archive)).status == "ready"
+            assert (await target.portability.restore(archive)).inserted == 0
+            roundtrip = await target.portability.export([scope_id], tmp_path / "roundtrip.pcb", authorize=authorize)
+            assert roundtrip.total_digest == exported.total_digest
+        async with open_builtin_contexts(target_config) as target:
+            memory = target.atomic_memory.for_scope(scope_id)
+            for original in originals:
+                assert await memory.get(original.ref.artifact_id) == original
+                assert original.state.state == "merged"
+                assert original.state.merged_into_id == merged.ref.artifact_id
+                with pytest.raises(InvalidAtomicMemoryStateError, match="cannot be edited"):
+                    await target.records.replace_artifact(
+                        scope_id,
+                        "atomic-memory",
+                        original.ref.artifact_id,
+                        '"revision:1"',
+                        ArtifactWrite(content={"kind": "rule", "text": "Cannot revise merged input."}),
+                    )
+            result = await memory.restore(merged.ref.artifact_id, operation="undo_merge")
+            assert {item.artifact_id for item in result.restored} == {item.ref.artifact_id for item in originals}
+            for original in originals:
+                assert (await memory.get(original.ref.artifact_id)).state.state == "active"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("field", ["merged_into_id", "is_merge_input"])
+def test_archive_detects_conflicting_merge_topology(tmp_path: Path, field: str) -> None:
+    async def scenario() -> None:
+        archive, scope_id, originals, merged, _exported = await _merged_archive(tmp_path)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            await target.portability.restore(archive)
+
+            def damage(records):
+                kind = "artifact_head" if field == "merged_into_id" else "artifact_lineage_artifact"
+                record = next(
+                    item for item in records if item["record_type"] == kind and item["payload"][field] is not None
+                )
+                record["payload"][field] = None if field == "merged_into_id" else False
+                return records
+
+            _rewrite_archive_records(archive, damage)
+            validation = await target.portability.validate(archive)
+            assert not validation.compatible
+            assert validation.conflicts == 1
+            with pytest.raises(BundleConflictError):
+                await target.portability.restore(archive)
+            memory = target.atomic_memory.for_scope(scope_id)
+            assert await memory.get(originals[0].ref.artifact_id) == originals[0]
+            assert await memory.get(merged.ref.artifact_id) == merged
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("damage", ["missing_result", "old_head_schema", "old_lineage_schema", "invalid_marker"])
+def test_archive_rejects_invalid_merge_records_before_writing(tmp_path: Path, damage: str) -> None:
+    async def scenario() -> None:
+        archive, scope_id, _originals, _merged, _exported = await _merged_archive(tmp_path)
+
+        def rewrite(records):
+            if damage in {"missing_result", "old_head_schema"}:
+                record = next(
+                    item
+                    for item in records
+                    if item["record_type"] == "artifact_head" and item["payload"]["merged_into_id"] is not None
+                )
+                if damage == "missing_result":
+                    record["payload"]["merged_into_id"] = "missing-merge-result"
+                else:
+                    record["schema_version"] = 1
+                    del record["payload"]["merged_into_id"]
+            else:
+                record = next(item for item in records if item["record_type"] == "artifact_lineage_artifact")
+                if damage == "invalid_marker":
+                    record["payload"]["is_merge_input"] = "true"
+                else:
+                    record["schema_version"] = 1
+                    del record["payload"]["is_merge_input"]
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError):
+                    await operation(archive)
+            async with target.database.transaction() as connection:
+                assert (
+                    await connection.scalar(select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == scope_id))
+                    is None
+                )
+
+    asyncio.run(scenario())
+
+
+def test_archive_exports_migrated_scopes_without_deleting_offline_history(tmp_path: Path) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'migrated.db'}")
+        async with (
+            open_builtin_contexts(BuiltinConfig(database=config)) as source,
+            source.database.transaction() as connection,
+        ):
+            await connection.execute(
+                insert(SCOPES_TABLE).values(
+                    scope_id=MIGRATED_SCOPE,
+                    title="Migrated",
+                    summary="Retained history",
+                    scope_id_search=MIGRATED_SCOPE,
+                    title_search="Migrated",
+                    summary_search="Retained history",
+                    version=1,
+                )
+            )
+        await _seed_and_migrate(config)
+        archive = tmp_path / "migrated.pcb"
+        async with open_builtin_contexts(BuiltinConfig(database=config)) as source:
+            async with source.database.transaction() as connection:
+                retained_versions = (await connection.execute(select(MEMORY_ENTRY_VERSIONS_TABLE))).all()
+                retained_archive = (await connection.execute(select(ARCHIVE_TABLE))).all()
+            assert retained_versions and retained_archive
+            exported = await source.portability.export([MIGRATED_SCOPE], archive, authorize=authorize)
+            expected = await source.atomic_memory.for_scope(MIGRATED_SCOPE).list()
+            async with source.database.transaction() as connection:
+                assert (await connection.execute(select(MEMORY_ENTRY_VERSIONS_TABLE))).all() == retained_versions
+                assert (await connection.execute(select(ARCHIVE_TABLE))).all() == retained_archive
+        inspected = await PortableBundleService.inspect(archive)
+        assert "memory_entry_version" not in inspected.records_by_type
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            assert (await target.portability.restore(archive)).status == "ready"
+            assert await target.atomic_memory.for_scope(MIGRATED_SCOPE).list() == expected
+            reexported = await target.portability.export([MIGRATED_SCOPE], tmp_path / "again.pcb", authorize=authorize)
+            assert reexported.total_digest == exported.total_digest
+
+    asyncio.run(scenario())
+
+
+async def _candidate_archive(tmp_path: Path, family: str, *, audited: bool = False):
+    archive = tmp_path / "candidate.pcb"
+
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    proposal = (
+        ExperienceContent(situation="Archive", action="Validate", outcome="Readable", lesson="Check proposals.")
+        if family == "experience"
+        else ProfileCandidateProposal(
+            content="Keep exact profile instructions.",
+            generator_id="test",
+            generator_version="1",
+            created_at=datetime(2026, 10, 1, tzinfo=UTC),
+            source_window=SourceWindow(after=0, through=1),
+        )
+    )
+    package = None
+    if family == "skill":
+        package_dir = tmp_path / "portable-skill"
+        package_dir.mkdir()
+        (package_dir / "SKILL.md").write_text(
+            "---\nname: portable-skill\ndescription: Portable instructions\n---\nValidate archives.\n"
+        )
+        package = capture_skill_directory(package_dir)
+        proposal = package.as_skill_content()
+    async with open_builtin_contexts(BuiltinConfig()) as source:
+        scope = await source.scopes.create(
+            ScopeDraft(title="Candidate", summary="Recovery", idempotency_key="candidate")
+        )
+        context = await source.get(scope.scope_id)
+        await context.sources.capture(ContentCapture(source_id="evidence", content="Candidate evidence."))
+        if package is not None:
+            await source.upload_skill_package(scope.scope_id, package.archive_bytes, None, None)
+        async with source.database.transaction() as connection:
+            candidate = await source.repositories.candidates.create(
+                connection,
+                scope.scope_id,
+                "candidate-1",
+                family,
+                proposal,
+                sources=(SourceRef(source_type="content", source_id="evidence"),),
+                artifacts=(),
+                target=None,
+                reason=None,
+            )
+            if audited:
+                await attach_candidate_audit(
+                    connection,
+                    scope.scope_id,
+                    candidate,
+                    CandidateAudit(
+                        operation="correct",
+                        dream_run_id="dream-1",
+                        spec_version="1",
+                        proposal_digest=proposal_digest(proposal),
+                        evidence_manifest_ref="source:evidence",
+                        validation_policy_digest="sha256:" + "a" * 64,
+                    ),
+                )
+                candidate = await source.repositories.candidates.get(connection, scope.scope_id, candidate.candidate_id)
+        await source.portability.export([scope.scope_id], archive, authorize=authorize)
+    return archive, scope.scope_id, candidate
+
+
+@pytest.mark.parametrize("family", ["experience", "profile", "skill"])
+@pytest.mark.parametrize("audited", [False, True])
+def test_archive_restores_candidates_through_supported_read_paths(
+    tmp_path: Path, family: str, audited: bool, target_config: BuiltinConfig
+) -> None:
+    async def scenario() -> None:
+        archive, scope_id, candidate = await _candidate_archive(tmp_path, family, audited=audited)
+        async with open_builtin_contexts(target_config) as target:
+            assert (await target.portability.restore(archive)).status == "ready"
+            review = target.review(scope_id)
+            restored = await review.get_candidate(candidate.candidate_id)
+            assert restored.proposal == candidate.proposal
+            assert restored.audit == candidate.audit
+            page = await review.list_candidates(status=CandidateStatus.PENDING, family=family, cursor=None, limit=10)
+            assert restored in page.candidates
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("family", ["experience", "profile", "skill"])
+@pytest.mark.parametrize("damage", ["empty", "invalid_envelope", "invalid_audit"])
+def test_archive_rejects_invalid_candidate_proposals_before_writing(
+    tmp_path: Path, monkeypatch, family: str, damage: str
+) -> None:
+    from typer.testing import CliRunner
+
+    from powercontext.cli.app import create_cli
+    from powercontext.cli.archive import archive_app
+
+    async def scenario() -> Path:
+        archive, scope_id, _candidate = await _candidate_archive(tmp_path, family)
+
+        def rewrite(records):
+            record = next(item for item in records if item["record_type"] == "candidate_version")
+            payload = b"{}" if damage == "empty" else b'{"candidate_payload_version":1}'
+            if damage == "invalid_audit":
+                payload = b'{"candidate_payload_version":1,"proposal":{},"audit":{}}'
+            record["payload"]["proposal"] = {"base64": base64.b64encode(payload).decode()}
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match="Candidate proposal"):
+                    await operation(archive)
+            async with target.database.transaction() as connection:
+                assert (
+                    await connection.scalar(select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == scope_id))
+                    is None
+                )
+        return archive
+
+    archive = asyncio.run(scenario())
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "unused-target"))
+    result = CliRunner().invoke(create_cli([archive_app]), ["archive", "restore", str(archive), "--dry-run"])
+    assert result.exit_code == 2, result.output
+    assert "Candidate proposal" in result.output
+    assert not (tmp_path / "unused-target" / "powercontext.db").exists()
+
+
+def test_archive_rejects_tag_candidates_before_writing(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        archive, scope_id, _candidate = await _candidate_archive(tmp_path, "experience")
+
+        def rewrite(records):
+            record = next(item for item in records if item["record_type"] == "candidate_head")
+            record["payload"]["candidate_kind"] = "tag"
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match="tag Candidates"):
+                    await operation(archive)
+            async with target.database.transaction() as connection:
+                assert (
+                    await connection.scalar(select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == scope_id))
+                    is None
+                )
+
+    asyncio.run(scenario())
+
+
+def test_archive_rejects_missing_audited_skill_candidate_package(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        archive, scope_id, candidate = await _candidate_archive(tmp_path, "skill", audited=True)
+
+        def rewrite(records):
+            return [
+                item
+                for item in records
+                if item["record_type"] != "skill_package"
+                and (
+                    item["record_type"] not in {"candidate_version", "candidate_head"}
+                    or item["identity"]["candidate_id"] == candidate.candidate_id
+                )
+            ]
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match="missing or mismatched package"):
+                    await operation(archive)
+            async with target.database.transaction() as connection:
+                assert (
+                    await connection.scalar(select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == scope_id))
+                    is None
+                )
+
+    asyncio.run(scenario())
+
+
+def test_archive_preserves_stable_handles_and_detects_binding_conflicts(
+    tmp_path: Path, target_config: BuiltinConfig
+) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive = tmp_path / "handles.pcb"
+        handle = StableHandle(family="atomic-memory", key="portable-rule")
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Handles", summary="Recovery", idempotency_key="handles")
+            )
+            memories = await source.records.create_atomic_memories(
+                scope.scope_id,
+                ({"kind": "rule", "text": "Keep original binding."}, {"kind": "rule", "text": "Other binding."}),
+            )
+            original, alternate = tuple(
+                ArtifactRef(family="atomic-memory", artifact_id=item.artifact_id, revision=item.revision)
+                for item in memories
+            )
+            await source.records.bind_artifact_handle(scope.scope_id, handle, original)
+            exported = await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        async with open_builtin_contexts(target_config) as target:
+            await target.portability.restore(archive)
+        async with open_builtin_contexts(target_config) as target:
+            assert await target.records.resolve_artifact_handle(scope.scope_id, handle) == original
+            assert (await target.portability.restore(archive)).inserted == 0
+            roundtrip = await target.portability.export([scope.scope_id], tmp_path / "again.pcb", authorize=authorize)
+            assert roundtrip.total_digest == exported.total_digest
+
+            def rewrite(records):
+                record = next(item for item in records if item["record_type"] == "artifact_handle")
+                record["payload"]["artifact_id"] = alternate.artifact_id
+                return records
+
+            _rewrite_archive_records(archive, rewrite)
+            assert (await target.portability.validate(archive)).conflicts == 1
+            with pytest.raises(BundleConflictError):
+                await target.portability.restore(archive)
+            assert await target.records.resolve_artifact_handle(scope.scope_id, handle) == original
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "damage", ["head_family", "empty_evidence", "blank_reason", "blank_decision_reason", "historical_reason"]
+)
+def test_archive_rejects_invalid_candidate_envelopes_before_writing(tmp_path: Path, monkeypatch, damage: str) -> None:
+    from typer.testing import CliRunner
+
+    from powercontext.cli.app import create_cli
+    from powercontext.cli.archive import archive_app
+
+    async def scenario() -> Path:
+        archive, scope_id, _candidate = await _candidate_archive(tmp_path, "experience")
+
+        def rewrite(records):
+            version = next(item for item in records if item["record_type"] == "candidate_version")
+            head = next(item for item in records if item["record_type"] == "candidate_head")
+            if damage == "head_family":
+                head["payload"]["family"] = "profile"
+            elif damage == "empty_evidence":
+                version["payload"]["source_refs"] = {"base64": base64.b64encode(b"[]").decode()}
+                version["payload"]["artifact_refs"] = {"base64": base64.b64encode(b"[]").decode()}
+            elif damage == "blank_decision_reason":
+                head["payload"].update(status="rejected", decision_reason="")
+            else:
+                if damage == "historical_reason":
+                    records.append({
+                        **version,
+                        "identity": {**version["identity"], "version": 2},
+                        "payload": dict(version["payload"]),
+                    })
+                    head["payload"]["version"] = 2
+                version["payload"]["reason"] = ""
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            existing = await target.scopes.create(
+                ScopeDraft(title="Existing target", summary="Must remain unchanged", idempotency_key="existing")
+            )
+            async with target.database.transaction() as connection:
+                before = (await connection.execute(select(SCOPES_TABLE))).all()
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match=r"[Cc]andidate"):
+                    await operation(archive)
+            async with target.database.transaction() as connection:
+                assert (await connection.execute(select(SCOPES_TABLE))).all() == before
+                assert (
+                    await connection.scalar(select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == scope_id))
+                    is None
+                )
+                assert existing.scope_id in {row.scope_id for row in before}
+        return archive
+
+    archive = asyncio.run(scenario())
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "unused-target"))
+    result = CliRunner().invoke(create_cli([archive_app]), ["archive", "restore", str(archive), "--dry-run"])
+    assert result.exit_code == 2, result.output
+    assert "candidate" in result.output.lower()
+    assert not (tmp_path / "unused-target" / "powercontext.db").exists()
+
+
+@pytest.mark.parametrize("status", ["pending", "approved", "rejected"])
+def test_archive_preserves_candidate_versions_and_lifecycle_after_restart(
+    tmp_path: Path, status: str, target_config: BuiltinConfig
+) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        original, scope_id, candidate = await _candidate_archive(tmp_path, "experience")
+        archive = tmp_path / "candidate-history.pcb"
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            await source.portability.restore(original)
+            review = source.review(scope_id)
+            revised = await review.revise(
+                candidate.candidate_id,
+                candidate.version,
+                candidate.proposal,
+                sources=candidate.sources,
+                artifacts=candidate.artifacts,
+                target=candidate.target,
+                reason="Refined from the same evidence.",
+            )
+            if status == "approved":
+                await review.approve(revised.candidate_id, revised.version)
+            elif status == "rejected":
+                await review.reject(revised.candidate_id, revised.version, "Not needed.")
+            expected = await review.get_candidate(candidate.candidate_id)
+            expected_history = await review.history(candidate.candidate_id)
+            await source.portability.export([scope_id], archive, authorize=authorize)
+        _rewrite_archive_records(archive, lambda records: list(reversed(records)))
+        inspected = await PortableBundleService.inspect(archive)
+        assert inspected.records_by_type["candidate_version"] == 2
+        async with open_builtin_contexts(target_config) as target:
+            assert (await target.portability.restore(archive)).status == "ready"
+            assert (await target.portability.restore(archive)).inserted == 0
+        async with open_builtin_contexts(target_config) as target:
+            review = target.review(scope_id)
+            assert await review.get_candidate(candidate.candidate_id) == expected
+            assert await review.history(candidate.candidate_id) == expected_history
+            page = await review.list_candidates(
+                status=CandidateStatus(status),
+                family="experience",
+                cursor=None,
+                limit=10,
+            )
+            assert page.candidates == (expected,)
+
+    asyncio.run(scenario())
+
+
+def test_archive_preserves_working_note_identity_and_handoff_after_restart(
+    tmp_path: Path, target_config: BuiltinConfig
+) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive = tmp_path / "working-note.pcb"
+        capture = CaptureWorkingNote(
+            source_id="validation-note",
+            content="The archive roundtrip passed without promoting session state to Memory.",
+            session_id="session-1",
+            note_kind=WorkingNoteKind.VALIDATION,
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        async with open_builtin_runtime(BuiltinConfig()) as source:
+            assert source.scopes is not None
+            scope = await source.scopes.create(
+                ScopeDraft(title="Working note", summary="Portable session state", idempotency_key="working-note")
+            )
+            note = await source.sources.for_scope(scope.scope_id).capture_working_note(capture)
+            expected = await source.records.for_scope(scope.scope_id).get_source("content", capture.source_id)
+            draft = HandoffDraft(
+                objective="Continue archive verification.",
+                state=(
+                    HandoffStatement(
+                        text="The recorded validation remains available.",
+                        citations=(HandoffSourceCitation(source_ref=note.source_ref),),
+                    ),
+                ),
+                disposition="continuable",
+            )
+            handoffs = source.handoff.for_scope(scope.scope_id)
+            committed = await handoffs.commit(await handoffs.finalize(draft))
+            assert source.archive is not None
+            exported = await source.archive.export([scope.scope_id], archive, authorize=authorize)
+        async with open_builtin_runtime(target_config) as target:
+            assert target.archive is not None
+            assert (await target.archive.restore(archive)).status == "ready"
+        async with open_builtin_runtime(target_config) as target:
+            assert await target.records.for_scope(scope.scope_id).get_source("content", capture.source_id) == expected
+            assert await target.sources.for_scope(scope.scope_id).capture_working_note(capture) == note
+            handoffs = target.handoff.for_scope(scope.scope_id)
+            assert await handoffs.latest() == committed
+            assert (await handoffs.finalize(draft)).content == committed.content
+            assert target.atomic_memory is not None
+            assert (await target.atomic_memory.for_scope(scope.scope_id).list()).items == ()
+            assert target.archive is not None
+            reexported = await target.archive.export([scope.scope_id], tmp_path / "again.pcb", authorize=authorize)
+            assert reexported.total_digest == exported.total_digest
 
     asyncio.run(scenario())

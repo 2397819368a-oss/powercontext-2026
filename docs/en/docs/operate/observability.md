@@ -18,6 +18,69 @@ and `POWERCONTEXT_SERVER_LOGGING_ACCESS` (default `true`). For a native personal
 Use the response's `X-PowerContext-Request-ID` to correlate a failed request with diagnostics. The host guides also
 explain content-free recall and capture diagnostics; a missing context result can be valid rather than an outage.
 
+### Operational fields and correlation
+
+For event examples, field extension, and regression checks, see the
+[developer guide](../../development/observability.md).
+
+JSON and console logs use the same explicit operational field allowlist. Unrecognized extras are not serialized.
+Both formats retain application/transport outcomes and error diagnostics, plus worker correlation on nested events,
+including code stages. Code-specific diagnostic fields are included only for `code.*` events.
+
+| Fields | Meaning |
+| --- | --- |
+| `service_name`, `service_version`, `service_role`, `service_instance_id` | Service name (honors `OTEL_SERVICE_NAME`), installed package version, process role, and generated process identity |
+| `event`, `operation`, `unit`, `outcome` | Event name, declared application operation or stage, work unit, and result |
+| `request_id`, `trace_id`, `span_id` | Bound ingress request and current trace context, when available |
+| `worker_id`, `family`, `binding`, `request_generation`, `supervisor_group`, `supervisor_generation` | One worker attempt and its accepted work/fence; correlate child output with supervisor diagnostics |
+| `duration_ms`, `error_code`, `error_category` | Duration in milliseconds, diagnostic code, and bounded operational error classification |
+
+Server roles are `all` (API and supervisor), `api`, and `background`; child processes use `worker`. Explicit logging
+configuration without a deployment role uses `server`. JSON identity fields correspond to trace resource attributes
+`service.name`, `service.version`, `service.instance.id`, and `powercontext.service.role`. `service_version` is absent
+when installed distribution metadata is unavailable, such as a source checkout or a frozen bundle. A new process
+receives a new instance ID; a worker retry receives a new `worker_id`. None of these execution identifiers are metric
+labels.
+
+The request ID is inherited by nested request logs unless an event provides an explicit ID. Scheduled processing does
+not acquire the request ID that happened to be active when the supervisor started, including supervisor control logs.
+Trace IDs still exist with recording disabled, but do not imply that a backend has stored the trace.
+Child logging alone does not establish cross-process trace propagation.
+
+Common outcomes are `success`, `failure`, `cancelled`, and `noop`; admission blocks use `blocked` rather than success or failure.
+If a worker encounters a durable processing block, `artifact_processing.worker.blocked` is emitted at `WARNING`
+with outcome and error category `blocked`, preserving the block's diagnostic code and stage.
+Worker control results can also be `cursor_conflict`,
+`head_conflict`, or `leadership_lost`. A `artifact_processing.worker.returned` event describes the child's result;
+`artifact_processing.worker.acknowledged` indicates that the supervisor verified durable acknowledgement. A child
+return does not by itself prove business completion. Forced process termination can prevent a child terminal event;
+the supervisor records interruption or failure instead.
+
+`error_category` is absent when not applicable. Its vocabulary is `authentication`, `authorization`, `configuration`,
+`rate_limit`, `dependency`, `timeout`, `not_found`, `conflict`, `invalid_request`, `internal`, `cancelled`, and `blocked`.
+Server spans use the same vocabulary in `powercontext.error.category`; each boundary classifies its own observed result.
+Existing diagnostic codes remain available for more specific investigation.
+Supervisor worker and wait spans preserve the child's bounded failure category across the process boundary.
+Policy blocks and child cancellation use `blocked` and `cancelled` outcomes without an error span status;
+inference failures retain their timeout, configuration, or dependency classification.
+For child cancellation, the supervisor emits `artifact_processing.failed` at `INFO` with outcome/category `cancelled`
+and diagnostic code `worker_cancelled`. Application spans classify mapped diagnostic codes even when sensitive
+exception values are excluded from logs and traces.
+
+At `DEBUG`, `code.*` events retain `seconds` and add `duration_ms`. Their `operation` is the stage name (`code.<stage>`),
+matching the span identity; an existing requested query kind moves to `code_operation`. Code diagnostics can include `selected_count`,
+`hit_count`, `hit_count_is_lower_bound`, `cache_bytes`, `status`, `limitations`, and `reason`. Where supported by the OS,
+`process_lifetime_max_rss_bytes` and `children_lifetime_max_rss_bytes` are process-lifetime high-water marks in bytes;
+they are not per-request allocations or simultaneous process-tree totals, and must not be added together.
+Failed code stages retain the diagnostic `error_code` and, for domain errors, `status_code`; logs and spans use these
+values to distinguish timeouts, conflicts, and invalid requests from internal failures.
+
+Server-created workers use the configured log level and format. Importing or running the Runtime as an SDK does not
+configure global logging; an embedding application owns its logging configuration. Logging bootstrap failure does not
+fail processing. The Server handler emits at most one content-free `observability.log_failed` notification to stderr
+per handler if formatting or writing fails; it does not dump the failed record. Operational logs remain best-effort,
+not a durable audit or billing ledger. The identity/error fields are additive; console lines now include identity.
+
 ## Metrics and readiness
 
 Metrics are enabled by default at `/metrics`. In `enforced` mode, `/metrics` and `capabilities` require a Principal with

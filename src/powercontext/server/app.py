@@ -47,8 +47,8 @@ from starlette.routing import Match
 from starlette.types import Lifespan, Scope
 from typing_extensions import override
 
-from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactAddress, ArtifactRef
+from powercontext._logging import error_category, log_safely
+from powercontext.artifacts import ArtifactAddress, ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchFamilyNotFound,
@@ -131,6 +131,7 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemoryCurrentItem,
     TopicMemorySearchResult,
 )
+from powercontext.builtin.catalog_changes.models import CatalogChangeCandidate as RuntimeTagCandidate
 from powercontext.builtin.code.application import CodeApplication
 from powercontext.builtin.code.errors import CodeError
 from powercontext.builtin.code.models import CodeQueryRequest as RuntimeCodeQueryRequest
@@ -205,7 +206,6 @@ from powercontext.builtin.records import (
 from powercontext.builtin.records import (
     SourceRecordPage as RuntimeSourceRecordPage,
 )
-from powercontext.builtin.review import ArtifactCandidate as RuntimeArtifactCandidate
 from powercontext.builtin.review import (
     ArtifactTargetConflictError,
     CandidateConflictError,
@@ -217,6 +217,7 @@ from powercontext.builtin.review.generation import (
     GeneratedCandidateResult as RuntimeGeneratedCandidateResult,
 )
 from powercontext.builtin.review.generation import GenerationCapabilityUnavailableError
+from powercontext.builtin.review.models import Candidate as RuntimeCandidate
 from powercontext.builtin.runtime import (
     ActivateHandoff,
     CaptureSource,
@@ -238,7 +239,13 @@ from powercontext.builtin.runtime import (
     TopicMemoryProcessingUnavailableError,
 )
 from powercontext.builtin.runtime import (
-    ApproveArtifactCandidateRequest as RuntimeApproveArtifactCandidateRequest,
+    ApproveCandidateRequest as RuntimeApproveCandidateRequest,
+)
+from powercontext.builtin.runtime import BootstrapContext as RuntimeBootstrapContext
+from powercontext.builtin.runtime import BootstrapContextRequest as RuntimeBootstrapContextRequest
+from powercontext.builtin.runtime import BootstrapDeliveryReceipt as RuntimeBootstrapDeliveryReceipt
+from powercontext.builtin.runtime import (
+    CaptureWorkingNote as RuntimeCaptureWorkingNote,
 )
 from powercontext.builtin.runtime import (
     CommitConnectorCheckpoint as RuntimeCommitConnectorCheckpoint,
@@ -253,7 +260,7 @@ from powercontext.builtin.runtime import (
     GenerateSkillRequest as RuntimeGenerateSkillRequest,
 )
 from powercontext.builtin.runtime import (
-    GetArtifactCandidateRequest as RuntimeGetArtifactCandidateRequest,
+    GetCandidateRequest as RuntimeGetCandidateRequest,
 )
 from powercontext.builtin.runtime import (
     GetExperienceRequest as RuntimeGetExperienceRequest,
@@ -264,7 +271,7 @@ from powercontext.builtin.runtime import (
     ImportExternalSkillRequest as RuntimeImportExternalSkillRequest,
 )
 from powercontext.builtin.runtime import (
-    ListArtifactCandidatesRequest as RuntimeListArtifactCandidatesRequest,
+    ListCandidatesRequest as RuntimeListCandidatesRequest,
 )
 from powercontext.builtin.runtime import ListExternalSkillsRequest as RuntimeListExternalSkillsRequest
 from powercontext.builtin.runtime import (
@@ -277,12 +284,13 @@ from powercontext.builtin.runtime import (
     ProposeExperienceRequest as RuntimeProposeExperienceRequest,
 )
 from powercontext.builtin.runtime import ProposeSkillRequest as RuntimeProposeSkillRequest
+from powercontext.builtin.runtime import RecordBootstrapDeliveryRequest as RuntimeRecordBootstrapDeliveryRequest
 from powercontext.builtin.runtime import (
-    RejectArtifactCandidateRequest as RuntimeRejectArtifactCandidateRequest,
+    RejectCandidateRequest as RuntimeRejectCandidateRequest,
 )
 from powercontext.builtin.runtime import ResolveExternalSkillRequest as RuntimeResolveExternalSkillRequest
 from powercontext.builtin.runtime import (
-    ReviseArtifactCandidateRequest as RuntimeReviseArtifactCandidateRequest,
+    ReviseCandidateRequest as RuntimeReviseCandidateRequest,
 )
 from powercontext.builtin.runtime import SearchTopicMemoryRequest as RuntimeSearchTopicMemoryRequest
 from powercontext.builtin.runtime import (
@@ -390,22 +398,30 @@ from powercontext.http import (
     AccessRolePage,
     AcknowledgeHandoffRequest,
     ActivateHandoffRequest,
-    ApproveArtifactCandidateRequest,
+    ApproveCandidateRequest,
     ArtifactAccessResource,
-    ArtifactCandidate,
-    ArtifactCandidatePage,
     ArtifactCollectionItem,
     ArtifactCreated,
     ArtifactFamilyAccessCapability,
+    ArtifactHandleBinding,
     ArtifactPage,
     ArtifactReadFamily,
+    ArtifactReference,
     ArtifactRevision,
     ArtifactRevisionPage,
     BaseArtifactFamily,
+    BindArtifactHandleRequest,
+    BootstrapContext,
+    BootstrapContextRequest,
+    BootstrapDeliveryReceipt,
+    Candidate,
+    CandidateHistory,
+    CandidatePage,
     CandidatePermissions,
     Capabilities,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
+    CaptureWorkingNoteRequest,
     ClearScopeBindingRequest,
     ClearScopeBindingResponse,
     CodeQueryRequest,
@@ -444,7 +460,7 @@ from powercontext.http import (
     GenerateExperienceRequest,
     GeneratePromptDemonstrationsRequest,
     GenerateSkillRequest,
-    GetArtifactCandidateRequest,
+    GetCandidateRequest,
     GetConnectorCheckpointRequest,
     GetExperienceRequest,
     GetHandoffReportRequest,
@@ -465,9 +481,9 @@ from powercontext.http import (
     ListAccessBindingsRequest,
     ListAccessResourcesRequest,
     ListAccessRolesRequest,
-    ListArtifactCandidatesRequest,
     ListArtifactRevisionsRequest,
     ListArtifactsRequest,
+    ListCandidatesRequest,
     ListDreamRunsRequest,
     ListExternalSkillsRequest,
     ListExternalSkillsResponse,
@@ -503,11 +519,12 @@ from powercontext.http import (
     ReadinessStatus,
     ReconcileRemoteSkillsRequest,
     ReconcileRemoteSkillsResponse,
+    RecordBootstrapDeliveryRequest,
     RecordRemoteSkillReceiptRequest,
     RecordSkillUsageRequest,
     RecordTaskOutcomeRequest,
     RegisterSourceDefinitionRequest,
-    RejectArtifactCandidateRequest,
+    RejectCandidateRequest,
     RememberMemoryRequest,
     RemoteSkillAction,
     RemoteSkillPublication,
@@ -523,7 +540,7 @@ from powercontext.http import (
     ResolveScopeBindingRequest,
     ResolveScopeSelectionRequest,
     RetireMemoryEntryRequest,
-    ReviseArtifactCandidateRequest,
+    ReviseCandidateRequest,
     ReviseMemoryEntryRequest,
     RevokeAccessBindingRequest,
     RevokeRemoteSkillTargetRequest,
@@ -646,8 +663,10 @@ from powercontext.http._generated.operations import (
     API_DESCRIPTION,
     API_TITLE,
     API_VERSION,
-    APPROVE_ARTIFACT_CANDIDATE,
+    APPROVE_CANDIDATE,
+    BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
+    CAPTURE_WORKING_NOTE,
     CHECK_ACCESS,
     CLEAR_SCOPE_BINDING,
     COMMIT_CONNECTOR_CHECKPOINT,
@@ -673,9 +692,10 @@ from powercontext.http._generated.operations import (
     GENERATE_SKILL,
     GET_ACCESS_PRINCIPAL,
     GET_ARTIFACT,
-    GET_ARTIFACT_CANDIDATE,
     GET_ARTIFACT_REVISION,
     GET_ARTIFACT_TAGS,
+    GET_CANDIDATE,
+    GET_CANDIDATE_HISTORY,
     GET_CAPABILITIES,
     GET_CONNECTOR_CHECKPOINT,
     GET_DEFAULT_SCOPE,
@@ -702,9 +722,9 @@ from powercontext.http._generated.operations import (
     LIST_ACCESS_BINDINGS,
     LIST_ACCESS_RESOURCES,
     LIST_ACCESS_ROLES,
-    LIST_ARTIFACT_CANDIDATES,
     LIST_ARTIFACT_REVISIONS,
     LIST_ARTIFACTS,
+    LIST_CANDIDATES,
     LIST_DREAM_RUNS,
     LIST_EXTERNAL_SKILLS,
     LIST_MANAGED_SKILLS,
@@ -714,6 +734,7 @@ from powercontext.http._generated.operations import (
     LIST_SCOPES,
     LIST_SOURCES,
     OPENAPI_VERSION,
+    PREPARE_BOOTSTRAP_CONTEXT,
     PREPARE_CONTEXT,
     PREPARE_HANDOFF,
     PREPARE_HANDOFF_HINT,
@@ -726,22 +747,24 @@ from powercontext.http._generated.operations import (
     QUERY_ARTIFACT_TAGS,
     QUERY_CODE,
     RECONCILE_REMOTE_SKILLS,
+    RECORD_BOOTSTRAP_DELIVERY,
     RECORD_REMOTE_SKILL_RECEIPT,
     RECORD_SKILL_USAGE,
     RECORD_TASK_OUTCOME,
     REGISTER_SOURCE_DEFINITION,
-    REJECT_ARTIFACT_CANDIDATE,
+    REJECT_CANDIDATE,
     REMEMBER_MEMORY,
     RENAME_REMOTE_SKILL_TARGET,
     REPLACE_ACCESS_BINDING,
     REPLACE_ARTIFACT,
     REPLACE_ARTIFACT_TAGS,
     REPLACE_MEMORY_ENTRY_TAGS,
+    RESOLVE_ARTIFACT_HANDLE,
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
     RETIRE_MEMORY_ENTRY,
-    REVISE_ARTIFACT_CANDIDATE,
+    REVISE_CANDIDATE,
     REVISE_MEMORY_ENTRY,
     REVOKE_ACCESS_BINDING,
     REVOKE_REMOTE_SKILL_TARGET,
@@ -809,6 +832,11 @@ from powercontext.server.context import (
     reset_request_id,
 )
 from powercontext.server.dream_access import DreamAccess, principal_identity
+from powercontext.server.dream_compatibility import (
+    LEGACY_DREAM_OPERATIONS,
+    negotiate_dream_contract,
+    require_extended_dream,
+)
 from powercontext.server.tracing import request_id_from_span
 from powercontext.sources import ConnectorBinding as RuntimeConnectorBinding
 from powercontext.sources import SourceDefinitionManifest as RuntimeSourceDefinitionManifest
@@ -833,6 +861,8 @@ _ScopePathId = Annotated[str, PathParameter(min_length=1, max_length=256, patter
 
 class _ScopedSourceApplication(Protocol):
     async def capture(self, value: CaptureSource, /) -> SourceReceipt: ...
+
+    async def capture_working_note(self, value: RuntimeCaptureWorkingNote, /) -> SourceReceipt: ...
 
 
 class _SourceApplication(Protocol):
@@ -876,7 +906,13 @@ class _ScopedRecordApplication(Protocol):
         /,
     ) -> RuntimeArtifactCreated: ...
 
-    async def get_artifact(self, family: str, artifact_id: str, /) -> RuntimeArtifactRecord: ...
+    async def bind_artifact_handle(self, handle: StableHandle, target: ArtifactRef, /) -> ArtifactRef: ...
+
+    async def resolve_artifact_handle(self, handle: StableHandle, /) -> ArtifactRef: ...
+
+    async def get_artifact(
+        self, family: str, artifact_id: str, /, *, execution_context: Any = None
+    ) -> RuntimeArtifactRecord: ...
 
     async def get_artifact_revision(
         self,
@@ -884,6 +920,8 @@ class _ScopedRecordApplication(Protocol):
         artifact_id: str,
         revision: int,
         /,
+        *,
+        execution_context: Any = None,
     ) -> RuntimeArtifactRecord: ...
 
     async def logical_artifacts(self) -> tuple[LogicalArtifactRecord, ...]: ...
@@ -934,6 +972,26 @@ class _ScopedContextApplication(Protocol):
 
 class _ContextApplication(Protocol):
     def for_scope(self, scope_id: str, /) -> _ScopedContextApplication: ...
+
+
+class _ScopedBootstrapApplication(Protocol):
+    async def prepare(
+        self,
+        request: RuntimeBootstrapContextRequest,
+        /,
+        *,
+        authorize_scopes: Callable[[tuple[str, ...]], Awaitable[None]] | None = None,
+    ) -> RuntimeBootstrapContext: ...
+
+    async def record_delivery(
+        self,
+        request: RuntimeRecordBootstrapDeliveryRequest,
+        /,
+    ) -> RuntimeBootstrapDeliveryReceipt: ...
+
+
+class _BootstrapApplication(Protocol):
+    def for_scope(self, scope_id: str, /) -> _ScopedBootstrapApplication: ...
 
 
 class _ScopedExperienceApplication(Protocol):
@@ -1103,15 +1161,17 @@ class _ExternalSkillApplication(Protocol):
 
 
 class _ScopedReviewApplication(Protocol):
-    async def list(self, request: RuntimeListArtifactCandidatesRequest, /) -> ReviewedCandidatePage: ...
+    async def history(self, request: RuntimeGetCandidateRequest, /) -> tuple[ReviewedCandidate, ...]: ...
 
-    async def get(self, request: RuntimeGetArtifactCandidateRequest, /) -> ReviewedCandidate: ...
+    async def list(self, request: RuntimeListCandidatesRequest, /) -> ReviewedCandidatePage: ...
 
-    async def approve(self, request: RuntimeApproveArtifactCandidateRequest, /) -> ReviewedCandidate: ...
+    async def get(self, request: RuntimeGetCandidateRequest, /) -> ReviewedCandidate: ...
 
-    async def reject(self, request: RuntimeRejectArtifactCandidateRequest, /) -> ReviewedCandidate: ...
+    async def approve(self, request: RuntimeApproveCandidateRequest, /) -> ReviewedCandidate: ...
 
-    async def revise(self, request: RuntimeReviseArtifactCandidateRequest, /) -> ReviewedCandidate: ...
+    async def reject(self, request: RuntimeRejectCandidateRequest, /) -> ReviewedCandidate: ...
+
+    async def revise(self, request: RuntimeReviseCandidateRequest, /) -> ReviewedCandidate: ...
 
 
 class _ReviewApplication(Protocol):
@@ -1212,6 +1272,7 @@ class ServerApplication(Protocol):
     profiles: Any
     subject_sources: Any
 
+    catalog_changes: Any
     dream: DreamApplication
     scopes: ScopeApplication | None
     publications: ArtifactPublicationApplication | None
@@ -1220,6 +1281,7 @@ class ServerApplication(Protocol):
     ingestion: _RemoteIngestionApplication
     code: CodeApplication
     context: _ContextApplication
+    bootstrap: _BootstrapApplication
     experience: _ExperienceApplication
     external_skills: _ExternalSkillApplication
     handoff: _HandoffApplication
@@ -1291,6 +1353,8 @@ def create_app(
         context_versions=[],
     )
     app.state.server_info = None
+
+    app.middleware("http")(negotiate_dream_contract)
 
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -1389,6 +1453,8 @@ def create_app(
     _add_route(app, FLUSH_PROFILE, flush_profile)
     _add_route(app, GET_SOURCE, get_source)
     _add_route(app, CREATE_ARTIFACT, create_artifact)
+    _add_route(app, BIND_ARTIFACT_HANDLE, bind_artifact_handle)
+    _add_route(app, RESOLVE_ARTIFACT_HANDLE, resolve_artifact_handle)
     _add_route(app, GET_MEMORY_ENTRY_TAGS, get_memory_entry_tags)
     _add_route(app, REPLACE_MEMORY_ENTRY_TAGS, replace_memory_entry_tags)
     _add_route(app, GET_ARTIFACT_TAGS, get_artifact_tags)
@@ -1402,6 +1468,7 @@ def create_app(
     _add_route(app, GET_PROMPT_CONFIGURATION, get_prompt_configuration)
     _add_route(app, REPLACE_ARTIFACT, replace_artifact)
     _add_route(app, CAPTURE_CONTENT_SOURCE, capture_content_source)
+    _add_route(app, CAPTURE_WORKING_NOTE, capture_working_note)
     add_atomic_memory_routes(
         app,
         application_dependency=_require_application,
@@ -1419,6 +1486,8 @@ def create_app(
     _add_route(app, FLUSH_MEMORY, flush_memory)
     _add_route(app, REMEMBER_MEMORY, remember_memory)
     _add_route(app, SEARCH_MEMORY, search_memory)
+    _add_route(app, PREPARE_BOOTSTRAP_CONTEXT, prepare_bootstrap_context)
+    _add_route(app, RECORD_BOOTSTRAP_DELIVERY, record_bootstrap_delivery)
     _add_route(app, PREPARE_CONTEXT, prepare_context)
     _add_route(app, QUERY_CODE, query_code)
     _add_route(app, CREATE_WORK_CONTRACT, create_work_contract)
@@ -1463,11 +1532,12 @@ def create_app(
     _add_route(app, LIST_EXTERNAL_SKILLS, list_external_skills)
     _add_route(app, RESOLVE_EXTERNAL_SKILL, resolve_external_skill)
     _add_route(app, IMPORT_EXTERNAL_SKILL, import_external_skill)
-    _add_route(app, LIST_ARTIFACT_CANDIDATES, list_artifact_candidates)
-    _add_route(app, GET_ARTIFACT_CANDIDATE, get_artifact_candidate)
-    _add_route(app, APPROVE_ARTIFACT_CANDIDATE, approve_artifact_candidate)
-    _add_route(app, REJECT_ARTIFACT_CANDIDATE, reject_artifact_candidate)
-    _add_route(app, REVISE_ARTIFACT_CANDIDATE, revise_artifact_candidate)
+    _add_route(app, LIST_CANDIDATES, list_candidates)
+    _add_route(app, GET_CANDIDATE, get_candidate)
+    _add_route(app, GET_CANDIDATE_HISTORY, get_candidate_history)
+    _add_route(app, APPROVE_CANDIDATE, approve_candidate)
+    _add_route(app, REJECT_CANDIDATE, reject_candidate)
+    _add_route(app, REVISE_CANDIDATE, revise_candidate)
     app.add_api_route(
         "/docs",
         scalar_api_reference,
@@ -2397,6 +2467,42 @@ async def create_artifact(
     return _artifact_created_response(result)
 
 
+async def bind_artifact_handle(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    family: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
+    key: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")],
+    request: BindArtifactHandleRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ArtifactHandleBinding:
+    handle = StableHandle(family=family, key=key)
+    target = ArtifactRef(family=family, artifact_id=request.artifact_id, revision=request.revision)
+    result = await application.records.for_scope(scope_id).bind_artifact_handle(handle, target)
+    return _artifact_handle_binding(handle, result)
+
+
+async def resolve_artifact_handle(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    family: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
+    key: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")],
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ArtifactHandleBinding:
+    handle = StableHandle(family=family, key=key)
+    result = await application.records.for_scope(scope_id).resolve_artifact_handle(handle)
+    return _artifact_handle_binding(handle, result)
+
+
+def _artifact_handle_binding(handle: StableHandle, target: ArtifactRef) -> ArtifactHandleBinding:
+    return ArtifactHandleBinding(
+        family=handle.family,
+        key=handle.key,
+        artifact=ArtifactReference(
+            family=target.family,
+            artifact_id=target.artifact_id,
+            revision=target.revision,
+        ),
+    )
+
+
 def _list_artifacts_query(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
@@ -2668,6 +2774,7 @@ async def get_artifact(
     scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
     family: Annotated[ArtifactReadFamily, Path()],
     artifact_id: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
+    http_request: Request,
     response: Response,
     application: Annotated[ServerApplication, Depends(_require_application)],
     if_none_match: Annotated[
@@ -2675,7 +2782,15 @@ async def get_artifact(
         Header(alias="If-None-Match", min_length=1),
     ] = None,
 ) -> ArtifactRevision | Response:
-    result = await application.records.for_scope(scope_id).get_artifact(family.value, artifact_id)
+    result = await application.records.for_scope(scope_id).get_artifact(
+        family.value,
+        artifact_id,
+        **(
+            {"execution_context": _atomic_execution_context(http_request, GET_ARTIFACT.operation_id)}
+            if family.value == "atomic-memory"
+            else {}
+        ),
+    )
     etag = _artifact_etag(result.revision)
     if _if_none_match_matches(if_none_match, etag):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
@@ -2722,12 +2837,18 @@ async def get_artifact_revision(
     family: Annotated[ArtifactReadFamily, Path()],
     artifact_id: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
     revision: Annotated[int, Path(ge=1)],
+    http_request: Request,
     application: Annotated[ServerApplication, Depends(_require_application)],
 ) -> ArtifactRevision:
     result = await application.records.for_scope(scope_id).get_artifact_revision(
         family.value,
         artifact_id,
         revision,
+        **(
+            {"execution_context": _atomic_execution_context(http_request, GET_ARTIFACT_REVISION.operation_id)}
+            if family.value == "atomic-memory"
+            else {}
+        ),
     )
     return _artifact_revision_response(result)
 
@@ -2837,6 +2958,16 @@ async def capture_content_source(
 ) -> CaptureContentSourceResponse:
     _reject_reserved_handoff_receipt_content(request.content)
     result = await application.sources.for_scope(request.scope_id).capture(mapping.capture_request(request))
+    return mapping.capture_response(result)
+
+
+async def capture_working_note(
+    request: CaptureWorkingNoteRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> CaptureContentSourceResponse:
+    result = await application.sources.for_scope(request.scope_id).capture_working_note(
+        mapping.working_note_capture_request(request)
+    )
     return mapping.capture_response(result)
 
 
@@ -2957,6 +3088,44 @@ async def prepare_context(
             atomic_context=_atomic_execution_context(http_request, PREPARE_CONTEXT.operation_id),
         )
     return mapping.prepared_context_response(result)
+
+
+async def prepare_bootstrap_context(
+    request: BootstrapContextRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
+) -> BootstrapContext:
+    prepared_request = mapping.bootstrap_context_request(request)
+    scoped = application.bootstrap.for_scope(request.scope_id)
+    access = access_control_for_mode(
+        http_request.app.state.access_control,
+        mode=http_request.app.state.access_mode,
+    )
+    if access is None:
+        result = await scoped.prepare(prepared_request)
+    else:
+
+        async def authorize_scopes(scope_ids: tuple[str, ...]) -> None:
+            await access.require_all(
+                _require_principal(),
+                tuple((AccessAction.SCOPE_READ, ResourceRef.scope(scope_id)) for scope_id in scope_ids),
+                context=_access_audit_context(PREPARE_BOOTSTRAP_CONTEXT.operation_id),
+            )
+            for scope_id in scope_ids[1:]:
+                await require_scope_content_ready(http_request, scope_id)
+
+        result = await scoped.prepare(prepared_request, authorize_scopes=authorize_scopes)
+    return mapping.bootstrap_context_response(result)
+
+
+async def record_bootstrap_delivery(
+    request: RecordBootstrapDeliveryRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> BootstrapDeliveryReceipt:
+    result = await application.bootstrap.for_scope(request.scope_id).record_delivery(
+        mapping.record_bootstrap_delivery_request(request)
+    )
+    return mapping.bootstrap_delivery_response(result)
 
 
 async def create_work_contract(
@@ -3255,6 +3424,8 @@ async def create_dream_run(
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
 ) -> DreamRun:
+    if request.operation.value not in LEGACY_DREAM_OPERATIONS:
+        require_extended_dream(http_request)
     result = await application.dream.for_scope(scope_id, principal_id=_dream_principal(http_request)).create(
         RuntimeCreateDreamRunRequest.model_validate_json(request.model_dump_json(exclude_unset=True)),
     )
@@ -3304,7 +3475,7 @@ async def propose_experience(
     request: ProposeExperienceRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
-) -> ArtifactCandidate:
+) -> Candidate:
     result = await application.experience.for_scope(request.scope_id).propose(
         mapping.propose_experience_request(request)
     )
@@ -3352,7 +3523,7 @@ async def propose_skill(
     request: ProposeSkillRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
-) -> ArtifactCandidate:
+) -> Candidate:
     result = await application.skill.for_scope(request.scope_id).propose(mapping.propose_skill_request(request))
     await _attest_candidate_owner(
         http_request,
@@ -3448,7 +3619,7 @@ async def propose_skill_package(
     request: ProposeSkillPackageRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
-) -> ArtifactCandidate:
+) -> Candidate:
     try:
         archive_bytes = base64.b64decode(request.archive_base64, validate=True)
     except (binascii.Error, ValueError) as error:
@@ -3981,9 +4152,11 @@ async def import_external_skill(
 
 
 async def _candidate_response(
-    request: Request, scope_id: str, candidate: RuntimeArtifactCandidate[Any]
-) -> ArtifactCandidate:
+    request: Request, scope_id: str, candidate: RuntimeCandidate[Any] | RuntimeTagCandidate
+) -> Candidate:
     response = mapping.candidate_response(candidate)
+    if candidate.candidate_kind == "tag":
+        return response
     access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
     if access is None:
         return response
@@ -4010,35 +4183,69 @@ async def _candidate_response(
     return response
 
 
-async def list_artifact_candidates(
-    request: ListArtifactCandidatesRequest,
+async def _require_catalog_target_write(request: Request, scope_id: str, candidate: Any) -> None:
+    access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
+    if access is None:
+        return
+    target = candidate.proposal.target
+    payload = {"scope_id": scope_id, **target.model_dump(mode="json")}
+    checks = (
+        _path_memory_entry_write_access(payload, access.deployment_id)
+        if target.type == "memory_entry"
+        else _path_artifact_tags_write_access(payload, access.deployment_id)
+    )
+    await access.require_all(_require_principal(), checks, context=_access_audit_context("review_catalog_change"))
+
+
+async def list_candidates(
+    request: ListCandidatesRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
-) -> ArtifactCandidatePage:
+) -> CandidatePage:
     result = await application.review.for_scope(request.scope_id).list(mapping.list_candidates_request(request))
-    response = mapping.candidate_page_response(result)
+    response = CandidatePage(candidates=[], next_cursor=result.next_cursor)
     response.candidates = [
         await _candidate_response(http_request, request.scope_id, value) for value in result.candidates
     ]
     return response
 
 
-async def get_artifact_candidate(
-    request: GetArtifactCandidateRequest,
+async def get_candidate(
+    request: GetCandidateRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
-) -> ArtifactCandidate:
+) -> Candidate:
     result = await application.review.for_scope(request.scope_id).get(mapping.get_candidate_request(request))
-    await _require_candidate_artifact_owner(http_request, request.scope_id, result)
+    if result.candidate_kind == "artifact":
+        await _require_candidate_artifact_owner(http_request, request.scope_id, result)
     return await _candidate_response(http_request, request.scope_id, result)
 
 
-async def approve_artifact_candidate(
-    request: ApproveArtifactCandidateRequest,
+async def get_candidate_history(
+    request: GetCandidateRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
-) -> ArtifactCandidate:
+) -> CandidateHistory:
+    service = application.review.for_scope(request.scope_id)
+    current = await service.get(mapping.get_candidate_request(request))
+    if current.candidate_kind == "artifact":
+        await _require_candidate_artifact_owner(http_request, request.scope_id, current)
+    versions = await service.history(mapping.get_candidate_request(request))
+    return CandidateHistory(versions=[mapping.candidate_response(item) for item in versions])
+
+
+async def approve_candidate(
+    request: ApproveCandidateRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
+) -> Candidate:
     review = application.review.for_scope(request.scope_id)
+    current = await review.get(RuntimeGetCandidateRequest(candidate_id=request.candidate_id))
+    if current.candidate_kind == "tag":
+        await _require_catalog_target_write(http_request, request.scope_id, current)
+        result = await review.approve(mapping.approve_candidate_request(request))
+        return mapping.candidate_response(result)
+    await _require_candidate_target_write(http_request, request.scope_id, current)
     access = access_control_for_mode(
         http_request.app.state.access_control,
         mode=http_request.app.state.access_mode,
@@ -4049,7 +4256,7 @@ async def approve_artifact_candidate(
     try:
         result = await review.approve(mapping.approve_candidate_request(request))
     except CandidateTerminalError:
-        current = await review.get(RuntimeGetArtifactCandidateRequest(candidate_id=request.candidate_id))
+        current = await review.get(RuntimeGetCandidateRequest(candidate_id=request.candidate_id))
         if current.status.value != "approved" or current.version != request.expected_version:
             raise
         result = current
@@ -4065,25 +4272,33 @@ async def approve_artifact_candidate(
             ),
             attestation.proposed_owner,
             idempotency_key=f"candidate-artifact-owner:{request.scope_id}:{request.candidate_id}",
-            context=_access_audit_context(APPROVE_ARTIFACT_CANDIDATE.operation_id),
+            context=_access_audit_context(APPROVE_CANDIDATE.operation_id),
         )
     return await _candidate_response(http_request, request.scope_id, result)
 
 
-async def reject_artifact_candidate(
-    request: RejectArtifactCandidateRequest,
+async def reject_candidate(
+    request: RejectCandidateRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
-) -> ArtifactCandidate:
+) -> Candidate:
     result = await application.review.for_scope(request.scope_id).reject(mapping.reject_candidate_request(request))
     return await _candidate_response(http_request, request.scope_id, result)
 
 
-async def revise_artifact_candidate(
-    request: ReviseArtifactCandidateRequest,
+async def revise_candidate(
+    request: ReviseCandidateRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
-) -> ArtifactCandidate:
+) -> Candidate:
+    current = await application.review.for_scope(request.scope_id).get(
+        RuntimeGetCandidateRequest(candidate_id=request.candidate_id)
+    )
+    if current.candidate_kind == "tag":
+        await _require_catalog_target_write(http_request, request.scope_id, current)
+        result = await application.review.for_scope(request.scope_id).revise(mapping.revise_candidate_request(request))
+        return mapping.candidate_response(result)
+    await _require_candidate_target_write(http_request, request.scope_id, current)
     access = access_control_for_mode(
         http_request.app.state.access_control,
         mode=http_request.app.state.access_mode,
@@ -4098,12 +4313,32 @@ async def revise_artifact_candidate(
     return await _candidate_response(http_request, request.scope_id, result)
 
 
+async def _require_candidate_target_write(request: Request, scope_id: str, candidate: RuntimeCandidate[Any]) -> None:
+    access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
+    if access is None or candidate.target is None:
+        return
+    if candidate.family in {"prompt", "topic-memory"}:
+        checks = ((AccessAction.SCOPE_ADMIN, ResourceRef.scope(scope_id)),)
+    elif candidate.family == "memory":
+        checks = _base_memory_write_access({
+            "scope_id": scope_id,
+            "artifact_id": candidate.target.artifact_id,
+            "content": {"entries": [{"entry_id": item.entry_id} for item in candidate.proposal.changes]},
+        })
+    else:
+        return
+    await access.require_all(_require_principal(), checks, context=_access_audit_context("review_candidate_target"))
+
+
 async def _require_candidate_artifact_owner(
     request: Request,
     scope_id: str,
     candidate: ReviewedCandidate,
 ) -> None:
-    if candidate.status.value != "approved" or candidate.result_artifact is None:
+    if candidate.candidate_kind == "tag" or candidate.status.value != "approved" or candidate.result_artifact is None:
+        return
+    if candidate.result_artifact.family in {"memory", "prompt", "topic-memory"}:
+        # These results name aggregate or Scope-owned revisions, not separately owned content.
         return
     access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
     if access is None:
@@ -4421,9 +4656,10 @@ _COLLECTION_CONTENT_OPERATIONS = frozenset({
     "get_memory_capacity",
     "list_memory_changes",
     "prepare_context",
+    "prepare_bootstrap_context",
     "list_managed_skills",
-    "list_artifact_candidates",
-    "get_artifact_candidate",
+    "list_candidates",
+    "get_candidate",
     "list_artifacts",
     "get_artifact",
     "get_artifact_revision",
@@ -5102,8 +5338,9 @@ def _observe_application_operation(
                 started_at=started_at,
                 error=diagnostic_error,
                 error_code=error_code,
+                status_code=response_status,
             )
-            _finish_span(span, "failure", error=diagnostic_error)
+            _finish_span(span, "failure", error=diagnostic_error, error_code=error_code, status_code=response_status)
             raise
         outcome = _application_outcome(result)
         _observe_application(app, operation, outcome, started_at)
@@ -5160,10 +5397,24 @@ def _start_application_span(app: FastAPI, operation: Operation[Any, Any]) -> Any
     )
 
 
-def _finish_span(span: Any | None, outcome: str, *, error: BaseException | None = None) -> None:
+def _finish_span(
+    span: Any | None,
+    outcome: str,
+    *,
+    error: BaseException | None = None,
+    error_code: str | None = None,
+    status_code: int | None = None,
+) -> None:
     if span is not None:
         with suppress(Exception):
-            span.finish(outcome, error=error)
+            attributes: dict[str, Any] = {}
+            if status_code is not None:
+                attributes["http.response.status_code"] = status_code
+            if error_code is not None:
+                category = error_category(error_code, status_code=status_code, outcome=outcome)
+                if category is not None:
+                    attributes["powercontext.error.category"] = category
+            span.finish(outcome, error=error, attributes=attributes or None)
 
 
 def _observe_application(
@@ -5208,6 +5459,7 @@ def _log_operation(
     started_at: float,
     error: Exception | None = None,
     error_code: str | None = None,
+    status_code: int | None = None,
 ) -> None:
     extra = {
         "event": "application.operation.completed",
@@ -5219,6 +5471,8 @@ def _log_operation(
     }
     if error_code is not None:
         extra["error_code"] = error_code
+    if status_code is not None:
+        extra["status_code"] = status_code
     log_safely(logger, level, message, exc_info=error, extra=extra)
 
 
@@ -5252,6 +5506,8 @@ def _set_error_headers(response: Response, error: Exception) -> None:
 
 
 def _map_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
+    if isinstance(error, DreamError) and error.code == "client_upgrade_required":
+        return 426, error.code, "Upgrade to a client supporting Dream contract 2.", {"required_dream_contract": 2}
     if isinstance(error, ArtifactSearchFamilyNotFound):
         return status.HTTP_404_NOT_FOUND, "artifact_family_not_found", "The Artifact Family was not found.", None
     if isinstance(error, ArtifactSearchUnsupported):
@@ -5268,6 +5524,7 @@ def _map_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
         return access_error
     if isinstance(error, (DreamError, EvidenceResolutionError)):
         statuses = {
+            "client_upgrade_required": 426,
             "idempotency_conflict": 409,
             "artifact_conflict": 409,
             "dream_not_found": 404,

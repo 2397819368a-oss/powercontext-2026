@@ -66,7 +66,11 @@ configured Runtime can restore the archive's source types and Artifact families.
 `2` for an invalid bundle, or `3` for unsupported requirements or target conflicts, and reports only a content-free
 reason; record bodies are not printed. A successful report includes
 `already_present`, `conflicts`, required and unsupported Source types and Artifact families, and whether the target has
-a projection rebuilder. Run against a different deployment with `--env-file ./target.env`.
+a projection rebuilder. Candidate versions and decision heads use the same complete decoder as normal reads. Validation
+checks their family consistency, evidence, reasons, lifecycle state and family-owned proposals, including optional Dream
+audit envelopes; malformed or unsupported Candidates are rejected before any domain write. Run against a different
+deployment with `--env-file ./target.env`. Existing SQLite targets, including `file:` URI filenames with `uri=true`,
+are inspected read-only. A missing SQLite target is validated without creating its database file or parent directory.
 
 Native Sources require their Python adapter on the target. Worker-materialized `SourceObservation` records carry
 their captured payload and projections, so they can be read without loading that adapter. The bundle includes only
@@ -92,10 +96,10 @@ Format version 1 carries the portable relational representation of these support
 | --- | --- |
 | Scope identity, hierarchy, context/external references, and creation identity | Scope access bindings and host-local default selection |
 | Source journal heads, Source records, and referenced remote Source Definition manifests | Search projections and indexes |
-| Artifact Revisions, lineage, cross-Scope publication provenance, and heads | Source cursors and scheduler state |
-| Memory entry versions and heads | External Skill registrations and host-local installation state |
+| Artifact Revisions, stable handles, lineage, cross-Scope publication provenance, and heads | Source cursors and scheduler state |
+| Atomic Memory merge relationships and marked merge-input lineage | External Skill registrations and host-local installation state |
 | Candidate versions, decision heads, and their evidence references | Audit events, usage facts, evaluation receipts, and restore receipts |
-| Managed Skill package bytes and manifests; Artifact and Memory-entry tags | Download locations and host-local Skill paths |
+| Managed Skill package bytes and manifests; Artifact tags | Download locations and host-local Skill paths |
 | Profile policies, Prompt revisions, and Topic Memory publication metadata | Target-specific embedding configuration |
 | Work contracts, task outcomes, Handoff boundaries and receipts stored as Sources | Credentials, bearer tokens, provider secrets, and host-local Skill installation state |
 
@@ -106,6 +110,14 @@ analysis, but it cannot preserve immutable revisions, lineage, or evidence refer
 Frozen recurrence matches and events are preserved with their original idempotency keys, Source positions, and exact
 Artifact revisions. Restore validates candidate revisions, Handoff/receipt references, and event-to-match dependencies.
 Advancing an Experience head does not change this history; replay after restore reuses the saved decisions.
+
+Merged inputs remain frozen after restore, and marked merge-input lineage remains available for undo-merge. These fields
+also participate in conflict checks: the same revision with a different merge relationship is not an identical record.
+
+After Atomic Memory migration, bundles preserve the migrated Atomic Memory identities, immutable revisions and lineage.
+The unused legacy entry rows whose collection is no longer public and the offline Memory collection archive are not
+portable Runtime state. Export leaves this retained history untouched in the source database. Keep a deployment-native
+backup if you need the original pre-migration collection snapshots, migration records or access-control history.
 
 ## Recovery and conflicts
 
@@ -152,6 +164,10 @@ does not replace the archive schema version or record-type compatibility checks.
 format `0` downgrade. A reader rejects unknown archive or record schema versions before target writes. Keep the old
 binary available until a restore drill succeeds when upgrading across a PowerContext major release.
 
+`artifact_head`, `artifact_lineage_artifact` and `candidate_head` require record schema version `2`. Incomplete schema
+version `1` representations of these records are rejected rather than assigning default merge state or Candidate kind.
+Create a fresh bundle from the source database with the current binary when a bundle fails these compatibility checks.
+
 ## Deployment-native backups
 
 Logical export is not a substitute for a crash-consistent deployment backup:
@@ -165,7 +181,11 @@ Logical export is not a substitute for a crash-consistent deployment backup:
 
 ## Current boundaries
 
-Export streams database rows to a temporary NDJSON file. Validation stores only record identities in a temporary
-on-disk index, and restore replays dependency levels as streams, so aggregate archive payloads are not retained in
+Export streams database rows to a temporary NDJSON file. Validation stores record identities and Candidate versions in a
+temporary on-disk index to verify each head against its exact version. Restore replays dependency levels as streams, so
+aggregate archive payloads are not retained in
 process memory. Scope metadata is bounded by the manifest scope list. The command is not a remote Server API and never
 puts deployment configuration or database credentials into the archive.
+
+Artifact Candidates are supported; tag-change Candidates are rejected before export publishes an archive or restore
+writes records. An archive must not silently drop a tag-change decision or reinterpret it as an Artifact Candidate.

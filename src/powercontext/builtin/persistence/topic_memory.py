@@ -480,22 +480,21 @@ class TopicMemoryRepository:
                 "query",
                 f"must contain at most {MAX_TOPIC_MEMORY_QUERY_LENGTH} characters",
             )
-        analyzed = analyze_text(query)
         used_mode = self._select_mode(mode, query_vector, embedding_profile)
         if artifact_request is not None:
             admission = artifact_request.admission.as_floor()
         fusion = self._search_fusion_parameters(used_mode, artifact_request)
-        query_terms = tuple(sorted(set(analyzed.split())))
-        if used_mode in {"fts", "hybrid"} and len(query_terms) > MAX_TOPIC_MEMORY_QUERY_TERMS:
-            raise InvalidRepositoryArgumentError(
-                "query",
-                f"must contain at most {MAX_TOPIC_MEMORY_QUERY_TERMS} distinct Analyzer terms",
-            )
+        query_terms: tuple[str, ...] = ()
+        if used_mode in {"fts", "hybrid"}:
+            if len(set(analyze_text(query).split())) > MAX_TOPIC_MEMORY_QUERY_TERMS:
+                raise InvalidRepositoryArgumentError(
+                    "query",
+                    f"must contain at most {MAX_TOPIC_MEMORY_QUERY_TERMS} distinct Analyzer terms",
+                )
+            query_terms = tuple(sorted(set(analyze_fts_query(query).split())))
         query_vector = self._canonical_query_vector(used_mode, query_vector)
         await self._check_retrieval_shape(connection)
-        analyzed = analyze_fts_query(query)
-        query_terms = tuple(sorted(set(analyzed.split())))
-        if not analyzed and used_mode == "fts":
+        if not query_terms and used_mode == "fts":
             return TopicMemorySearchResult(
                 mode=used_mode, hits=(), artifacts=() if artifact_request is not None else None
             )

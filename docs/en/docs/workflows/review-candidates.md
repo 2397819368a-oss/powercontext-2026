@@ -8,6 +8,20 @@ description: Inspect, revise, approve, or reject pending Experience and Skill Ca
 Use the Review Inbox to decide whether a generated or submitted Experience or managed Skill should become an Artifact
 Revision. Approval writes an immutable Revision. Rejection closes the Candidate without writing an Artifact.
 
+## Unified API and upgrade
+
+Candidate management uses six POST endpoints: `/v1/candidates/list`, `get`, `history`, `revise`, `approve`, and `reject`.
+`candidate_kind=artifact|tag` distinguishes content proposals from tag changes; family still identifies the owning Artifact.
+List supports kind filtering and includes both kinds when omitted. Artifact approval returns a real `result_artifact`;
+Tag approval returns its target, committed tags, and ETag without creating a content revision. Tag review checks candidate
+version, content baseline, ETag, and permission. The Experience/Skill examples below concern artifact candidates.
+
+The old `/v1/artifact-candidates/*` routes are removed without aliases or redirects. Upgrade Clients and integrations together.
+Stop old Servers/Workers and back up the database before starting the new release. First initialization automatically renames
+the existing Candidate tables to `pc_candidate_heads` and `pc_candidate_versions`, backfills kind, and preserves historical data
+and references before readiness. Failed migration blocks startup with an actionable error; retries resume without clearing data.
+Mixed old/new binaries are unsupported. Downgrade requires restoring the pre-upgrade backup.
+
 ## Before you begin
 
 Start the Server and confirm that it is ready:
@@ -50,7 +64,7 @@ request. Reusing a key with the same normalized selection returns the same run; 
 Use the Candidate ID in a `proposed` result with the review commands below. A run does not approve or install its result.
 
 To produce a Skill, set `operation` to `derive_skill` and place approved Experience references in `artifacts`.
-Atomic Memory references are accepted only by `refine_experience`. To propose a replacement Experience, include its
+Atomic Memory references can support revision operations; `derive_skill` requires approved Experience references. To propose a replacement Experience, include its
 current exact reference in both `artifacts` and `target`.
 
 A selection contains 1–20 Atomic Memory and Experience references after deduplication, with at most 32 references
@@ -59,8 +73,8 @@ items, 64 KiB of model input, two model calls, 4,096 output tokens per call, and
 Each Scope admits at most 32 queued or running requests by default. Restarted workers resume persisted requests under
 a lease; they keep the same evidence snapshot and execution deadline.
 
-Use the Candidate commands below or `POST /v1/artifact-candidates/get` to read the current version and its
-`source_refs` and `artifact_refs`, then inspect reference bodies through exact Source and Artifact revision reads.
+Use the Candidate commands below or `POST /v1/candidates/get` to read the current version and its
+`artifact_refs`, then inspect their bodies through exact Source/Artifact revision reads.
 The Dream run's `input_manifest` retains generation-time root Source groups and independence annotations. Repeated
 citations to one root do not count as independent observations; unknown independence remains unknown. Review revalidates
 evidence against the current Candidate version and reviewer permissions; an unavailable reference blocks approval.
@@ -71,8 +85,7 @@ It displays approved Experiences and
 Skills, with exact references linking to the cited Atomic Memory revisions. Dream creation, Run inspection, and Candidate review
 use the CLI, Client, or HTTP API. See [Install and run](../get-started/install-and-run.md) to enable personal access.
 
-The Runtime creates `pc_dream_runs` on startup. No copy of Memory bodies is stored in the run table. Back up existing
-databases before deploying a schema change.
+Dream uses `pc_dream_runs` and the unified `pc_candidate_heads` / `pc_candidate_versions` tables. Existing databases require coordinated maintenance through the shared migration framework, after the Atomic Memory conversion. Ordinary startup only checks readiness; it does not rename Candidate tables or restore legacy citation columns.
 
 ## 1. List pending Candidates
 
@@ -196,7 +209,7 @@ If a write reports that the Candidate version is stale, show the Candidate again
 change `--expected-version` without inspecting the replacement. A terminal Candidate cannot be approved, rejected, or
 revised again.
 
-The HTTP API, Python Client, and MCP expose the same five Review operations and concurrency rules. See
+The HTTP API, Python Client, and MCP expose the same six Review operations and concurrency rules. See
 [Interfaces](../develop/interfaces.md) for their contract and availability.
 
 ## 5. Use Dream experience in a later task

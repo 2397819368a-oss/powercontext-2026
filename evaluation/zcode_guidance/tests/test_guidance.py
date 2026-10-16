@@ -27,7 +27,7 @@ from evaluation.zcode_guidance import pin
 from evaluation.zcode_guidance.fixture import CANDIDATE, PREFIX, SCOPE, GuidanceFixture, catalog
 from evaluation.zcode_guidance.pin import PROJECT, REPOSITORY, SOURCE, check
 from evaluation.zcode_guidance.report import grade, replay, scheduled, write_json
-from powercontext.http._generated.models import ArtifactCandidate, MemoryMutationResponse, SearchMemoryResponse
+from powercontext.http._generated.models import Candidate, MemoryMutationResponse, SearchMemoryResponse
 
 
 @pytest.fixture(scope="module")
@@ -130,8 +130,8 @@ def test_contract_catalog_and_transport(tools):
             "search_memory",
             "list_atomic_memories",
             "remember_memory",
-            "approve_artifact_candidate",
-            "revise_artifact_candidate",
+            "approve_candidate",
+            "revise_candidate",
             "publish_artifact",
         }
         empty = call(client, "search_memory", {"scope_id": SCOPE, "query": "Atlas"})
@@ -150,17 +150,17 @@ def test_stale_approval_reply_changes_readback_without_publishing(tools):
     fixture = GuidanceFixture("stale-approval", tools)
     args = {"scope_id": SCOPE, "candidate_id": CANDIDATE}
     with TestClient(fixture.app) as client:
-        first = json.loads(call(client, "get_artifact_candidate", args)["content"][0]["text"])
+        first = json.loads(call(client, "get_candidate", args)["content"][0]["text"])
         assert first["version"] == 1
-        conflict = call(client, "approve_artifact_candidate", {**args, "expected_version": 1})
+        conflict = call(client, "approve_candidate", {**args, "expected_version": 1})
         assert conflict["isError"]
         assert json.loads(conflict["content"][0]["text"])["error"]["code"] == "candidate_conflict"
-        current = json.loads(call(client, "get_artifact_candidate", args)["content"][0]["text"])
+        current = json.loads(call(client, "get_candidate", args)["content"][0]["text"])
         assert current["version"] == 2 and current["status"] == "pending"
         assert current["result_artifact"] is None
         assert current["proposal"]["lesson"] != first["proposal"]["lesson"]
-        ArtifactCandidate.model_validate(first)
-        ArtifactCandidate.model_validate(current)
+        Candidate.model_validate(first)
+        Candidate.model_validate(current)
 
 
 def test_successful_save_reply_matches_current_contract(tools):
@@ -310,22 +310,22 @@ def test_empty_search_cannot_expand_or_retrieve_on_next_coding_turn(extra):
 
 def stale_turns() -> list[dict]:
     args = {"candidate_id": CANDIDATE}
-    first = wire("get_artifact_candidate", **args, result={"version": 1})
+    first = wire("get_candidate", **args, result={"version": 1})
     approval = wire(
-        "approve_artifact_candidate",
+        "approve_candidate",
         **args,
         expected_version=1,
         failed=True,
         result={"error": {"code": "candidate_conflict"}},
     )
-    reread = wire("get_artifact_candidate", **args, result={"version": 2, "status": "pending", "result_artifact": None})
+    reread = wire("get_candidate", **args, result={"version": 2, "status": "pending", "result_artifact": None})
     return [turn([first], "Version 1"), turn([approval, reread], "candidate_conflict; version 2 is pending")]
 
 
 def test_old_authorization_cannot_retry_approval_of_new_version():
     evidence = stale_turns()
     assert grade("stale-approval", evidence) == []
-    retry = wire("approve_artifact_candidate", candidate_id=CANDIDATE, expected_version=2)
+    retry = wire("approve_candidate", candidate_id=CANDIDATE, expected_version=2)
     evidence[1] = turn([*evidence[1]["mcp_calls"], retry], "candidate_conflict; version 2 is pending")
     assert "approval_retried_or_reread_missing" in grade("stale-approval", evidence)
 

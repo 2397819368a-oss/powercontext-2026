@@ -22,16 +22,18 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, TypeVar, assert_never
+from urllib.parse import unquote, urlsplit
 
 import typer
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
+from powercontext.builtin.persistence.candidates import CandidateRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.seekdb import SeekDBConfig, SeekDBProfile
-from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.portability import (
     BundleConflictError,
     BundleFormatError,
@@ -42,7 +44,7 @@ from powercontext.builtin.portability import (
     PortableBundleService,
 )
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_runtime
-from powercontext.builtin.runtime.relational import BUILTIN_ARTIFACT_TYPES
+from powercontext.builtin.runtime.relational import BUILTIN_ARTIFACT_TYPES, BUILTIN_CANDIDATE_PROPOSAL_TYPES
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY
 from powercontext.paths import default_scheduler_path
 from powercontext.server.configuration import server_settings_context
@@ -149,11 +151,12 @@ async def _validate_only(source: Path, /, *, env_file: Path | None) -> BundleVal
     with server_settings_context(env_file=env_file) as settings:
         database = settings.database
         if isinstance(database, SQLiteConfig):
-            configured_path = make_url(database.url).database
-            existing = configured_path is not None and await asyncio.to_thread(_database_file_exists, configured_path)
-            url = database.url if existing else "sqlite+aiosqlite:///:memory:"
-            engine = create_async_engine(url, echo=database.echo, hide_parameters=True)
-            validation_database = AsyncDatabase.own(engine, shared_connection=not existing)
+            existing = database.is_persistent and await asyncio.to_thread(_database_file_exists, database.url)
+            if existing:
+                async with SQLiteProfile.open_readonly(database) as profile:
+                    return await _validate_with_database(profile.database, source)
+            engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=database.echo, hide_parameters=True)
+            validation_database = AsyncDatabase.own(engine, shared_connection=True)
             try:
                 return await _validate_with_database(validation_database, source)
             finally:
@@ -178,12 +181,19 @@ async def _validate_with_database(database: AsyncDatabase, source: Path, /) -> B
         supported_source_types=tuple(definition.name for definition in BUILTIN_SOURCE_REGISTRY.definitions),
         supported_artifact_families=artifacts.families,
         artifact_content_decoder=artifacts.decode_content,
+        candidate_decoder=CandidateRepository(BUILTIN_CANDIDATE_PROPOSAL_TYPES).decode_candidate,
     )
     return await archive.validate(source, progress=_emit_progress)
 
 
 def _database_file_exists(value: str, /) -> bool:
-    return Path(value).expanduser().is_file()
+    url = make_url(value)
+    arguments, options = url.get_dialect()().create_connect_args(url)
+    filename = str(arguments[0])
+    if options.get("uri") and filename.startswith("file:"):
+        uri = urlsplit(filename.replace("\t", "%09").replace("\n", "%0A").replace("\r", "%0D"))
+        filename = unquote(uri.path).partition("\0")[0]
+    return Path(filename).is_file()
 
 
 def _emit_progress(value: BundleProgress, /) -> None:

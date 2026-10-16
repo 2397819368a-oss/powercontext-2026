@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Literal, NoReturn
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 
 from powercontext._logging import log_safely
@@ -66,7 +66,7 @@ from powercontext.builtin.persistence.decision_observations import DecisionObser
 from powercontext.builtin.persistence.errors import GenerationConflictError
 from powercontext.builtin.persistence.memory_windows import MemorySourceWindowRepository
 from powercontext.builtin.persistence.sources import SourceRepository
-from powercontext.builtin.persistence.tables import SOURCE_JOURNAL_HEADS_TABLE
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, SOURCE_JOURNAL_HEADS_TABLE
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication, deferred_decision_audit
 from powercontext.builtin.runtime.decision_policy import emit_decision_observation
 from powercontext.builtin.runtime.models import MemoryFlushResult
@@ -597,6 +597,9 @@ class AtomicMemorySourceWindowProcessor:
             deferred_decision_audit(context),
             self.application.database.transaction(consistent_snapshot=True) as connection,
         ):
+            if connection.dialect.name == "sqlite":
+                # Pin business data before an external policy decision can race with new content.
+                await connection.execute(select(ARTIFACT_HEADS_TABLE.c.scope_id).limit(1))
             yield connection
 
     def _stage(self, name, attributes):

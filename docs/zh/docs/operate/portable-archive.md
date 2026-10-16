@@ -60,6 +60,11 @@ source type 和 Artifact family。归档无效时返回退出码 `2`，不兼容
 包含 `already_present`、`conflicts`、所需和不支持的 Source type/Artifact family，以及目标是否支持 projection rebuild。
 可用 `--env-file ./target.env` 检查另一个部署。
 
+Candidate version 和 decision head 使用正常读取路径的完整解码器，校验 family 一致性、evidence、原因、生命周期状态，
+以及 family 自有的 proposal 协议和可选的 Dream audit envelope。格式错误或不支持的 Candidate 会在写入领域数据前被拒绝。
+已有 SQLite 目标以只读方式检查，支持带 `uri=true` 的 `file:` URI 文件名。
+目标不存在时，dry-run 不会创建数据库文件或父目录。
+
 原生 Source 需要目标环境安装对应的 Python adapter。远程 worker 已物化的 `SourceObservation` 自带捕获内容和投影，
 读取时不需要加载该 adapter。归档只携带所选 scope 实际引用的 Source Definition manifest，并在恢复前校验 observation
 的身份和定义指纹。缺失定义或与目标定义冲突会阻止恢复；未引用的全局定义不会随包导出。
@@ -82,10 +87,10 @@ powercontext archive restore ./backups/payments.pcb --yes
 | --- | --- |
 | Scope identity、层级、context/external reference 和创建 identity | Scope access binding 和 host-local default selection |
 | Source journal head、Source record 和引用的远程 Source Definition manifest | 搜索 projection 和 index |
-| Artifact Revision、lineage、跨 Scope 发布来源和 head | Source cursor 和 scheduler state |
-| Memory entry version 和 head | External Skill registration 和 host-local installation state |
+| Artifact Revision、稳定句柄、lineage、跨 Scope 发布来源和 head | Source cursor 和 scheduler state |
+| Atomic Memory 合并关系和带合并输入标记的 lineage | External Skill registration 和 host-local installation state |
 | Candidate version、decision head 及其 evidence reference | Audit event、usage fact、evaluation receipt 和 restore receipt |
-| 托管 Skill 包的文件内容与 manifest；Artifact 和 Memory entry 的标签 | 下载地址和主机本地 Skill 路径 |
+| 托管 Skill 包的文件内容与 manifest；Artifact 标签 | 下载地址和主机本地 Skill 路径 |
 | Profile policy、Prompt revision 和 Topic Memory 发布元数据 | 目标环境的 embedding 配置 |
 | 作为 Source 保存的 Work contract、task outcome、Handoff boundary 和 receipt | Credential、bearer token、provider secret 和 host-local Skill 安装状态 |
 
@@ -96,6 +101,14 @@ powercontext archive restore ./backups/payments.pcb --yes
 归档保留已冻结的 recurrence 匹配决策与事件，包括原始幂等键、Source 位置和精确 Artifact revision。
 恢复前会校验候选 revision、Handoff/receipt 引用及事件关联的匹配记录。Experience 当前版本推进后，
 历史决策仍保持不变；恢复后的重放复用已保存的决策。
+
+恢复后，已合并输入仍保持冻结，带标记的合并输入 lineage 仍可用于撤销合并。这些字段也参与冲突检查：
+相同 revision 但合并关系不同的记录，不会被误判为相同内容。
+
+Atomic Memory 迁移后，归档保留迁移后的 Atomic Memory identity、不可变 revision 和 lineage。
+原 collection 已退出公共读路径的旧 entry 表记录，以及离线 Memory collection archive，不属于可移植 Runtime 状态。
+导出不会修改或删除源数据库中保留的这些历史。若需要原始迁移前 collection 快照、迁移记录或访问控制历史，
+请同时保留部署原生备份。
 
 ## 恢复和冲突处理
 
@@ -137,6 +150,10 @@ record type。producer version 仅用于诊断，不能替代 archive schema ver
 writer 只生成版本 `1`，不支持降级到格式 `0`。遇到未知 archive 或 record schema
 version 时，reader 会在目标写入前拒绝。跨 PowerContext 大版本升级时，应保留旧二进制，直到恢复演练通过。
 
+`artifact_head`、`artifact_lineage_artifact` 和 `candidate_head` 要求 record schema version `2`。
+reader 会拒绝这些记录不完整的 schema version `1` 表示，而不是补上默认合并状态或 Candidate 类型。
+归档不满足兼容检查时，请用当前二进制从源数据库重新导出。
+
 ## 部署原生备份
 
 逻辑导出不能替代 crash-consistent 部署备份：
@@ -149,6 +166,10 @@ version 时，reader 会在目标写入前拒绝。跨 PowerContext 大版本升
 
 ## 当前边界
 
-导出会把数据库 row 流式写到临时 NDJSON 文件。验证只在临时磁盘 index 中保存 record identity，恢复则按依赖层流式
+导出会把数据库 row 流式写到临时 NDJSON 文件。验证在临时磁盘 index 中保存 record identity 和 Candidate version，
+用于校验每个 head 对应的精确版本。恢复则按依赖层流式
 回放，因此归档的聚合 payload 不会常驻进程内存；Scope metadata 由 manifest scope list 约束。命令不是远程 Server
 API，也不会把部署配置或数据库凭据写入归档。
+
+归档支持 Artifact Candidate；tag-change Candidate 会在导出发布文件或恢复写入记录前被明确拒绝，
+不会被静默丢弃或错误解释成 Artifact Candidate。

@@ -33,13 +33,13 @@ from powercontext.builtin.artifacts.skill import capture_skill_directory
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import (
-    ARTIFACT_CANDIDATE_HEADS_TABLE,
-    ARTIFACT_CANDIDATE_VERSIONS_TABLE,
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_PUBLICATIONS_TABLE,
     ARTIFACT_TAGS_TABLE,
     ARTIFACTS_TABLE,
     BUILTIN_TABLES,
+    CANDIDATE_HEADS_TABLE,
+    CANDIDATE_VERSIONS_TABLE,
     PORTABLE_RESTORE_RECEIPTS_TABLE,
     PROFILE_POLICIES_TABLE,
     SCOPE_CONTEXT_REFERENCES_TABLE,
@@ -617,7 +617,7 @@ def test_export_rejects_candidate_evidence_that_is_not_in_the_bundle(tmp_path: P
             async with source.database.transaction() as connection:
                 await _insert_scope(connection)
                 await connection.execute(
-                    insert(ARTIFACT_CANDIDATE_VERSIONS_TABLE).values(
+                    insert(CANDIDATE_VERSIONS_TABLE).values(
                         scope_id="project:one",
                         candidate_id="candidate-1",
                         version=1,
@@ -632,7 +632,7 @@ def test_export_rejects_candidate_evidence_that_is_not_in_the_bundle(tmp_path: P
                     )
                 )
                 await connection.execute(
-                    insert(ARTIFACT_CANDIDATE_HEADS_TABLE).values(
+                    insert(CANDIDATE_HEADS_TABLE).values(
                         scope_id="project:one",
                         candidate_id="candidate-1",
                         family="handoff",

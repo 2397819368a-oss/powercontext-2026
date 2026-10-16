@@ -7,8 +7,13 @@ It does not download a host, deploy a remote service, or operate the desktop UI.
 
 [ZCode acceptance](../../../.github/workflows/zcode-acceptance.yml) runs on every pull request, every push to master,
 weekly on Sunday at 03:23 UTC, and by manual dispatch. It builds the actual open-source CLI on Windows from ZCode commit
-`29628c9acdb81b703bbd4080c207a0e7ce5e276e` (ZCode 3.14.3 / CLI 0.16.9), using Node 24.15.0, pnpm 10.33.2 and the
+`29628c9acdb81b703bbd4080c207a0e7ce5e276e` (ZCode 3.14.3 / CLI 0.16.9), using Node 24.21.0, pnpm 10.33.2 and the
 host's frozen lockfile. Dependency install scripts are disabled; only the CLI and its required workspace builds run.
+
+Node 24.21.0 includes the [Windows shutdown fix](https://github.com/nodejs/node/pull/61999) for a delayed worker task
+posting to a closing libuv async handle, and the [file-watcher fix](https://github.com/nodejs/node/pull/65118) for a
+separate path assertion in Node 24.16.0–24.20.0. Both faults can abort with `0xC0000409`; the async-handle fault can occur
+after emitting a CLI result. The acceptance requires a zero process exit code for every invocation.
 
 The job runs all plugin Node tests, including the actual host test, then explicitly selects two independent
 controlled-model acceptances covering P3-01 through P3-09. Host build errors, missing prerequisites and failed scenarios
@@ -27,7 +32,8 @@ fixed host against current master and dependency availability; they do not silen
 ## Prerequisites
 
 - Install this checkout with its development dependencies and Server extras.
-- Build the open-source ZCode CLI separately; Node 24 or later must be on PATH.
+- Build the open-source ZCode CLI separately; Node 24 or later must be on PATH. On Windows, use the patched Node
+  24.21.0 runtime pinned by CI.
 - Use a directory writable by the same Windows user that runs Node and Python. An inaccessible plugin directory
   is an installation failure, even when its path appears in `plugins.dirs`.
 - Keep `.powercontext/` ignored by Git. A run's profile contains private model configuration and may contain
@@ -83,6 +89,10 @@ Each run writes `.powercontext/zcode-acceptance/<run-id>/summary.json` with sche
 `powercontext.zcode.acceptance-run.v1`, host/model/Server metadata, scenario status and evidence references.
 Missing prerequisites, rejected model requests, timeouts and failed assertions exit nonzero. Daily pytest runs deselect
 these tests. Deselection and unsupported features are not acceptance success.
+
+For a nonzero prompt-process exit, `host_process_exit` in the summary retains the return code, the number of result
+complete result events already emitted, and the fixed `libuv_async_handle_closing` or `libuv_fs_event_path_mismatch`
+signature when present. Raw stderr is excluded. A truncated frame from a crashed process does not hide its exit code.
 
 | Scenario | Evidence |
 | --- | --- |
