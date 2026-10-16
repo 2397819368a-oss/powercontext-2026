@@ -38,7 +38,7 @@ from powercontext.builtin.artifacts.merge_models import (
     ArtifactMergeRestoreOperation,
 )
 from powercontext.builtin.persistence.database import AsyncDatabase
-from powercontext.builtin.persistence.tables import ARTIFACT_TAGS_TABLE
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACT_TAGS_TABLE
 from powercontext.builtin.records import BaseOperationNotSupportedError
 from powercontext.builtin.sources import validate_scope_id
 from powercontext.builtin.sources.content import ArtifactRestorationOutcome
@@ -169,6 +169,13 @@ class ScopedArtifactMerge:
             access.defer_decision_audit() if access is not None else nullcontext(),
             self.application.database.transaction(consistent_snapshot=True) as connection,
         ):
+            # Pin business data before a configured provider can authorize through a
+            # separate connection: SQLite takes its read snapshot at the first table read.
+            await connection.execute(
+                select(ARTIFACT_HEADS_TABLE.c.artifact_id)
+                .where(ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id)
+                .limit(1)
+            )
             return await self.service.get(connection, self.scope_id, artifact_id, context, revision=revision)
 
     async def merge(
@@ -208,6 +215,13 @@ class ScopedArtifactMerge:
             access.defer_decision_audit() if access is not None else nullcontext(),
             self.application.database.transaction(consistent_snapshot=True) as connection,
         ):
+            # Pin business data before a configured provider can authorize through a
+            # separate connection: SQLite takes its read snapshot at the first table read.
+            await connection.execute(
+                select(ARTIFACT_HEADS_TABLE.c.artifact_id)
+                .where(ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id)
+                .limit(1)
+            )
             return await self.service.restoration_outcome(connection, self.scope_id, artifact_id, revision, context)
 
     async def preview_restoration(
@@ -224,6 +238,13 @@ class ScopedArtifactMerge:
             access.defer_decision_audit() if access is not None else nullcontext(),
             self.application.database.transaction(consistent_snapshot=True) as connection,
         ):
+            # Pin business data before a configured provider can authorize through a
+            # separate connection: SQLite takes its read snapshot at the first table read.
+            await connection.execute(
+                select(ARTIFACT_HEADS_TABLE.c.artifact_id)
+                .where(ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id)
+                .limit(1)
+            )
             plan = await self.service.inspect_restore(
                 connection, self.scope_id, artifact_id, context, operation=operation, revision=revision
             )
