@@ -245,6 +245,9 @@ def _processing_metrics(supervisor: ArtifactProcessingSupervisors | None) -> lis
                 "last_acknowledgement_timestamp_seconds",
                 "requested_snapshot_timestamp_seconds",
                 "oldest_observed_pending_age_seconds",
+                "oldest_pending_timestamp_seconds",
+                "oldest_pending_age_seconds",
+                "pending_age_unknown_scopes",
                 "blocked_wait",
                 "observed_pending_scopes",
             ):
@@ -263,6 +266,15 @@ def _processing_metrics(supervisor: ArtifactProcessingSupervisors | None) -> lis
                             value,
                         )
                     )
+            failures = values.get("pending_observation_failures", 0)
+            if isinstance(failures, int) and not isinstance(failures, bool) and failures >= 0:
+                metric = CounterMetricFamily(
+                    _PREFIX + "artifact_processing_pending_observation_failures",
+                    "Failed background pending observations; last successful snapshot is preserved.",
+                    labels=["family"],
+                )
+                metric.add_metric([family], failures)
+                snapshot.append(metric)
         for family, observation in getattr(supervisor, "processing_observations", {}).items():
             if not _valid_family(family):
                 continue

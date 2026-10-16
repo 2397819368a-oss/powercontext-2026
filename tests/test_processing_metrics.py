@@ -84,7 +84,7 @@ def test_processing_metrics_expose_family_capacity_progress_and_counter_snapshot
     assert instruments[PREFIX + "failed"].type == "counter"
     assert instruments[PREFIX + "timeouts"].type == "counter"
     assert instruments[PREFIX + "unacknowledged_requests"].type == "gauge"
-    assert "latest requested-work discovery pass" in instruments[PREFIX + "unacknowledged_requests"].documentation
+    assert "latest background pending observation" in instruments[PREFIX + "unacknowledged_requests"].documentation
     assert "resets on restart" in instruments[PREFIX + "completed"].documentation
     assert not any(secret in rendered for secret in ("scope-secret", "worker-secret", "binding-secret"))
     assert all(

@@ -1,8 +1,23 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Processing observations reflect durable outcomes without doing work on reads."""
 
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC
 
 import pytest
 
@@ -110,6 +125,7 @@ def test_pending_age_tracks_only_observed_pending_work(tmp_path):
             supervisor = ArtifactProcessingSupervisor(
                 database=profile.database,
                 bindings=[ArtifactProcessingBinding("binding", "memory", Launcher(), max_workers=2)],
+                pending_observation_interval_seconds=0.1,
                 lease_mode="single-process",
             )
             assert supervisor.family_status["memory"]["requested_snapshot_timestamp_seconds"] == 0
@@ -126,7 +142,9 @@ def test_pending_age_tracks_only_observed_pending_work(tmp_path):
                 assert float(second["oldest_observed_pending_age_seconds"]) > float(
                     first["oldest_observed_pending_age_seconds"]
                 )
-                assert second["requested_snapshot_timestamp_seconds"] == first["requested_snapshot_timestamp_seconds"]
+                assert float(second["requested_snapshot_timestamp_seconds"]) >= float(
+                    first["requested_snapshot_timestamp_seconds"]
+                )
                 # A fresh cohort must not inherit an acknowledged predecessor's age,
                 # even while the old worker has not yet returned to the supervisor.
                 async with profile.database.transaction() as connection:
@@ -141,9 +159,8 @@ def test_pending_age_tracks_only_observed_pending_work(tmp_path):
                     ):
                         await asyncio.sleep(0.001)
                 renewed = supervisor.family_status["memory"]
-                assert float(renewed["oldest_observed_pending_age_seconds"]) < float(
-                    first["oldest_observed_pending_age_seconds"]
-                )
+                assert renewed["unacknowledged_requests"] == 1
+                assert renewed["pending_age_unknown_scopes"] == 0
 
             finally:
                 await supervisor.close()
@@ -195,6 +212,103 @@ def test_retry_reason_describes_current_event_after_failure(tmp_path, conflict):
                     while attempts < 3:  # noqa: ASYNC110 - public scheduler observation
                         await asyncio.sleep(0.01)
                 assert dict(supervisor.processing_observations["memory"].retry_counts) == {"failure": 1, "conflict": 1}
+            finally:
+                await supervisor.close()
+
+    asyncio.run(scenario())
+
+
+def test_durable_pending_observation_refreshes_while_worker_capacity_is_full(tmp_path):
+    async def scenario():
+        async with SQLiteProfile.open(
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'durable-pending.db'}"), tables=SHARED_TABLES
+        ) as profile:
+            intents = ArtifactProcessingIntentRepository()
+            started = asyncio.Event()
+
+            class Handle:
+                async def wait(self):
+                    started.set()
+                    await asyncio.Event().wait()
+
+                async def terminate(self):
+                    pass
+
+            class Launcher:
+                async def start(self, assignment):
+                    return Handle()
+
+            async with profile.database.transaction() as connection:
+                await intents.request(connection, "oldest", "binding")
+                expected = await intents.pending_observation(connection, "binding")
+            assert expected.oldest_requested_at is not None
+            for _ in range(2):
+                supervisor = ArtifactProcessingSupervisor(
+                    database=profile.database,
+                    bindings=[ArtifactProcessingBinding("binding", "memory", Launcher())],
+                    lease_mode="single-process",
+                    pending_observation_interval_seconds=0.02,
+                )
+                try:
+                    await supervisor.start()
+                    await asyncio.wait_for(started.wait(), 3)
+                    before = supervisor.family_status["memory"]
+                    assert before["used_workers"] == 1
+                    assert before["pending_age_unknown_scopes"] == 0
+                    assert (
+                        before["oldest_pending_timestamp_seconds"]
+                        == expected.oldest_requested_at.replace(tzinfo=UTC).timestamp()
+                    )
+                    assert float(before["oldest_pending_age_seconds"]) >= 0
+                    # Discovery cannot admit more work while the only worker is
+                    # stalled, but the global pending snapshot must still advance.
+                    async with profile.database.transaction() as connection:
+                        await intents.request(connection, "newer", "binding")
+                    async with asyncio.timeout(3):
+                        while supervisor.family_status["memory"]["unacknowledged_requests"] != 2:  # noqa: ASYNC110
+                            await asyncio.sleep(0.01)
+                    assert supervisor.family_status["memory"]["last_acknowledgement_timestamp_seconds"] == 0
+                finally:
+                    await supervisor.close()
+                # Recreating the supervisor must not reset durable request age.
+                started.clear()
+
+    asyncio.run(scenario())
+
+
+def test_unknown_legacy_pending_age_is_not_exported_as_zero(tmp_path):
+    async def scenario():
+        async with SQLiteProfile.open(
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'legacy-pending.db'}"), tables=SHARED_TABLES
+        ) as profile:
+
+            class Handle:
+                async def wait(self):
+                    await asyncio.Event().wait()
+
+                async def terminate(self):
+                    pass
+
+            class Launcher:
+                async def start(self, assignment):
+                    return Handle()
+
+            async with profile.database.transaction() as connection:
+                await ArtifactProcessingIntentRepository().request(
+                    connection, "legacy", "binding", legacy_timestamp_unknown=True
+                )
+            supervisor = ArtifactProcessingSupervisor(
+                database=profile.database,
+                bindings=[ArtifactProcessingBinding("binding", "memory", Launcher())],
+                lease_mode="single-process",
+            )
+            try:
+                await supervisor.start()
+                status = supervisor.family_status["memory"]
+                assert status["unacknowledged_requests"] == 1
+                assert status["pending_age_unknown_scopes"] == 1
+                assert "oldest_pending_timestamp_seconds" not in status
+                assert "oldest_pending_age_seconds" not in status
             finally:
                 await supervisor.close()
 

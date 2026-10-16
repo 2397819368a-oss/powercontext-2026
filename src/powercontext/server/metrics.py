@@ -52,7 +52,7 @@ _PROCESSING_INSTRUMENTS = (
     ("retry_wait", "Scope invocations retained in this Artifact Family's bounded retry cache.", False),
     (
         "unacknowledged_requests",
-        "Snapshot of Scopes with unacknowledged requests at the latest requested-work discovery pass.",
+        "Snapshot of Scopes with unacknowledged requests at the latest background pending observation.",
         False,
     ),
     ("discovery_seconds", "Duration in seconds of this Artifact Family's most recent discovery pass.", False),

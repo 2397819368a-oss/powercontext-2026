@@ -37,7 +37,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import func, select, update
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncConnection
 from typing_extensions import override
 
@@ -57,7 +57,7 @@ from powercontext.builtin.persistence.supervision import (
     ArtifactProcessingLeaseRepository,
     database_utc_now,
 )
-from powercontext.builtin.persistence.tables import ARTIFACT_PROCESSING_INTENTS_TABLE, ARTIFACT_PROCESSING_LEASES_TABLE
+from powercontext.builtin.persistence.tables import ARTIFACT_PROCESSING_LEASES_TABLE
 from powercontext.builtin.runtime.observations import DurationObservations, DurationObservationSnapshot
 from powercontext.builtin.runtime.processing_contracts import (
     ArtifactProcessingBlock,
@@ -441,6 +441,10 @@ class _FamilyState:
     last_success_at: str = ""
     last_acknowledgement_timestamp_seconds: float = 0
     requested_snapshot_timestamp_seconds: float = 0
+    next_pending_observation_at: float = 0
+    pending_age_unknown_scopes: int = 0
+    oldest_pending_timestamp_seconds: float | None = None
+    pending_observation_failures: int = 0
     pending_observed: dict[str, tuple[int, float]] = field(default_factory=dict)
     attempt_durations: DurationObservations = field(default_factory=DurationObservations)
     discovery_durations: DurationObservations = field(default_factory=DurationObservations)
@@ -469,6 +473,7 @@ class ArtifactProcessingSupervisor:
         retry_cap_seconds: float = _RETRY_CAP_SECONDS,
         retry_jitter: Callable[[], float] | None = None,
         blocked_check_seconds: float = _BLOCKED_CHECK_SECONDS,
+        pending_observation_interval_seconds: float = 30.0,
         tracing: RuntimeTracing | None = None,
     ) -> None:
         for attribute in ("binding_name", "artifact_family", "config_prefix"):
@@ -495,6 +500,9 @@ class ArtifactProcessingSupervisor:
         if blocked_check_seconds <= 0:
             raise ValueError("blocked check interval must be positive")  # noqa: TRY003
         self._blocked_check_seconds = blocked_check_seconds
+        if pending_observation_interval_seconds <= 0:
+            raise ValueError("pending observation interval must be positive")  # noqa: TRY003
+        self._pending_observation_interval = pending_observation_interval_seconds
         self._tracing = tracing
         self._fence: ArtifactProcessingFence | None = None
         self._status = ArtifactProcessingSupervisorStatus.STANDBY
@@ -550,6 +558,22 @@ class ArtifactProcessingSupervisor:
                 )
                 if state.pending_observed
                 else 0.0,
+                "pending_age_unknown_scopes": state.pending_age_unknown_scopes,
+                "pending_observation_failures": state.pending_observation_failures,
+                **(
+                    {
+                        "oldest_pending_timestamp_seconds": state.oldest_pending_timestamp_seconds,
+                        "oldest_pending_age_seconds": max(
+                            0.0, state.requested_snapshot_timestamp_seconds - state.oldest_pending_timestamp_seconds
+                        ),
+                    }
+                    if (
+                        state.unacknowledged > 0
+                        and state.oldest_pending_timestamp_seconds is not None
+                        and state.pending_age_unknown_scopes == 0
+                    )
+                    else {}
+                ),
                 "observed_pending_scopes": len(state.pending_observed),
                 "blocked_wait": sum(retry.block is not None for retry in state.retries.values()),
             }
@@ -660,6 +684,7 @@ class ArtifactProcessingSupervisor:
         self._status = ArtifactProcessingSupervisorStatus.LEADER
         for state in self._families.values():
             state.discovery_pending = True
+            state.next_pending_observation_at = 0
             state.reconcile_complete = False
             state.reconcile_after = None
         if self._lease_mode == "oceanbase":
@@ -723,12 +748,41 @@ class ArtifactProcessingSupervisor:
                     state.discovery_seconds = asyncio.get_running_loop().time() - now
                     with suppress(Exception):
                         state.discovery_durations.record(discovery_outcome, state.discovery_seconds)
+            await self._observe_pending_requests(state)
             await self._activate_retries(state)
             await self._dispatch(state)
             retained = state.queued | state.running.keys() | state.retries.keys()
             state.pending_observed = {
                 key: observed for key, observed in state.pending_observed.items() if key in retained
             }
+
+    async def _observe_pending_requests(self, state: _FamilyState) -> None:
+        # Independent of worker capacity: a stalled worker must not freeze the
+        # pending snapshot. Rate-limit aggregate reads, including after failures.
+        now = asyncio.get_running_loop().time()
+        if now < state.next_pending_observation_at:
+            return
+        state.next_pending_observation_at = now + self._pending_observation_interval
+        try:
+            async with asyncio.timeout(_DISCOVERY_TIMEOUT_SECONDS):
+                async with self._database.transaction(consistent_snapshot=True) as connection:
+                    observation = await self._intents.pending_observation(connection, state.binding.binding_name)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            state.pending_observation_failures += 1
+            self._log_failure(state, None, error, "pending_observation")
+            return
+        state.unacknowledged = observation.pending_count
+        state.pending_age_unknown_scopes = observation.unknown_count
+        state.oldest_pending_timestamp_seconds = (
+            observation.oldest_requested_at.replace(tzinfo=UTC).timestamp()
+            if observation.oldest_requested_at is not None
+            else None
+        )
+        state.requested_snapshot_timestamp_seconds = observation.observed_at.replace(tzinfo=UTC).timestamp()
+        if not state.unacknowledged:
+            state.pending_observed.clear()
 
     async def _discover(self, state: _FamilyState) -> None:
         binding = state.binding
@@ -751,7 +805,7 @@ class ArtifactProcessingSupervisor:
             await self._discover_requested(state)
             await self._discover_automatic(state)
 
-    async def _discover_requested(self, state: _FamilyState) -> None:  # noqa: C901 - bounded discovery and observation
+    async def _discover_requested(self, state: _FamilyState) -> None:
         capacity = self._fresh_capacity(state)
         if capacity <= 0:
             return
@@ -759,22 +813,8 @@ class ArtifactProcessingSupervisor:
             return
         if state.requested_after == 0:
             state.notification_at_start = self._notifications
-        requested_count: int | None = None
         async with self._database.transaction() as connection:
             await self._leases.require_fence(connection, self._require_current_fence())
-            if state.requested_after == 0:
-                table = ARTIFACT_PROCESSING_INTENTS_TABLE
-                requested_count = int(
-                    await connection.scalar(
-                        select(func.count())
-                        .select_from(table)
-                        .where(
-                            table.c.binding_name == state.binding.binding_name,
-                            table.c.requested_generation > table.c.handled_generation,
-                        )
-                    )
-                    or 0
-                )
             rows = await self._intents.scan(
                 connection,
                 state.binding.binding_name,
@@ -782,11 +822,6 @@ class ArtifactProcessingSupervisor:
                 limit=min(capacity, _DISCOVERY_PAGE_SIZE),
                 requested_only=True,
             )
-        if requested_count is not None:
-            state.unacknowledged = requested_count
-            state.requested_snapshot_timestamp_seconds = time.time()
-            if state.unacknowledged == 0:
-                state.pending_observed.clear()
         for row in rows:
             self._observe_pending(state, row.scope_id, row.requested_generation)
             state.requested_after = row.pending_sequence
@@ -1322,7 +1357,7 @@ class ArtifactProcessingSupervisor:
                 state.failed += 1
                 if isinstance(error, TimeoutError):
                     state.timeouts += 1
-                self._record_failure(state, error, "worker")
+                self._record_failure(state, error, "worker", count_error=running.task.exception() is not error)
                 self._log_failure(state, running.assignment, error, "worker", failures, delay)
             finally:
                 if not retain_slot:
@@ -1396,6 +1431,7 @@ class ArtifactProcessingSupervisor:
         now = asyncio.get_running_loop().time()
         deadlines: list[float] = []
         for state in self._families.values():
+            deadlines.append(state.next_pending_observation_at)
             if len(state.running) >= state.binding.max_workers:
                 continue
             deadlines.extend(
@@ -1414,7 +1450,9 @@ class ArtifactProcessingSupervisor:
                 deadlines.append(max(now, state.next_discovery_at))
         return None if not deadlines else max(0.001, min(deadlines) - now)
 
-    def _record_failure(self, state: _FamilyState | None, error: BaseException, stage: str) -> None:
+    def _record_failure(
+        self, state: _FamilyState | None, error: BaseException, stage: str, *, count_error: bool = True
+    ) -> None:
         error_code = (
             processing_error_code(error.failure.exception_type, error.failure.error_code)
             if isinstance(error, _WorkerExecutionError)
@@ -1427,7 +1465,10 @@ class ArtifactProcessingSupervisor:
         elif isinstance(error, TimeoutError):
             error_code = "worker_timeout"
         occurred_at = datetime.now(UTC).isoformat()
+        _, category = _attempt_failure_observation(error)
         for affected in self._families.values() if state is None else (state,):
+            if count_error and category:
+                affected.error_counts[category] = affected.error_counts.get(category, 0) + 1
             affected.last_error = error_code
             affected.last_error_stage = stage
             affected.last_error_at = occurred_at
