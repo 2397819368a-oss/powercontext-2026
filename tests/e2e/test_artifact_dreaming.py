@@ -35,7 +35,7 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryExtractionInput,
     AtomicMemoryExtractionOutput,
 )
-from powercontext.builtin.artifacts.experience import ExperienceContent
+from powercontext.builtin.artifacts.experience import ExperienceCandidateInput, ExperienceContent
 from powercontext.builtin.artifacts.handoff.models import (
     HandoffContent,
     HandoffDraft,
@@ -56,7 +56,7 @@ from powercontext.builtin.artifacts.topic_memory import (
     prepare_topic_memory_projection,
 )
 from powercontext.builtin.dream.generation import DreamGenerationInput
-from powercontext.builtin.dream.models import DreamError, DreamPlan
+from powercontext.builtin.dream.models import DreamError, DreamOperation, DreamPlan
 from powercontext.builtin.evidence.models import EvidenceResolutionError
 from powercontext.builtin.inference.models import GenerationResult, InferenceUsage
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
@@ -82,7 +82,9 @@ from powercontext.builtin.runtime import (
     RuntimeConfig,
 )
 from powercontext.builtin.scope import ScopeDraft
+from powercontext.builtin.sources import ContentSource
 from powercontext.server.app import ServerApplication
+from powercontext.sources import Source, SourceRef
 from tests.e2e.dream_support import atomic_memory_pipeline, process_pending
 from tests.e2e.dream_support import open_dream_runtime as open_builtin_runtime
 
@@ -164,6 +166,20 @@ class Generator:
         )
 
 
+class NoChangeGenerator:
+    config_id = "test-dream-no-change-v1"
+
+    def __init__(self) -> None:
+        self.inputs: list[DreamGenerationInput] = []
+
+    async def generate(self, value: DreamGenerationInput) -> GenerationResult[DreamPlan]:
+        self.inputs.append(value)
+        return GenerationResult(
+            output=DreamPlan(outcome="no_change", reason="The selected evidence already expresses the bounded rule."),
+            usage=InferenceUsage(requests=1, input_tokens=24, output_tokens=12),
+        )
+
+
 class MemoryPipeline:
     async def generate(self, request: AtomicMemoryExtractionInput, /) -> GenerationResult[AtomicMemoryExtractionOutput]:
         return GenerationResult(
@@ -177,6 +193,22 @@ class MemoryPipeline:
                     for evidence in request.evidence
                 )
             )
+        )
+
+
+class IncubationPipeline:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Source, ...]] = []
+
+    async def incubate(self, sources: tuple[Source, ...], /) -> tuple[ExperienceCandidateInput, ...]:
+        self.calls.append(sources)
+        return tuple(
+            ExperienceCandidateInput(
+                proposal=experience().model_copy(update={"outcome": source.content}),
+                sources=(SourceRef(source_type="content", source_id=source.name),),
+            )
+            for source in sources
+            if isinstance(source, ContentSource) and source.metadata.get("kind") == "task-outcome"
         )
 
 
@@ -1220,6 +1252,7 @@ def test_memory_dream_approval_and_skill_preserve_exact_provenance(database: Dat
             assert (run.status, run.outcome, run.error) == ("succeeded", "proposed", None)
             assert run.input_manifest is not None
             assert run.candidate is not None
+            assert run.attempt_count == run.usage.model_calls == 1
             assert run.usage.input_tokens == 80
             assert "UNSELECTED_SIBLING_SENTINEL" not in generator.inputs[0].model_dump_json()
             assert generator.inputs[0].target_evidence_id is None
@@ -1229,6 +1262,7 @@ def test_memory_dream_approval_and_skill_preserve_exact_provenance(database: Dat
             candidate = await runtime.review.for_scope(scope).get(
                 GetCandidateRequest(candidate_id=run.candidate.candidate_id)
             )
+            assert (candidate.family, candidate.status, candidate.target) == ("experience", "pending", None)
             assert candidate.artifacts == (citation,)
             assert candidate.sources == (root,)
             followup = PrepareContextRequest(query=experience().lesson)
@@ -1259,11 +1293,17 @@ def test_memory_dream_approval_and_skill_preserve_exact_provenance(database: Dat
             await process_pending(runtime)
             derived = await runtime.dream.for_scope(scope).get(GetDreamRunRequest(run_id=skill_run.run_id))
             assert (derived.status, derived.outcome, derived.error) == ("succeeded", "proposed", None)
+            assert derived.attempt_count == derived.usage.model_calls == 1
             assert all(item.kind != "memory" for item in generator.inputs[1].evidence.evidence)
             assert generator.inputs[1].target_evidence_id is None
             assert derived.candidate is not None
             skill_candidate = await runtime.review.for_scope(scope).get(
                 GetCandidateRequest(candidate_id=derived.candidate.candidate_id)
+            )
+            assert (skill_candidate.family, skill_candidate.status, skill_candidate.target) == (
+                "skill",
+                "pending",
+                None,
             )
             assert skill_candidate.artifacts == (artifact.as_ref(),)
             skill_approval = await runtime.review.for_scope(scope).approve(
@@ -1284,6 +1324,54 @@ def test_memory_dream_approval_and_skill_preserve_exact_provenance(database: Dat
             assert older.runs[0].run_id == run.run_id
             with pytest.raises(DreamError, match="idempotency_conflict"):
                 await runtime.dream.for_scope(scope).create(request.model_copy(update={"sources": (root,)}))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["refine_experience", "derive_skill"])
+def test_explicit_dream_no_change_is_terminal_without_a_candidate(
+    database: DatabaseConfig, operation: DreamOperation
+) -> None:
+    async def scenario() -> None:
+        generator = NoChangeGenerator()
+        async with open_builtin_runtime(
+            config(database), candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()), dream_generator=generator
+        ) as runtime:
+            scope, root, citation = await seed(runtime)
+            artifacts = (citation,)
+            family = "experience"
+            if operation == "derive_skill":
+                proposed = await runtime.experience.for_scope(scope).propose(
+                    ProposeExperienceRequest(proposal=experience(), sources=(root,))
+                )
+                approved = await runtime.review.for_scope(scope).approve(
+                    ApproveCandidateRequest(
+                        candidate_id=proposed.candidate_id,
+                        expected_version=proposed.version,
+                    )
+                )
+                assert approved.result_artifact is not None
+                artifacts = (approved.result_artifact,)
+                family = "skill"
+
+            accepted = await runtime.dream.for_scope(scope).create(
+                CreateDreamRunRequest(
+                    operation=operation,
+                    artifacts=artifacts,
+                    idempotency_key=f"no-change-{operation}",
+                )
+            )
+            await process_pending(runtime)
+            run = await runtime.dream.for_scope(scope).get(GetDreamRunRequest(run_id=accepted.run_id))
+            pending = await runtime.review.for_scope(scope).list(ListCandidatesRequest(family=family))
+
+            assert (run.status, run.outcome, run.error, run.candidate) == ("succeeded", "no_change", None, None)
+            assert run.input_manifest is not None
+            assert run.attempt_count == run.usage.model_calls == 1
+            assert run.usage.input_tokens == 24
+            assert len(generator.inputs) == 1
+            assert generator.inputs[0].operation == operation
+            assert pending.candidates == ()
 
     asyncio.run(scenario())
 
@@ -1542,6 +1630,52 @@ def test_transient_failure_retries_same_projection_with_bounded_calls(database: 
             assert complete.input_manifest == first.input_manifest
             assert generator.inputs[0] == generator.inputs[1]
             assert complete.usage.input_tokens is None  # The failed call's token usage is unknown.
+
+    asyncio.run(scenario())
+
+
+def test_explicit_dream_preserves_incubation_cursor_and_pending_source_work(database: DatabaseConfig) -> None:
+    async def scenario() -> None:
+        incubation = IncubationPipeline()
+        async with open_builtin_runtime(
+            config(database),
+            candidate_pipeline=atomic_memory_pipeline(MemoryPipeline()),
+            experience_pipeline=incubation,
+            dream_generator=Generator(),
+        ) as runtime:
+            scope, _, citation = await seed(runtime)
+            first = await runtime.sources.for_scope(scope).capture(
+                CaptureSource(
+                    source_id="incubated-before-dream",
+                    content="The first bounded task completed.",
+                    metadata={"kind": "task-outcome"},
+                )
+            )
+            initial = await runtime.experience.for_scope(scope).incubate()
+            assert initial.current_cursor == first.sequence
+
+            pending = await runtime.sources.for_scope(scope).capture(
+                CaptureSource(
+                    source_id="pending-during-dream",
+                    content="The second bounded task completed.",
+                    metadata={"kind": "task-outcome"},
+                )
+            )
+            accepted = await runtime.dream.for_scope(scope).create(
+                CreateDreamRunRequest(
+                    operation="refine_experience",
+                    artifacts=(citation,),
+                    idempotency_key="preserve-incubation-cursor",
+                )
+            )
+            await process_pending(runtime)
+            run = await runtime.dream.for_scope(scope).get(GetDreamRunRequest(run_id=accepted.run_id))
+            assert (run.status, run.outcome) == ("succeeded", "proposed")
+
+            incubated = await runtime.experience.for_scope(scope).incubate()
+            assert (incubated.previous_cursor, incubated.current_cursor) == (first.sequence, pending.sequence)
+            assert incubated.candidate_count == 1
+            assert len(incubation.calls) == 2
 
     asyncio.run(scenario())
 

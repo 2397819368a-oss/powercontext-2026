@@ -135,6 +135,51 @@ def test_incubation_uses_an_independent_cursor_and_keeps_candidates_gated() -> N
     asyncio.run(scenario())
 
 
+def test_incubation_commits_multiple_candidates_from_one_generation_call() -> None:
+    async def scenario() -> None:
+        pipeline = _TaskOutcomePipeline()
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            experience_pipeline=pipeline,
+        ) as runtime:
+            scope = await _create_scope(runtime, "multi-output-experience")
+            first = await runtime.sources.for_scope(scope).capture(
+                CaptureSource(
+                    source_id="task-1",
+                    content="python test_config.py passed",
+                    metadata={"kind": "task-outcome"},
+                )
+            )
+            second = await runtime.sources.for_scope(scope).capture(
+                CaptureSource(
+                    source_id="task-2",
+                    content="python test_upgrade.py passed",
+                    metadata={"kind": "task-outcome"},
+                )
+            )
+
+            incubated = await runtime.experience.for_scope(scope).incubate()
+            inbox = await runtime.review.for_scope(scope).list(ListCandidatesRequest(family="experience"))
+
+            assert len(pipeline.calls) == 1
+            assert tuple(source.name for source in pipeline.calls[0] if isinstance(source, ContentSource)) == (
+                "task-1",
+                "task-2",
+            )
+            assert (incubated.previous_cursor, incubated.current_cursor) == (0, second.sequence)
+            assert incubated.source_count == incubated.candidate_count == 2
+            assert set(incubated.candidate_ids) == {candidate.candidate_id for candidate in inbox.candidates}
+            assert all(candidate.status == "pending" for candidate in inbox.candidates)
+            assert {
+                (candidate.sources[0].source_type, candidate.sources[0].source_id) for candidate in inbox.candidates
+            } == {
+                (first.source_ref.source_type, first.source_ref.source_id),
+                (second.source_ref.source_type, second.source_ref.source_id),
+            }
+
+    asyncio.run(scenario())
+
+
 def test_incubation_retries_the_same_window_after_generation_failure() -> None:
     async def scenario() -> None:
         pipeline = _TaskOutcomePipeline(fail_once=True)
