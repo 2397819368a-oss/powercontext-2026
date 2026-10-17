@@ -199,22 +199,23 @@ The harness therefore checks the Server's Access audit, in which an enforced Ser
 on an API or MCP request, allowed or denied. After each ON arm it lists the decisions recorded from just after it
 created the arm's Scope until the arm ended. An ON run reached another Scope when the Server allowed it either of two
 kinds of request: a request on another Scope, its Memory, or its Artifacts, other than one that returns none of them,
-namely reading the Scope's descriptor, its statistics, or its resolved identity, or flushing it; or a Handoff Report
-over every Scope or a subtree, which the Server authorizes once for the whole Server but which carries each Scope's
-latest Handoff. A write to another Scope gives the agent nothing, but it shows the integration acting outside its Scope,
-as when it falls back to the Default Scope. Such a run is reported and left out of success rates and paired differences
-whatever its reward, because leaving out only the runs that passed would bias the rest. The arm's observation lists
-every API or MCP decision of that window about another Scope or about the Server as a whole. A denied request, the
-requests above that return no content, and the Server's other Server-wide operations, such as listing Scopes, which
-return descriptors, settings, or counts, are recorded without excluding the run. A flush is also left out because a host
-plugin's own end-of-session flush of the previous ON arm's Scope can still be extracting Memory after that arm ended.
-The Server's background processing records its decisions under its own transport and is not counted. The audit cannot
-tell the agent from the harness, which uses the same token, but the harness touches only the arm's own Scope while the
-arm runs. The check therefore needs a Server that no other client, such as a second paired run or the Dashboard, uses
-during the run, and a Server clock that agrees with the harness's, because the window is compared with the Server's
-timestamps. The audit is named by the Server's `POWERCONTEXT_SERVER_ACCESS_DEPLOYMENT_ID`, which the Server does not
-expose: when the Server sets it, give the harness the same value as `POWERCONTEXT_E2E_ACCESS_DEPLOYMENT_ID`, which
-defaults to the Server's default, `powercontext`. The command stops before the first run when it cannot read that audit.
+namely reading the Scope's descriptor, its statistics, or its resolved identity, flushing it, or an Access API request,
+such as checking a permission on it, which returns decisions, Bindings, or audit records; or a Handoff Report over every
+Scope or a subtree, which the Server authorizes once for the whole Server but which carries each Scope's latest Handoff.
+A write to another Scope gives the agent nothing, but it shows the integration acting outside its Scope, as when it
+falls back to the Default Scope. Such a run is reported and left out of success rates and paired differences whatever
+its reward, because leaving out only the runs that passed would bias the rest. The arm's observation lists every API or
+MCP decision of that window about another Scope or about the Server as a whole. A denied request, the requests above
+that return no content, and the Server's other Server-wide operations, such as listing Scopes, which return descriptors,
+settings, or counts, are recorded without excluding the run. A flush is also left out because a host plugin's own
+end-of-session flush of the previous ON arm's Scope can still be extracting Memory after that arm ended. The Server's
+background processing records its decisions under its own transport and is not counted. The audit cannot tell the agent
+from the harness, which uses the same token, but the harness touches only the arm's own Scope while the arm runs. The
+check therefore needs a Server that no other client, such as a second paired run or the Dashboard, uses during the run,
+and a Server clock that agrees with the harness's, because the window is compared with the Server's timestamps. The
+audit is named by the Server's `POWERCONTEXT_SERVER_ACCESS_DEPLOYMENT_ID`, which the Server does not expose: when the
+Server sets it, give the harness the same value as `POWERCONTEXT_E2E_ACCESS_DEPLOYMENT_ID`, which defaults to the
+Server's default, `powercontext`. The command stops before the first run when it cannot read that audit.
 
 After each ON session the harness records the Scope's Server statistics. When another session follows, it first flushes
 the Scope, standing in for the time that passes between real sessions, and repeats the flush until the Scope has

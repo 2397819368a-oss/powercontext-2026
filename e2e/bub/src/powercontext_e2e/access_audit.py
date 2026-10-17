@@ -42,10 +42,24 @@ REQUEST_TRANSPORTS = frozenset({"http", "mcp"})
 # Handoff Report over every Scope or a subtree carries each Scope's latest Handoff. Its other Server-wide operations
 # return descriptors, settings, or counts, such as listing Scopes.
 SERVER_WIDE_CONTENT_OPERATIONS = frozenset({"get_handoff_report"})
-# Requests on one Scope that return no Memory, Artifacts, or Handoffs: a Scope's descriptor, its counts, its resolved
-# identity, or processing cursors. A host plugin's own end-of-session flush of an earlier ON arm's Scope can also still
-# be extracting Memory, and recording decisions on that Scope, after its arm ended.
+# Requests that can record decisions on another Scope yet return none of its Memory, Artifacts, or Handoffs: a
+# Scope's descriptor, its counts, its resolved identity, or processing cursors. A host plugin's own end-of-session
+# flush of an earlier ON arm's Scope can also still be extracting Memory, and recording decisions on that Scope, after
+# its arm ended.
 CONTENTLESS_OPERATIONS = frozenset({"get_scope", "get_stats", "resolve_scope_selection", "flush_memory"})
+# The Access API returns permission decisions, roles, Bindings, and audit records. Checking whether the caller may read
+# a Scope records that decision on the Scope, and listing its Bindings or audit records an administration check there.
+ACCESS_OPERATIONS = frozenset({
+    "get_access_principal",
+    "check_access",
+    "list_access_resources",
+    "list_access_roles",
+    "list_access_bindings",
+    "create_access_binding",
+    "revoke_access_binding",
+    "replace_access_binding",
+    "list_access_audit",
+})
 _PAGE_LIMIT = 500
 
 
@@ -119,8 +133,9 @@ def outside_scope(events: Sequence[AccessAuditEvent], scope_id: str) -> tuple[Ou
 def reached_another_scope(accesses: Sequence[OutsideScopeAccess]) -> bool:
     """Whether the Server allowed the run a request on another Scope, or a Server-wide request returning Scope content.
 
-    Any request on another Scope counts except those that return no content: a write there is no use to the run, but
-    it shows the integration acting outside its Scope, as when it falls back to the Default Scope.
+    Any request on another Scope counts except those that return no content, including the Access API's: a write
+    there is no use to the run, but it shows the integration acting outside its Scope, as when it falls back to the
+    Default Scope.
     """
 
     return any(
@@ -128,7 +143,7 @@ def reached_another_scope(accesses: Sequence[OutsideScopeAccess]) -> bool:
         and (
             access.operation in SERVER_WIDE_CONTENT_OPERATIONS
             if access.scope_id is None
-            else access.operation not in CONTENTLESS_OPERATIONS
+            else access.operation not in CONTENTLESS_OPERATIONS | ACCESS_OPERATIONS
         )
         for access in accesses
     )

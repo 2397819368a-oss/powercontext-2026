@@ -25,6 +25,7 @@ from powercontext.client import ForbiddenResponseError
 from powercontext.http import AccessAuditEvent
 
 from powercontext_e2e.access_audit import (
+    ACCESS_OPERATIONS,
     SERVER_WIDE_CONTENT_OPERATIONS,
     AccessAuditUnavailableError,
     outside_scope,
@@ -130,6 +131,14 @@ def test_outside_scope_keeps_api_and_mcp_decisions_about_other_scopes_and_the_se
             ),
             id="descriptor-and-counts",
         ),
+        # Asking whether the caller may read another Scope returns a decision, not the Scope's content.
+        pytest.param(
+            (
+                _event(_scope(_EARLIER), operation="check_access"),
+                _event(_artifact(_EARLIER), action="artifact.read", operation="check_access"),
+            ),
+            id="permission-check",
+        ),
         pytest.param((), id="nothing"),
     ],
 )
@@ -173,18 +182,22 @@ _SERVER_WIDE_WITHOUT_CONTENT = frozenset({
 
 def test_every_server_wide_operation_is_classified_by_whether_it_returns_scope_content() -> None:
     contract = yaml.safe_load((_REPOSITORY / "openapi" / "powercontext.yaml").read_text(encoding="utf-8"))
-    server_wide = set()
+    server_wide, access_api = set(), set()
     for operations in contract["paths"].values():
         for operation in operations.values():
             access = operation.get("x-powercontext-access") if isinstance(operation, dict) else None
-            if access is None or access.get("action") == "access.self":
+            if access is None:
                 continue
-            if access.get("resolver") == "scope_selection_read_access" or access.get("resource", {}).get("type") == (
+            if access.get("action") == "access.self":
+                access_api.add(operation["operationId"])
+            elif access.get("resolver") == "scope_selection_read_access" or access.get("resource", {}).get("type") == (
                 "server"
             ):
                 server_wide.add(operation["operationId"])
 
     assert server_wide == SERVER_WIDE_CONTENT_OPERATIONS | _SERVER_WIDE_WITHOUT_CONTENT
+    # The Access API authorizes the caller itself and then decides about any resource it names, returning no content.
+    assert access_api == ACCESS_OPERATIONS
 
 
 class _AuditClient:
