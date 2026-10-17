@@ -268,6 +268,14 @@ async def load_prompts(api: DashboardAPI, request: Request, ctx: dict[str, Any])
             selected = request.query_params.get("prompt_revision") or str(artifact["revision"])
             if str(selected).isdigit():
                 ctx["prompt_key"] = selected_key
+                try:
+                    ctx["prompt_opened"] = await api.artifact_revision(
+                        ctx["scope"], "prompt", selected_key, int(selected)
+                    )
+                except ReadError as error:
+                    # Showing the current configuration here would mislabel it as the requested revision.
+                    ctx["errors"]["prompt_selected"] = error
+                    return
                 ctx["history"] = await load_history(
                     api,
                     request,
@@ -277,12 +285,6 @@ async def load_prompts(api: DashboardAPI, request: Request, ctx: dict[str, Any])
                     selected=int(selected),
                     cursor_key="prompt_revision_cursor",
                 )
-                try:
-                    ctx["prompt_opened"] = await api.artifact_revision(
-                        ctx["scope"], "prompt", selected_key, int(selected)
-                    )
-                except ReadError:
-                    ctx["prompt_opened"] = None
 
 
 async def _load_atomic_memory_history(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:

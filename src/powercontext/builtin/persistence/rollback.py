@@ -108,11 +108,13 @@ async def _submitted_body(
     family: str,
     command: BaseModel,
 ) -> object:
-    if family == "skill" and isinstance(command, SkillContent) and isinstance(writer, SkillManagementWriter):
-        if command.package is None:
-            command = build_instruction_skill_package(command).as_skill_content()
-        else:
-            command = await writer.canonical_content(connection, scope_id, command)
+    if (
+        family == "skill"
+        and isinstance(command, SkillContent)
+        and command.package is not None
+        and isinstance(writer, SkillManagementWriter)
+    ):
+        command = await writer.canonical_content(connection, scope_id, command)
     return _stored_body(family, command)
 
 
@@ -128,4 +130,7 @@ def _stored_body(family: str, content: BaseModel) -> object:
         return (topic.title, topic.summary, topic.detail)
     if family == "handoff":
         return content.model_dump(mode="json", by_alias=True, exclude={"generation"})
+    if family == "skill" and isinstance(content, SkillContent) and content.package is None:
+        # Legacy instruction-only revisions and new ones compare in their packaged form.
+        content = build_instruction_skill_package(content).as_skill_content()
     return content.model_dump(mode="json", by_alias=True)

@@ -14,7 +14,9 @@
 
 """Read and download exact artifacts through the authenticated Dashboard."""
 
+import json
 import re
+import sqlite3
 from html import unescape
 from pathlib import Path
 from typing import Any, cast
@@ -256,6 +258,15 @@ def test_prompt_page_shows_the_selected_revision(dashboard: TestClient) -> None:
     assert opened.status_code == 200
     assert "Keep the approved prompt." in opened.text
     assert "Keep a later prompt." not in opened.text
+    missing = dashboard.get(
+        "/dashboard/prompts",
+        params={"scope": scope, "prompt_key": "experience.generate", "prompt_revision": "99", "lang": "en"},
+    )
+    assert missing.status_code == 200
+    assert 'role="alert"' in missing.text
+    assert "Keep a later prompt." not in missing.text
+    assert "/dashboard/rollback" not in missing.text
+    assert 'id="compare-revision"' not in missing.text
 
 
 def _put_content(
@@ -405,6 +416,32 @@ def test_topic_history_cursor_does_not_follow_a_link_to_another_topic(dashboard:
     other = next(href for href in _hrefs(paged.text) if f"topic_artifact={ids[1]}" in href)
     assert "topic_revision_cursor" not in other
     assert "Revision history" in dashboard.get(other).text
+
+
+def test_dashboard_restores_a_legacy_instruction_only_skill_revision(dashboard: TestClient, tmp_path: Path) -> None:
+    scope = create_scope(dashboard, "Legacy skill rollback")["scope_id"]
+    legacy = {
+        "name": "compatibility-check",
+        "description": "Check compatibility before release",
+        "instructions": "Run the approved compatibility tests.",
+        "validation": ["Compatibility tests pass"],
+    }
+    created = dashboard.post(f"/v1/scopes/{scope}/artifacts", json={"family": "skill", "content": legacy})
+    assert created.status_code == 201, created.text
+    skill_id = created.json()["artifact_id"]
+    _put_content(dashboard, scope, "skill", skill_id, {**legacy, "instructions": "Run a later set of tests."})
+    # Revisions written before package-backed Skills stored the instruction core without a package.
+    with sqlite3.connect(tmp_path / "data.db") as connection:
+        connection.execute(
+            "UPDATE pc_artifacts SET content = ? WHERE scope_id = ? AND family = 'skill' AND artifact_id = ? "
+            "AND revision = 1",
+            (json.dumps(legacy).encode(), scope, skill_id),
+        )
+    restored = _rollback(dashboard, scope, "skill", skill_id, 2)
+    assert restored.status_code == 200, restored.text
+    head = dashboard.get(f"/v1/scopes/{scope}/artifacts/skill/{skill_id}").json()
+    assert head["revision"] == 3
+    assert head["content"]["instructions"].startswith("Run the approved compatibility tests.")
 
 
 def test_dashboard_rolls_back_experience_skill_topic_and_handoff(dashboard: TestClient) -> None:
