@@ -616,3 +616,17 @@ def test_render_keeps_a_response_without_estimates_online(
 
     assert "PC online" in rendered
     assert "no data today" in rendered
+
+
+def test_the_reduction_helpers_return_an_int_or_none_not_the_totals(statusline_module: ModuleType) -> None:
+    """A well-formed window yields numbers, never the validated totals mapping.
+
+    The display helper resolves a missing estimate to ``None`` (unavailable), while
+    the validity helper still reads the well-formed zero so the integration stays
+    online.
+    """
+
+    assert statusline_module.token_reduction(_without_estimate()) == 0
+    assert statusline_module.measured_reduction(_without_estimate()) is None
+    assert statusline_module.token_reduction(_stats(0)) == 0
+    assert statusline_module.measured_reduction(_stats(0)) == 0

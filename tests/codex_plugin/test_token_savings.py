@@ -781,3 +781,17 @@ def test_stop_keeps_a_response_without_estimates_online(
         "continue": True,
         "systemMessage": "PowerContext · no data today · no data in 30d",
     }
+
+
+def test_the_reduction_helpers_return_an_int_or_none_not_the_totals(token_savings_module: ModuleType) -> None:
+    """A well-formed window yields numbers, never the validated totals mapping.
+
+    The display helper resolves a missing estimate to ``None`` (unavailable), while
+    the validity helper still reads the well-formed zero so the integration stays
+    online.
+    """
+
+    assert token_savings_module.token_reduction(_without_estimate()) == 0
+    assert token_savings_module.measured_reduction(_without_estimate()) is None
+    assert token_savings_module.token_reduction(_stats(0)) == 0
+    assert token_savings_module.measured_reduction(_stats(0)) == 0

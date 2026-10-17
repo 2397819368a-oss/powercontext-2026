@@ -22,7 +22,7 @@ import sys
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, cast
 from urllib.error import HTTPError
 from urllib.request import Request
 
@@ -111,7 +111,7 @@ def _validated_totals(value: object) -> dict[str, Any] | None:
     reduction = totals.get("token_reduction")
     if not isinstance(reduction, int) or isinstance(reduction, bool):
         return None
-    return totals
+    return cast("dict[str, Any]", totals)
 
 
 def token_reduction(value: object) -> int | None:
