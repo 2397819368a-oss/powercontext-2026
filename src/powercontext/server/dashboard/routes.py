@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -154,7 +155,7 @@ def links(request: Request, ctx: dict[str, Any]):
         if "scope" in params and params["scope"] != ctx["scope"]:
             query = {"scope": params["scope"], "period": ctx["period"]}
         else:
-            _drop_foreign_revision_cursors(query, params)
+            _drop_foreign_revision_cursors(query, params, request.query_params)
             query.update(params)
         if destination.startswith("evidence/"):
             destination = "evidence/" + segment(destination.removeprefix("evidence/"))
@@ -176,11 +177,16 @@ _REVISION_CURSOR_IDENTITY = {
 }
 
 
-def _drop_foreign_revision_cursors(query: dict[str, Any], params: dict[str, Any]) -> None:
-    """Remove retained revision cursors that belong to an artifact the link no longer targets."""
+def _drop_foreign_revision_cursors(query: dict[str, Any], params: dict[str, Any], current: Mapping[str, str]) -> None:
+    """Remove retained revision cursors that belong to an artifact the link no longer targets.
+
+    A link that clears the selection drops the cursor too, because the page then opens a default artifact.
+    """
 
     for cursor, identity in _REVISION_CURSOR_IDENTITY.items():
-        if cursor not in params and identity in params and params[identity] != query.get(identity):
+        if cursor in params or identity not in params:
+            continue
+        if params[identity] is None or params[identity] != current.get(identity):
             query.pop(cursor, None)
 
 

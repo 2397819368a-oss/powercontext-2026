@@ -30,6 +30,7 @@ from powercontext.builtin.artifacts.prompt import PROMPT_KEYS, PromptRegistry
 from powercontext.builtin.artifacts.prompt.builtin import builtin_prompt_definitions
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.server.dashboard.api import DashboardAPI
+from powercontext.server.dashboard.pagination import PAGE_SIZE
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import (
     DashboardConfig,
@@ -190,6 +191,38 @@ def test_rollback_is_offered_when_access_control_is_disabled(tmp_path: Path) -> 
         assert 'type="number"' in opened.text
 
 
+def test_existing_database_without_revision_metadata_columns_keeps_working(tmp_path: Path) -> None:
+    def open_app():
+        return create_server_app(
+            settings=ServerSettings(
+                database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path}/existing.db"),
+                dashboard=DashboardConfig(enabled=True),
+                mcp=McpConfig(enabled=False),
+            ),
+            scheduler_path=tmp_path / "scheduler.db",
+        )
+
+    with TestClient(open_app()) as client:
+        scope = create_scope(client, "Existing database")["scope_id"]
+        _profile(client, scope, "# First profile\n\nOriginal preference.")
+    # A database written before revision metadata existed has none of these columns.
+    with sqlite3.connect(tmp_path / "existing.db") as connection:
+        for column in ("created_at", "created_by", "restored_from_revision", "rollback_reason"):
+            connection.execute(f"ALTER TABLE pc_artifacts DROP COLUMN {column}")
+    with TestClient(open_app()) as client:
+        path = f"/v1/scopes/{scope}/artifacts/profile/profile"
+        current = client.get(path)
+        assert current.status_code == 200, current.text
+        assert current.json()["created_at"] is None
+        changed = client.put(
+            path,
+            json={"content": {"content": "# Second profile\n\nLater preference."}},
+            headers={"If-Match": current.headers["etag"]},
+        )
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["created_at"] is not None
+
+
 def test_profile_compare_accepts_a_revision_outside_the_current_page(dashboard: TestClient) -> None:
     scope = create_scope(dashboard, "Profile compare")["scope_id"]
     _profile(dashboard, scope, "# First profile\n\nOriginal preference.")
@@ -347,6 +380,35 @@ def test_atomic_memory_history_link_opens_that_exact_revision(dashboard: TestCli
     reading = _reading(page.text).split("Revision history", 1)[0]
     assert "Original note." in reading
     assert "Revised note." not in reading
+
+
+def test_notes_directory_link_drops_the_previous_notes_revision_cursor(dashboard: TestClient) -> None:
+    scope = create_scope(dashboard, "Atomic memory cursor")["scope_id"]
+    for index in range(PAGE_SIZE + 1):
+        remembered = dashboard.post(
+            "/v1/memory/remember", json={"scope_id": scope, "kind": "fact", "text": f"Note {index}."}
+        )
+        assert remembered.status_code == 200, remembered.text
+    first = dashboard.get("/dashboard/notes", params={"scope": scope, "lang": "en"})
+    selected = re.search(r'atomic-memory/([^@"]+)@', first.text)
+    assert selected is not None
+    path = f"/v1/scopes/{scope}/artifacts/atomic-memory/{selected.group(1)}"
+    for revision in range(2, PAGE_SIZE + 2):
+        current = dashboard.get(path)
+        revised = dashboard.put(
+            path,
+            headers={"If-Match": current.headers["etag"]},
+            json={"content": {"kind": "fact", "text": f"Revised {revision}."}},
+        )
+        assert revised.status_code == 200, revised.text
+    opened = dashboard.get("/dashboard/notes", params={"scope": scope, "lang": "en"})
+    paged = dashboard.get(next(href for href in _hrefs(opened.text) if "notes_revision_cursor=" in href))
+    assert paged.status_code == 200, paged.text
+    directory = next(href for href in _hrefs(paged.text) if "notes_cursor=" in href)
+    assert "notes_revision_cursor" not in directory
+    following = dashboard.get(directory)
+    assert following.status_code == 200, following.text
+    assert "Revision history" in following.text
 
 
 def test_atomic_memory_replace_rejects_rollback_fields(dashboard: TestClient) -> None:

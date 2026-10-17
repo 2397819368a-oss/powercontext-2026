@@ -14,7 +14,7 @@
 
 """Recognize the frozen MySQL layouts without importing application metadata.
 
-Only the reviewed linear p0001--p0005 history is supported. DDL recovery accepts
+Only the reviewed linear p0001--p0004 history is supported. DDL recovery accepts
 an exact prefix of the next revision, never an arbitrary collection of objects.
 The caller owns maintenance evidence, backup, the pinned database lock and the
 version row; this module never writes or stamps a revision.
@@ -35,7 +35,7 @@ from .bundle import MigrationBundle
 from .models import MigrationError, digest
 
 _LEXEME = re.compile(r"\s+|`(?:``|[^`])*`|'(?:''|\\.|[^'\\])*'|[A-Za-z_][A-Za-z_0-9$]*|[0-9]+|>=|<=|<>|!=|[(),.=<>+-]")
-_REVISIONS = ("p0001", "p0002", "p0003", "p0004", "p0005")
+_REVISIONS = ("p0001", "p0002", "p0003", "p0004")
 _CITATION_TABLES = ("pc_artifacts", "pc_artifact_candidate_versions")
 _FAMILY_CHECK = "ck_pc_artifact_tags_family"
 _CONTROL_TABLE = "pc_schema_revision"
@@ -49,12 +49,6 @@ _ARTIFACT_HANDLES_DDL = """CREATE TABLE pc_artifact_handles (
 	FOREIGN KEY(scope_id, family, artifact_id, revision) REFERENCES pc_artifacts (scope_id, family, artifact_id, revision) ON DELETE RESTRICT,
 	CONSTRAINT ck_pc_artifact_handles_revision_positive CHECK (revision > 0)
 )"""
-_REVISION_METADATA_DDL = (
-    "ALTER TABLE pc_artifacts ADD COLUMN created_at DATETIME",
-    "ALTER TABLE pc_artifacts ADD COLUMN created_by VARCHAR(2048)",
-    "ALTER TABLE pc_artifacts ADD COLUMN restored_from_revision INTEGER",
-    "ALTER TABLE pc_artifacts ADD COLUMN rollback_reason VARCHAR(1024)",
-)
 _PHYSICAL_VALUES = frozenset({
     "row_format",
     "compression",
@@ -162,7 +156,6 @@ class MySQLSchema:
             "p0002": tuple(f"ALTER TABLE {table} ADD COLUMN memory_citations MEDIUMBLOB" for table in _CITATION_TABLES),
             "p0003": (f"ALTER TABLE pc_artifact_tags DROP CHECK {_FAMILY_CHECK}",),
             "p0004": (_ARTIFACT_HANDLES_DDL,),
-            "p0005": _REVISION_METADATA_DDL,
         }
         inventory = _empty_inventory()
         self._prefixes: dict[str, list[dict[str, Any]]] = {}
