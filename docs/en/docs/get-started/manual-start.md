@@ -7,6 +7,8 @@ description: Configure and start the PowerContext Server manually without the se
 
 This page explains how to configure and start the PowerContext Server without using the powercontext config init setup wizard, then bind Codex to a Scope.
 
+This guide applies to macOS and Linux only. It uses POSIX shell syntax such as `source`, `env -i`, and here-documents; Windows PowerShell is not covered by this guide.
+
 Use this page if you want to understand each step, troubleshoot configuration, or control the Server address, port, Dashboard, and authentication yourself. If you prefer the interactive setup wizard, see [Quick Start](quickstart.md).
 
 ## Manual startup versus Quick Start

@@ -7,6 +7,8 @@ description: 不使用配置向导，手动配置并启动 PowerContext Server�
 
 本页介绍不使用 powercontext config init 配置向导时，如何手动配置和启动 PowerContext Server，并将 Codex 绑定到一个 Scope。
 
+本指南仅适用于 macOS 和 Linux。文中的命令使用 POSIX Shell 语法，例如 `source`、`env -i` 和 here-document；本文不提供 Windows PowerShell 流程。
+
 本页适合希望了解每一步、排查配置问题，或需要自己控制 Server 地址、端口、Dashboard 和认证方式的用户。如果希望使用交互式配置向导快速完成安装，请看[快速开始](quickstart.md)。
 
 ## 手动启动和快速启动的区别
