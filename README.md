@@ -9,7 +9,7 @@
 
 *[English](README.md) · [中文](README_CN.md) · [日本語](README_JP.md)*
 
-[Website](https://powercontext.oceanbase.io/) · [Quickstart](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) · [Integrations](https://powercontext.oceanbase.io/en/docs/integrations/) · [Benchmarks](https://powercontext.oceanbase.io/en/benchmarks/) · [Interfaces](https://powercontext.oceanbase.io/en/docs/develop/interfaces/)
+[Website](https://powercontext.oceanbase.io/) · [Quickstart](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) · [Manual startup](docs/en/docs/get-started/manual-start.md) · [Integrations](https://powercontext.oceanbase.io/en/docs/integrations/) · [Benchmarks](https://powercontext.oceanbase.io/en/benchmarks/) · [Interfaces](https://powercontext.oceanbase.io/en/docs/develop/interfaces/)
 
 ## Quick start
 
@@ -33,6 +33,8 @@ Choose the path that matches your goal:
 | Try explicit saves and recall | **Basic memory** | CLI and Server; no model API |
 | Process Sources automatically and use Topic Memory or semantic retrieval | **Full memory** | Separate Generation and Embedding API credentials; schedules and Scope policies still apply |
 | Learn the core workflows in Python | The first seven Jupyter tutorials | A repository checkout and `uv`; no model or API key |
+
+If you want to manually configure and start PowerContext, see the [manual startup guide](docs/en/docs/get-started/manual-start.md) before following the quick-start instructions below.
 
 ### 1. Install and run the wizard
 
