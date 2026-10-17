@@ -55,6 +55,17 @@ class DatabaseCreationError(PersistenceError):
         )
 
 
+class MissingDatabaseError(PersistenceError):
+    """An inspection path requires an already provisioned database and never creates one."""
+
+    def __init__(self, name: str) -> None:
+        self.database_name = name
+        super().__init__(
+            f"Database {name!r} does not exist. This command inspects the configured database without creating it; "
+            "provision it first, or start the Server once to create the default database, then repeat the command."
+        )
+
+
 def validate_database_name(name: str) -> str:
     """Accept database names supported throughout initialization and reflection."""
     if "`" in name:
@@ -109,8 +120,7 @@ async def ensure_database(
     require_backend: Callable[[AsyncConnection], Awaitable[None]] | None = None,
 ) -> None:
     """Reuse usable databases without issuing CREATE or listing other databases."""
-    quoted = engine.dialect.identifier_preparer.quote_identifier(validate_database_name(name))
-    statement = f"CREATE DATABASE IF NOT EXISTS {quoted} CHARACTER SET utf8mb4"
+    statement = creation_statement(engine, name)
     try:
         if await database_is_available(engine, name=name):
             return
@@ -133,6 +143,24 @@ async def ensure_database(
 
     if not await database_is_available(engine, name=name):
         raise PersistenceError(f"Database {name!r} is still unavailable after creation; retry startup")  # noqa: TRY003
+
+
+async def require_existing_database(engine: AsyncEngine, *, name: str) -> None:
+    """Connect to a provisioned database without creating it or listing other databases."""
+    try:
+        available = await database_is_available(engine, name=name)
+    except DBAPIError as error:
+        if mysql_error_code(error) != 1044:
+            raise
+        raise DatabaseAccessError(name, creation_statement(engine, name)) from None
+    if not available:
+        raise MissingDatabaseError(name)
+
+
+def creation_statement(engine: AsyncEngine, name: str) -> str:
+    """Render the exact statement an administrator runs to provision this database."""
+    quoted = engine.dialect.identifier_preparer.quote_identifier(validate_database_name(name))
+    return f"CREATE DATABASE IF NOT EXISTS {quoted} CHARACTER SET utf8mb4"
 
 
 async def _recover_creation_race(engine: AsyncEngine, name: str, statement: str, error: DBAPIError) -> None:

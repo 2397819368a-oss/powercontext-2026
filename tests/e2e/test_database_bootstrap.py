@@ -38,7 +38,12 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from powercontext.builtin.persistence.bootstrap import DatabaseAccessError, DatabaseCreationError, mysql_error_code
+from powercontext.builtin.persistence.bootstrap import (
+    DatabaseAccessError,
+    DatabaseCreationError,
+    MissingDatabaseError,
+    mysql_error_code,
+)
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.oceanbase.profile import _register_official_dialect
 from powercontext.builtin.persistence.seekdb import LegacySeekDBDatabaseError, SeekDBConfig, SeekDBProfile
@@ -110,6 +115,32 @@ def test_seekdb_rejects_backtick_database_without_side_effects(short_tmp_path: P
             await assert_record(profile, retained.database)
         async with SeekDBProfile.open(retained, tables=(_RECORDS,)) as profile:
             await assert_record(profile, retained.database)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not _SEEKDB, reason="set POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB=1")
+def test_seekdb_inspection_reuses_an_existing_database_without_provisioning(short_tmp_path: Path) -> None:
+    pytest.importorskip("pylibseekdb")
+
+    async def scenario() -> None:
+        path = short_tmp_path / "seekdb"
+        retained = SeekDBConfig(path=path, database="retained_context")
+        async with SeekDBProfile.open(retained, tables=(_RECORDS,)) as profile:
+            await insert_record(profile)
+        # A second identical attempt proves inspection never created the database.
+        for _attempt in range(2):
+            with pytest.raises(MissingDatabaseError, match="does not exist"):
+                async with SeekDBProfile.open_existing(SeekDBConfig(path=path, database="absent_context"), tables=()):
+                    pytest.fail("Inspection must not provision a missing database")
+        async with SeekDBProfile.open_existing(retained, tables=()) as profile:
+            await assert_record(profile, retained.database)
+            async with profile.database.transaction() as connection:
+                absent = await connection.exec_driver_sql(
+                    "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s",
+                    ("absent_context",),
+                )
+                assert absent.all() == []
 
     asyncio.run(scenario())
 

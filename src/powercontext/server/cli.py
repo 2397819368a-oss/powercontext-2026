@@ -28,6 +28,7 @@ import typer
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
+from powercontext.builtin.persistence.bootstrap import MissingDatabaseError
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.processing_migration import (
@@ -118,9 +119,23 @@ def processing_migrate(
     if action == "apply" and not maintenance_confirmed:
         raise typer.BadParameter("apply requires --maintenance-confirmed after stopping old workers and writes")  # noqa: TRY003
     with server_settings_context(env_file=env_file) as settings:
-        ready = asyncio.run(_processing_maintenance(settings, action, migration_id=migration_id, batch_size=batch_size))
+        try:
+            ready = asyncio.run(
+                _processing_maintenance(settings, action, migration_id=migration_id, batch_size=batch_size)
+            )
+        except MissingDatabaseError as error:
+            if action == "apply":
+                raise
+            raise typer.BadParameter(_missing_read_only_database(error)) from error
     if not ready:
         raise typer.Exit(code=1)
+
+
+def _missing_read_only_database(error: MissingDatabaseError) -> str:
+    return (
+        f"plan and verify require an existing database: {error.database_name!r} is missing. "
+        "Provision it first, or start the Server once to create the configured database"
+    )
 
 
 async def _processing_maintenance(
@@ -140,14 +155,21 @@ async def _processing_maintenance(
     )
     manifest = canonical_processing_manifest(config)
     database = settings.database
+    read_only = action in {"plan", "verify"}
     if isinstance(database, SQLiteConfig):
         if not database.is_persistent:
             raise typer.BadParameter("offline migration requires a persistent database")  # noqa: TRY003
         opened = SQLiteProfile.open(database, tables=())
     elif isinstance(database, OceanBaseConfig):
-        opened = OceanBaseProfile.open(database, tables=())
+        opened = (
+            OceanBaseProfile.open_existing(database, tables=())
+            if read_only
+            else OceanBaseProfile.open(database, tables=())
+        )
     elif isinstance(database, SeekDBConfig):
-        opened = SeekDBProfile.open(database, tables=())
+        opened = (
+            SeekDBProfile.open_existing(database, tables=()) if read_only else SeekDBProfile.open(database, tables=())
+        )
     else:
         raise typer.BadParameter("unsupported migration database")  # noqa: TRY003
     async with opened as profile:
@@ -230,6 +252,10 @@ def atomic_memory_migrate(
                     settings, action, maintenance_confirmed=maintenance_confirmed, decisions=loaded
                 )
             )
+        except MissingDatabaseError as error:
+            if action == "apply":
+                raise
+            raise typer.BadParameter(_missing_read_only_database(error)) from error
         except OperationalError as error:
             sqlite_code = getattr(error.orig, "sqlite_errorcode", None)
             if (
@@ -300,10 +326,16 @@ async def _atomic_memory_maintenance(
         )
         index = SQLiteAtomicMemoryIndex(embedding_profile)
     elif isinstance(database, OceanBaseConfig):
-        opened = OceanBaseProfile.open(database, tables=())
+        opened = (
+            OceanBaseProfile.open_existing(database, tables=())
+            if read_only
+            else OceanBaseProfile.open(database, tables=())
+        )
         index = OceanBaseAtomicMemoryIndex(embedding_profile)
     elif isinstance(database, SeekDBConfig):
-        opened = SeekDBProfile.open(database, tables=())
+        opened = (
+            SeekDBProfile.open_existing(database, tables=()) if read_only else SeekDBProfile.open(database, tables=())
+        )
         index = OceanBaseAtomicMemoryIndex(embedding_profile)
     else:
         raise typer.BadParameter("unsupported migration database")  # noqa: TRY003

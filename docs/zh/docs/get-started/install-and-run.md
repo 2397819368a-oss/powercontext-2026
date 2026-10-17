@@ -211,8 +211,9 @@ CREATE DATABASE IF NOT EXISTS `powercontext` CHARACTER SET utf8mb4;
 对实例进程所有权的限制。
 
 Python 调用方使用 `OceanBaseProfile.open()` 时可省略 URL 中的库名，并按需建库。
-`OceanBaseProfile.attach()` 要求调用方的 engine 已显式选择一个已有数据库，不替换 engine 或改变连接目标。
-只读数据库维护命令不会创建缺失库；显式的 seekDB 写入维护可以在应用迁移包前准备配置指定的数据库。
+`OceanBaseProfile.open_existing()` 只连接已准备好的数据库；`attach()` 要求调用方的 engine 已显式选择一个已有数据库。
+两者都不替换 engine 或改变连接目标。只读巡检（`plan`、`verify` 与 `db-migrate` 的检查类命令）不会创建缺失的
+OceanBase 或内嵌 seekDB 库；显式的 seekDB 写入维护可以在应用迁移包前准备配置指定的数据库。
 
 ## 验证安装
 

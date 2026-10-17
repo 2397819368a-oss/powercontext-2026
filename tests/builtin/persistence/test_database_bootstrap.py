@@ -29,7 +29,13 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from powercontext.builtin.persistence.bootstrap import DatabaseAccessError, DatabaseCreationError, ensure_database
+from powercontext.builtin.persistence.bootstrap import (
+    DatabaseAccessError,
+    DatabaseCreationError,
+    MissingDatabaseError,
+    ensure_database,
+    require_existing_database,
+)
 from powercontext.builtin.persistence.errors import PersistenceError
 from powercontext.builtin.persistence.oceanbase import (
     OceanBaseConfig,
@@ -379,3 +385,35 @@ def test_oceanbase_rejects_conflicting_query_database_selection(options: str) ->
             "url": f"mysql+aoceanbase://user:password@host:2881/custom?charset=utf8mb4&{options}"
         })
     assert "private-secret" not in str(error.value)
+
+
+def test_read_only_inspection_reuses_an_existing_database() -> None:
+    async def scenario() -> None:
+        instance = Instance({"custom-db"})
+        await require_existing_database(cast(AsyncEngine, instance.engine("custom-db")), name="custom-db")
+        assert not any(statement.startswith("CREATE") for statement in instance.statements)
+
+    asyncio.run(scenario())
+
+
+def test_read_only_inspection_reports_a_missing_database_without_creating_it() -> None:
+    async def scenario() -> None:
+        instance = Instance(set())
+        with pytest.raises(MissingDatabaseError, match="does not exist") as error:
+            await require_existing_database(cast(AsyncEngine, instance.engine("custom-db")), name="custom-db")
+        assert error.value.database_name == "custom-db"
+        assert not any(statement.startswith("CREATE") for statement in instance.statements)
+
+    asyncio.run(scenario())
+
+
+def test_read_only_inspection_reports_denied_access_without_claiming_absence() -> None:
+    async def scenario() -> None:
+        instance = Instance(set())
+        instance.failure = 1044
+        with pytest.raises(DatabaseAccessError, match="denied") as error:
+            await require_existing_database(cast(AsyncEngine, instance.engine("custom-db")), name="custom-db")
+        assert "CREATE DATABASE IF NOT EXISTS `custom-db`" in str(error.value)
+        assert not any(statement.startswith("CREATE") for statement in instance.statements)
+
+    asyncio.run(scenario())

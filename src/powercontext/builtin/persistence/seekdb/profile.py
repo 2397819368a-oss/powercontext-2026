@@ -39,6 +39,7 @@ from powercontext.builtin.persistence.bootstrap import (
     dispose_engine,
     ensure_database,
     mysql_error_code,
+    require_existing_database,
     validate_database_name,
 )
 from powercontext.builtin.persistence.database import AsyncDatabase
@@ -127,6 +128,31 @@ class SeekDBProfile:
     ) -> AsyncIterator[SeekDBProfile]:
         """Start seekdb locally and connect through its async Unix socket."""
 
+        async with cls._connect(config, tables=tables, provision=True) as profile:
+            yield profile
+
+    @classmethod
+    @asynccontextmanager
+    async def open_existing(
+        cls,
+        config: SeekDBConfig,
+        *,
+        tables: tuple[Table, ...],
+    ) -> AsyncIterator[SeekDBProfile]:
+        """Start seekdb locally and connect to an already provisioned database."""
+
+        async with cls._connect(config, tables=tables, provision=False) as profile:
+            yield profile
+
+    @classmethod
+    @asynccontextmanager
+    async def _connect(
+        cls,
+        config: SeekDBConfig,
+        *,
+        tables: tuple[Table, ...],
+        provision: bool,
+    ) -> AsyncIterator[SeekDBProfile]:
         path = config.path.expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         module = _load_binding()
@@ -137,11 +163,14 @@ class SeekDBProfile:
             profile = cls(database=database, tables=tables, connection_options=instance.connection_options())
             try:
                 await _require_explicit_legacy_database(config, instance.connection_options())
-                await ensure_database(
-                    engine,
-                    lambda: _create_engine(config, instance.connection_options(), database=""),
-                    name=config.database,
-                )
+                if provision:
+                    await ensure_database(
+                        engine,
+                        lambda: _create_engine(config, instance.connection_options(), database=""),
+                        name=config.database,
+                    )
+                else:
+                    await require_existing_database(engine, name=config.database)
                 await assert_dream_schema_ready(engine)
                 async with database.transaction() as connection:
                     await create_tables(connection, tables)

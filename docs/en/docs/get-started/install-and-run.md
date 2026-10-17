@@ -231,9 +231,11 @@ Concurrent creation uses idempotent database/table DDL and handles duplicate-ind
 coordination for existing-schema migrations or change embedded seekDB's process-ownership restrictions.
 
 For Python callers, `OceanBaseProfile.open()` resolves an omitted URL database and provisions it when necessary.
-`OceanBaseProfile.attach()` requires a caller-owned engine that already selects an existing database; it does not
-replace that engine or provision a different connection target. Read-only database-maintenance commands never create a
-missing database; explicit writable seekDB maintenance can provision its configured database before applying its bundle.
+`OceanBaseProfile.open_existing()` connects only to an already provisioned database, and `attach()` requires a
+caller-owned engine that already selects an existing database; neither replaces that engine or provisions a different
+connection target. Read-only inspection (`plan`, `verify`, and the `db-migrate` inspection commands) never creates a
+missing OceanBase or embedded seekDB database; explicit writable seekDB maintenance can provision its configured database
+before applying its bundle.
 
 ## Verify the installation
 

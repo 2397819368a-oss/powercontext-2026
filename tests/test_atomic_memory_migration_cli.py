@@ -24,9 +24,11 @@ import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
+from powercontext.builtin.persistence.bootstrap import MissingDatabaseError
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.cli.app import create_cli
+from powercontext.server import cli as server_cli
 from powercontext.server.authz import PrincipalRef
 from powercontext.server.authz.composition import open_builtin_access_control
 from powercontext.server.cli import app
@@ -261,3 +263,36 @@ def test_obsolete_development_projection_requires_explicit_rebuild(tmp_path, mon
             assert [hit.hit.artifact_ref.artifact_id for hit in result.hits] == [created.artifact_id]
 
     asyncio.run(read_and_write())
+
+
+class _ReadOnlyInspection:
+    """A backend profile whose read-only opener refuses to provision the database."""
+
+    @classmethod
+    def open(cls, config, *, tables):
+        raise AssertionError("read-only inspection must not use the provisioning opener")  # noqa: TRY003
+
+    @classmethod
+    def open_existing(cls, config, *, tables):
+        raise MissingDatabaseError("configured_db")
+
+
+@pytest.mark.parametrize("action", ["plan", "verify"])
+@pytest.mark.parametrize("backend", ["oceanbase", "seekdb"])
+def test_inspection_never_provisions_the_configured_database(tmp_path, monkeypatch, maintenance_cli, action, backend):
+    monkeypatch.setattr(server_cli, "OceanBaseProfile", _ReadOnlyInspection)
+    monkeypatch.setattr(server_cli, "SeekDBProfile", _ReadOnlyInspection)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_KIND", backend)
+    if backend == "oceanbase":
+        monkeypatch.setenv(
+            "POWERCONTEXT_SERVER_DATABASE_URL",
+            "mysql+aoceanbase://user:password@host:2881/configured_db?charset=utf8mb4",
+        )
+    else:
+        monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_PATH", str(tmp_path / "seekdb"))
+
+    result = CliRunner().invoke(maintenance_cli, ["server", "atomic-memory-migrate", "--action", action])
+
+    assert result.exit_code == 2, result.output
+    assert "require an existing database" in unstyle(result.output)
+    assert "configured_db" in unstyle(result.output)

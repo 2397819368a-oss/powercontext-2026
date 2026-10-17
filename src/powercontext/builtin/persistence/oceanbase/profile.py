@@ -28,7 +28,12 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from powercontext.builtin.persistence.bootstrap import DEFAULT_DATABASE, ensure_database, validate_database_name
+from powercontext.builtin.persistence.bootstrap import (
+    DEFAULT_DATABASE,
+    ensure_database,
+    require_existing_database,
+    validate_database_name,
+)
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.dream_schema import assert_dream_schema_ready
 from powercontext.builtin.persistence.errors import PersistenceError
@@ -130,17 +135,46 @@ class OceanBaseProfile:
     ) -> AsyncIterator[OceanBaseProfile]:
         """Create, initialize and exclusively own an official OceanBase engine."""
 
+        async with cls._connect(config, tables=tables, provision=True) as profile:
+            yield profile
+
+    @classmethod
+    @asynccontextmanager
+    async def open_existing(
+        cls,
+        config: OceanBaseConfig,
+        *,
+        tables: tuple[Table, ...],
+    ) -> AsyncIterator[OceanBaseProfile]:
+        """Connect to an already provisioned database without creating one."""
+
+        async with cls._connect(config, tables=tables, provision=False) as profile:
+            yield profile
+
+    @classmethod
+    @asynccontextmanager
+    async def _connect(
+        cls,
+        config: OceanBaseConfig,
+        *,
+        tables: tuple[Table, ...],
+        provision: bool,
+    ) -> AsyncIterator[OceanBaseProfile]:
         _register_official_dialect()
         url = _validate_oceanbase_url(config.url.get_secret_value())
+        name = url.database or DEFAULT_DATABASE
         engine = _create_engine(config, url)
         database = AsyncDatabase.own(engine)
         try:
-            await ensure_database(
-                engine,
-                lambda: _create_engine(config, url.set(database="")),
-                name=url.database or DEFAULT_DATABASE,
-                require_backend=_require_mysql_tenant,
-            )
+            if provision:
+                await ensure_database(
+                    engine,
+                    lambda: _create_engine(config, url.set(database="")),
+                    name=name,
+                    require_backend=_require_mysql_tenant,
+                )
+            else:
+                await require_existing_database(engine, name=name)
             async with _initialized_profile(cls(database=database, tables=tables)) as profile:
                 yield profile
         finally:
