@@ -23,8 +23,10 @@ from typing import Any
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
+from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
+from powercontext.builtin.runtime.config import RuntimeConfig
 from powercontext.server.authz import AccessAction
 from powercontext.server.authz.errors import AccessDeniedError, AccessUnavailableError
 from powercontext.server.background_metrics import create_background_metrics_app, serve_background_metrics
@@ -35,6 +37,7 @@ from powercontext.server.settings import (
     HttpConfig,
     MetricsConfig,
     ServerSettings,
+    UnauthenticatedNonLoopbackBindError,
 )
 
 
@@ -214,3 +217,62 @@ def test_background_metrics_fails_closed_without_authorization_service():
     with TestClient(app) as client:
         response = client.get("/metrics", headers={"Authorization": "Bearer scrape-token"})
     assert response.status_code == 503
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.1", "2001:db8::1"])  # noqa: S104 - policy test never opens an external socket
+def test_background_listener_rejects_unauthenticated_non_loopback(monkeypatch, host):
+    async def unexpected_listener(_server):
+        pytest.fail("unsafe listener reached Uvicorn")
+
+    monkeypatch.setattr("powercontext.server.background_metrics._BackgroundMetricsServer.serve", unexpected_listener)
+    settings = ServerSettings(
+        runtime=RuntimeConfig(artifact_processing_role="background"),
+        database=OceanBaseConfig(url=SecretStr("mysql+aoceanbase://test@localhost:2881/test?charset=utf8mb4")),
+    ).model_copy(update={"http": HttpConfig(host=host)})
+    app = create_background_metrics_app(settings, runtime=None, metrics=ServerMetrics(), access_control=None)
+    with pytest.raises(UnauthenticatedNonLoopbackBindError, match="non-loopback bind requires authentication"):
+        asyncio.run(serve_background_metrics(app, settings, asyncio.Event()))
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.1", "2001:db8::1"])  # noqa: S104 - policy test never opens an external socket
+def test_background_metrics_settings_reject_unsafe_bind(host):
+    with pytest.raises(ValidationError, match="non-loopback bind requires authentication"):
+        ServerSettings(
+            runtime=RuntimeConfig(artifact_processing_role="background"),
+            database=OceanBaseConfig(url=SecretStr("mysql+aoceanbase://test@localhost:2881/test?charset=utf8mb4")),
+            http=HttpConfig(host=host),
+        )
+
+
+@pytest.mark.parametrize(
+    "host,enforced,override,enabled",
+    [
+        ("127.0.0.1", False, False, True),
+        ("::1", False, False, True),
+        ("0.0.0.0", True, False, True),  # noqa: S104 - policy test never opens an external socket
+        ("::", True, False, True),
+        ("0.0.0.0", False, True, True),  # noqa: S104 - policy test never opens an external socket
+        ("::", False, True, True),
+        ("0.0.0.0", False, False, False),  # noqa: S104 - policy test never opens an external socket
+        ("::", False, False, False),
+    ],
+)
+def test_background_listener_preserves_allowed_bind_modes(monkeypatch, host, enforced, override, enabled):
+    started = []
+
+    async def listener(server):
+        started.append(server.config.host)
+
+    monkeypatch.setattr("powercontext.server.background_metrics._BackgroundMetricsServer.serve", listener)
+    settings = ServerSettings(
+        runtime=RuntimeConfig(artifact_processing_role="background"),
+        database=OceanBaseConfig(url=SecretStr("mysql+aoceanbase://test@localhost:2881/test?charset=utf8mb4")),
+        http=HttpConfig(host=host),
+        access=AccessControlConfig(mode="enforced" if enforced else "disabled"),
+        auth=BearerAuthConfig(token=SecretStr("scrape-token") if enforced else None),
+        metrics=MetricsConfig(enabled=enabled),
+        allow_unauthenticated_non_loopback=override,
+    )
+    app = create_background_metrics_app(settings, runtime=None, metrics=ServerMetrics(), access_control=None)
+    asyncio.run(serve_background_metrics(app, settings, asyncio.Event()))
+    assert started == ([host] if enabled else [])

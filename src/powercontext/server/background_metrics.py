@@ -29,6 +29,11 @@ from powercontext.server.app import _error_response, _map_error, _set_error_head
 from powercontext.server.authz.errors import AccessControlError
 from powercontext.server.factory import _MetricsEndpoint, _resolve_security_providers
 from powercontext.server.middleware import AuthenticationMiddleware
+from powercontext.server.settings import (
+    _UNSAFE_BIND_MESSAGE,
+    UnauthenticatedNonLoopbackBindError,
+    is_unauthenticated_non_loopback_bind,
+)
 
 if TYPE_CHECKING:
     from powercontext.builtin.runtime import BuiltinRuntime
@@ -82,8 +87,14 @@ class _BackgroundMetricsServer(uvicorn.Server):
 async def serve_background_metrics(app: FastAPI, settings: ServerSettings, stopped: asyncio.Event) -> None:
     """Keep the listener and supervisor lifetime aligned, including startup failure and cancellation."""
 
-    if stopped.is_set():
+    if stopped.is_set() or not settings.metrics.enabled:
         return
+    if is_unauthenticated_non_loopback_bind(
+        host=settings.http.host,
+        auth_enabled=settings.access.mode != "disabled",
+        allow_unauthenticated_non_loopback=settings.allow_unauthenticated_non_loopback,
+    ):
+        raise UnauthenticatedNonLoopbackBindError(_UNSAFE_BIND_MESSAGE)
     server = _BackgroundMetricsServer(
         uvicorn.Config(
             app,
