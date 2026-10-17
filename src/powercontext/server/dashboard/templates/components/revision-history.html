@@ -38,17 +38,13 @@ limitations under the License.
               <a class="btn btn-sm" href="{{ link('topics', topic_artifact=history.artifact_id, topic_revision=item.revision) }}">{{ t.revision }} {{ item.revision }}</a>
             {% elif history.family == "prompt" %}
               <a class="btn btn-sm" href="{{ link('prompts', prompt_key=history.artifact_id, prompt_revision=item.revision) }}">{{ t.revision }} {{ item.revision }}</a>
-            {% elif history.family == "memory" %}
-              <a class="btn btn-sm" href="{{ link('notes', memory_history=item.revision, memory_artifact=history.artifact_id, notes_page=none, memory_id=none, memory_revision=none, entry_version=none) }}">{{ t.revision }} {{ item.revision }}</a>
+            {% elif history.family == "atomic-memory" %}
+              <a class="btn btn-sm" href="{{ link('notes', artifact=history.artifact_id, revision=item.revision, compare=none, fragment='note-reading') }}">{{ t.revision }} {{ item.revision }}</a>
             {% else %}
               <a class="btn btn-sm" href="{{ link(none, artifact=history.artifact_id, revision=item.revision) }}">{{ t.revision }} {{ item.revision }}</a>
             {% endif %}
             {% if item.revision != history.selected %}
-              {% if history.family == "memory" %}
-                <a class="btn btn-sm" href="{{ link(none, compare=item.revision, memory_artifact=history.artifact_id, notes_page=none) }}">{{ t.revision_compare }}</a>
-              {% else %}
-                <a class="btn btn-sm" href="{{ link(none, compare=item.revision) }}">{{ t.revision_compare }}</a>
-              {% endif %}
+              <a class="btn btn-sm" href="{{ link(none, compare=item.revision) }}">{{ t.revision_compare }}</a>
             {% endif %}
           </div>
         </div>
@@ -76,14 +72,13 @@ limitations under the License.
           <p class="text-secondary">{{ t.revision_same }}</p>
         {% endif %}
       {% endfor %}
-      {% if history.compare_truncated %}<p class="text-secondary">{{ t.revision_compare_truncated }}</p>{% endif %}
     </div>
   {% endif %}
   {% if history.selected != history.head %}
     <form class="card-body border-top" method="get" action="/dashboard/{{ page }}">
       <input type="hidden" name="scope" value="{{ scope }}">
       {% if history.family == "profile" %}<input type="hidden" name="revision" value="{{ history.selected }}">{% endif %}
-      {% if history.family not in ["profile", "prompt", "memory", "topic-memory"] %}
+      {% if history.family not in ["profile", "prompt", "topic-memory"] %}
         <input type="hidden" name="artifact" value="{{ history.artifact_id }}">
         <input type="hidden" name="revision" value="{{ history.selected }}">
       {% endif %}
@@ -94,10 +89,6 @@ limitations under the License.
       {% if history.family == "prompt" %}
         <input type="hidden" name="prompt_key" value="{{ history.artifact_id }}">
         <input type="hidden" name="prompt_revision" value="{{ history.selected }}">
-      {% endif %}
-      {% if history.family == "memory" %}
-        <input type="hidden" name="memory_history" value="{{ history.selected }}">
-        <input type="hidden" name="memory_artifact" value="{{ history.artifact_id }}">
       {% endif %}
       <label class="form-label" for="compare-revision">{{ t.revision_other }}</label>
       <input class="form-control" id="compare-revision" name="compare" type="number" min="1" step="1" required value="{{ history.compare or history.head }}">

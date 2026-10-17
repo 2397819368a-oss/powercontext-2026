@@ -1,4 +1,5 @@
 ---
+# POWERCONTEXT-GUIDANCE:START
 name: powercontext-project-context
 description: PowerContext memory search/save, inventory, handoff and candidate review (搜索记忆、记住、盘点、交接、审查候选). Use for explicit requests or missing project history; ordinary coding and current-context summaries need no Skill detour.
 ---
@@ -14,7 +15,7 @@ Use the connected `powercontext` MCP server to manage project memory and handoff
 | The conversation already has enough information, ordinary coding, conceptual questions, or preview only | Complete the task directly without PowerContext calls, Scope creation, or Source writes. |
 | Find earlier decisions or missing project history | `search_memory`; [Scope and memory](references/scope-memory.md). |
 | Explicitly list or audit saved memory | `list_memory_entries`; do not replace relevance search with an inventory or expand an empty search into a listing. |
-| Explicitly remember, correct, or retire durable memory | `remember_memory`, `revise_memory_entry`, `retire_memory_entry`; [Scope and memory](references/scope-memory.md). |
+| Explicitly remember, correct, or retire durable memory | `remember_memory`, `replace_artifact`, `change_atomic_memory_lifecycle`; [Scope and memory](references/scope-memory.md). |
 | Find topic summaries and read their exact versions | `search_topic_memory`, `get_topic_memory`; [Scope and memory](references/scope-memory.md). |
 | Hand off, resume, acknowledge receipt, or record an actual task outcome | [Work handoffs](references/work-handoff.md). |
 | Inspect candidates, make authorized review decisions, or publish across Scopes | [Candidate review and publication](references/review-publication.md). |
@@ -43,3 +44,6 @@ Check error flags and structured results before reporting completed work. An emp
 A timed-out write may have an unknown outcome. Check its status before retrying a non-idempotent operation. For confirmed version conflicts, refresh as described in the relevant reference. If the service is unavailable, report it once and continue work that does not need PowerContext.
 
 Distinguish retrieved history, saved Memory, accepted Sources, prepared handoffs, committed milestones, acknowledged handoffs, and recorded outcomes. Report only states supported by the returned results.
+
+Semantic recall or vector indexing may use the configured embedding provider and incur external API cost; cached embeddings can be reused, and preparing context reuses the query embedding. Respect the configured budget and existing authorization before starting additional indexing.
+<!-- POWERCONTEXT-GUIDANCE:END -->

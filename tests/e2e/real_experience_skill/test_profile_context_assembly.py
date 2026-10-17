@@ -152,7 +152,7 @@ async def _scenario(url, token, scope_ids, report, settings):
         report["checks"].append("real_llm_pending_candidate_excluded")
 
         approved = await transport.post(
-            "/v1/artifact-candidates/approve",
+            "/v1/candidates/approve",
             json={"scope_id": current, "candidate_id": pending.json()["candidate_id"], "expected_version": 1},
         )
         assert approved.status_code == 200, approved.text
@@ -174,7 +174,7 @@ async def _scenario(url, token, scope_ids, report, settings):
                 scope_id=current, kind="constraint", text="Release verification requires contract tests."
             )
         )
-        assert remembered.entry is not None
+        assert len(remembered.records) == 1
         mixed = await client.prepare_context(
             PrepareContextRequest.model_validate({
                 "scope_id": current,
@@ -184,7 +184,7 @@ async def _scenario(url, token, scope_ids, report, settings):
         )
         assert mixed.content is not None
         assert mixed.content.index("## Profile") < mixed.content.index("## Memory")
-        assert remembered.entry.citation.entry_version_id in mixed.content
+        assert remembered.records[0].artifact.artifact_id in mixed.content
         assert 'Scope: "' + shared + '"' not in mixed.content
         for assembly in [None, {}]:
             payload = {"scope_id": current, "query": "Release verification contract tests"}

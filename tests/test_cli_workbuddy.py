@@ -96,10 +96,13 @@ def test_setup_workbuddy_installs_from_a_local_checkout(tmp_path: Path, monkeypa
     home = tmp_path / "workbuddy home"
     monkeypatch.setenv("WORKBUDDY_HOME", str(home))
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
+    # --env-file: a developer's repo-root .env must not supply the authorization state under test.
+    env_file = tmp_path / "setup.env"
+    env_file.write_text("", encoding="utf-8")
 
     result = CliRunner().invoke(
         create_cli([setup_app]),
-        ["setup", "workbuddy", "--source", str(checkout), "--json"],
+        ["setup", "--env-file", str(env_file), "workbuddy", "--source", str(checkout), "--json"],
     )
 
     assert result.exit_code == 0
@@ -211,6 +214,9 @@ def test_setup_workbuddy_preserves_remote_authenticated_mcp_configuration(tmp_pa
     home.mkdir()
     monkeypatch.setenv("WORKBUDDY_HOME", str(home))
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
+    # --env-file: a developer's repo-root .env must not override the endpoint preserved here.
+    env_file = tmp_path / "setup.env"
+    env_file.write_text("", encoding="utf-8")
 
     (home / "mcp.json").write_text(
         json.dumps({
@@ -228,7 +234,7 @@ def test_setup_workbuddy_preserves_remote_authenticated_mcp_configuration(tmp_pa
 
     result = CliRunner().invoke(
         create_cli([setup_app]),
-        ["setup", "workbuddy", "--source", str(checkout)],
+        ["setup", "--env-file", str(env_file), "workbuddy", "--source", str(checkout)],
     )
 
     assert result.exit_code == 0
@@ -319,8 +325,20 @@ def test_setup_workbuddy_refuses_an_unowned_skill(tmp_path: Path, monkeypatch) -
 
 
 def test_setup_workbuddy_refreshes_an_owned_skill(tmp_path: Path, monkeypatch) -> None:
+    from powercontext.cli.guidance import END, RESOURCE_MANIFEST, START
+
     checkout = tmp_path / "powercontext"
     plugin = _write_plugin(checkout)
+    source = plugin / "skills/powercontext-project-context/SKILL.md"
+    source.write_text(f"{START}\n{source.read_text(encoding='utf-8')}{END}\n", encoding="utf-8")
+    (source.parent / RESOURCE_MANIFEST).write_text(
+        json.dumps({
+            "schema_version": 1,
+            "resources": ["SKILL.md", "references/scope-memory.md"],
+            "legacy_sha256": {},
+        }),
+        encoding="utf-8",
+    )
     home = tmp_path / "workbuddy"
     monkeypatch.setenv("WORKBUDDY_HOME", str(home))
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
@@ -328,8 +346,8 @@ def test_setup_workbuddy_refreshes_an_owned_skill(tmp_path: Path, monkeypatch) -
     first = CliRunner().invoke(create_cli([setup_app]), ["setup", "workbuddy", "--source", str(checkout)])
     assert first.exit_code == 0
 
-    (plugin / "skills" / "powercontext-project-context" / "SKILL.md").write_text(
-        'updated\n${POWERCONTEXT_PYTHON} ${POWERCONTEXT_SCOPE_BINDING_SCRIPT} --cwd "$PWD"\n',
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(START + "\n", START + "\nupdated\n"),
         encoding="utf-8",
     )
     refreshed = CliRunner().invoke(create_cli([setup_app]), ["setup", "workbuddy", "--source", str(checkout)])
@@ -338,7 +356,7 @@ def test_setup_workbuddy_refreshes_an_owned_skill(tmp_path: Path, monkeypatch) -
     assert (
         (home / "skills" / "powercontext-project-context" / "SKILL.md")
         .read_text(encoding="utf-8")
-        .startswith("updated\n")
+        .startswith(START + "\nupdated\n")
     )
 
 

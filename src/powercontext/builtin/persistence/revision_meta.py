@@ -22,14 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import inspect
-from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy.schema import CreateColumn
-
 from powercontext.artifacts import Artifact
-from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE
-from powercontext.limits import MAX_ARTIFACT_REVISION_ACTOR_LENGTH
 
 _ROLLBACK_STAMP: ContextVar[PendingRollback | None] = ContextVar("powercontext_rollback_stamp", default=None)
 
@@ -125,37 +118,3 @@ def _utc(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
-
-
-async def ensure_revision_metadata_schema(connection: AsyncConnection, /) -> None:
-    """Add revision metadata columns to databases created before this contract."""
-
-    for name in ("created_at", "created_by", "restored_from_revision", "rollback_reason"):
-        if await _has_column(connection, name):
-            continue
-        declaration = str(CreateColumn(ARTIFACTS_TABLE.c[name]).compile(dialect=connection.dialect))
-        try:
-            await connection.exec_driver_sql(f"ALTER TABLE {ARTIFACTS_TABLE.name} ADD COLUMN {declaration}")
-        except DBAPIError:
-            if not await _has_column(connection, name):
-                raise
-    await _widen_created_by(connection)
-
-
-async def _widen_created_by(connection: AsyncConnection) -> None:
-    """Grow an older created_by column so a maximum-length principal id can be stored."""
-
-    if connection.dialect.name == "sqlite":
-        return
-    columns = await connection.run_sync(lambda sync: inspect(sync).get_columns(ARTIFACTS_TABLE.name))
-    column = next((item for item in columns if item["name"] == "created_by"), None)
-    length = None if column is None else getattr(column["type"], "length", None)
-    if not isinstance(length, int) or length >= MAX_ARTIFACT_REVISION_ACTOR_LENGTH:
-        return
-    declaration = str(CreateColumn(ARTIFACTS_TABLE.c.created_by).compile(dialect=connection.dialect))
-    await connection.exec_driver_sql(f"ALTER TABLE {ARTIFACTS_TABLE.name} MODIFY COLUMN {declaration}")
-
-
-async def _has_column(connection: AsyncConnection, column_name: str) -> bool:
-    columns = await connection.run_sync(lambda sync: inspect(sync).get_columns(ARTIFACTS_TABLE.name))
-    return any(column["name"] == column_name for column in columns)

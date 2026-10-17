@@ -171,7 +171,10 @@ def test_definition_change_does_not_hide_history_or_partially_commit_a_failed_ro
             )
             original = await records.get_artifact("scope-a", "prompt", "memory.extract")
             definitions = builtin_prompt_definitions()
-            changed = (replace(definitions[0], input_type=IncompatibleInput), *definitions[1:])
+            changed = tuple(
+                replace(definition, input_type=IncompatibleInput) if definition.key == "memory.extract" else definition
+                for definition in definitions
+            )
             upgraded = _records(profile, PromptRegistry(changed, supported=frozenset(PROMPT_KEYS)))
             assert await upgraded.get_artifact_revision("scope-a", "prompt", "memory.extract", 1) == original
             with pytest.raises(PromptError) as failure:
@@ -322,7 +325,7 @@ class _EmptyCommand(BaseModel):
     pass
 
 
-def test_memory_replace_rejects_rollback_fields() -> None:
-    write = ArtifactWrite(content={"changes": []}, restored_from_revision=1, reason="Restore memory")
-    with pytest.raises(InvalidBaseAccessRequestError, match="is not supported for memory"):
-        merged_source_revision("memory", write, _EmptyCommand())
+def test_atomic_memory_replace_rejects_rollback_fields() -> None:
+    write = ArtifactWrite(content={"kind": "fact", "text": "x"}, restored_from_revision=1, reason="Restore memory")
+    with pytest.raises(InvalidBaseAccessRequestError, match="is not supported for atomic-memory"):
+        merged_source_revision("atomic-memory", write, _EmptyCommand())

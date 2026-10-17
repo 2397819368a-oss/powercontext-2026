@@ -14,7 +14,6 @@
 
 """Read and download exact artifacts through the authenticated Dashboard."""
 
-import asyncio
 import re
 from html import unescape
 from pathlib import Path
@@ -29,7 +28,6 @@ from powercontext.builtin.artifacts.prompt import PROMPT_KEYS, PromptRegistry
 from powercontext.builtin.artifacts.prompt.builtin import builtin_prompt_definitions
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.server.dashboard.api import DashboardAPI
-from powercontext.server.dashboard.revisions import _MEMORY_COMPARE_LIMIT, _memory_text_rows
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import (
     DashboardConfig,
@@ -227,7 +225,7 @@ def test_prompt_page_shows_the_selected_revision(dashboard: TestClient) -> None:
         f"/v1/scopes/{scope}/artifacts",
         json={
             "family": "prompt",
-            "prompt_key": "memory.extract",
+            "prompt_key": "experience.generate",
             "content": {
                 "schema_version": "powercontext.prompt.v1",
                 "mode": "custom",
@@ -237,9 +235,9 @@ def test_prompt_page_shows_the_selected_revision(dashboard: TestClient) -> None:
         },
     )
     assert created.status_code == 201, created.text
-    current = dashboard.get(f"/v1/scopes/{scope}/artifacts/prompt/memory.extract")
+    current = dashboard.get(f"/v1/scopes/{scope}/artifacts/prompt/experience.generate")
     replaced = dashboard.put(
-        f"/v1/scopes/{scope}/artifacts/prompt/memory.extract",
+        f"/v1/scopes/{scope}/artifacts/prompt/experience.generate",
         json={
             "content": {
                 "schema_version": "powercontext.prompt.v1",
@@ -253,7 +251,7 @@ def test_prompt_page_shows_the_selected_revision(dashboard: TestClient) -> None:
     assert replaced.status_code == 200, replaced.text
     opened = dashboard.get(
         "/dashboard/prompts",
-        params={"scope": scope, "prompt_key": "memory.extract", "prompt_revision": "1", "lang": "en"},
+        params={"scope": scope, "prompt_key": "experience.generate", "prompt_revision": "1", "lang": "en"},
     )
     assert opened.status_code == 200
     assert "Keep the approved prompt." in opened.text
@@ -286,182 +284,72 @@ def _rollback(client: TestClient, scope: str, family: str, artifact_id: str, exp
     )
 
 
-def test_notes_history_follows_the_displayed_memory(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Memory history identity")["scope_id"]
-    extra = dashboard.post(
-        f"/v1/scopes/{scope}/artifacts",
-        json={"family": "memory", "content": {"entries": [{"kind": "preference", "text": "Unrelated memory"}]}},
-    )
-    assert extra.status_code == 201, extra.text
-    extra_id = extra.json()["artifact_id"]
-    first = dashboard.post(
-        "/v1/memory/remember",
-        json={"scope_id": scope, "kind": "fact", "text": "Approved note."},
-    )
-    assert first.status_code == 200, first.text
-    second = dashboard.post(
-        "/v1/memory/remember",
-        json={"scope_id": scope, "kind": "fact", "text": "Later note."},
-    )
-    assert second.status_code == 200, second.text
-    binding = dashboard.post("/v1/memory/entries/list", json={"scope_id": scope}).json()["memory"]
-    page = dashboard.get("/dashboard/notes", params={"scope": scope, "lang": "en"})
-    assert page.status_code == 200, page.text
-    assert "Approved note." in page.text
-    assert "Later note." in page.text
-    assert "Revision 2" in page.text
-    assert f"memory_artifact={binding['artifact_id']}" in page.text
-    assert f"memory_artifact={extra_id}" not in page.text
-    opened = dashboard.get(
-        "/dashboard/notes",
-        params={"scope": scope, "memory_artifact": binding["artifact_id"], "memory_history": "1", "lang": "en"},
-    )
-    assert opened.status_code == 200, opened.text
-    assert first.json()["entry"]["citation"]["entry_id"] in opened.text
-    assert "Unrelated memory" not in opened.text
-
-
-def test_notes_page_shows_the_selected_memory_revision(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Memory revision text")["scope_id"]
-    remembered = dashboard.post(
-        "/v1/memory/remember",
-        json={"scope_id": scope, "kind": "fact", "text": "Original note."},
-    )
-    assert remembered.status_code == 200, remembered.text
-    revised = dashboard.post(
-        "/v1/memory/entries/revise",
-        json={
-            "scope_id": scope,
-            "citation": remembered.json()["entry"]["citation"],
-            "kind": "fact",
-            "text": "Revised note.",
-        },
-    )
-    assert revised.status_code == 200, revised.text
-    page = dashboard.get(
-        "/dashboard/notes",
-        params={"scope": scope, "memory_history": "1", "compare": "2", "lang": "en"},
-    )
-    assert page.status_code == 200, page.text
-    assert 'class="note-text">Original note.' in page.text
-    assert "Revised note." in page.text
-
-
 def _hrefs(html: str) -> list[str]:
     return [unescape(href) for href in re.findall(r'href="([^"]+)"', html)]
 
 
-def test_memory_history_link_replaces_the_previously_selected_note_version(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Memory revision navigation")["scope_id"]
-    remembered = dashboard.post(
-        "/v1/memory/remember",
-        json={"scope_id": scope, "kind": "fact", "text": "Original note."},
-    )
+def _revised_memory(client: TestClient, scope: str) -> str:
+    remembered = client.post("/v1/memory/remember", json={"scope_id": scope, "kind": "fact", "text": "Original note."})
     assert remembered.status_code == 200, remembered.text
-    entry = remembered.json()["entry"]
-    revised = dashboard.post(
-        "/v1/memory/entries/revise",
-        json={"scope_id": scope, "citation": entry["citation"], "kind": "fact", "text": "Revised note."},
+    artifact_id = remembered.json()["records"][0]["artifact"]["artifact_id"]
+    path = f"/v1/scopes/{scope}/artifacts/atomic-memory/{artifact_id}"
+    current = client.get(path)
+    revised = client.put(
+        path, headers={"If-Match": current.headers["etag"]}, json={"content": {"kind": "fact", "text": "Revised note."}}
     )
     assert revised.status_code == 200, revised.text
-    current = dashboard.get(
+    return artifact_id
+
+
+def _reading(html: str) -> str:
+    return html.split('id="note-reading"', 1)[1]
+
+
+def test_atomic_memory_history_compares_its_own_revisions_read_only(dashboard: TestClient) -> None:
+    scope = create_scope(dashboard, "Atomic memory history")["scope_id"]
+    artifact_id = _revised_memory(dashboard, scope)
+    page = dashboard.get(
         "/dashboard/notes",
-        params={"scope": scope, "entry": entry["citation"]["entry_id"], "lang": "en"},
+        params={"scope": scope, "artifact": artifact_id, "revision": "1", "compare": "2", "lang": "en"},
     )
-    assert current.status_code == 200, current.text
-    selected = dashboard.get(next(href for href in _hrefs(current.text) if "memory_id=" in href and "entry=" in href))
-    assert selected.status_code == 200, selected.text
-    page = dashboard.get(next(href for href in _hrefs(selected.text) if "memory_history=1" in href))
     assert page.status_code == 200, page.text
-    reading = page.text.split('id="note-reading"', 1)[1]
+    assert "Original note." in _reading(page.text).split("Revision history", 1)[0]
+    assert "Revision history" in page.text
+    assert "+ Revised note." in unescape(page.text)
+    assert "- Original note." in unescape(page.text)
+    assert "/dashboard/rollback" not in page.text
+
+
+def test_atomic_memory_history_link_opens_that_exact_revision(dashboard: TestClient) -> None:
+    scope = create_scope(dashboard, "Atomic memory navigation")["scope_id"]
+    artifact_id = _revised_memory(dashboard, scope)
+    current = dashboard.get("/dashboard/notes", params={"scope": scope, "lang": "en"})
+    assert current.status_code == 200, current.text
+    assert "Revised note." in _reading(current.text)
+    older = next(
+        href
+        for href in _hrefs(current.text)
+        if f"artifact={artifact_id}" in href and "revision=1" in href.split("#")[0]
+    )
+    page = dashboard.get(older)
+    assert page.status_code == 200, page.text
+    reading = _reading(page.text).split("Revision history", 1)[0]
     assert "Original note." in reading
     assert "Revised note." not in reading
 
 
-def test_memory_history_link_tolerates_a_note_added_after_that_revision(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Memory revision navigation")["scope_id"]
-    for text in ("Alpha note.", "Beta note."):
-        remembered = dashboard.post("/v1/memory/remember", json={"scope_id": scope, "kind": "fact", "text": text})
-        assert remembered.status_code == 200, remembered.text
-    beta = remembered.json()["entry"]["citation"]["entry_id"]
-    current = dashboard.get("/dashboard/notes", params={"scope": scope, "entry": beta, "lang": "en"})
-    selected = dashboard.get(next(href for href in _hrefs(current.text) if "memory_id=" in href and "entry=" in href))
-    page = dashboard.get(next(href for href in _hrefs(selected.text) if "memory_history=1" in href))
-    assert page.status_code == 200, page.text
-    assert "Alpha note." in page.text
-    assert "Beta note." not in page.text
-
-
-def test_older_memory_revision_ignores_a_later_notes_page(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Paged memory history")["scope_id"]
-    first = dashboard.post(
-        "/v1/memory/remember",
-        json={"scope_id": scope, "kind": "fact", "text": "First historical note."},
+def test_atomic_memory_replace_rejects_rollback_fields(dashboard: TestClient) -> None:
+    scope = create_scope(dashboard, "Atomic memory rollback")["scope_id"]
+    artifact_id = _revised_memory(dashboard, scope)
+    path = f"/v1/scopes/{scope}/artifacts/atomic-memory/{artifact_id}"
+    current = dashboard.get(path)
+    restored = dashboard.put(
+        path,
+        headers={"If-Match": current.headers["etag"]},
+        json={"content": {"kind": "fact", "text": "Original note."}, "restored_from_revision": 1, "reason": "Undo"},
     )
-    assert first.status_code == 200, first.text
-    for index in range(6):
-        later = dashboard.post(
-            "/v1/memory/remember",
-            json={"scope_id": scope, "kind": "fact", "text": f"Later note {index}."},
-        )
-        assert later.status_code == 200, later.text
-    current = dashboard.get("/dashboard/notes", params={"scope": scope, "notes_page": "2", "lang": "en"})
-    assert current.status_code == 200, current.text
-    hrefs = re.findall(r'href="([^"]*memory_history=[^"]*)"', current.text)
-    assert hrefs
-    assert all("notes_page" not in unescape(href) for href in hrefs)
-    opened = dashboard.get(
-        "/dashboard/notes",
-        params={"scope": scope, "notes_page": "2", "memory_history": "1", "lang": "en"},
-    )
-    assert opened.status_code == 200, opened.text
-    assert "First historical note." in opened.text
-
-
-def test_missing_memory_revision_does_not_show_current_notes(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Missing memory revision")["scope_id"]
-    remembered = dashboard.post(
-        "/v1/memory/remember",
-        json={"scope_id": scope, "kind": "fact", "text": "Original note."},
-    )
-    assert remembered.status_code == 200, remembered.text
-    page = dashboard.get("/dashboard/notes", params={"scope": scope, "memory_history": "99", "lang": "en"})
-    assert page.status_code == 200, page.text
-    assert "Original note." not in page.text
-    assert "Content not found" in page.text
-
-
-def test_memory_compare_stops_after_the_entry_budget() -> None:
-    async def scenario() -> None:
-        calls: list[str] = []
-
-        class Api:
-            async def read(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-                assert payload is not None
-                entry_id = payload["citation"]["entry_id"]
-                calls.append(entry_id)
-                return {"text": entry_id}
-
-        count = _MEMORY_COMPARE_LIMIT + 1
-        entries = [
-            {"state": "active", "entry_id": f"entry-{index}", "entry_version_id": f"version-{index}"}
-            for index in range(count)
-        ]
-        changed = [{**item, "entry_version_id": f"later-{item['entry_id']}"} for item in entries]
-        rows, truncated = await _memory_text_rows(
-            cast(DashboardAPI, Api()),
-            "scope",
-            "memory",
-            1,
-            {"manifest": {"entries": entries}},
-            2,
-            {"manifest": {"entries": changed}},
-        )
-        assert truncated
-        assert len(rows) == _MEMORY_COMPARE_LIMIT
-        assert len(calls) == _MEMORY_COMPARE_LIMIT * 2
-
-    asyncio.run(scenario())
+    assert restored.status_code == 422, restored.text
+    assert dashboard.get(path).json()["revision"] == 2
 
 
 def test_rollback_rejects_a_cross_origin_request(dashboard: TestClient) -> None:

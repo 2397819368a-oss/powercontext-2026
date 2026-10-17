@@ -58,6 +58,13 @@ def isolated_client_connection_settings(tmp_path, monkeypatch, request):
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
+    continuity = parser.getgroup("powercontext-cross-host")
+    continuity.addoption(
+        "--cross-host-acceptance-output",
+        type=Path,
+        default=Path(".powercontext/cross-host-acceptance"),
+        help="Selected evidence from actual Pi to ZCode Work Continuity acceptance.",
+    )
     dsh = parser.getgroup("powercontext-dsh")
     dsh.addoption(
         "--require-dsh-runtime",
@@ -143,6 +150,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         if item.get_closest_marker("zcode_host_acceptance")
         and (not selected or (item.get_closest_marker("zcode_live_model") is not None) != live)
     ]
+    cross_requested = marker_expression.evaluate(lambda name, **kwargs: name == "cross_host_acceptance" and not kwargs)
+    cross_selected = (cross_requested and not without_host) or any(
+        "test_cross_host_work_continuity.py" in str(argument) for argument in config.args
+    )
+    deselected.extend(item for item in items if item.get_closest_marker("cross_host_acceptance") and not cross_selected)
     if deselected:
         config.hook.pytest_deselected(items=deselected)
         items[:] = [item for item in items if item not in deselected]

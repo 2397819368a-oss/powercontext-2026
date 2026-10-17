@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 
 from evaluation.memory.locomo.dataset import LoCoMoConversation, LoCoMoSession, LoCoMoTurn
@@ -108,7 +108,7 @@ def test_inspection_and_planning_need_no_credentials_or_models(
         assert output["plan"]
 
 
-@pytest.mark.parametrize("flag", ["--limit", "--top-k", "--max-tokens", "--max-history-sessions"])
+@pytest.mark.parametrize("flag", ["--limit", "--top-k", "--max-tokens", "--max-history-sessions", "--concurrency"])
 def test_nonpositive_resource_bounds_are_rejected(flag: str) -> None:
     with pytest.raises(SystemExit, match="2"):
         cli.main(["run", "--dry-run", flag, "0"])
@@ -141,8 +141,25 @@ def test_full_profile_passes_explicit_case_and_history_bounds(
             "1",
             "--judge-model",
             "openai:test-judge",
+            "--memory-extraction-model",
+            "openai:test-extractor",
+            "--memory-extraction-timeout-seconds",
+            "120",
             "--arm",
-            "query-only",
+            "memory-source",
+            "--reuse-ingestion-directory",
+            str(tmp_path / "donor"),
+            "--memory-rerank",
+            "--rerank-model",
+            "openai:test-reranker",
+            "--rerank-candidate-limit",
+            "40",
+            "--top-k",
+            "8",
+            "--database",
+            "oceanbase",
+            "--concurrency",
+            "3",
             "--output-directory",
             str(tmp_path),
             "--run-id",
@@ -154,7 +171,16 @@ def test_full_profile_passes_explicit_case_and_history_bounds(
     assert received["limit"] == 1
     assert received["max_history_sessions"] == 1
     assert received["judge_model"] == "openai:test-judge"
-    assert received["arm"] == "query-only"
+    assert received["memory_extraction_model"] == "openai:test-extractor"
+    assert received["memory_extraction_timeout_seconds"] == 120.0
+    assert received["arm"] == "memory-source"
+    assert received["reuse_ingestion_directory"] == tmp_path / "donor"
+    assert received["memory_rerank"] is True
+    assert received["rerank_model"] == "openai:test-reranker"
+    assert received["rerank_candidate_limit"] == 40
+    assert received["top_k"] == 8
+    assert received["database"] == "oceanbase"
+    assert received["concurrency"] == 3
     assert '"planned_cases": 1' in capsys.readouterr().out
 
 
@@ -231,7 +257,7 @@ def test_bundled_input_rejects_requests_outside_its_fixed_scope(options: list[st
         cli.main(["run", "--dataset-file", str(DEFAULT_SMOKE_PATH), "--dry-run", *options])
 
 
-def test_run_loads_oceanbase_identity_from_dotenv_without_recording_credentials(
+def test_run_loads_oceanbase_identity_from_dotenv_without_recording_credentials(  # noqa: C901
     dataset: LoCoMoPlusDataset,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -262,8 +288,23 @@ def test_run_loads_oceanbase_identity_from_dotenv_without_recording_credentials(
     async def open_model(name, settings, resources):
         async def respond(messages, info):
             output = (
-                "A quiet place would help." if name == "test-answer" else '{"label":"correct","reason":"Uses the cue."}'
+                "A quiet place would help."
+                if name == "test-answer"
+                else '{"label":"correct","reason":"Uses the cue.","prediction_support":"quiet place",'
+                '"historical_support":"quiet place"}'
             )
+            if name != "test-answer":
+                payload = json.loads(
+                    next(
+                        part.content
+                        for message in reversed(messages)
+                        if isinstance(message, ModelRequest)
+                        for part in message.parts
+                        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+                    )
+                )
+                if "response" in payload:
+                    output = json.dumps({"claims": [payload["response"]]})
             return ModelResponse(parts=[TextPart(output)])
 
         return FunctionModel(respond, model_name=name)

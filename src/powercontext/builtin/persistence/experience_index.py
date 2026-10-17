@@ -36,7 +36,9 @@ from powercontext.builtin.artifacts.search import (
     AdmissionCounts,
     AdmissionFloor,
     InvalidSearchScore,
+    admits_fts_projection,
     admits_fts_text,
+    analyze_text,
     lexical_search_score,
 )
 from powercontext.builtin.artifacts.skill import (
@@ -77,6 +79,7 @@ _GOVERNANCE_COLUMNS = {
     ),
     "replacement_artifact_id": ("VARCHAR(128) NULL", "VARCHAR(128) NULL"),
     "governance_generation": ("BIGINT NOT NULL DEFAULT 0", "BIGINT NOT NULL DEFAULT 0"),
+    "merged_into_id": ("VARCHAR(128) NULL", "VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL"),
 }
 
 
@@ -92,6 +95,8 @@ class ExperienceIndex(Protocol):
         experience: Experience,
         /,
     ) -> None: ...
+
+    async def remove(self, connection: AsyncConnection, scope_id: str, artifact_id: str, /) -> None: ...
 
     async def search(
         self,
@@ -158,6 +163,9 @@ class NoExperienceIndex:
     ) -> ExperienceSearchOutcome:
         return ExperienceSearchOutcome()
 
+    async def remove(self, _connection: AsyncConnection, _scope_id: str, _artifact_id: str, /) -> None:
+        pass
+
     async def replace_skill(
         self,
         _connection: AsyncConnection,
@@ -184,7 +192,7 @@ class NoExperienceIndex:
 
 
 async def ensure_artifact_head_searchable_text(connection: AsyncConnection, /) -> None:
-    """Upgrade a pre-Experience Artifact head table with its rebuildable search projection."""
+    """Upgrade existing shared heads and lineage with their current persisted columns."""
 
     dialect = connection.dialect.name
     if dialect == "sqlite":
@@ -210,6 +218,17 @@ async def ensure_artifact_head_searchable_text(connection: AsyncConnection, /) -
         if int(exists or 0) == 0:
             definition = definitions[0 if dialect == "sqlite" else 1]
             await connection.exec_driver_sql(f"ALTER TABLE pc_artifact_heads ADD COLUMN {column} {definition}")
+    lineage_column_sql = text(
+        "SELECT COUNT(*) FROM pragma_table_info('pc_artifact_lineage_artifacts') WHERE name = 'is_merge_input'"
+        if dialect == "sqlite"
+        else "SELECT COUNT(*) FROM information_schema.columns "
+        "WHERE table_schema = DATABASE() AND table_name = 'pc_artifact_lineage_artifacts' "
+        "AND column_name = 'is_merge_input'"
+    )
+    if int(await connection.scalar(lineage_column_sql) or 0) == 0:
+        await connection.exec_driver_sql(
+            "ALTER TABLE pc_artifact_lineage_artifacts ADD COLUMN is_merge_input BOOLEAN NOT NULL DEFAULT 0"
+        )
 
 
 async def rebuild_experience_projections(connection: AsyncConnection, /) -> None:
@@ -223,6 +242,7 @@ async def rebuild_experience_projections(connection: AsyncConnection, /) -> None
                     ARTIFACT_HEADS_TABLE.c.artifact_id,
                     ARTIFACT_HEADS_TABLE.c.revision,
                     ARTIFACTS_TABLE.c.content,
+                    ARTIFACT_HEADS_TABLE.c.searchable_text,
                 )
                 .join(
                     ARTIFACTS_TABLE,
@@ -237,12 +257,15 @@ async def rebuild_experience_projections(connection: AsyncConnection, /) -> None
         ).mappings()
     )
     for row in rows:
+        searchable = experience_searchable_text(_content(row["content"]))
+        if row["searchable_text"] == searchable:
+            continue
         await _update_searchable_text(
             connection,
             scope_id=str(row["scope_id"]),
             artifact_id=str(row["artifact_id"]),
             revision=int(row["revision"]),
-            searchable_text=experience_searchable_text(_content(row["content"])),
+            searchable_text=searchable,
         )
 
 
@@ -257,6 +280,7 @@ async def rebuild_skill_projections(connection: AsyncConnection, /) -> None:
                     ARTIFACT_HEADS_TABLE.c.artifact_id,
                     ARTIFACT_HEADS_TABLE.c.revision,
                     ARTIFACTS_TABLE.c.content,
+                    ARTIFACT_HEADS_TABLE.c.searchable_text,
                 )
                 .join(
                     ARTIFACTS_TABLE,
@@ -273,13 +297,16 @@ async def rebuild_skill_projections(connection: AsyncConnection, /) -> None:
     for row in rows:
         content = _skill_content(row["content"])
         package = await _load_skill_package(connection, str(row["scope_id"]), content)
+        searchable = skill_searchable_text(content, package)
+        if row["searchable_text"] == searchable:
+            continue
         await _update_searchable_text(
             connection,
             scope_id=str(row["scope_id"]),
             family=Skill.family,
             artifact_id=str(row["artifact_id"]),
             revision=int(row["revision"]),
-            searchable_text=skill_searchable_text(content, package),
+            searchable_text=searchable,
         )
 
 
@@ -297,6 +324,20 @@ async def replace_experience_projection(
         artifact_id=experience.artifact_id,
         revision=experience.revision,
         searchable_text=experience_searchable_text(experience.content),
+    )
+
+
+async def remove_experience_projection(connection: AsyncConnection, scope_id: str, artifact_id: str, /) -> None:
+    """Remove current searchable content without changing exact Artifact history."""
+
+    await connection.execute(
+        update(ARTIFACT_HEADS_TABLE)
+        .where(
+            ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
+            ARTIFACT_HEADS_TABLE.c.family == Experience.family,
+            ARTIFACT_HEADS_TABLE.c.artifact_id == artifact_id,
+        )
+        .values(searchable_text=None)
     )
 
 
@@ -393,8 +434,8 @@ def skill_search_hits(
     hits: list[SkillSearchHit] = []
     for row in rows:
         content = _skill_content(row["content"])
-        searchable = row.get("searchable_text") or skill_search_text(content)
-        if not admits_fts_text(query, str(searchable), floor=admission):
+        searchable = row.get("searchable_text") or analyze_text(skill_search_text(content))
+        if not admits_fts_projection(query, str(searchable), floor=admission):
             continue
         retrieval_score, channel_scores = _search_scores(row, required=require_scores or min_score is not None)
         if min_score is not None and (retrieval_score is None or retrieval_score < min_score):
@@ -497,6 +538,7 @@ __all__ = [
     "experience_search_hits",
     "rebuild_experience_projections",
     "rebuild_skill_projections",
+    "remove_experience_projection",
     "replace_experience_projection",
     "replace_skill_projection",
     "skill_search_hits",

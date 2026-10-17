@@ -16,15 +16,18 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, JsonValue, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
+from powercontext.artifacts import ArtifactRef
 from powercontext.limits import MAX_ARTIFACT_FAMILY_LENGTH
 from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, AdapterSourceDefinition, TextEvidence
 from powercontext.sources.models import Source, SourceMaterialization
 
 CONTENT_SOURCE_NAME = "content"
+WORKING_NOTE_SOURCE_KIND = "working_note"
 NonEmptyText = Annotated[str, Field(min_length=1)]
 
 
@@ -59,12 +62,35 @@ class ContentSourceTarget(BaseModel):
         return value
 
 
+class ArtifactRestorationWrite(BaseModel):
+    """Exact content source and committed result of one restoration write."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    before_ref: ArtifactRef
+    content_from_ref: ArtifactRef
+    after_ref: ArtifactRef
+    lifecycle_state: Literal["active", "retired"]
+
+
+class ArtifactRestorationOutcome(BaseModel):
+    """One successful restoration group retained with its primary revision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation: Literal["restore", "undo_merge"]
+    target: ArtifactRef
+    writes: tuple[ArtifactRestorationWrite, ...]
+    undo_merge_results: tuple[ArtifactRef, ...]
+
+
 class ContentSourceInternal(BaseModel):
     """Server-owned Source purpose data never exposed by the base REST API."""
 
     role: Literal["lineage_only"]
-    operation: Literal["artifact_create", "artifact_replace"]
+    operation: Literal["artifact_create", "artifact_replace", "artifact_restore", "artifact_undo_merge"]
     target: ContentSourceTarget
+    restoration_outcome: ArtifactRestorationOutcome | None = None
 
 
 class ContentSource(Source):
@@ -72,11 +98,36 @@ class ContentSource(Source):
 
     content: str
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    working_note: bool = False
     wire_content: JsonValue | None = None
     wire_content_present: bool = False
     internal: ContentSourceInternal | None = None
     # Set only by the Work acknowledgement writer, never from capture metadata.
     handoff_receipt: bool = False
+
+    @property
+    def is_working_note(self) -> bool:
+        """Whether this captured Source is explicitly session-local work state."""
+
+        return self.working_note
+
+    def is_working_note_active(self, *, now: datetime | None = None) -> bool:
+        """Whether a Working Note remains eligible for an explicit consumer."""
+
+        if not self.is_working_note:
+            return False
+        expires_at = self.metadata.get("expires_at")
+        if expires_at is None:
+            return True
+        if not isinstance(expires_at, str):
+            return False
+        try:
+            expiry = datetime.fromisoformat(expires_at)
+        except ValueError:
+            return False
+        if expiry.tzinfo is None or expiry.utcoffset() is None:
+            return False
+        return expiry > (datetime.now(UTC) if now is None else now)
 
 
 class ContentSourceAdapter:

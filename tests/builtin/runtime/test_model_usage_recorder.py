@@ -118,9 +118,16 @@ def test_flush_persists_copied_usage_with_unknown_tokens_and_original_date(tmp_p
 def test_queue_capacity_drops_without_sql_or_sensitive_logs(caplog: pytest.LogCaptureFixture) -> None:
     async def scenario() -> None:
         async with _database() as database:
-            # Keep queue overflow assertions independent of SQLite write deadlines.
+            capacity = 2
+            write_budget = 5.0
+            # Queue admission is under test. The default short flush may return
+            # before the accepted prefix settles, even with a healthy consumer.
             recorder = _ModelUsageRecorder(
-                database, StatisticsRepository(), queue_capacity=2, write_timeout_seconds=5.0, flush_timeout_seconds=5.0
+                database,
+                StatisticsRepository(),
+                queue_capacity=capacity,
+                write_timeout_seconds=write_budget,
+                flush_timeout_seconds=capacity * write_budget + 1,
             )
             try:
                 for _ in range(8):
@@ -285,26 +292,40 @@ def test_an_attempt_that_expires_at_checkout_is_repeated(tmp_path: Path, monkeyp
         config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'slow-checkout.db'}")
         async with _database(config) as database:
             starts = 0
+            checkout_expired = False
+            release_checkout = asyncio.Event()
             original_start = AsyncConnection.start
 
             async def start(connection: AsyncConnection, is_ctxmanager: bool = False) -> AsyncConnection:
-                nonlocal starts
+                nonlocal starts, checkout_expired
                 starts += 1
                 if starts == 1:
-                    # Outlive the whole slice without starting driver work, so
-                    # the attempt expires with nothing applied.
-                    await asyncio.sleep(0.08)
+                    # Wait for real deadline cancellation before any driver
+                    # work starts, so the expired attempt applied nothing.
+                    try:
+                        await release_checkout.wait()
+                    except asyncio.CancelledError:
+                        checkout_expired = True
+                        raise
                 return await original_start(connection, is_ctxmanager)
 
             monkeypatch.setattr(AsyncConnection, "start", start)
-            recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=0.2)
+            # The retry uses real SQLite; leave scheduling margin after the
+            # deliberate expiry instead of testing a subsecond write budget.
+            recorder = _ModelUsageRecorder(
+                database, StatisticsRepository(), write_timeout_seconds=5.0, flush_timeout_seconds=5.0
+            )
             try:
                 _offer(recorder)
                 await recorder.flush()
+                assert checkout_expired
                 assert starts > 1
-                assert (await _rows(database))[0].requests == 1
+                rows = await _rows(database)
+                assert len(rows) == 1
+                assert rows[0].requests == 1
                 await _assert_connection_restored(database)
             finally:
+                release_checkout.set()
                 await recorder.close()
 
     asyncio.run(scenario())
@@ -375,7 +396,7 @@ def test_a_repeat_after_an_expiry_gets_the_rest_of_the_budget(tmp_path: Path, mo
         async with _database(config) as database:
             budgets: list[float] = []
             expired = False
-            original = AsyncDatabase._model_usage_transaction
+            original = AsyncDatabase.statistics_transaction
 
             @asynccontextmanager
             async def transaction(instance: AsyncDatabase, timeout_seconds: float) -> AsyncIterator[AsyncConnection]:
@@ -387,7 +408,7 @@ def test_a_repeat_after_an_expiry_gets_the_rest_of_the_budget(tmp_path: Path, mo
                 async with original(instance, timeout_seconds) as connection:
                     yield connection
 
-            monkeypatch.setattr(AsyncDatabase, "_model_usage_transaction", transaction)
+            monkeypatch.setattr(AsyncDatabase, "statistics_transaction", transaction)
             recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=1.0)
             try:
                 _offer(recorder)
@@ -420,7 +441,7 @@ def test_a_repeat_after_a_lost_race_gets_the_rest_of_the_budget(
         async with _database(config) as database:
             budgets: list[float] = []
             contended = False
-            original = AsyncDatabase._model_usage_transaction
+            original = AsyncDatabase.statistics_transaction
 
             @asynccontextmanager
             async def transaction(instance: AsyncDatabase, timeout_seconds: float) -> AsyncIterator[AsyncConnection]:
@@ -432,7 +453,7 @@ def test_a_repeat_after_a_lost_race_gets_the_rest_of_the_budget(
                 async with original(instance, timeout_seconds) as connection:
                     yield connection
 
-            monkeypatch.setattr(AsyncDatabase, "_model_usage_transaction", transaction)
+            monkeypatch.setattr(AsyncDatabase, "statistics_transaction", transaction)
             recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=1.0)
             try:
                 _offer(recorder)
@@ -538,7 +559,7 @@ def test_usage_checkout_budget_releases_pool_resources(
 
             async def attempt() -> None:
                 with pytest.raises(TimeoutError):
-                    async with database._model_usage_transaction(0.05):
+                    async with database.statistics_transaction(0.05):
                         pytest.fail("A stalled checkout exceeded its usage budget")
 
             if stall == "pool":
@@ -591,7 +612,7 @@ def test_a_stalled_driver_read_is_cancelled_and_returns_its_pool_slot() -> None:
         database = AsyncDatabase.own(engine)
 
         async def attempt() -> None:
-            async with database._model_usage_transaction(0.05):
+            async with database.statistics_transaction(0.05):
                 pytest.fail("A stalled driver read exceeded its usage budget")
 
         # Failing fast beats hanging: without the checkout bound this task never
@@ -634,7 +655,7 @@ def test_cancellation_at_checkout_returns_the_connection(tmp_path: Path) -> None
                     asyncio.get_running_loop().call_soon(owner.cancel)
 
                 event.listen(engine.sync_engine, "checkout", cancel_on_checkout, once=True)
-                async with database._model_usage_transaction(1):
+                async with database.statistics_transaction(1):
                     pytest.fail("Cancellation must propagate before usage is written")
 
             attempt_task = asyncio.create_task(attempt())
@@ -679,7 +700,7 @@ def test_timed_out_shared_checkout_cannot_roll_back_business(monkeypatch: pytest
             monkeypatch.setattr(AsyncConnection, "close", close)
             try:
                 with pytest.raises(TimeoutError):
-                    async with database._model_usage_transaction(0.02):
+                    async with database.statistics_transaction(0.02):
                         pytest.fail("The stalled checkout must time out")
                 async with database.transaction() as connection:
                     await connection.execute(update(SCOPES_TABLE).values(title="committed"))
@@ -694,20 +715,25 @@ def test_timed_out_shared_checkout_cannot_roll_back_business(monkeypatch: pytest
     asyncio.run(scenario())
 
 
-def test_commit_lock_rolls_back_usage_and_restores_connection(tmp_path: Path) -> None:
+def test_commit_lock_rolls_back_usage_and_restores_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
         path = tmp_path / "commit-locked.db"
         config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}", journal_mode="DELETE")
         async with _database(config) as database:
-            recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=0.04)
+            recorder = _ModelUsageRecorder(database, StatisticsRepository())
             reader = sqlite3.connect(path)
             try:
                 reader.execute("BEGIN")
                 reader.execute("SELECT * FROM pc_scopes").fetchall()
-                start = asyncio.get_running_loop().time()
-                _offer(recorder)
-                await recorder.flush()
-                assert asyncio.get_running_loop().time() - start < 0.5
+                # Only the blocked write needs a tiny budget. Check recovery on
+                # the same recorder with its normal write allowance afterwards.
+                with monkeypatch.context() as constrained:
+                    constrained.setattr(recorder, "_write_timeout_seconds", 0.04)
+                    start = asyncio.get_running_loop().time()
+                    _offer(recorder)
+                    await recorder.flush()
+                    assert asyncio.get_running_loop().time() - start < 0.5
+                    assert recorder._settled == recorder.checkpoint() == 1
                 reader.rollback()
                 assert await _rows(database) == ()
                 await _assert_connection_restored(database)
@@ -741,6 +767,43 @@ class _SlowQueryRepository(StatisticsRepository):
         await super().record(connection, scope_id, usage_date, purpose, operation, usage)
 
 
+@pytest.mark.parametrize("file_backed", [False, True])
+def test_native_deadline_before_commit_retries_usage_without_double_counting(tmp_path: Path, file_backed: bool) -> None:
+    class InterruptedOnceRepository(StatisticsRepository):
+        slow = True
+
+        async def record(self, connection, *args) -> None:
+            # Apply the increment before real SQLite VM work consumes the first
+            # attempt's slice. Its rollback must remove that increment before a
+            # retry, rather than either dropping the record or counting it twice.
+            await super().record(connection, *args)
+            if self.slow:
+                self.slow = False
+                await connection.exec_driver_sql(
+                    "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000000000) SELECT sum(x) FROM n"
+                )
+
+    async def scenario() -> None:
+        config = (
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'interrupted-usage.db'}")
+            if file_backed
+            else SQLiteConfig()
+        )
+        async with _database(config) as database:
+            recorder = _ModelUsageRecorder(database, InterruptedOnceRepository(), write_timeout_seconds=0.4)
+            try:
+                _offer(recorder, InferenceUsage(requests=1, input_tokens=3, output_tokens=5))
+                await recorder.flush()
+                rows = await _rows(database)
+                assert len(rows) == 1
+                assert (rows[0].requests, rows[0].input_tokens, rows[0].output_tokens) == (1, 3, 5)
+                await _assert_connection_restored(database)
+            finally:
+                await recorder.close()
+
+    asyncio.run(scenario())
+
+
 def test_native_sqlite_deadline_stops_vm_work_and_preserves_in_memory_database() -> None:
     async def scenario() -> None:
         async with _database() as database:
@@ -761,6 +824,38 @@ def test_native_sqlite_deadline_stops_vm_work_and_preserves_in_memory_database()
                 await recorder.close()
 
     asyncio.run(scenario())
+
+
+def test_an_interrupted_commit_reply_does_not_repeat_applied_usage(caplog: pytest.LogCaptureFixture) -> None:
+    async def scenario() -> None:
+        async with _database() as database:
+
+            def lost_reply(connection) -> None:
+                # Commit for real, then let the native deadline expire before
+                # reporting an interrupted reply. Repeating this outcome would
+                # increment an already committed record a second time.
+                connection.connection.commit()
+                await_only(asyncio.sleep(0.12))
+                original = sqlite3.OperationalError("secret commit reply")
+                original.sqlite_errorcode = sqlite3.SQLITE_INTERRUPT
+                raise OperationalError("COMMIT", None, original)
+
+            event.listen(database.engine.sync_engine, "commit", lost_reply, once=True)
+            recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=0.4)
+            try:
+                _offer(recorder)
+                await recorder.flush()
+                rows = await _rows(database)
+                assert len(rows) == 1
+                assert rows[0].requests == 1
+                await _assert_connection_restored(database)
+            finally:
+                await recorder.close()
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(scenario())
+    assert "will not be retried" in caplog.text
+    assert "secret commit reply" not in caplog.text
 
 
 class _BlockingNativeRepository(StatisticsRepository):
@@ -967,7 +1062,7 @@ def test_deleted_scope_is_not_resurrected_by_queued_usage() -> None:
 def test_commit_unknown_is_not_retried(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     async def scenario() -> None:
         async with _database() as database:
-            transaction = database._model_usage_transaction
+            transaction = database.statistics_transaction
 
             @asynccontextmanager
             async def lost_commit_reply(timeout_seconds: float) -> AsyncIterator[AsyncConnection]:
@@ -975,7 +1070,7 @@ def test_commit_unknown_is_not_retried(monkeypatch: pytest.MonkeyPatch, caplog: 
                     yield connection
                 raise RuntimeError("secret credentials and SQL that must not reach logs")  # noqa: TRY003
 
-            monkeypatch.setattr(database, "_model_usage_transaction", lost_commit_reply)
+            monkeypatch.setattr(database, "statistics_transaction", lost_commit_reply)
             recorder = _ModelUsageRecorder(database, StatisticsRepository())
             try:
                 _offer(recorder)

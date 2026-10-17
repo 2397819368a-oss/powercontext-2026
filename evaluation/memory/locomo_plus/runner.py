@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.metadata
 import json
 import math
 import shutil
 import subprocess
+from collections import deque
 from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -38,8 +40,18 @@ from sqlalchemy.exc import ArgumentError
 
 from evaluation.memory.locomo.dataset import LoCoMoSession
 from evaluation.memory.locomo.metrics import retrieval_metrics
-from evaluation.memory.locomo.runner import load_settings, normalize_run_id, public_configuration
-from powercontext.builtin.artifacts.memory.prompts import memory_extraction_instructions_version
+from evaluation.memory.locomo.runner import (
+    _all_atomic_records,
+    _atomic_snapshot,
+    _lineage_source_ids,
+    load_settings,
+    normalize_run_id,
+    public_configuration,
+)
+from powercontext.builtin.artifacts.atomic_memory.extraction import atomic_memory_extraction_instructions
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryStateValue
+from powercontext.builtin.artifacts.atomic_memory.reconciliation import ATOMIC_MEMORY_RECONCILIATION_INSTRUCTIONS
+from powercontext.builtin.artifacts.memory.reranking import MemoryReranker
 from powercontext.builtin.inference import InvalidInferenceOutputError, character_token_estimator
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
@@ -47,7 +59,6 @@ from powercontext.builtin.runtime import (
     CaptureSource,
     MemoryExtractionProfile,
     RuntimeConfig,
-    SearchMemoryRequest,
     open_builtin_runtime,
 )
 from powercontext.builtin.runtime.config import DatabaseConfig
@@ -55,18 +66,21 @@ from powercontext.builtin.scope import ScopeDraft
 from powercontext.server.settings import ServerSettings
 
 from .dataset import LoCoMoPlusCase, LoCoMoPlusDataset, render_case_session
+from .decision import CURRENT_DECISION_CASE, CURRENT_RERANK_USAGE
 from .metrics import render_summary, summarize_observations
 from .models import generate, open_model
 from .prompts import (
     ANSWER_INSTRUCTIONS,
     ANSWER_INSTRUCTIONS_VERSION,
     build_answer_input,
+    build_claim_input,
     build_judge_input,
+    replay_claims,
     replay_judgment,
 )
 
 ARMS = ("memory", "memory-source", "query-only", "oracle-cue", "full-context")
-HARNESS_VERSION = "powercontext.locomo-plus.v1"
+HARNESS_VERSION = "powercontext.locomo-plus.v2"
 
 # Only application-authored details are safe to copy verbatim. Provider exception messages can contain credentials.
 _KNOWN_DETAILS = frozenset({
@@ -97,7 +111,7 @@ def describe_error(error: BaseException) -> dict[str, Any]:
         seen.add(id(current))
         item: dict[str, Any] = {"type": type(current).__name__}
         if isinstance(current, InvalidInferenceOutputError):
-            if current.operation in {"generate", "embed", "memory-extract"}:
+            if current.operation in {"generate", "embed", "atomic-memory-extract", "atomic-memory-reconcile"}:
                 item["operation"] = current.operation
             if current.detail in _KNOWN_DETAILS:
                 item["detail"] = current.detail
@@ -126,7 +140,8 @@ def _append(path: Path, value: Any) -> None:
 def _observations(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
-    return {row["case_id"]: row for line in path.read_text(encoding="utf-8").splitlines() if (row := json.loads(line))}
+    with path.open(encoding="utf-8") as stream:
+        return {row["case_id"]: row for line in stream if (row := json.loads(line))}
 
 
 def _digest(value: Any) -> str:
@@ -155,6 +170,21 @@ def _selection(dataset, profile, limit, max_history_sessions):
     if not cases:
         raise ValueError("selection contains no cases")  # noqa: TRY003
     return cases, history_limit
+
+
+def _fair_cases(cases: Sequence[LoCoMoPlusCase]) -> tuple[LoCoMoPlusCase, ...]:
+    """Round-robin scopes so a concurrency window is not monopolized by one conversation."""
+
+    groups: dict[str, deque[LoCoMoPlusCase]] = {}
+    for case in cases:
+        groups.setdefault(case.sample_id, deque()).append(case)
+    ordered: list[LoCoMoPlusCase] = []
+    while groups:
+        for sample_id in tuple(groups):
+            ordered.append(groups[sample_id].popleft())
+            if not groups[sample_id]:
+                del groups[sample_id]
+    return tuple(ordered)
 
 
 def _history_identity(case: LoCoMoPlusCase, sessions: tuple[LoCoMoSession, ...]) -> dict[str, Any]:
@@ -191,6 +221,7 @@ def dry_run_plan(
     histories = {case.sample_id: _history(case, history_limit) for case in cases}
     truncated = any(len(_history(case, history_limit)) < len(case.sessions) for case in cases)
     scope = "full" if profile == "full" and limit is None and not truncated and not dataset.exclusions else "subset"
+    projection_requests = sum(case.category == 6 for case in cases)
     return {
         "benchmark": "LoCoMo-Plus",
         "requested_profile": profile,
@@ -214,8 +245,11 @@ def dry_run_plan(
         if arm.startswith("memory")
         else 0,
         "answer_requests": len(cases),
-        "judge_requests": len(cases),
-        "note": "Subset scores are not complete benchmark results. Extraction and embedding add model calls.",
+        "judge_requests": len(cases) + projection_requests,
+        "judge_projection_requests": projection_requests,
+        "judge_verdict_requests": len(cases),
+        "note": "Subset scores are not complete benchmark results. Judge requests include claim projection and verdicts "
+        "for a fresh run without retries. Extraction, embedding and reranking add model calls.",
     }
 
 
@@ -276,9 +310,11 @@ def _cost(usage: dict[str, Any], model: str | None, prices: dict[str, Any] | Non
     return {**usage, "model": model, "cost_usd": cost, "pricing_version": None if prices is None else prices["version"]}
 
 
-def _database_config(settings: ServerSettings, output_directory: Path) -> DatabaseConfig:
-    if "database" not in settings.model_fields_set:
+def _database_config(settings: ServerSettings, output_directory: Path, backend: str | None = None) -> DatabaseConfig:
+    if backend == "sqlite" or (backend is None and "database" not in settings.model_fields_set):
         return SQLiteConfig(url=f"sqlite+aiosqlite:///{output_directory / 'state.sqlite3'}")
+    if backend is not None and backend != settings.database.kind:
+        raise ValueError("selected database backend does not match the configured database")  # noqa: TRY003
     return settings.database
 
 
@@ -351,8 +387,17 @@ def _database_identity(database: DatabaseConfig) -> dict[str, str]:
     }
 
 
-def _configuration(settings, judge_model, max_tokens, database) -> dict[str, Any]:
+def _configuration(
+    settings,
+    judge_model,
+    max_tokens,
+    database,
+    memory_extraction_model=None,
+    memory_extraction_timeout_seconds=None,
+) -> dict[str, Any]:
     inference = settings.inference
+    extraction_model = memory_extraction_model or inference.generation_model
+    extraction_timeout = memory_extraction_timeout_seconds or inference.generation_timeout_seconds
     return {
         **public_configuration(settings),
         **_database_identity(database),
@@ -363,6 +408,9 @@ def _configuration(settings, judge_model, max_tokens, database) -> dict[str, Any
         ),
         "judge_model": judge_model,
         "judge_shares_generator_model": judge_model == inference.generation_model,
+        "memory_extraction_model": extraction_model,
+        "memory_extraction_shares_generator_model": extraction_model == inference.generation_model,
+        "memory_extraction_timeout_seconds": extraction_timeout,
         "temperature": 0.0,
         "max_tokens": max_tokens,
         "generation_timeout_seconds": inference.generation_timeout_seconds,
@@ -375,12 +423,134 @@ def _configuration(settings, judge_model, max_tokens, database) -> dict[str, Any
             "embedding": _digest(str(inference.embedding_base_url)),
         },
         "memory_extraction_profile": "conversation",
-        "memory_extraction_instructions": memory_extraction_instructions_version(MemoryExtractionProfile.CONVERSATION),
+        "memory_extraction_instructions_sha256": hashlib.sha256(
+            atomic_memory_extraction_instructions(MemoryExtractionProfile.CONVERSATION).encode("utf-8")
+        ).hexdigest(),
+        "memory_reconciliation_instructions_sha256": hashlib.sha256(
+            ATOMIC_MEMORY_RECONCILIATION_INSTRUCTIONS.encode("utf-8")
+        ).hexdigest(),
     }
 
 
 def _scope(run_id: str, sample_id: str) -> str:
     return f"benchmark:locomo-plus:{run_id}:{sample_id}"
+
+
+async def _registered_scope(runtime, namespace, scope_namespace, scope_ids, ingestion, output_directory):
+    scope = scope_ids.get(namespace)
+    if scope is None:
+        registered = await runtime.scopes.create(
+            ScopeDraft(
+                title="Benchmark conversation",
+                summary="Isolated conversation evidence for a reproducible evaluation.",
+                idempotency_key=_digest(f"{scope_namespace}:{namespace}"),
+            )
+        )
+        scope = registered.scope_id
+        scope_ids[namespace] = scope
+        ingestion[scope] = {"scope_id": scope, "namespace": namespace, "latency_ms": 0.0}
+        _write_json(output_directory / "ingestion.json", ingestion)
+    return scope
+
+
+def _reuse_ingestion(directory, cases, plan, configuration):
+    """Validate donor provenance before any model call or scope mutation."""
+    donor = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+    records = json.loads((directory / "ingestion.json").read_text(encoding="utf-8"))
+    observed = _observations(directory / "observations.jsonl")
+    keys = (
+        "database_kind",
+        "database_fingerprint",
+        "database_fingerprint_version",
+        "embedding_model",
+        "embedding_profile_id",
+        "embedding_dimension",
+        "embedding_normalization",
+        "memory_extraction_model",
+        "memory_extraction_profile",
+        "memory_extraction_instructions",
+    )
+    if not donor["configuration"].get("database_fingerprint"):
+        raise ValueError("ingestion reuse requires a saved database fingerprint")  # noqa: TRY003
+    for key in keys:
+        if donor["configuration"].get(key) != configuration.get(key):
+            raise ValueError(f"ingestion reuse configuration mismatch: {key}")  # noqa: TRY003
+    if (
+        donor["configuration"]["endpoint_fingerprints"]["embedding"]
+        != configuration["endpoint_fingerprints"]["embedding"]
+    ):
+        raise ValueError("ingestion reuse embedding endpoint mismatch")  # noqa: TRY003
+    scopes = {}
+    for case in cases:
+        if donor["selection"]["histories"].get(case.sample_id) != plan["histories"][case.sample_id]:
+            raise ValueError(f"ingestion reuse history mismatch: {case.sample_id}")  # noqa: TRY003
+        scope = observed.get(case.case_id, {}).get("scope_id")
+        record = records.get(scope, {})
+        if (
+            record.get("status") != "ok"
+            or record.get("processed_session_count") != plan["histories"][case.sample_id]["session_count"]
+        ):
+            raise ValueError(f"ingestion reuse requires complete Memory: {case.case_id}")  # noqa: TRY003
+        if case.sample_id in scopes and scopes[case.sample_id] != scope:
+            raise ValueError("ingestion reuse has inconsistent scope identities")  # noqa: TRY003
+        scopes[case.sample_id] = scope
+    identity = {"directory": str(directory), "run_sha256": _digest(donor), "ingestion_sha256": _digest(records)}
+    return scopes, records, identity
+
+
+def _reused_sqlite_database(directory: Path) -> Path:
+    """Follow authenticated donor links instead of creating a database in a reuse run."""
+    visited: set[Path] = set()
+    while True:
+        directory = directory.resolve()
+        if directory in visited:
+            raise ValueError("SQLite ingestion reuse contains a donor cycle")  # noqa: TRY003
+        visited.add(directory)
+        manifest = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+        parent = manifest.get("reused_ingestion")
+        if parent is None:
+            database = Path(manifest.get("sqlite_database", directory / "state.sqlite3"))
+            if not database.is_file():
+                raise ValueError("SQLite ingestion reuse backing database is missing")  # noqa: TRY003
+            return database
+        directory = Path(parent["directory"])
+        for name, digest_key in (("run.json", "run_sha256"), ("ingestion.json", "ingestion_sha256")):
+            value = json.loads((directory / name).read_text(encoding="utf-8"))
+            if _digest(value) != parent[digest_key]:
+                raise ValueError("SQLite ingestion reuse donor identity changed")  # noqa: TRY003
+
+
+async def _reuse_page(runtime, scope, sessions, donor_record, directory, records, cache, donor_directory):
+    if scope in cache:
+        return cache[scope]
+    started = perf_counter()
+    memory = runtime.atomic_memory.for_scope(scope)
+    cursor = await memory.cursor()
+    if cursor.sequence != len(sessions):
+        raise ValueError("reused Memory cursor does not match the complete history")  # noqa: TRY003
+    atomic_records = await _all_atomic_records(memory, include_inactive=True)
+    memories = [record.model_dump(mode="json", by_alias=True) for record in atomic_records]
+    if _digest(memories) != _digest(donor_record["memories"]):
+        raise ValueError("reused Memory differs from the donor snapshot")  # noqa: TRY003
+    records[scope] = {
+        "scope_id": scope,
+        "namespace": donor_record["namespace"],
+        "status": "ok",
+        "reused": True,
+        "source_run_directory": str(donor_directory),
+        "session_count": len(sessions),
+        "planned_session_count": len(sessions),
+        "processed_session_count": cursor.sequence,
+        "schema": "powercontext.benchmark.locomo-plus.ingestion.v2",
+        "atomic_memory_count": sum(record.state.state is AtomicMemoryStateValue.ACTIVE for record in atomic_records),
+        "atomic_memory_snapshot": [read.model_dump(mode="json") for read in _atomic_snapshot(atomic_records)],
+        "memories": memories,
+        "latency_ms": (perf_counter() - started) * 1_000,
+        "usage": {"reuse": {"requests": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0}},
+    }
+    _write_json(directory / "ingestion.json", records)
+    cache[scope] = atomic_records
+    return atomic_records
 
 
 async def _flush_session(memory_app, session, position, scope, output_directory, record):
@@ -404,9 +574,9 @@ async def _flush_session(memory_app, session, position, scope, output_directory,
             raise
 
 
-async def _ingest(runtime, case, sessions, scope, output_directory, records, prices, settings):
+async def _ingest(runtime, case, sessions, scope, output_directory, records, prices, settings, extraction_model):
     source_app = runtime.sources.for_scope(scope)
-    memory_app = runtime.memory.for_scope(scope)
+    memory_app = runtime.atomic_memory.for_scope(scope)
     started = perf_counter()
     record = records.setdefault(scope, {"scope_id": scope, "latency_ms": 0.0})
     flush_inflight = False
@@ -435,16 +605,18 @@ async def _ingest(runtime, case, sessions, scope, output_directory, records, pri
             cursor = await memory_app.cursor()
             record["processed_session_count"] = cursor.sequence
             _write_json(output_directory / "ingestion.json", records)
-        page = await memory_app.list()
+        memories = await _all_atomic_records(memory_app, include_inactive=True)
         record.update({
             "status": "ok",
             "session_count": len(sessions),
-            "memory_count": len(page.entries),
-            "memories": [entry.model_dump(mode="json") for entry in page.entries],
+            "schema": "powercontext.benchmark.locomo-plus.ingestion.v2",
+            "atomic_memory_count": sum(memory.state.state is AtomicMemoryStateValue.ACTIVE for memory in memories),
+            "atomic_memory_snapshot": [read.model_dump(mode="json") for read in _atomic_snapshot(memories)],
+            "memories": [memory.model_dump(mode="json", by_alias=True) for memory in memories],
         })
         record.pop("error_type", None)
         record.pop("error", None)
-        return page  # noqa: TRY300
+        return memories  # noqa: TRY300
     except Exception as error:
         record.update({"status": "error", "error_type": type(error).__name__, "error": describe_error(error)})
         if flush_inflight:
@@ -461,7 +633,7 @@ async def _ingest(runtime, case, sessions, scope, output_directory, records, pri
             record["usage"] = {
                 "generation": _cost(
                     _sum_usage([row.generation.model_dump() for row in ingestion]),
-                    settings.inference.generation_model,
+                    extraction_model,
                     prices,
                 ),
                 "embedding": _cost(
@@ -509,23 +681,52 @@ def _finish_usage(observation, stage, usage, model, prices):
 
 async def _recall_usage(runtime, scope):
     statistics = await runtime.statistics.for_scope(scope).overview()
-    return _sum_usage([
-        row.embedding.model_dump() for row in statistics.usage.by_purpose if row.purpose.value == "memory_recall"
-    ])
+    rows = [row for row in statistics.usage.by_purpose if row.purpose.value == "memory_recall"]
+    return {
+        "embedding": _sum_usage([{**row.embedding.model_dump(), "output_tokens": 0} for row in rows]),
+        "generation": _sum_usage([row.generation.model_dump() for row in rows]),
+    }
 
 
-async def _retrieve(runtime, case, page, scope, sessions, top_k, source_expansion):
-    result = await runtime.memory.for_scope(scope).search(
-        SearchMemoryRequest(query=case.question, limit=top_k, mode="hybrid")
-    )
-    sources = {(record.entry.entry_id, record.entry.entry_version_id): record.entry.sources for record in page.entries}
+def _record_rerank_usage(observation, usages, trace, retrieved, model, prices):
+    # Audits include failed/degraded decisions. Uninstrumented failures retain
+    # unknown usage; a successful search without reranking consumed zero calls.
+    if usages:
+        usage = _sum_usage(usages)
+    elif trace is not None:
+        usage = trace.get("usage") or {}
+    else:
+        usage = dict.fromkeys(("requests", "input_tokens", "output_tokens"), 0 if retrieved else None)
+    attempts = observation.setdefault("usage_attempts", {}).setdefault("rerank", [])
+    if not attempts and "rerank" in observation["usage"]:
+        attempts.append(observation["usage"]["rerank"])
+    attempts.append({})
+    _finish_usage(observation, "rerank", usage, model, prices)
+    observation["usage"]["rerank"]["model"] = model
+
+
+async def _retrieve(runtime, case, scope, sessions, top_k, source_expansion):
+    result = await runtime.atomic_memory.for_scope(scope).search(case.question, limit=top_k, mode="hybrid")
+    records = runtime.records.for_scope(scope)
+    cache: dict[tuple[str, str, int], tuple[str, ...]] = {}
     rendered: list[str] = []
     hits: list[dict[str, Any]] = []
     session_map = {session.session_id: session for session in sessions}
     selected_ids: list[str] = []
-    for hit in result.hits:
-        ids = tuple(ref.source_id for ref in sources.get((hit.entry_id, hit.entry_version_id), ()))
-        hits.append({**hit.model_dump(mode="json"), "source_ids": list(ids)})
+    for rank, wrapper in enumerate(result.hits, 1):
+        hit = wrapper.hit
+        ids = await _lineage_source_ids(records, hit.artifact_ref, cache)
+        hits.append({
+            "rank": rank,
+            "artifact_ref": hit.artifact_ref.model_dump(mode="json"),
+            "state_version": hit.state_version,
+            "kind": hit.kind,
+            "text": hit.text,
+            "score": hit.score,
+            "distance": hit.distance,
+            "matched_by": list(wrapper.matched_by),
+            "source_ids": list(ids),
+        })
         rendered.append(f"Memory: {hit.text}\nSources: {', '.join(ids)}")
         for source_id in ids:
             local_id = source_id.rsplit(":", maxsplit=1)[-1]
@@ -538,7 +739,41 @@ async def _retrieve(runtime, case, page, scope, sessions, top_k, source_expansio
     metrics = retrieval_metrics(
         evidence_sessions=evidence_sessions, hit_source_ids=tuple(tuple(hit["source_ids"]) for hit in hits)
     )
-    return "\n\n".join(rendered), hits, selected_ids, metrics
+    retrieval = {
+        **metrics,
+        "mode": result.mode,
+        "score_kind": "rrf-ranking-score",
+        "embedding_calls": result.embedding_calls,
+        "generation_calls": result.generation_calls,
+        "rerank": None
+        if result.rerank is None
+        else {
+            "policy_id": result.rerank.policy_id,
+            "candidate_count": len(result.rerank.candidate_hits),
+            "selected_ranks": list(result.rerank.selected_ranks),
+            "discarded_rank_count": result.rerank.discarded_rank_count,
+            "used_fallback": result.rerank.used_fallback,
+            "latency_ms": result.rerank.latency_ms,
+            "usage": result.rerank.usage.model_dump(mode="json"),
+        },
+    }
+    return "\n\n".join(rendered), hits, selected_ids, retrieval, retrieval["rerank"]
+
+
+def _record_retrieval_usage(observation, before, after, settings, prices):
+    for channel, stage, model in (
+        ("embedding", "retrieval", settings.inference.embedding_model),
+        ("generation", "retrieval_generation", settings.inference.generation_model),
+    ):
+        usage = {
+            key: None
+            if (end := after[channel][key]) is None or (start := before[channel][key]) is None
+            else end - start
+            for key in ("requests", "input_tokens", "output_tokens")
+        }
+        if stage == "retrieval_generation":
+            _start_usage(observation, stage, model, prices)
+        _finish_usage(observation, stage, usage, model, prices)
 
 
 async def _evaluate(
@@ -557,9 +792,17 @@ async def _evaluate(
     max_tokens,
     prices,
     ingestion,
+    memory_extraction_model,
     scope_ids,
     scope_namespace,
     previous,
+    scope_lock,
+    reused_scopes,
+    donor_records,
+    reuse_directory,
+    reuse_cache,
+    rerank_model_id,
+    memory_rerank,
 ):
     started = perf_counter()
     phase = "infrastructure"
@@ -568,6 +811,7 @@ async def _evaluate(
         if previous
         else {
             "case_id": case.case_id,
+            "schema": "powercontext.benchmark.locomo-plus.observation.v2",
             "category": case.category,
             "constraint_type": case.relation_type,
             "question": case.question,
@@ -587,37 +831,61 @@ async def _evaluate(
             prepared = perf_counter()
             hits, selected_ids, retrieval = [], [], {}
             if arm.startswith("memory"):
-                namespace = _scope(run_id, case.sample_id)
-                scope = scope_ids.get(namespace)
-                if scope is None:
-                    registered = await runtime.scopes.create(
-                        ScopeDraft(
-                            title="Benchmark conversation",
-                            summary="Isolated conversation evidence for a reproducible evaluation.",
-                            idempotency_key=_digest(f"{scope_namespace}:{namespace}"),
+                async with scope_lock:
+                    if reuse_directory is not None:
+                        scope = reused_scopes[case.sample_id]
+                        await _reuse_page(
+                            runtime,
+                            scope,
+                            sessions,
+                            donor_records[scope],
+                            output_directory,
+                            ingestion,
+                            reuse_cache,
+                            reuse_directory,
                         )
-                    )
-                    scope = registered.scope_id
-                    scope_ids[namespace] = scope
-                    ingestion[scope] = {"scope_id": scope, "namespace": namespace, "latency_ms": 0.0}
-                    _write_json(output_directory / "ingestion.json", ingestion)
-                observation["scope_id"] = scope
-                page = await _ingest(runtime, case, sessions, scope, output_directory, ingestion, prices, settings)
-                phase = "retrieval"
-                queried = perf_counter()
-                before = await _recall_usage(runtime, scope)
-                _start_usage(observation, "retrieval", settings.inference.embedding_model, prices)
-                context, hits, selected_ids, retrieval = await _retrieve(
-                    runtime, case, page, scope, sessions, top_k, arm == "memory-source"
-                )
-                observation["latency_ms"]["query"] = (perf_counter() - queried) * 1_000
-                after = await _recall_usage(runtime, scope)
-                usage = {
-                    key: None if after[key] is None or before[key] is None else after[key] - before[key]
-                    for key in ("requests", "input_tokens")
-                }
-                usage["output_tokens"] = 0
-                _finish_usage(observation, "retrieval", usage, settings.inference.embedding_model, prices)
+                    else:
+                        namespace = _scope(run_id, case.sample_id)
+                        scope = await _registered_scope(
+                            runtime, namespace, scope_namespace, scope_ids, ingestion, output_directory
+                        )
+                        await _ingest(
+                            runtime,
+                            case,
+                            sessions,
+                            scope,
+                            output_directory,
+                            ingestion,
+                            prices,
+                            settings,
+                            memory_extraction_model,
+                        )
+                    observation["scope_id"] = scope
+                    phase = "retrieval"
+                    queried = perf_counter()
+                    before = await _recall_usage(runtime, scope)
+                    _start_usage(observation, "retrieval", settings.inference.embedding_model, prices)
+                    rerank_usages: list[dict[str, Any]] = []
+                    usage_token = CURRENT_RERANK_USAGE.set(rerank_usages)
+                    rerank_trace = None
+                    retrieved = False
+                    try:
+                        context, hits, selected_ids, retrieval, rerank_trace = await _retrieve(
+                            runtime, case, scope, sessions, top_k, arm == "memory-source"
+                        )
+                        retrieved = True
+                        observation["rerank"] = rerank_trace
+                    finally:
+                        CURRENT_RERANK_USAGE.reset(usage_token)
+                        if memory_rerank:
+                            _record_rerank_usage(
+                                observation, rerank_usages, rerank_trace, retrieved, rerank_model_id, prices
+                            )
+                            observation["status"] = "pending_retrieval"
+                            _append(output_directory / "observations.jsonl", observation)
+                    observation["latency_ms"]["query"] = (perf_counter() - queried) * 1_000
+                    after = await _recall_usage(runtime, scope)
+                    _record_retrieval_usage(observation, before, after, settings, prices)
             elif arm == "query-only":
                 context = ""
             else:
@@ -674,13 +942,25 @@ async def _evaluate(
             if not answer.strip():
                 raise ValueError("answer model returned an empty response")  # noqa: TRY003, TRY301
             observation["generated_answer"] = answer
-            observation["judge_input"] = build_judge_input(
-                category=case.category, evidence=case.evidence_text, prediction=answer, gold=case.answer
-            )
             # Persist the answer before the judge so interrupted runs never need to regenerate it.
             observation["status"] = "pending_judge"
             _append(output_directory / "observations.jsonl", observation)
         phase = "judge"
+        request = case.question if case.query_time is None else f"Date and time: {case.query_time}\n{case.question}"
+        claims = None
+        if case.category == 6:
+            claims = await _project_claims(
+                observation, request, judge_model, judge_model_id, settings, max_tokens, prices, output_directory
+            )
+        if "judge_input" not in observation:
+            observation["judge_input"] = build_judge_input(
+                category=case.category,
+                evidence=case.evidence_text,
+                prediction=observation["generated_answer"],
+                gold=case.answer,
+                question=request,
+                memory_claims=claims,
+            )
         judged = perf_counter()
         judge_input = observation["judge_input"]
         _start_usage(observation, "judge", judge_model_id, prices)
@@ -707,6 +987,34 @@ async def _evaluate(
         })
     observation["latency_ms"]["total"] = (perf_counter() - started) * 1_000
     return observation
+
+
+async def _project_claims(observation, request, model, model_id, settings, max_tokens, prices, output_directory):
+    """Checkpoint the evidence-blind projection so judge retries do not repeat a valid projection."""
+    saved = observation.get("judge_projection")
+    if saved is not None and "claims" in saved:
+        return replay_claims(saved["input"], saved["raw"])
+    frozen = build_claim_input(question=request, prediction=observation["generated_answer"])
+    started = perf_counter()
+    _start_usage(observation, "judge_projection", model_id, prices)
+    observation["status"] = "pending_judge"
+    _append(output_directory / "observations.jsonl", observation)
+    raw, usage = await generate(
+        model,
+        prompt=frozen["input"],
+        instructions=frozen["instructions"],
+        settings=settings.inference,
+        max_tokens=max_tokens,
+    )
+    observation["latency_ms"]["judge_projection"] = (perf_counter() - started) * 1_000
+    messages = usage.pop("messages")
+    _finish_usage(observation, "judge_projection", usage, model_id, prices)
+    saved = {"input": frozen, "raw": raw, "messages": messages}
+    observation["judge_projection"] = saved
+    claims = replay_claims(frozen, raw)
+    saved["claims"] = claims
+    _append(output_directory / "observations.jsonl", observation)
+    return claims
 
 
 def _summarize(output_directory: Path) -> dict[str, Any]:
@@ -743,6 +1051,8 @@ async def run_benchmark(  # noqa: C901
     output_directory: Path,
     run_id: str,
     judge_model: str,
+    memory_extraction_model: str | None = None,
+    memory_extraction_timeout_seconds: float | None = None,
     profile: str = "smoke",
     limit: int | None = None,
     arm: str = "memory",
@@ -750,38 +1060,112 @@ async def run_benchmark(  # noqa: C901
     max_tokens: int = 512,
     max_history_sessions: int | None = None,
     prices: Path | None = None,
+    database: str | None = None,
+    concurrency: int = 1,
+    reuse_ingestion_directory: Path | None = None,
+    memory_rerank: bool = False,
+    rerank_model: str | None = None,
+    rerank_candidate_limit: int = 30,
+    memory_reranker: MemoryReranker | None = None,
+    rerank_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run a sequential, budget-conscious selection with immutable resume identity."""
-    if not 1 <= top_k <= 50 or max_tokens < 1:
-        raise ValueError("top_k must be 1..50 and max_tokens positive")  # noqa: TRY003
+    """Run a bounded, resumable selection with controlled case concurrency."""
+    if not 1 <= top_k <= 50 or max_tokens < 1 or concurrency < 1:
+        raise ValueError("top_k must be 1..50; max_tokens and concurrency must be positive")  # noqa: TRY003
     if not settings.inference.generation_model or not judge_model.strip():
         raise ValueError("generation and judge models must be explicitly configured")  # noqa: TRY003
+    if not 1 <= rerank_candidate_limit <= 100:
+        raise ValueError("rerank candidate limit must be 1..100")  # noqa: TRY003
+    if (reuse_ingestion_directory is not None or memory_rerank) and not arm.startswith("memory"):
+        raise ValueError("Memory reuse and reranking require a Memory arm")  # noqa: TRY003
+    if rerank_model and not memory_rerank:
+        raise ValueError("rerank model requires --memory-rerank")  # noqa: TRY003
+    if memory_reranker is not None and (not memory_rerank or not rerank_identity):
+        raise ValueError("an injected reranker requires reranking and an explicit experiment identity")  # noqa: TRY003
+    if rerank_identity is not None and memory_reranker is None:
+        raise ValueError("a custom rerank identity requires an injected reranker")  # noqa: TRY003
+    extraction_model = memory_extraction_model or settings.inference.generation_model
+    if not extraction_model.strip():
+        raise ValueError("memory extraction model must not be empty")  # noqa: TRY003
+    extraction_timeout = memory_extraction_timeout_seconds or settings.inference.generation_timeout_seconds
+    if not math.isfinite(extraction_timeout) or extraction_timeout <= 0:
+        raise ValueError("memory extraction timeout must be finite and positive")  # noqa: TRY003
     plan = dry_run_plan(dataset, profile=profile, limit=limit, arm=arm, max_history_sessions=max_history_sessions)
     cases, history_limit = _selection(dataset, profile, limit, max_history_sessions)
     rates = _prices(prices)
     run_id = normalize_run_id(run_id)
     output_directory = output_directory.resolve()  # noqa: ASYNC240 - small local artifact operation
     output_directory.mkdir(parents=True, exist_ok=True)
-    database = _database_config(settings, output_directory)
-    if arm.startswith("memory") and database.kind == "sqlite":
-        url = make_url(database.url)
-        if database.is_in_memory or url.query.get("mode") == "memory" or url.database == "file::memory:":
+    selected_database = _database_config(settings, output_directory, database)
+    if reuse_ingestion_directory is not None:
+        reuse_ingestion_directory = reuse_ingestion_directory.resolve()  # noqa: ASYNC240
+        if reuse_ingestion_directory == output_directory:
+            raise ValueError("reuse donor and output directory must differ")  # noqa: TRY003
+        if selected_database.kind == "sqlite" and (database == "sqlite" or "database" not in settings.model_fields_set):
+            backing_database = _reused_sqlite_database(reuse_ingestion_directory)
+            selected_database = SQLiteConfig(url=f"sqlite+aiosqlite:///{backing_database}")
+    if arm.startswith("memory") and selected_database.kind == "sqlite":
+        url = make_url(selected_database.url)
+        if selected_database.is_in_memory or url.query.get("mode") == "memory" or url.database == "file::memory:":
             raise ValueError("Memory runs require a persistent database for resume; configure a SQLite file")  # noqa: TRY003
     manifest_path = output_directory / "run.json"
     saved_manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else None
     scope_namespace = saved_manifest.get("scope_namespace") if saved_manifest is not None else uuid4().hex
     if not isinstance(scope_namespace, str) or not scope_namespace:
         raise ValueError("run identity changed; use a new output directory (existing runs remain replayable)")  # noqa: TRY003
-    manifest = {
+    manifest: dict[str, Any] = {
         "run_id": run_id,
         "scope_namespace": scope_namespace,
         "harness": _harness_identity(),
         "dataset": dataset.manifest,
         "selection": plan,
-        "configuration": _configuration(settings, judge_model, max_tokens, database),
+        "configuration": _configuration(
+            settings,
+            judge_model,
+            max_tokens,
+            selected_database,
+            extraction_model,
+            extraction_timeout,
+        ),
         "top_k": top_k,
+        "concurrency": concurrency,
         "prices": rates,
     }
+    if selected_database.kind == "sqlite":
+        name = make_url(selected_database.url).database
+        if name and name != ":memory:" and not name.startswith("file:"):
+            manifest["sqlite_database"] = str(Path(name).resolve())  # noqa: ASYNC240
+    effective_rerank_model = rerank_model or settings.inference.generation_model
+    retrieval_configuration: dict[str, Any] = {
+        "artifact_processing_role": "api"
+        if reuse_ingestion_directory is not None and selected_database.kind == "oceanbase"
+        else "all",
+        "background_processing_enabled": reuse_ingestion_directory is None,
+        "mode": "hybrid",
+        "rerank_enabled": memory_rerank,
+        "rerank_model": effective_rerank_model if memory_rerank else None,
+        "rerank_candidate_limit": rerank_candidate_limit if memory_rerank else None,
+        "rerank_timeout_seconds": (settings.inference.rerank_timeout_seconds or extraction_timeout)
+        if memory_rerank and memory_reranker is None
+        else None,
+        "rerank_max_requests": (settings.inference.rerank_max_requests or settings.inference.generation_max_requests)
+        if memory_rerank and memory_reranker is None
+        else None,
+        "backend_candidate_limit": max(max(top_k, rerank_candidate_limit if memory_rerank else top_k) * 4, 32),
+        "source_expansion": arm == "memory-source",
+    }
+    manifest["retrieval"] = retrieval_configuration
+    reused_scopes, donor_records, reuse_cache = {}, {}, {}
+    if memory_reranker is not None:
+        retrieval_configuration["custom_reranker"] = {
+            "policy_id": memory_reranker.policy_id,
+            **dict(rerank_identity or {}),
+        }
+    if reuse_ingestion_directory is not None:
+        reused_scopes, donor_records, identity = _reuse_ingestion(
+            reuse_ingestion_directory, cases, plan, manifest["configuration"]
+        )
+        manifest["reused_ingestion"] = identity
     if saved_manifest is not None and saved_manifest != manifest:
         raise ValueError("run identity changed; use a new output directory")  # noqa: TRY003
     _write_json(manifest_path, manifest)
@@ -816,45 +1200,110 @@ async def run_benchmark(  # noqa: C901
         async with AsyncExitStack() as resources:
             runtime = None
             if arm.startswith("memory"):
+                extraction_inference = (
+                    settings.inference
+                    if extraction_model == settings.inference.generation_model
+                    and extraction_timeout == settings.inference.generation_timeout_seconds
+                    else settings.inference.model_copy(
+                        update={
+                            "generation_model": extraction_model,
+                            "generation_timeout_seconds": extraction_timeout,
+                        }
+                    )
+                )
                 runtime_config = BuiltinConfig(
-                    database=database,
+                    database=selected_database,
                     runtime=RuntimeConfig(
                         memory_extraction_profile=MemoryExtractionProfile.CONVERSATION,
                         dream_enabled=False,
-                        artifact_processing_role="all",
+                        artifact_processing_role="api"
+                        if reuse_ingestion_directory is not None and selected_database.kind == "oceanbase"
+                        else "all",
+                        memory_rerank_enabled=memory_rerank and memory_reranker is None,
+                        memory_rerank_candidate_limit=rerank_candidate_limit,
                     ),
-                    inference=settings.inference,
+                    inference=extraction_inference.model_copy(
+                        update={
+                            "rerank_model": effective_rerank_model,
+                            "rerank_base_url": settings.inference.generation_base_url,
+                            "rerank_headers": settings.inference.generation_headers,
+                            "rerank_model_settings": settings.inference.generation_model_settings,
+                        }
+                    )
+                    if memory_rerank
+                    else extraction_inference,
                 )
-                runtime = await resources.enter_async_context(open_builtin_runtime(runtime_config))
+                runtime = await resources.enter_async_context(
+                    open_builtin_runtime(runtime_config)
+                    if memory_reranker is None
+                    else open_builtin_runtime(runtime_config, memory_reranker=memory_reranker)
+                )
+                # Embedded backends require role=all. Stop execution through the lifecycle
+                # handle, not by changing the donor's persisted Family declaration.
+                if reuse_ingestion_directory is not None and runtime.artifact_processing_supervisor is not None:
+                    await runtime.artifact_processing_supervisor.close()
                 if runtime.scopes is None:
                     raise RuntimeError("Memory runs require a Scope registry")  # noqa: TRY003, TRY301
                 for scope_id in scope_ids.values():
                     await runtime.scopes.get(scope_id)
             answer = await open_model(settings.inference.generation_model, settings.inference, resources)
             judge = await open_model(judge_model, settings.inference, resources)
-            for index, case in enumerate(pending, 1):
-                row = await _evaluate(
-                    case,
-                    runtime=runtime,
-                    answer_model=answer,
-                    judge_model=judge,
-                    judge_model_id=judge_model,
-                    settings=settings,
-                    output_directory=output_directory,
-                    run_id=run_id,
-                    sessions=_history(case, history_limit),
-                    arm=arm,
-                    top_k=top_k,
-                    max_tokens=max_tokens,
-                    prices=rates,
-                    ingestion=ingestion,
-                    scope_ids=scope_ids,
-                    scope_namespace=scope_namespace,
-                    previous=observed.get(case.case_id),
-                )
-                _append(output_directory / "observations.jsonl", row)
-                _summarize(output_directory)
-                print(f"[{index}/{len(pending)}] {case.case_id}: {row['status']}")
+            semaphore = asyncio.Semaphore(concurrency)
+            scope_locks = {case.sample_id: asyncio.Lock() for case in pending}
+
+            async def evaluate(case: LoCoMoPlusCase) -> dict[str, Any]:
+                async with semaphore:
+                    CURRENT_DECISION_CASE.set(case.case_id)
+                    return await _evaluate(
+                        case,
+                        runtime=runtime,
+                        answer_model=answer,
+                        judge_model=judge,
+                        judge_model_id=judge_model,
+                        settings=settings,
+                        output_directory=output_directory,
+                        run_id=run_id,
+                        sessions=_history(case, history_limit),
+                        arm=arm,
+                        top_k=top_k,
+                        max_tokens=max_tokens,
+                        prices=rates,
+                        ingestion=ingestion,
+                        scope_ids=scope_ids,
+                        scope_namespace=scope_namespace,
+                        memory_extraction_model=extraction_model,
+                        previous=observed.get(case.case_id),
+                        scope_lock=scope_locks[case.sample_id],
+                        reused_scopes=reused_scopes,
+                        donor_records=donor_records,
+                        reuse_directory=reuse_ingestion_directory,
+                        reuse_cache=reuse_cache,
+                        rerank_model_id=effective_rerank_model,
+                        memory_rerank=memory_rerank,
+                    )
+
+            tasks = tuple(asyncio.create_task(evaluate(case)) for case in _fair_cases(pending))
+            try:
+                for index, task in enumerate(asyncio.as_completed(tasks), 1):
+                    row = await task
+                    _append(output_directory / "observations.jsonl", row)
+                    if index % 10 == 0 or index == len(pending):
+                        _summarize(output_directory)
+                    print(f"[{index}/{len(pending)}] {row['case_id']}: {row['status']}")
+            finally:
+                # Resources must outlive every case, including collector failure and cancellation.
+                for task in tasks:
+                    if not task.done() and not task.cancelling():
+                        task.cancel()
+                drained = asyncio.gather(*tasks, return_exceptions=True)
+                cancelled = False
+                while not drained.done():
+                    try:
+                        await asyncio.shield(drained)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                if cancelled:
+                    raise asyncio.CancelledError
     except Exception as error:
         observed = _observations(output_directory / "observations.jsonl")
         for case in pending:
@@ -876,6 +1325,16 @@ async def run_benchmark(  # noqa: C901
 def replay_results(directory: Path) -> dict[str, Any]:
     """Recompute scores from frozen judge inputs and raw outputs without network calls."""
     for row in _observations(directory / "observations.jsonl").values():
+        projection = row.get("judge_projection")
+        if row.get("status") == "ok" and projection is not None:
+            claims = replay_claims(projection["input"], projection["raw"])
+            projected_response = json.loads(projection["input"]["input"])["response"]
+            if (
+                claims != projection["claims"]
+                or projected_response != row["generated_answer"]
+                or json.loads(row["judge_input"]["input"])["candidate_claims"] != claims
+            ):
+                raise ValueError("saved projection does not match the judged answer")  # noqa: TRY003
         if row.get("judge_raw") is not None:
             try:
                 verdict = replay_judgment(row["judge_input"], row["judge_raw"])

@@ -26,13 +26,13 @@ from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.review import InvalidCandidateError
 from powercontext.builtin.review.generation import GenerationCapabilityUnavailableError
 from powercontext.builtin.runtime import (
-    ApproveArtifactCandidateRequest,
+    ApproveCandidateRequest,
     BuiltinConfig,
     BuiltinRuntime,
     CaptureSource,
     GenerateExperienceRequest,
     GenerateSkillRequest,
-    ListArtifactCandidatesRequest,
+    ListCandidatesRequest,
     SkillGenerationOrigin,
     open_builtin_runtime,
 )
@@ -99,7 +99,7 @@ def test_generation_without_model_fails_before_candidate_persistence() -> None:
                     GenerateExperienceRequest(sources=(captured.source_ref,))
                 )
 
-            inbox = await runtime.review.for_scope(scope_id).list(ListArtifactCandidatesRequest())
+            inbox = await runtime.review.for_scope(scope_id).list(ListCandidatesRequest())
             capabilities = await runtime.capabilities()
             assert inbox.candidates == ()
             assert capabilities.experience_generation is False
@@ -144,7 +144,7 @@ def test_experience_generation_uses_exact_source_and_supports_no_op() -> None:
             result = await runtime.experience.for_scope(scope_id).generate(
                 GenerateExperienceRequest(sources=(captured.source_ref,))
             )
-            inbox = await runtime.review.for_scope(scope_id).list(ListArtifactCandidatesRequest())
+            inbox = await runtime.review.for_scope(scope_id).list(ListCandidatesRequest())
 
             assert result.generated is False
             assert inbox.candidates == ()
@@ -161,8 +161,8 @@ def test_explicit_generation_rejects_a_lineage_only_source_before_model_use() ->
         ) as runtime:
             scope_id = await _create_scope(runtime)
             created = await runtime.records.for_scope(scope_id).create_artifact(
-                "memory",
-                ArtifactWrite(content={"entries": [{"kind": "fact", "text": "Direct input."}]}),
+                "atomic-memory",
+                ArtifactWrite(content={"kind": "fact", "text": "Direct input."}),
             )
 
             with pytest.raises(SourceNotEligibleError) as error:
@@ -192,7 +192,7 @@ def test_experience_generation_targets_an_exact_approved_revision() -> None:
             )
             assert first_candidate.candidate is not None
             first_approval = await runtime.review.for_scope(scope_id).approve(
-                ApproveArtifactCandidateRequest(
+                ApproveCandidateRequest(
                     candidate_id=first_candidate.candidate.candidate_id,
                     expected_version=1,
                 )
@@ -243,7 +243,7 @@ def test_managed_skill_generation_enforces_origin_specific_lineage() -> None:
             )
             assert experience_candidate.candidate is not None
             approved = await runtime.review.for_scope(scope_id).approve(
-                ApproveArtifactCandidateRequest(
+                ApproveCandidateRequest(
                     candidate_id=experience_candidate.candidate.candidate_id,
                     expected_version=1,
                 )
@@ -265,7 +265,7 @@ def test_managed_skill_generation_enforces_origin_specific_lineage() -> None:
                 for evidence in skill_generator.inputs[0].evidence
             )
             skill_approval = await runtime.review.for_scope(scope_id).approve(
-                ApproveArtifactCandidateRequest(
+                ApproveCandidateRequest(
                     candidate_id=generated.candidate.candidate_id,
                     expected_version=1,
                 )

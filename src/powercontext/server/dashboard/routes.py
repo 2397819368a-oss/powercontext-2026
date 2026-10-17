@@ -34,8 +34,10 @@ from powercontext.server.dashboard.navigation import (
     positive_revision,
     request_reading_return,
 )
+from powercontext.server.dashboard.pagination import PAGE_SIZE
 from powercontext.server.dashboard.preferences import CATALOGS, presentation, remember_language
 from powercontext.server.dashboard.presenters import source_view
+from powercontext.server.dashboard.review import load_review, submit_review
 from powercontext.server.dashboard.session import login_response, same_origin
 
 ROOT = Path(__file__).parent
@@ -51,6 +53,7 @@ PAGES = {
     "profile",
     "handoff-download",
     "usage",
+    "review",
     "entry",
     *RECORDS,
 }
@@ -94,9 +97,6 @@ def links(request: Request, ctx: dict[str, Any]):
                     "revision",
                     "compare",
                     "rollback_error",
-                    "memory_history",
-                    "memory_history_cursor",
-                    "memory_artifact",
                     "prompt_key",
                     "prompt_revision",
                     "prompt_revision_cursor",
@@ -106,10 +106,6 @@ def links(request: Request, ctx: dict[str, Any]):
                     "skill_revision_cursor",
                     "handoff_revision_cursor",
                     "kind",
-                    "entry",
-                    "memory_id",
-                    "memory_revision",
-                    "entry_version",
                     "cursor",
                     "experience_cursor",
                     "skill_cursor",
@@ -126,9 +122,18 @@ def links(request: Request, ctx: dict[str, Any]):
                     "return_to",
                     "lang",
                     "notes_page",
+                    "notes_cursor",
+                    "notes_revision_cursor",
+                    "notes_history",
+                    "note_state",
                     "skill_page",
                     "experience_history",
                     "handoff_history",
+                    "resource_type",
+                    "review_status",
+                    "candidate_id",
+                    "candidate_kind",
+                    "artifact_cursor",
                 }
             })
         if destination == "methods" and ctx["page"] in {"experience", "skill"}:
@@ -142,21 +147,15 @@ def links(request: Request, ctx: dict[str, Any]):
             record = ctx["data"].get("handoff")
         if record:
             query.update(artifact=record["artifact_id"], revision=record["revision"])
-        if destination == "notes" and "entry" in params:
-            note = next((item for item in ctx["data"]["notes"] if item["entry_id"] == params["entry"]), None)
-            if note:
-                query.update(
-                    memory_id=note["memory_ref"]["artifact_id"],
-                    memory_revision=note["memory_ref"]["revision"],
-                    entry_version=note["entry_version_id"],
-                )
+        if destination == "notes" and {"artifact", "revision"}.intersection(params):
+            for key in ("artifact", "revision"):
+                query.pop(key, None)
         reading_link_context(request, ctx, destination, params, query)
         if "scope" in params and params["scope"] != ctx["scope"]:
             query = {"scope": params["scope"], "period": ctx["period"]}
         else:
             _drop_foreign_revision_cursors(query, params)
             query.update(params)
-            _retain_memory_artifact(destination, ctx, query)
         if destination.startswith("evidence/"):
             destination = "evidence/" + segment(destination.removeprefix("evidence/"))
         return (
@@ -173,6 +172,7 @@ _REVISION_CURSOR_IDENTITY = {
     "experience_revision_cursor": "artifact",
     "skill_revision_cursor": "artifact",
     "handoff_revision_cursor": "artifact",
+    "notes_revision_cursor": "artifact",
 }
 
 
@@ -182,11 +182,6 @@ def _drop_foreign_revision_cursors(query: dict[str, Any], params: dict[str, Any]
     for cursor, identity in _REVISION_CURSOR_IDENTITY.items():
         if cursor not in params and identity in params and params[identity] != query.get(identity):
             query.pop(cursor, None)
-
-
-def _retain_memory_artifact(destination: str, ctx: dict[str, Any], query: dict[str, Any]) -> None:
-    if destination == "notes" and ctx.get("memory_artifact") and query.get("memory_artifact") is None:
-        query["memory_artifact"] = ctx["memory_artifact"]
 
 
 def reading_link_context(
@@ -230,6 +225,7 @@ def initial_context(request: Request, page: str) -> dict[str, Any]:
         "topic_revision": request.query_params.get("topic_revision"),
         "topic_cursor": request.query_params.get("topic_cursor"),
         "search_limited": False,
+        "note_state": request.query_params.get("note_state", "active"),
         "data": {
             "title": "PowerContext",
             "summary": "",
@@ -254,7 +250,11 @@ def initial_context(request: Request, page: str) -> dict[str, Any]:
         "stats": None,
         "selected_note": None,
         "requested_entry": request.query_params.get("entry"),
+        "requested_note": request.query_params.get("artifact") if page == "notes" else None,
+        "notes_pager": None,
+        "notes_page_size": PAGE_SIZE,
         "collections": {},
+        "review": {"kind": "all", "status": "pending", "sections": [], "selected": None},
         "related_sources": [],
         "source_record": None,
         "source": None,
@@ -265,7 +265,6 @@ def initial_context(request: Request, page: str) -> dict[str, Any]:
         "profile_pager": None,
         "profile_html": "",
         "history": None,
-        "memory_revision_missing": False,
         "prompt_key": None,
         "prompt_opened": None,
         "return_to": collection_return(
@@ -299,7 +298,12 @@ async def scope_context(api: DashboardAPI, ctx: dict[str, Any]) -> None:
     try:
         descriptor = await api.read(f"/v1/scopes/{segment(ctx['scope'])}")
     except ReadError as error:
-        if (ctx["page"] in RECORDS or ctx["page"] == "handoff-download") and error.status in {403, 404}:
+        record_page = (
+            ctx["page"] in RECORDS
+            or ctx["page"] == "handoff-download"
+            or (ctx["page"] == "notes" and (ctx["requested_note"] or ctx["requested_entry"]))
+        )
+        if record_page and error.status in {403, 404}:
             ctx["record_only"] = True
             return
         raise
@@ -339,6 +343,7 @@ def validate_selection(page: str, ctx: dict[str, Any]) -> None:
         ctx["period"] not in {"today", "7d", "30d"}
         or ctx["method_kind"] not in {"experience", "skill"}
         or len(ctx["search_query"] or "") > (8192 if page == "notes" else 2000)
+        or ctx["note_state"] not in {"active", "forgotten", "merged", "retired"}
     ):
         raise ReadError(422, "invalid_request")
 
@@ -474,13 +479,29 @@ def _rollback_return(scope: str, family: str, artifact_id: str, revision: int, e
     elif family == "prompt":
         page = "prompts"
         params.update(prompt_key=artifact_id, prompt_revision=revision)
-    elif family in {"experience", "skill", "handoff"}:
+    else:
         page = "handoff-detail" if family == "handoff" else family
         params.update(artifact=artifact_id, revision=revision)
-    else:
-        page = "notes"
-        params["memory_history"] = revision
     return f"/dashboard/{page}?{urlencode({key: value for key, value in params.items() if value is not None})}"
+
+
+@router.post("/review/decision")
+async def review_decision(request: Request) -> Response:
+    ctx = initial_context(request, "review")
+    api = DashboardAPI(request)
+    try:
+        scope, kind, candidate_id = await submit_review(api, request)
+        return RedirectResponse(
+            "/dashboard/review?" + urlencode({"scope": scope, "candidate_kind": kind, "candidate_id": candidate_id}),
+            status_code=303,
+        )
+    except ReadError as error:
+        if error.status == 401:
+            return login_response(request=request)
+        ctx.update(page_error=error, status=error.status)
+        return render(request, ctx)
+    finally:
+        await api.client.aclose()
 
 
 @router.get("/{page}")
@@ -490,7 +511,9 @@ async def screen(request: Request, page: str) -> HTMLResponse:
     try:
         validate_selection(page, ctx)
         await scope_context(api, ctx)
-        if ctx["scope"] and page != "entry":
+        if ctx["scope"] and page == "review":
+            await load_review(api, request, ctx)
+        elif ctx["scope"] and page != "entry":
             await load_content(api, request, ctx)
         if ctx["errors"] and not ctx["scope_descriptor"] and not ctx["record_only"]:
             raise next(iter(ctx["errors"].values()))

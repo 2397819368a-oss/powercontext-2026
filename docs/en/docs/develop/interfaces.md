@@ -175,6 +175,10 @@ Each `powercontext doctor <host>` command still fails when that host CLI is miss
 host-specific integration check, including OpenCode's separate `plugin` and `skill` results. DSH checks that
 `dump-config` lists `powercontext-dsh`; Pi checks that the CLI lists the PowerContext package.
 
+The unified HTTP review routes are `/v1/candidates/list`, `get`, `history`, `revise`, `approve`, and `reject` (all POST).
+`candidate_kind=artifact|tag` distinguishes proposals. Old Artifact Candidate routes are removed; callers must upgrade together.
+Artifact approval returns a real revision; Tag approval returns committed tags and ETag without creating a content revision.
+
 The `candidate` command group exposes the human Review Inbox. See [Review Candidates](../workflows/review-candidates.md)
 for the ordered workflow to list, inspect, revise, approve, or reject Candidates.
 
@@ -186,9 +190,10 @@ automatically includes the target in Artifact evidence. Managed Skill revision a
 ## Python Client SDK
 
 `PowerContextClient` is the typed asynchronous HTTP client for a Server-owned deployment. Its request and response
-models are exported from `powercontext.http`. Mutation responses include exact citations, which callers pass when a
-later request revises, retires, or reads an immutable entry version. See the
-[HTTP API lifecycle tutorial](api-quickstart.md) for a runnable client flow.
+models are exported from `powercontext.http`. Memory mutation `records` contain real ArtifactRefs, content, and current
+state. Content edits use the content ETag; lifecycle operations use the required content and state versions. Exact
+history is read as Atomic Memory Artifact revisions. See the [HTTP API lifecycle tutorial](api-quickstart.md) for a runnable client
+flow and [Atomic Memory](../workflows/atomic-memory.md) for lifecycle operations.
 
 The Client also exposes `generate_experience`, `propose_experience`, `get_experience`, `generate_skill`,
 `propose_skill`, `get_skill`, `scan_external_skills`, `list_external_skills`, `resolve_external_skill`,
@@ -289,7 +294,7 @@ contract. The Server publishes a Scalar API reference at `/docs`, its OpenAPI do
 `/health/ready`, capabilities at `/v1/capabilities`, and Streamable HTTP MCP at `/mcp` by default. The Scalar reference
 remains public when bearer authentication is enabled, but the operations it describes retain their normal authentication
 requirements. HTTP is the complete application contract. MCP is a curated Agent-facing projection of Source capture,
-Memory maintenance, work continuity, scope Handoff Report lookup, and Candidate Review. The five Candidate Review
+Memory maintenance, work continuity, scope Handoff Report lookup, and Candidate Review. The six Candidate Review
 operations use the same validation, `expected_version` concurrency checks, and approval transaction over HTTP and MCP.
 Readiness is `ready` with HTTP 200 when all checks pass, `degraded` with HTTP 200 when only configured inference checks
 fail, and `not_ready` with HTTP 503 when the Runtime or database fails. Dependency checks use `ready`, `unavailable`,

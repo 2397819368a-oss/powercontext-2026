@@ -77,7 +77,7 @@ async fn missing_or_mismatched_cli_registration_never_runs_a_program() {
     );
     let executable = directory.path().join("powercontext.exe");
     std::fs::write(&executable, b"not executable").unwrap();
-    let value = serde_json::json!({"executable":executable,"sha256":"0".repeat(64),"version":"1.0.1.dev61+g63f918b7e.d20260919","source":"explicit_local_installation"});
+    let value = serde_json::json!({"executable":executable,"sha256":"0".repeat(64),"source":"explicit_local_installation"});
     std::fs::write(&registration, serde_json::to_vec(&value).unwrap()).unwrap();
     assert_eq!(
         diagnostics.run(DiagnosticKind::Service).await.unwrap_err(),

@@ -111,7 +111,7 @@ source_exchange = post(
 source_ref = source_exchange["source"]
 
 # Explicit long-term writes require application or user authorization.
-post(
+saved = post(
     "/v1/memory/remember",
     {
         "scope_id": SCOPE_ID,
@@ -120,6 +120,10 @@ post(
         "reason": "Confirmed billing policy",
     },
 )
+
+# Preserve the real independent Artifact identities from the successful write.
+memories = saved["records"]
+print(json.dumps(memories, ensure_ascii=False, indent=2))
 
 # Prepare bounded historical context for one model request.
 question = "How should the assistant handle a refund request for an expired order?"
@@ -141,7 +145,7 @@ messages = [
     {"role": "user", "content": question},
 ]
 
-# Send `messages` to your model provider here.
+# Send `messages` to your model provider; step 4 shows one with the OpenAI SDK.
 print(json.dumps({"prepared": prepared, "model_messages": messages}, indent=2))
 ```
 
@@ -159,6 +163,21 @@ fresh validation always take precedence.
 
 The minimal Server uses full-text search. This example queries terms from the saved decision; configure
 [vector search](../workflows/configure-vector-search.md) for semantic retrieval.
+
+## 4. Send the context to a model
+
+The [OpenAI Python SDK example](https://github.com/oceanbase/powercontext/tree/master/examples/openai_sdk) completes
+this loop with `PowerContextClient` and `AsyncOpenAI`. It calls `prepare_context`, adds ready content to the system
+message unchanged, and sends one chat request. An empty result sends the request without history. With the Server
+from step 1 running, from a clone of this repository:
+
+```bash
+export OPENAI_API_KEY=replace-with-a-secret-store-value
+uv run python -m examples.openai_sdk.chat --seed
+```
+
+The example reads the same `POWERCONTEXT_URL`, `POWERCONTEXT_TOKEN`, and `POWERCONTEXT_SCOPE` variables. Its README
+lists the model settings, the expected output, and offline tests that need no credentials.
 
 ## Next workflows
 

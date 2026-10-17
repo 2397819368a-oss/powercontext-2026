@@ -68,7 +68,8 @@ curl --fail \
   "$POWERCONTEXT_URL/v1/memory/remember"
 ```
 
-响应包含精确 citation。后续请求需要修订、停用或读取这个不可变 revision 时，应保留并传回该 citation。
+响应的 `records` 包含独立记忆的 `artifact`、正文、状态和 `state_version`。用精确 ArtifactRef 读取历史版本，
+用通用 Artifact 接口和内容 ETag 编辑，用 Atomic Memory 接口遗忘或恢复。完整示例见[原子记忆](../workflows/atomic-memory.md)。
 
 在同一个 scope 中搜索 active entry：
 
@@ -149,7 +150,8 @@ Source、Memory 或 Artifact 接口；除非另有 scope 或 Artifact role，否
 每条审计事件会把 effective `principal` 与可信 `actor` 记录为两个独立的 opaque identity。
 
 Access wire contract 只使用 `server`、`scope` 和 `artifact` 三种 Resource Kind。Artifact Resource 使用逻辑 identity
-`{family, artifact_id}`，刻意不包含 Revision；Memory 可使用仅含 `entry_id` 的 `memory_entry` selector 缩小授权单位。
+`{family, artifact_id}`，刻意不包含 Revision。Atomic Memory 每条记忆独立授权，不使用 entry selector。
+旧 `memory_entry` selector 只用于迁移前的 Memory 身份；停服迁移将有效条目授权转到对应 Atomic Memory。
 未知 Family、未实现 Prompt lifecycle 的 `prompt` 或不匹配的 selector/role 都不会创建 Binding。`/v1/access/me` 会报告
 当前 mode、Provider 能力和每个 Artifact Family 的启用状态。
 
@@ -158,7 +160,7 @@ Access wire contract 只使用 `server`、`scope` 和 `artifact` 三种 Resource
 可以覆盖 source 的历史与后续 Revision，而每次 publication 仍会记录实际复制的精确 Revision 和 provenance。
 host-local projection 由对应的 Scope 与 Artifact 权限保护。
 
-Prompt 发布返回 `422 / artifact_publication_unsupported`，不会创建目标 Artifact。要在另一个 Scope 中配置 Prompt，
+Atomic Memory 不支持跨 Scope 发布。Prompt 发布返回 `422 / artifact_publication_unsupported`，不会创建目标 Artifact。要在另一个 Scope 中配置 Prompt，
 请使用 `POST /v1/scopes/{scope_id}/artifacts`，指定 `family=prompt` 和已注册的 `prompt_key`；更新时使用
 `PUT /v1/scopes/{scope_id}/artifacts/prompt/{prompt_key}` 并携带 `If-Match`。这些操作会保留 Prompt 的固定身份并校验内容。
 
@@ -178,15 +180,21 @@ Principal，并注入 Authorization Provider。HTTP 与 MCP 使用同一个策�
 | --- | --- | --- |
 | 健康与能力 | `/health/*`、`/v1/capabilities` | 探测部署状态并查看已启用的 Runtime 行为 |
 | Access Control | `/v1/access/*` | 查看身份、检查决策，并管理 role、Binding 和审计事件 |
-| Source 与 Context | `/v1/sources/content`、`/v1/context/prepare` | 采集证据并准备有界 Context |
+| Source 与 Context | `/v1/sources/content`、`/v1/scopes/{scope_id}/subject-sources`、`/v1/context/prepare` | 采集证据、向业务与主体 Scope 写入 Source，并准备有界 Context |
 | 工作连续性 | `/v1/work/*` | 创建 Work Contract、准备或确认 Handoff、记录 Outcome |
 | 底层 Handoff | `/v1/handoff/*` | activate、prepare、finalize、commit 或 continue Handoff |
-| Memory | `/v1/memory/*` | flush、remember、search、list、get、revise、retire 和查看变更 |
+| Atomic Memory | `/v1/atomic-memory/*`、`/v1/scopes/{scope_id}/artifacts/*`（`family=atomic-memory`） | 检索、管理列表、状态、合并、遗忘和恢复；创建、读取、修订正文及查询历史 |
+| Memory 兼容入口 | `/v1/memory/*` | 保留 flush、remember、search、list 和旧身份读取；旧集合修改返回明确的不支持错误 |
+| Topic Memory | `/v1/topic-memory/*`、`/v1/scopes/{scope_id}/artifacts/*`（`family=topic-memory`） | 请求后台处理、检索和展开主题；创建、读取、修订正文及查询历史 |
+| Profile | `/v1/profile/*`、`/v1/scopes/{scope_id}/profile-policy`、`/v1/scopes/{scope_id}/artifacts/*`（`family=profile`） | 处理画像生成、配置生成策略、读写画像及查询历史 |
 | Experience 与 Skill | `/v1/experience/*`、`/v1/skill/*`、`/v1/skills/*` | propose、review、打包、治理、分发并读取 managed Skill Revision |
-| 审核 | `/v1/artifact-candidates/*` | 列出、检查、修订、批准或拒绝 pending Candidate |
+| 审核 | `/v1/candidates/*` | 列出、检查、修订、批准或拒绝 pending Candidate |
 | 外部 Skill | `/v1/external-skills/*` | 扫描已配置 target，解析或导入 package |
 | Handoff Report | `/v1/handoff-reports/*` | 按 Scope selection 生成只读报告 |
 | 统计 | `/v1/stats` | 读取指定 scope 的使用统计 |
+
+创建 Artifact 使用 `POST /v1/scopes/{scope_id}/artifacts`，在请求体中指定 `family`。
+Profile 的候选审核复用 `/v1/candidates/*`。
 
 完整路径、schema、限制和状态码以 OpenAPI 契约为准。高层工作流和 Python 示例见[接口](interfaces.md)。
 
@@ -204,25 +212,10 @@ Principal，并注入 Authorization Provider。HTTP 与 MCP 使用同一个策�
 }
 ```
 
-`/v1/memory/remember` 和 `/v1/memory/entries/revise` 的正文在 Unicode NFC 规范化并去掉首尾空白后，
-最多为 8192 个 UTF-8 字节。这是字节数限制，不是字符数限制。正文超限时返回 HTTP `422`，
-顶层错误码仍为 `invalid_request`：
-
-```json
-{
-  "error": {
-    "code": "invalid_request",
-    "message": "The request is invalid.",
-    "details": {
-      "code": "text-too-long",
-      "message": "memory entry text must not exceed 8192 UTF-8 bytes"
-    }
-  }
-}
-```
-
-客户端可通过 `error.details.code` 识别具体的规范化校验错误。其他错误的详情仍可能为 `null`；
-没有结构化错误码的 Memory 错误不会向客户端返回内部异常文本。
+Atomic Memory 正文最多为 8192 个 UTF-8 字节，超过限制返回 HTTP `422`。
+旧 citation 读取、修订、停用和集合级并发前提返回 `legacy_memory_operation_unsupported`，不能通过删除并发前提自动重试。
+新内容编辑缺少 `If-Match` 返回 `428`，版本过期返回 `412`；合并和生命周期状态冲突返回 `409`。
+完整错误及替代操作见[原子记忆](../workflows/atomic-memory.md)。
 
 常见状态码：
 
@@ -237,5 +230,5 @@ Principal，并注入 Authorization Provider。HTTP 与 MCP 使用同一个策�
 | `503` | 必需的 Runtime 绑定或依赖不可用 |
 | `500` | Server 发生错误，但不会暴露内部细节 |
 
-每个响应都包含 `X-PowerContext-Request-ID`，排查失败请求时应记录它。修订或停用 Memory 时应传回精确 citation。
+每个响应都包含 `X-PowerContext-Request-ID`，排查失败请求时应记录它。编辑记忆应保留读取时的内容 ETag；遗忘使用精确 ArtifactRef 和 state_version。
 Candidate 审核写操作需要当前 `expected_version`；收到 `409` 后，应重新读取 Candidate，再决定是否重试。

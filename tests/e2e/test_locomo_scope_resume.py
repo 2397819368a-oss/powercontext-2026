@@ -57,31 +57,43 @@ def test_locomo_ingestion_registers_and_resumes_its_scope_after_restart(
     async def respond(messages, info):
         prompt = next(part.content for part in messages[-1].parts if part.part_kind == "user-prompt")
         value = json.loads(prompt)
-        if "evidence" in value:
+        if "evidence" in value and "proposal" not in value:
             output = {
                 "candidates": [
                     {
-                        "intent": "add",
                         "kind": "fact",
                         "text": "Caroline went to the LGBTQ support group on 7 May 2023.",
                         "evidence_ids": [value["evidence"][0]["evidence_id"]],
                     }
                 ]
             }
+        elif "proposal" in value:
+            proposal = value["proposal"]
+            output = {
+                "action": "create",
+                "compared_ids": [item["item_id"] for item in value["related"]],
+                "content": {"kind": proposal["kind"], "text": proposal["text"]},
+                "evidence_ids": proposal["evidence_ids"],
+                "reason": "Preserve the supplied session evidence.",
+            }
         else:
             output = {"label": "CORRECT"} if "gold_answer" in value else {"answer": "7 May 2023"}
         return ModelResponse(parts=[TextPart(json.dumps(output))])
 
+    opened_clients: list[str] = []
+
     def infer_model(model, **kwargs):
+        opened_clients.append(str(model))
         return model if isinstance(model, Model) else FunctionModel(respond)
 
     monkeypatch.setattr("pydantic_ai.models.infer_model", infer_model)
     monkeypatch.setattr(runner, "infer_model", infer_model)
 
-    monkeypatch.setattr(
-        "pydantic_ai.embeddings.infer_embedding_model",
-        lambda model, **kwargs: TestEmbeddingModel() if isinstance(model, str) else model,
-    )
+    def infer_embedding_model(model, **kwargs):
+        opened_clients.append(str(model))
+        return TestEmbeddingModel() if isinstance(model, str) else model
+
+    monkeypatch.setattr("pydantic_ai.embeddings.infer_embedding_model", infer_embedding_model)
 
     async def ingest(run_id: str):
         return await runner.ingest_dataset(
@@ -96,7 +108,7 @@ def test_locomo_ingestion_registers_and_resumes_its_scope_after_restart(
     first_conversation = first["conversations"][conversation.sample_id]
     registered_scope = first_conversation["scope_id"]
     assert first["newly_processed_session_count"] == 1
-    assert first["memory_entry_count"] == 1
+    assert first["atomic_memory_count"] == 1
     assert first_conversation["namespace"] == runner.scope_id("scope-resume", conversation.sample_id)
 
     async def read_persisted_memory():
@@ -105,22 +117,26 @@ def test_locomo_ingestion_registers_and_resumes_its_scope_after_restart(
         ) as runtime:
             assert runtime.scopes is not None
             descriptor = await runtime.scopes.get(registered_scope)
-            page = await runtime.memory.for_scope(descriptor.scope_id).list()
-            assert len(page.entries) == 1
-            assert page.entries[0].entry.sources[0].source_id == "D1"
+            assert runtime.atomic_memory is not None
+            page = await runtime.atomic_memory.for_scope(descriptor.scope_id).list()
+            assert len(page.items) == 1
+            assert page.items[0].artifact.lineage.sources[0].source_id == "D1"
 
     asyncio.run(read_persisted_memory())
     resumed = asyncio.run(ingest("scope-resume"))
     assert resumed["conversations"][conversation.sample_id]["scope_id"] == registered_scope
     assert resumed["resumed_session_count"] == 1
     assert resumed["newly_processed_session_count"] == 0
-    assert resumed["memory_entry_count"] == 1
+    assert resumed["atomic_memory_count"] == 1
 
     missing_database_settings = settings.model_copy(
         update={"database": SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'missing-state.sqlite3'}")}
     )
     ingestion_path = tmp_path / "scope-resume" / "ingestion.json"
     frozen_ingestion = ingestion_path.read_bytes()
+    # A database that cannot resolve a recorded Scope has to say so before any model client --
+    # the runtime's generation and embedding providers included -- is opened.
+    opened_clients.clear()
     with pytest.raises(ScopeNotFoundError):
         asyncio.run(
             runner.evaluate_dataset(
@@ -131,6 +147,7 @@ def test_locomo_ingestion_registers_and_resumes_its_scope_after_restart(
                 top_k=1,
             )
         )
+    assert opened_clients == []
     with pytest.raises(ScopeNotFoundError):
         asyncio.run(
             runner.ingest_dataset(
@@ -140,6 +157,7 @@ def test_locomo_ingestion_registers_and_resumes_its_scope_after_restart(
                 output_directory=tmp_path / "scope-resume",
             )
         )
+    assert opened_clients == []
     assert ingestion_path.read_bytes() == frozen_ingestion
     assert not (tmp_path / "scope-resume" / "observations.jsonl").exists()
 

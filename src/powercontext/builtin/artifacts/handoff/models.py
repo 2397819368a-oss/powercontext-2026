@@ -25,7 +25,6 @@ from powercontext.builtin.artifacts.handoff.generation_metadata import (
     HandoffGenerationEnvelope,
     HandoffGenerationMetadata,
 )
-from powercontext.builtin.artifacts.memory import MemoryCitation, MemoryEntryVersion
 from powercontext.sources import Source, SourceRef
 
 DEFAULT_HANDOFF_MAX_BYTES = 8000
@@ -47,6 +46,14 @@ HandoffEvidenceStatus: TypeAlias = Literal["available", "unavailable"]
 HandoffResolutionSelection: TypeAlias = Literal["prepared", "exact", "latest"]
 HandoffResolutionStatus: TypeAlias = Literal["empty", "resolved"]
 HandoffActivationStatus: TypeAlias = Literal["generated", "ignored"]
+HandoffRolloverReason: TypeAlias = Literal[
+    "user_requested",
+    "host_context_budget",
+    "host_compaction",
+    "context_quality",
+    "delegation",
+    "manual_checkpoint",
+]
 
 
 class _HandoffValue(BaseModel):
@@ -67,15 +74,8 @@ class HandoffArtifactCitation(_HandoffValue):
     artifact_ref: ArtifactRef
 
 
-class HandoffMemoryCitation(_HandoffValue):
-    """Cite one exact Memory entry version."""
-
-    kind: Literal["memory"] = "memory"
-    memory_citation: MemoryCitation
-
-
 HandoffCitation: TypeAlias = Annotated[
-    HandoffSourceCitation | HandoffArtifactCitation | HandoffMemoryCitation,
+    HandoffSourceCitation | HandoffArtifactCitation,
     Field(discriminator="kind"),
 ]
 
@@ -84,6 +84,10 @@ class PrepareHandoff(_HandoffValue):
     """Standard action for generating one bounded, inspectable Handoff."""
 
     objective: Annotated[str, Field(max_length=MAX_HANDOFF_TEXT_LENGTH)]
+    rollover_reasons: Annotated[
+        tuple[HandoffRolloverReason, ...],
+        Field(max_length=6),
+    ] = ()
     evidence: Annotated[
         tuple[HandoffCitation, ...],
         Field(min_length=1, max_length=MAX_HANDOFF_CITATIONS),
@@ -96,7 +100,10 @@ class PrepareHandoff(_HandoffValue):
         return _require_text("objective", value)
 
     @model_validator(mode="after")
-    def require_unique_evidence(self) -> PrepareHandoff:
+    def require_unique_inputs(self) -> PrepareHandoff:
+        for index, reason in enumerate(self.rollover_reasons):
+            if reason in self.rollover_reasons[:index]:
+                raise ValueError("Handoff rollover reasons must be unique")  # noqa: TRY003
         for index, citation in enumerate(self.evidence):
             if citation in self.evidence[:index]:
                 raise ValueError("Handoff preparation evidence must be unique")  # noqa: TRY003
@@ -108,6 +115,10 @@ class ActivateHandoff(_HandoffValue):
 
     boundary_source: SourceRef
     objective: Annotated[str, Field(max_length=MAX_HANDOFF_TEXT_LENGTH)]
+    rollover_reasons: Annotated[
+        tuple[HandoffRolloverReason, ...],
+        Field(max_length=6),
+    ] = ()
     evidence: Annotated[
         tuple[HandoffCitation, ...],
         Field(max_length=MAX_HANDOFF_CITATIONS),
@@ -121,6 +132,9 @@ class ActivateHandoff(_HandoffValue):
 
     @model_validator(mode="after")
     def require_bounded_unique_evidence(self) -> ActivateHandoff:
+        for index, reason in enumerate(self.rollover_reasons):
+            if reason in self.rollover_reasons[:index]:
+                raise ValueError("Handoff rollover reasons must be unique")  # noqa: TRY003
         citations = self.action_evidence()
         if len(citations) > MAX_HANDOFF_CITATIONS:
             raise ValueError("Handoff activation evidence exceeds the citation limit")  # noqa: TRY003
@@ -156,31 +170,17 @@ class HandoffArtifactEvidence(_HandoffValue):
         return self
 
 
-class HandoffMemoryEvidence(_HandoffValue):
-    """One exact Memory entry version resolved for Handoff generation."""
-
-    citation: HandoffMemoryCitation
-    entry: MemoryEntryVersion
-
-    @model_validator(mode="after")
-    def require_exact_entry_version(self) -> HandoffMemoryEvidence:
-        reference = self.citation.memory_citation
-        if (
-            reference.memory_ref.artifact_id != self.entry.memory_artifact_id
-            or reference.entry_id != self.entry.entry_id
-            or reference.entry_version_id != self.entry.entry_version_id
-        ):
-            raise ValueError("resolved Memory entry does not match its Handoff citation")  # noqa: TRY003
-        return self
-
-
-HandoffGenerationEvidence: TypeAlias = HandoffSourceEvidence | HandoffArtifactEvidence | HandoffMemoryEvidence
+HandoffGenerationEvidence: TypeAlias = HandoffSourceEvidence | HandoffArtifactEvidence
 
 
 class HandoffGenerationRequest(_HandoffValue):
     """Canonical bounded evidence offered to a Handoff generation pipeline."""
 
     objective: Annotated[str, Field(max_length=MAX_HANDOFF_TEXT_LENGTH)]
+    rollover_reasons: Annotated[
+        tuple[HandoffRolloverReason, ...],
+        Field(max_length=6),
+    ] = ()
     evidence: Annotated[
         tuple[HandoffGenerationEvidence, ...],
         Field(min_length=1, max_length=MAX_HANDOFF_CITATIONS),
@@ -191,6 +191,13 @@ class HandoffGenerationRequest(_HandoffValue):
     @classmethod
     def require_objective(cls, value: str) -> str:
         return _require_text("objective", value)
+
+    @model_validator(mode="after")
+    def require_unique_rollover_reasons(self) -> HandoffGenerationRequest:
+        for index, reason in enumerate(self.rollover_reasons):
+            if reason in self.rollover_reasons[:index]:
+                raise ValueError("Handoff rollover reasons must be unique")  # noqa: TRY003
+        return self
 
 
 class HandoffStatement(_HandoffValue):
@@ -222,6 +229,8 @@ class HandoffOmission(_HandoffValue):
 
 class HandoffContent(_HandoffValue):
     """The complete content shared by temporary and committed Handoffs."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, validate_by_name=True)
 
     generation: HandoffGenerationMetadata | None = Field(default=None, exclude_if=lambda value: value is None)
 

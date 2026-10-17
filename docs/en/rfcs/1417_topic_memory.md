@@ -432,7 +432,12 @@ windows. Changing the Chunk policy requires rebuilding the corresponding retriev
 Each retrieval channel first collapses by Topic. When multiple Detail chunks from one Topic match, only the best
 position is retained for the snippet. The two or four channels enabled for the current deployment are fused by RRF
 rather than by comparing raw full-text scores with raw vector distances. A Topic occupies at most one final result
-position, and `matched_by` records which channels matched it. The per-channel candidate limit applies only after this
+position, and `matched_by` records every admitted channel that matched the selected Topic. A zero-weight channel makes
+no ranking contribution and cannot select a Topic by itself, but its evidence remains in `matched_by` when another
+positive-weight channel selects the same Topic. Hybrid mode applies the deployment's normalized relative FTS/vector
+weights to both Topic and Detail channels of the corresponding kind. FTS-only and vector-only modes remain unweighted.
+The weighted theoretical maximum for the enabled channels is the denominator that keeps the public score normalized
+to `0..100`. The per-channel candidate limit applies only after this
 Topic collapse, so one Topic with many matching chunks cannot hide another Topic. FTS snippets center a bounded window
 on an Analyzer v1 query match; a vector-only detail hit uses a stable window from its matched chunk.
 The first-release search limit and historical candidate configuration are both bounded to 20. Search queries are
@@ -723,7 +728,22 @@ minutes. The Supervisor may continue checking a failed key, but Topic Worker's d
 The attempt counter is committed before Source projection; each provider reservation is committed before I/O. The
 third attempt may finish using the remaining provider budget; a subsequent attempt is refused. An exhausted request
 or token allowance records `window_provider_budget_exceeded`, and an exhausted attempt count is reported as
-`window_attempt_limit`. The selector reads terminal frontiers before materializing Sources or spawning another Worker.
+`window_attempt_limit`. Before dispatch, a Topic-owned metadata probe checks the current Cursor, target/Source head
+and work-budget row, including legacy rows whose attempt count is exhausted but whose failure code is empty.
+The probe does not select or materialize Sources, estimate tokens, or construct models. The Worker selector and
+pre-I/O reservations retain their guards against changes after admission; an already started third attempt may finish.
+
+A durable rejection enters terminal waiting rather than ordinary failure backoff. It does not launch another Worker,
+consume provider allowance, increase the failure counter, acknowledge the invocation, or advance progress. The
+Supervisor checks metadata again after five minutes, on a new explicit flush, or at automatic admission. A changed
+allowance or Cursor can make the key eligible again without restarting. Transient failures keep their existing backoff.
+The first observed rejection or changed diagnostic emits `artifact_processing.blocked` with its stage, error code,
+Family, binding, Scope, attempted Window range and attempt/request/token counters. Unchanged cached rechecks are quiet.
+Deduplication is bounded and local to the Supervisor term; restart or cache eviction may report the condition again.
+Evicted terminal keys remain protected by the domain gate and are revisited through bounded durable-intent discovery;
+terminal cache pressure does not pause other Scope admission.
+Failed metadata rechecks retain the last terminal block, its waiting interval and log deduplication. Exhausting the
+Supervisor's shared admission time allowance yields control without attributing another failure to the Scope.
 
 A terminal frontier retains its Sources, Cursor, Pending, and later same-Scope Sources. It is not a NOOP, success, or
 permission to skip evidence. Other Scope keys remain processable. A retry that succeeds within the remaining allowance
@@ -745,9 +765,10 @@ conflicts and leadership loss are control signals and do not increase the ordina
 Cursor and Head conflicts use a fixed short retry deadline rather than immediate redispatch. The conflicting target
 releases its current page while delayed, so frozen suffix targets continue to make progress without a hot loop.
 
-Logs include at least the binding, Scope, Window range, stage, error code, exception type, failure count, retry delay,
-Supervisor generation, Worker ID, and traceback. They must not contain original Source content, Prompts, complete model
-outputs, or secrets.
+Console and JSON operational logs retain the binding, Family, Scope, Window range, stage, error code and applicable
+budget/retry counters. Actual Worker errors retain the child's stage, exception type and Worker identity. Sanitized
+stack locations are available in internal Worker failure diagnostics; operational formatters do not serialize arbitrary
+extras or traceback payloads. Logs must not contain original Source content, Prompts, complete model outputs, or secrets.
 
 ## HTTP, MCP, and Prepared Context
 

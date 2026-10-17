@@ -6,7 +6,7 @@ Dashboard 是 PowerContext 中供个人使用和演示的内容查看器，默�
 
 用户进入 Dashboard 时，可能想确认某项约定，查找解决过类似问题的经验，或继续一项中断的工作。页面需要让用户确定正在查看哪个范围，找到相关记录，并在需要时核对原始材料。
 
-1.0 的核心是阅读已有内容。现有页面同时列出修订历史、比较两个修订，并通过接口已有的条件替换把某一份已保存修订写成新的当前版本。记忆只提供历史和比较，因为替换记忆是追加条目，而不是把整份快照恢复回去。记忆、经验、技能和交接可以分别存在：只有记忆的范围也应当能够正常使用；没有内容的范围仍有明确的入口和页面结构。生成、审核和保存由现有工具与接口完成，阅读这些结果不应要求用户先配置生成能力。
+1.0 的核心是阅读已有内容。现有页面同时列出修订历史、比较两个修订，并通过接口已有的条件替换把某一份已保存修订写成新的当前版本。每条原子记忆可以查看和比较自己的修订，但只读。恢复原子记忆走它自己的恢复流程，确认前会预览所有受影响的记忆。记忆、经验、技能和交接可以分别存在：只有记忆的范围也应当能够正常使用；没有内容的范围仍有明确的入口和页面结构。生成、审核和保存由现有工具与接口完成，阅读这些结果不应要求用户先配置生成能力。
 
 页面的业务主题来自范围名称、摘要和保存的内容。支付服务、客户访谈或个人研究可以使用同一套界面，不需要为每种业务另造导航。新增区块时，应先说明它帮助用户完成哪项工作，以及现有数据能否支持它表达的含义。
 
@@ -156,9 +156,9 @@ Jinja2 组织内容与页面结构，HTMX 处理导航和片段替换。只有�
 | 页面能力 | 接口 | 需要保留的边界 |
 | --- | --- | --- |
 | 范围选择 | `GET /v1/scopes`、`GET /v1/scopes/default`、`GET /v1/scopes/{scope_id}` | 默认值、显式选择、父子关系和可读范围分别处理 |
-| 记忆目录与正文 | `POST /v1/memory/entries/list`、`POST /v1/memory/search`、`POST /v1/memory/entries/get` | 保留搜索模式与命中依据；最多 50 条匹配结果；正文按完整记忆引用读取 |
+| 记忆目录与正文 | `POST /v1/atomic-memory/list`、`POST /v1/memory/search`、Atomic Memory 精确版本与状态读取 | 保留独立制品身份、生命周期筛选、搜索模式与命中依据；最多 50 条匹配结果。搜索兼容入口解析 `auto`，并把 `fts` 映射为 Atomic Memory 的 `text` |
 | 交接目录与正文 | `GET /v1/scopes/{scope_id}/artifacts/handoff` 及精确版本读取 | 保留游标；列表顺序不解释为时间顺序 |
-| 经验目录与正文 | `GET /v1/scopes/{scope_id}/artifacts/experience`、`POST /v1/experience/get` | 提供分页目录；当前没有公开 HTTP 搜索接口 |
+| 经验目录与正文 | `GET /v1/scopes/{scope_id}/artifacts/experience`、`POST /v1/experience/get` | Dashboard 提供分页浏览；Family 相关性检索见 [Artifact 检索](../docs/workflows/search-artifacts.md) |
 | 技能目录与正文 | `POST /v1/skill/library`、`POST /v1/skill/get` | 库检索最多 200 项，达到上限时提示缩小查询；保留来源身份 |
 | 原始材料 | `GET /v1/scopes/{scope_id}/sources/{source_type}/{source_id}` | 验证材料与记录的关联；当前可读取正文的来源类型为 `content` |
 | 用量 | `POST /v1/stats` | 以 `exact` 读取当前范围，使用服务端周期与统计口径 |

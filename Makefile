@@ -19,7 +19,14 @@ notebooks-test: ## Execute provider-free tutorials in fresh kernels; use ARGS fo
 	@uv run --locked --group notebooks python examples/jupyter/run.py $(ARGS)
 
 .PHONY: check
-check: version-check workflow-actions-check integration-manifest-check ## Run code quality tools.
+check: version-check workflow-actions-check integration-manifest-check integration-guidance-check ## Run code quality tools.
+
+.PHONY: integration-guidance integration-guidance-check
+integration-guidance: ## Refresh the managed regions of packaged integration guidance.
+	@uv run python scripts/integration_guidance_skills.py --write
+
+integration-guidance-check: ## Reject stale generated guidance without modifying files or calling models.
+	@uv run python scripts/integration_guidance_skills.py --check-generated
 
 .PHONY: workflow-actions-check
 workflow-actions-check: ## Verify third-party GitHub Actions use immutable commit pins.
@@ -33,18 +40,21 @@ workflow-actions-check: ## Verify third-party GitHub Actions use immutable commi
 	@echo "🚀 Static type checking: Running ty for the Pydantic AI integration"
 	@uv run ty check integrations/pydantic-ai/src
 
+# pytest-xdist worker count; set PYTEST_WORKERS=0 to run tests in a single process.
+PYTEST_WORKERS ?= auto
+
 .PHONY: test
 test: ## Test the code with pytest
 	@echo "🚀 Testing code: Running pytest"
-	@uv run python -m pytest --doctest-modules
+	@uv run python -m pytest -n $(PYTEST_WORKERS) --doctest-modules
 
 .PHONY: unit-test
 unit-test: ## Run tests that do not cross the Server boundary end to end.
-	@uv run python -m pytest --doctest-modules --ignore=tests/e2e
+	@uv run python -m pytest -n $(PYTEST_WORKERS) --doctest-modules --ignore=tests/e2e
 
 .PHONY: e2e-test
 e2e-test: ## Run CLI to Client SDK to Server end-to-end tests.
-	@uv run python -m pytest tests/e2e
+	@uv run python -m pytest -n $(PYTEST_WORKERS) tests/e2e
 
 .PHONY: evaluation-unit-test
 evaluation-unit-test: ## Run the evaluation project's unit tests, the work-continuity benchmark included.
@@ -131,7 +141,7 @@ harness-compose-down: ## Stop the selected isolated harness environment and remo
 
 .PHONY: contract-test
 contract-test: api-generate-check js-api-generate-check ## Verify generated API code and contract bindings.
-	@uv run python -m pytest tests/test_api_contract.py tests/test_js_operations.py
+	@uv run python -m pytest tests/test_api_contract.py tests/test_js_operations.py tests/test_desktop_contract.py
 
 .PHONY: api-generate
 api-generate: ## Generate API models and operations from OpenAPI.

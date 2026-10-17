@@ -20,6 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use ts_rs::TS;
 use zeroize::Zeroizing;
 
+#[cfg(windows)]
 const SERVICE: &str = "com.powercontext.desktop.preview";
 pub struct Secret(Zeroizing<String>);
 impl Secret {

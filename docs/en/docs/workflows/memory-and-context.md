@@ -5,30 +5,33 @@ description: Save project decisions, retrieve relevant history, and correct outd
 
 # Save and recall Memory
 
-Memory keeps durable decisions, constraints, and facts. PreparedContext selects relevant history for one request;
-it is temporary and does not create another Memory entry.
+Memory keeps durable decisions, constraints, and facts. Each new memory is an independent `atomic-memory` Artifact;
+see [Use Atomic Memory](atomic-memory.md) for interfaces, lifecycle and legacy API compatibility. PreparedContext
+selects relevant history for one request; it is temporary and does not create another Memory.
 
 ## Save, recall, and correct
 
 1. Complete the [Quick Start](../get-started/quickstart.md) and keep the resolved Scope consistent across sessions.
 2. Explicitly ask the Agent to save the information. A direct `remember_memory` write does not require a model.
 3. Search with `search_memory`, or inspect entries with `list_memory_entries` and `get_memory_entry` where the host
-   exposes them. Keep the returned citation when referring to a result.
-4. Use the current citation to revise incorrect information or retire information that should no longer be recalled.
-   Retirement removes it from active recall while preserving history.
+   exposes them. Preserve the exact ArtifactRefs they return; exact history is read as Atomic Memory revisions.
+4. Replace content through the generic Artifact API or mark it forgotten through Atomic lifecycle. Content and history
+   remain available for restoration. Replacement requires the content ETag; forgetting requires the exact reference and state_version.
 
 Host tool names differ; see [Connect Agents](../integrations/index.md). The
 [HTTP API](../develop/http-api.md) exposes the complete request schemas and concurrency requirements.
 
 FTS uses the same query terms for candidate retrieval and admission. Query normalization excludes common English
 function words in longer queries and recognizes standalone execution instructions accompanying a question, such as
-"Use only supplied context" and "Do not call tools, read files, inspect old sessions, or delegate." Those instructions
+"Use only supplied context", "Do not call tools, read files, inspect old sessions, or delegate", and "Answer briefly
+and cite the artifact reference from the provided context. If no reliable context is present, say so." Those instructions
 cannot supply evidence for an unrelated fact. Explicitly quoted terms remain searchable, including function words
 used as identifiers such as `"AND" "OR" precedence`. Domain-specific directives and unrecognized wording remain searchable;
 this is a conservative lexical rule, not a general intent classifier. The default threshold requires 25% of all
 remaining distinct terms, with a minimum of two matches; one- or two-term queries require one match. Direct search and
 prepared context share this rule, including when the optional recall gate relaxes the threshold. Stored text and
 vector queries are unchanged, and matching words alone do not establish semantic relevance.
+When the entire query consists of execution instructions, its terms remain searchable so a caller can find that policy.
 
 ## Automatic context and extraction
 

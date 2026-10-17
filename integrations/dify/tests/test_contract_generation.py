@@ -77,11 +77,22 @@ def test_unrelated_openapi_changes_leave_all_dify_outputs_unchanged(repository: 
     assert generated_files(repository) == before
 
 
+def test_rollover_reasons_has_a_chinese_parameter_label(repository: Path) -> None:
+    declaration = yaml.safe_load(
+        (repository / "integrations/dify/plugin/tools/pc_handoff_prepare.yaml").read_text(encoding="utf-8")
+    )
+
+    parameter = next(item for item in declaration["parameters"] if item["name"] == "rollover_reasons")
+
+    assert parameter["label"]["zh_Hans"] == "轮换原因"
+
+
 def test_consumed_schema_changes_fail_stale_checks_and_update_outputs(repository: Path) -> None:
     before = generated_files(repository)
     contract = repository / "openapi/powercontext.yaml"
     spec = yaml.safe_load(contract.read_text(encoding="utf-8"))
-    spec["components"]["schemas"]["SearchMemoryHit"]["properties"]["text"]["description"] = "Updated retained evidence."
+    record = spec["components"]["schemas"]["AtomicMemoryRecord"]
+    record["properties"]["text"]["description"] = "Updated retained evidence."
     contract.write_text(yaml.safe_dump(spec, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
     stale = generate(repository, check=True)
@@ -96,7 +107,7 @@ def test_consumed_schema_changes_fail_stale_checks_and_update_outputs(repository
     assert after["tools/pc_search.yaml"] != before["tools/pc_search.yaml"]
     spec = json.loads(after["powercontext_dify/contract.json"])
     assert (
-        spec["components"]["schemas"]["SearchMemoryHit"]["properties"]["text"]["description"]
+        spec["components"]["schemas"]["AtomicMemoryRecord"]["properties"]["text"]["description"]
         == "Updated retained evidence."
     )
     checked = generate(repository, check=True)

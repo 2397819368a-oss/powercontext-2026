@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import runpy
 import shutil
 from datetime import UTC, datetime, timedelta
@@ -28,9 +29,10 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.task.task import Task as HarborTask
 from harbor.models.trial.result import StepResult, TimingInfo
 from harbor.models.verifier.result import VerifierResult
-from powercontext.client import UnauthorizedResponseError
+from powercontext.client import UnauthorizedResponseError, UnavailableResponseError
 
 from powercontext_e2e import paired as paired_module
+from powercontext_e2e import sessions as sessions_module
 from powercontext_e2e.catalog import TaskOutcomeComparisonSpec, load_tasks
 from powercontext_e2e.models import (
     HarborTrialObservation,
@@ -67,49 +69,82 @@ _HARBOR_TASKS = _REPOSITORY / "e2e" / "bub" / "harbor-tasks"
 _SETTINGS = HarnessSettings(repository=_REPOSITORY)
 
 
-def _grade(answer_path: Path, reward_path: Path) -> None:
+def _grade(answer_path: Path, reward_path: Path, task: str = "project-decision-continuation") -> None:
     # run_path does not write bytecode, which would change the Harbor task checksum.
-    grader = runpy.run_path(
-        str(_HARBOR_TASKS / "project-decision-continuation" / "steps" / "recall" / "tests" / "grade.py")
-    )
+    grader = runpy.run_path(str(_HARBOR_TASKS / task / "steps" / "recall" / "tests" / "grade.py"))
     grader["main"](answer_path, reward_path)
 
 
 @pytest.mark.parametrize(
-    ("answer", "reward"),
+    ("task", "answer", "reward"),
     [
-        ('{"database": "OceanBase", "shard_count": 12}', 1),
-        ('{"database": " oceanbase ", "shard_count": "12"}', 1),
+        ("project-decision-continuation", '{"database": "OceanBase", "shard_count": 12}', 1),
+        ("project-decision-continuation", '{"database": " oceanbase ", "shard_count": "12"}', 1),
         # Contradictory answers name the right fact somewhere but assert another value.
-        ('{"database": "OceanBase", "shard_count": 24}', 0),
-        ('{"database": "PostgreSQL", "shard_count": 12}', 0),
-        ("We chose OceanBase with 24 shards, not 12.", 0),
-        ("We chose PostgreSQL rather than OceanBase, with 12 shards.", 0),
+        ("project-decision-continuation", '{"database": "OceanBase", "shard_count": 24}', 0),
+        ("project-decision-continuation", '{"database": "PostgreSQL", "shard_count": 12}', 0),
+        ("project-decision-continuation", "We chose OceanBase with 24 shards, not 12.", 0),
+        ("project-decision-continuation", "We chose PostgreSQL rather than OceanBase, with 12 shards.", 0),
         # Uncertain answers do not assert the decision.
-        ('{"database": null, "shard_count": null}', 0),
-        ('{"database": "OceanBase?", "shard_count": 12}', 0),
-        ('{"database": "maybe OceanBase", "shard_count": 12}', 0),
-        ('{"database": "OceanBase", "shard_count": "about 12"}', 0),
-        ('["OceanBase", 12]', 0),
+        ("project-decision-continuation", '{"database": null, "shard_count": null}', 0),
+        ("project-decision-continuation", '{"database": "OceanBase?", "shard_count": 12}', 0),
+        ("project-decision-continuation", '{"database": "maybe OceanBase", "shard_count": 12}', 0),
+        ("project-decision-continuation", '{"database": "OceanBase", "shard_count": "about 12"}', 0),
+        # A fullwidth O is a different name, not a case variant; fullwidth digits are not digits either.
+        ("project-decision-continuation", '{"database": "\uff2fceanBase", "shard_count": 12}', 0),
+        ("project-decision-continuation", '{"database": "OceanBase", "shard_count": "\uff11\uff12"}', 0),
+        ("project-decision-continuation", '["OceanBase", 12]', 0),
         # A repeated key or an extra field could hide a contradiction from the checked values.
-        ('{"database": "PostgreSQL", "database": "OceanBase", "shard_count": 12}', 0),
-        ('{"database": "OceanBase", "shard_count": 12, "note": "or PostgreSQL with 24"}', 0),
+        ("project-decision-continuation", '{"database": "PostgreSQL", "database": "OceanBase", "shard_count": 12}', 0),
+        (
+            "project-decision-continuation",
+            '{"database": "OceanBase", "shard_count": 12, "note": "or PostgreSQL with 24"}',
+            0,
+        ),
+        # Header names are case-insensitive in ASCII; paths are exact. A look-alike character is a different name.
+        ("api-contract-continuation", '{"path": "/v3/ledger/settle", "header": "X-Ledger-Idempotency-Key"}', 1),
+        ("api-contract-continuation", '{"path": "/v3/ledger/settle", "header": " x-ledger-idempotency-key "}', 1),
+        ("api-contract-continuation", '{"path": "/v3/ledger/settle", "header": "X-LEDGER-IDEMPOTENCY-KEY"}', 1),
+        ("api-contract-continuation", '{"path": " /v3/ledger/settle ", "header": "X-Ledger-Idempotency-Key"}', 1),
+        # Superscript three in the path; fullwidth X, then the Kelvin sign (which lowercases to ASCII k) in the header.
+        ("api-contract-continuation", '{"path": "/v\u00b3/ledger/settle", "header": "X-Ledger-Idempotency-Key"}', 0),
+        ("api-contract-continuation", '{"path": "/v3/ledger/settle", "header": "\uff38-Ledger-Idempotency-Key"}', 0),
+        ("api-contract-continuation", '{"path": "/v3/ledger/settle", "header": "X-Ledger-Idempotency-\u212aey"}', 0),
+        ("api-contract-continuation", '{"path": "/V3/Ledger/Settle", "header": "X-Ledger-Idempotency-Key"}', 0),
+        ("api-contract-continuation", '{"path": "/v3/ledger/settle/", "header": "X-Ledger-Idempotency-Key"}', 0),
+        ("api-contract-continuation", '{"path": "/v3/ledger/settle", "header": "Idempotency-Key"}', 0),
+        ("api-contract-continuation", '{"path": "/v3/ledger/settle", "header": null}', 0),
+        (
+            "api-contract-continuation",
+            '{"path": "/v3/ledger/settle", "header": "X-Ledger-Idempotency-Key", "method": "POST"}',
+            0,
+        ),
+        # The current value and the superseded one must both be right, in their own keys.
+        ("revised-decision-continuation", '{"ttl_seconds": 90, "previous_ttl_seconds": 30}', 1),
+        ("revised-decision-continuation", '{"ttl_seconds": "90", "previous_ttl_seconds": "30"}', 1),
+        ("revised-decision-continuation", '{"ttl_seconds": "\uff19\uff10", "previous_ttl_seconds": 30}', 0),
+        ("revised-decision-continuation", '{"ttl_seconds": 30, "previous_ttl_seconds": 90}', 0),
+        ("revised-decision-continuation", '{"ttl_seconds": 30, "previous_ttl_seconds": 30}', 0),
+        ("revised-decision-continuation", '{"ttl_seconds": 90, "previous_ttl_seconds": null}', 0),
+        ("revised-decision-continuation", '{"ttl_seconds": 90, "previous_ttl_seconds": 30, "note": "or 60"}', 0),
+        ("revised-decision-continuation", "The TTL is 90 seconds, previously 30.", 0),
     ],
 )
-def test_recall_grader_checks_the_asserted_values(tmp_path: Path, answer: str, reward: int) -> None:
+def test_recall_graders_check_the_asserted_values(tmp_path: Path, task: str, answer: str, reward: int) -> None:
     answer_path = tmp_path / "answer.json"
     answer_path.write_text(answer, encoding="utf-8")
     reward_path = tmp_path / "reward.txt"
 
-    _grade(answer_path, reward_path)
+    _grade(answer_path, reward_path, task)
 
     assert reward_path.read_text(encoding="utf-8") == f"{reward}\n"
 
 
-def test_recall_grader_scores_a_missing_answer_as_zero(tmp_path: Path) -> None:
+@pytest.mark.parametrize("task", _PAIRED_TASKS, ids=lambda task: task.id)
+def test_recall_grader_scores_a_missing_answer_as_zero(tmp_path: Path, task) -> None:
     reward_path = tmp_path / "reward.txt"
 
-    _grade(tmp_path / "answer.json", reward_path)
+    _grade(tmp_path / "answer.json", reward_path, task.dataset.task_id)
 
     assert reward_path.read_text(encoding="utf-8") == "0\n"
 
@@ -120,6 +155,41 @@ def test_continuation_tasks_hide_the_answer_until_the_recall_session(task) -> No
     # be readable in the earlier session.
     assert recall_session_index(task, _SETTINGS) >= 1
     assert not (_HARBOR_TASKS / task.dataset.task_id / "tests").exists()
+
+
+_LICENSE_HEADER = (
+    (_HARBOR_TASKS / "project-decision-continuation" / "steps" / "recall" / "tests" / "test.sh")
+    .read_text(encoding="utf-8")[len("#!/bin/sh\n") :]
+    .split("\n\n", 1)[0]
+)
+
+
+@pytest.mark.parametrize("task", _PAIRED_TASKS, ids=lambda task: task.id)
+def test_task_files_do_not_hold_the_answer(task) -> None:
+    # The fact belongs in the capture instruction alone, and the answer key in the recall tests. Both arms can read
+    # every other file the task puts in the container, so none may hold an expected value. The repository's license
+    # header is on every file and is skipped; the "OceanBase" it leaves in the capture tests is out of the recall
+    # session's reach because the harness empties /tests before each session.
+    task_dir = _HARBOR_TASKS / task.dataset.task_id
+    recall_tests = task_dir / "steps" / "recall" / "tests"
+    grader = runpy.run_path(str(recall_tests / "grade.py"))
+    expected = {name: value for name, value in grader.items() if name.startswith("EXPECTED_")}
+    assert expected
+    capture_instruction = task_dir / "steps" / "capture" / "instruction.md"
+    visible = [
+        path
+        for path in task_dir.rglob("*")
+        if path.is_file() and path != capture_instruction and not path.is_relative_to(recall_tests)
+    ]
+    assert visible
+    for path in visible:
+        content = path.read_text(encoding="utf-8").replace(_LICENSE_HEADER, "").casefold()
+        for name, value in expected.items():
+            if isinstance(value, int):
+                found = re.search(rf"(?<!\d)(?<!\d\.){value}(?!\d)(?!\.\d)", content) is not None
+            else:
+                found = str(value).casefold() in content
+            assert not found, f"{path} holds {name}"
 
 
 def test_recall_step_must_be_the_final_session() -> None:
@@ -509,15 +579,24 @@ def test_paired_report_gives_the_runs_behind_a_mean_only_some_runs_reported() ->
 
 
 class _FlushingClient:
-    def __init__(self, cursors: list[tuple[int, int, int]], *, failing_flushes: frozenset[int] = frozenset()) -> None:
+    def __init__(
+        self,
+        cursors: list[tuple[int, int, int]],
+        *,
+        failing_flushes: frozenset[int] = frozenset(),
+        unavailable_flushes: dict[int, str] | None = None,
+    ) -> None:
         self._cursors = iter(cursors)
         self._failing_flushes = failing_flushes
+        self._unavailable_flushes = unavailable_flushes or {}
         self.flushes = 0
 
     async def flush_memory(self, request):
         self.flushes += 1
         if self.flushes in self._failing_flushes:
             raise TimeoutError("flush timed out")  # noqa: TRY003
+        if code := self._unavailable_flushes.get(self.flushes):
+            raise UnavailableResponseError(status_code=503, request_id=None, code=code)
         previous, current, high = next(self._cursors)
         return SimpleNamespace(previous_cursor=previous, current_cursor=current, high_watermark=high)
 
@@ -591,6 +670,48 @@ def test_recorder_records_a_failed_settle_instead_of_raising() -> None:
     assert recorder.failures == ["Settling the Scope after session 0 failed: TimeoutError: flush timed out"]
     assert [snapshot.session for snapshot in recorder.snapshots] == [1]
     assert any("not observed" in reason for reason in treatment_failures(recorder.snapshots, recall_session=1))
+
+
+def test_settling_waits_while_a_plugin_flush_records_memory_owners(monkeypatch) -> None:
+    # A host plugin's own flush can still be running when the harness settles; until it records who owns the Memory it
+    # created, the Server answers 503 artifact_owner_pending, which is not an integration failure.
+    monkeypatch.setattr(sessions_module, "OWNER_PENDING_DELAYS", (0.0, 0.0))
+    pending = "artifact_owner_pending"
+    recorder = SessionRecorder(
+        _FlushingClient([(0, 1, 1)], unavailable_flushes={1: pending, 2: pending}), "scope-1", final_session=1
+    )
+
+    asyncio.run(recorder(None))
+    asyncio.run(recorder(None))
+
+    assert recorder.failures == []
+    assert [(snapshot.session, snapshot.flush_rounds) for snapshot in recorder.snapshots] == [(0, 1), (1, 0)]
+
+
+@pytest.mark.parametrize(
+    ("unavailable_flushes", "code"),
+    [
+        ({1: "inference_timeout"}, "inference_timeout"),
+        (
+            {1: "artifact_owner_pending", 2: "artifact_owner_pending", 3: "artifact_owner_pending"},
+            "artifact_owner_pending",
+        ),
+    ],
+)
+def test_settling_still_reports_an_unavailable_server(
+    monkeypatch, unavailable_flushes: dict[int, str], code: str
+) -> None:
+    monkeypatch.setattr(sessions_module, "OWNER_PENDING_DELAYS", (0.0, 0.0))
+    recorder = SessionRecorder(
+        _FlushingClient([(0, 1, 1)], unavailable_flushes=unavailable_flushes), "scope-1", final_session=1
+    )
+
+    asyncio.run(recorder(None))
+
+    assert recorder.failures == [
+        "Settling the Scope after session 0 failed: "
+        f"UnavailableResponseError: PowerContext Server returned HTTP 503 ({code})"
+    ]
 
 
 class _AnonymousClient:

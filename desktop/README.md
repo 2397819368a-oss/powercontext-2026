@@ -59,9 +59,9 @@ Profiles persist under the app data directory; credentials never appear in profi
 
 After explicitly activating a qualified connection and choosing a Scope, use Home's note form or **My memories → Add note**. The target connection and exact Scope are shown before submission. Enter inserts a newline; only the save button submits. The input is plain text, limited conservatively to 8192 raw UTF-8 bytes without truncation. The Server owns normalization and the returned text is authoritative.
 
-Search uses FTS in the selected Scope and returns at most 10 matches. This is not a full directory or history, and ten matches do not establish a total count. **Read exact version** sends the complete returned citation; it never substitutes the latest version. Copy buttons explicitly copy either the full plain text or citation JSON.
+Search uses FTS in the selected Scope and returns at most 10 matches. This is not a full directory or history, and ten matches do not establish a total count. **Read exact version** reads the returned Atomic Memory reference (`{family: "atomic-memory", artifact_id, revision}`) at that exact revision; it never substitutes the latest version. Copy buttons explicitly copy either the full plain text or the reference JSON.
 
-A successful save without an entry is reported as an operation success without inventing a citation. A timeout or interrupted dispatched write is **unknown**, not a safe invitation to retry: inspect the original Server/Scope before deciding whether to submit again. Identical text alone cannot identify that operation. Desktop does not automatically replay writes or keep an offline queue. Switching context hides old results while retaining minimal original-operation metadata for this session. See [validation guide](VALIDATION.md) for tested behavior and qualification gaps.
+A successful save that returns no memory record is reported as an operation success without inventing a reference. A timeout or interrupted dispatched write is **unknown**, not a safe invitation to retry: inspect the original Server/Scope before deciding whether to submit again. Identical text alone cannot identify that operation. Desktop does not automatically replay writes or keep an offline queue. Switching context hides old results while retaining minimal original-operation metadata for this session. See [validation guide](VALIDATION.md) for tested behavior and qualification gaps.
 
 ## Contracts and resources
 
@@ -91,20 +91,19 @@ Register an explicitly trusted local installation in `%APPDATA%/com.powercontext
 {
   "executable": "C:/trusted/powercontext/Scripts/powercontext.exe",
   "sha256": "REPLACE_WITH_VERIFIED_64_CHARACTER_SHA256",
-  "version": "1.0.1.dev61+g63f918b7e.d20260919",
   "source": "explicit_local_installation"
 }
 ```
 
-The native adapter checks the absolute executable path, pinned digest and fixed `--version` result before running either `service status --json` or `doctor integrations --json`. This is a local installation pin, not publisher-signature verification; the Python environment and dependencies must also be trusted. The adapter admits 1.0.1 and 1.1.1 and their development builds; the registration must pin the exact installed version. The example identifies the tested baseline. Other version series require adapter qualification. No PATH-first CLI selection or renderer-provided commands are accepted.
+The native adapter verifies the absolute executable path and pinned digest before running either `service status --json` or `doctor integrations --json`. Registration does not require a version; legacy `version` fields are ignored. Compatibility is determined by the diagnostic response matching the adapter's supported output schema. The observed CLI version is collected for display after a valid diagnostic response; an unavailable version is shown as unknown and does not reject the response. This is a local installation pin, not publisher-signature verification; the Python environment and dependencies must also be trusted. Update the registered digest if the executable changes. No PATH-first CLI selection or renderer-provided commands are accepted.
 
-Version verification has a 15-second deadline, service status 20 seconds, and integration diagnostics 60 seconds. Each invocation limits combined stdout/stderr to 256 KiB. Helpers run hidden in an owned Windows Job; completion, timeout and cancellation clean up their descendants. Only allowlisted status fields reach the UI. Valid unhealthy JSON remains useful even with exit code 1. Isolated real-CLI checks pass; installed-application qualification remains open in [validation guide](VALIDATION.md).
+The optional version query has a 15-second deadline, service status 20 seconds, and integration diagnostics 60 seconds. Each invocation limits combined stdout/stderr to 256 KiB. Helpers run hidden in an owned Windows Job; completion, timeout and cancellation clean up their descendants. Only allowlisted status fields reach the UI. Valid unhealthy JSON remains useful even with exit code 1. Isolated real-CLI checks pass; installed-application qualification remains open in [validation guide](VALIDATION.md).
 
 [Validation guide](VALIDATION.md) describes reproducible checks and outstanding platform and product gates.
 
 ## Remote installed-package acceptance
 
-Windows GitHub Actions builds an unsigned installer, installs into a temporary Chinese path, and uses a matching Microsoft-signed WebDriver to operate the actual installed WebView2 page. An independent SQLite Server with synthetic data supports explicit connection activation, exact Scope selection, multiline Chinese note save, FTS search, exact reading, and paste-back verification of copied text and citation. The fixture Server and its temporary workspace are cleaned up afterward.
+Windows GitHub Actions builds an unsigned installer, installs into a temporary Chinese path, and uses a matching Microsoft-signed WebDriver to operate the actual installed WebView2 page. An independent SQLite Server with synthetic data supports explicit connection activation, exact Scope selection, multiline Chinese note save, FTS search, exact reading, and paste-back verification of copied text and reference. The fixture Server and its temporary workspace are cleaned up afterward.
 
 Reports, a screenshot and driver logs accompany the installer in the `desktop-windows-internal-unsigned` artifact. Failed or pending steps are not acceptance passes. The UI script permits only GitHub Windows runners and does not operate your local desktop. Hosted runners do not establish clean standard-user Windows 11, actual IME, screen-reader or Agent-host qualification.
 
@@ -116,4 +115,6 @@ The CI-only lifecycle scenario forcibly ends its own installed Desktop process a
 
 Installed boundary checks exercise an 8192-byte Unicode note, reject over-budget input, display zero and capped-ten search results, and verify cancel/confirm behavior when disconnecting with an unsaved draft. Each result requires its matching remote report.
 
-After upgrading from the earlier preview, select `sqlite-6e237568-v1` and recheck your connection. The previous `sqlite-1.1.1-v1` / `sqlite-63f918b7-v1` / `sqlite-ab43e3a7-v1` / `sqlite-f1089f4e-v1` selection is not silently upgraded to a different contract. See [current qualification](VALIDATION.md).
+After upgrading from an earlier preview, open Connections and select your saved connection. Profiles matching the bundled API contract appear under “Available for this Desktop build”; compare their tested Server builds with your deployment before selecting one, saving, checking and explicitly using the connection again. New connections start with no compatibility selection.
+
+Historical profiles appear as disabled records. A saved incompatible or unavailable selection remains visible with an explanation until explicitly replaced; it is never silently upgraded. This build currently has no product qualification record matching its bundled contract, so business operations remain unavailable in ordinary builds. The independently qualified `ci-fixtures` build is for disposable acceptance tests. Historical qualification evidence and remaining requirements are documented in the [validation guide](VALIDATION.md).

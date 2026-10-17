@@ -21,6 +21,16 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel
 
+from powercontext.builtin.artifacts.atomic_memory.extraction import (
+    AtomicMemoryExtractionInput,
+    AtomicMemoryExtractionOutput,
+)
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
+from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
+    AtomicMemoryReconciliationInput,
+    AtomicMemoryReconciliationOutput,
+    validate_reconciliation_output,
+)
 from powercontext.builtin.artifacts.experience import ExperienceIncubationInput, ExperienceIncubationOutput
 from powercontext.builtin.artifacts.generation import ArtifactGenerationInput, GenerationEvidenceKind
 from powercontext.builtin.artifacts.handoff import (
@@ -32,7 +42,7 @@ from powercontext.builtin.artifacts.handoff import (
     HandoffStatement,
     PrepareHandoff,
 )
-from powercontext.builtin.artifacts.handoff.generation import HandoffGenerationStatement
+from powercontext.builtin.artifacts.handoff.generation import HandoffGenerationStatement, rollover_draft_violation
 from powercontext.builtin.artifacts.memory import (
     MemoryExtractionInput,
     MemoryExtractionOutput,
@@ -74,7 +84,14 @@ def _identities(values: Iterable[str]) -> set[str]:
 
 def validate_demonstration(value: BaseModel, output: BaseModel) -> None:  # noqa: C901 - one branch per operation family
     """Enforce relationships that independent input/output JSON schemas cannot express."""
-    if isinstance(value, MemoryExtractionInput) and isinstance(output, MemoryExtractionOutput):
+    if isinstance(value, AtomicMemoryExtractionInput) and isinstance(output, AtomicMemoryExtractionOutput):
+        evidence = _identities(item.evidence_id for item in value.evidence)
+        for candidate in output.candidates:
+            AtomicMemoryContent(kind=candidate.kind, text=candidate.text)
+            _require(bool(candidate.evidence_ids) and set(candidate.evidence_ids) <= evidence)
+    elif isinstance(value, AtomicMemoryReconciliationInput) and isinstance(output, AtomicMemoryReconciliationOutput):
+        validate_reconciliation_output(value, output)
+    elif isinstance(value, MemoryExtractionInput) and isinstance(output, MemoryExtractionOutput):
         _memory_extraction(value, output)
     elif isinstance(value, MemoryRerankInput) and isinstance(output, MemoryRerankOutput):
         ranks = tuple(candidate.rank for candidate in value.candidates)
@@ -139,7 +156,12 @@ def _handoff(value: HandoffGenerationInput, output: HandoffGenerationOutput) -> 
         evidence_id: HandoffSourceCitation(source_ref=SourceRef(source_type="content", source_id=f"demo-{index}"))
         for index, evidence_id in enumerate(sorted(evidence))
     }
-    PrepareHandoff(objective=value.objective, evidence=tuple(citations.values()), max_bytes=value.max_bytes)
+    PrepareHandoff(
+        objective=value.objective,
+        rollover_reasons=value.rollover_reasons,
+        evidence=tuple(citations.values()),
+        max_bytes=value.max_bytes,
+    )
 
     def statement(item: HandoffGenerationStatement) -> HandoffStatement:
         _require(bool(item.evidence_ids) and set(item.evidence_ids) <= evidence)
@@ -153,13 +175,14 @@ def _handoff(value: HandoffGenerationInput, output: HandoffGenerationOutput) -> 
         omissions.append(
             HandoffOmission(text=item.text, citation=None if item.evidence_id is None else citations[item.evidence_id])
         )
-    HandoffDraft(
+    draft = HandoffDraft(
         objective=value.objective,
         state=tuple(statement(item) for item in output.state),
         disposition=output.disposition,
         next_action=None if output.next_action is None else statement(output.next_action),
         omissions=tuple(omissions),
     )
+    _require(not value.rollover_reasons or rollover_draft_violation(draft) is None)
 
 
 def _topic_memory_probe(value: TopicMemoryProbeInput, output: TopicMemoryProbeOutput) -> None:

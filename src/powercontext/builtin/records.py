@@ -18,20 +18,19 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
+from powercontext.artifacts import ArtifactRef, StableHandle
 from powercontext.sources import SourceRef
 
 if TYPE_CHECKING:
-    from powercontext.builtin.artifacts.memory import MemoryEntryVersion
     from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
     from powercontext.builtin.tags import ArtifactTagSet, TagFilter, TagQuery, TagQueryPage, TagTarget
 
-BaseArtifactFamily = Literal["memory", "experience", "skill", "handoff", "profile", "prompt", "topic-memory"]
-ArtifactReadFamily = Literal["memory", "experience", "skill", "handoff", "profile", "prompt", "topic-memory"]
+BaseArtifactFamily = Literal["atomic-memory", "experience", "skill", "handoff", "profile", "prompt", "topic-memory"]
+ArtifactReadFamily = Literal["atomic-memory", "experience", "skill", "handoff", "profile", "prompt", "topic-memory"]
 
 
 class _RecordModel(BaseModel):
@@ -94,7 +93,6 @@ class ArtifactRecord(_RecordModel):
     content: dict[str, JsonValue]
     sources: tuple[SourceRef, ...]
     artifacts: tuple[ArtifactRef, ...]
-    memory_citations: tuple[MemoryCitation, ...] = ()
     content_digest: str
     created_at: datetime | None = None
     created_by: ArtifactRevisionActor | None = None
@@ -280,6 +278,7 @@ class RecordService(Protocol):
         /,
         *,
         handoff_receipt: bool = False,
+        working_note: bool = False,
     ) -> SourceRecord: ...
 
     async def get_source(self, scope_id: str, source_type: str, source_id: str, /) -> SourceRecord: ...
@@ -300,9 +299,27 @@ class RecordService(Protocol):
         family: str,
         write: ArtifactWrite,
         /,
+        *,
+        execution_context: Any = None,
     ) -> ArtifactCreated: ...
 
-    async def get_artifact(self, scope_id: str, family: str, artifact_id: str, /) -> ArtifactRecord: ...
+    async def create_atomic_memories(
+        self, scope_id: str, contents: tuple[dict[str, JsonValue], ...], *, execution_context: Any = None
+    ) -> tuple[ArtifactCreated, ...]: ...
+
+    async def bind_artifact_handle(
+        self,
+        scope_id: str,
+        handle: StableHandle,
+        target: ArtifactRef,
+        /,
+    ) -> ArtifactRef: ...
+
+    async def resolve_artifact_handle(self, scope_id: str, handle: StableHandle, /) -> ArtifactRef: ...
+
+    async def get_artifact(
+        self, scope_id: str, family: str, artifact_id: str, /, *, execution_context: Any = None
+    ) -> ArtifactRecord: ...
 
     async def get_artifact_revision(
         self,
@@ -311,6 +328,8 @@ class RecordService(Protocol):
         artifact_id: str,
         revision: int,
         /,
+        *,
+        execution_context: Any = None,
     ) -> ArtifactRecord: ...
 
     async def list_artifact_revisions(
@@ -323,8 +342,6 @@ class RecordService(Protocol):
         limit: int,
         cursor: str | None,
     ) -> ArtifactRevisionPage: ...
-
-    async def current_memory_entry(self, scope_id: str, artifact_id: str, entry_id: str, /) -> MemoryEntryVersion: ...
 
     async def logical_artifacts(self, scope_id: str, /) -> tuple[LogicalArtifactRecord, ...]: ...
 
@@ -342,7 +359,13 @@ class RecordService(Protocol):
     async def get_tags(self, scope_id: str, target: TagTarget) -> ArtifactTagSet: ...
 
     async def replace_tags(
-        self, scope_id: str, target: TagTarget, tags: tuple[str, ...], *, expected_etag: str
+        self,
+        scope_id: str,
+        target: TagTarget,
+        tags: tuple[str, ...],
+        *,
+        expected_etag: str,
+        execution_context: Any = None,
     ) -> ArtifactTagSet: ...
 
     async def query_tags(self, scope_id: str, query: TagQuery, *, caller: str = "runtime") -> TagQueryPage: ...
@@ -358,6 +381,7 @@ class RecordService(Protocol):
         *,
         actor_type: str | None = None,
         actor_id: str | None = None,
+        execution_context: Any = None,
     ) -> ArtifactRecord: ...
 
     async def list_scopes(self, *, limit: int, cursor: str | None) -> ScopeSummaryPage: ...

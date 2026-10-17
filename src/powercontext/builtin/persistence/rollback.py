@@ -46,10 +46,8 @@ def merged_source_revision(family: str, write: ArtifactWrite, command: BaseModel
             "does not match content.restored_from_revision",
         )
     source = requested if requested is not None else embedded
-    if family == "memory" and (source is not None or write.reason is not None):
-        raise InvalidBaseAccessRequestError("restored_from_revision", "is not supported for memory")
     if family not in ROLLBACK_FAMILIES and (source is not None or write.reason is not None):
-        raise InvalidBaseAccessRequestError("restored_from_revision", "is not supported")
+        raise InvalidBaseAccessRequestError("restored_from_revision", f"is not supported for {family}")
     if source is None and write.reason is None:
         return None
     if source is None or write.reason is None:

@@ -4,6 +4,8 @@
 
 Local validation date: 2026-10-07. Server baseline: PowerContext master `1db8f3b1ed69f98da0a280b75e51c66cfa31e0a9`; public HTTP contract version 1.2.0. The plugin's generated contract hashes canonical UTF-8/LF OpenAPI text so Windows Git line endings do not change it.
 
+The results and package checksum below describe the 19-tool baseline validated on that date. They do not establish acceptance for the current 20-tool Atomic Memory surface, including `pc_memory_state`, current content ETags, Artifact replacement and guarded forgetting.
+
 | Component | Tested version / environment |
 | --- | --- |
 | Plugin identity | `knqiufan/powercontext` 0.0.1, experimental local build |
@@ -20,7 +22,7 @@ Local validation date: 2026-10-07. Server baseline: PowerContext master `1db8f3b
 
 ## Passed local acceptance
 
-- 66 focused regressions cover registered SDK entries, official daemon serialization and host models/helpers: exact catalog, hidden credential/Scope fields, JSON-text inputs, input validation, UTF-8 limits, missing binding, credential read validation, malformed/oversized receipts, partial error receipts, transport failure, secret-bearing capture, sanitization and no automatic write retry. All six server-controlled fields are rejected at the SDK boundary. The packaged requirements check accepts the locked dependency export and rejects a stale SDK constraint without changing the lock. Named outputs are checked against their declared Draft 7 JSON schemas, and `result` must equal the complete successful response or `{}` on error/unknown. Ready and empty context responses retain their original text/null values; no-op candidate receipts retain `candidate=null`. Rendering metadata does not weaken nullable object or integer revision validation.
+- 67 focused regressions cover registered SDK entries, official daemon serialization and host models/helpers: exact catalog, hidden credential/Scope fields, JSON-text inputs, input validation, UTF-8 limits, missing binding, credential read validation, malformed/oversized receipts, partial error receipts, transport failure, secret-bearing capture, sanitization and no automatic write retry. All seven server-controlled fields are rejected at the SDK boundary. The packaged requirements check accepts the locked dependency export and rejects a stale SDK constraint without changing the lock. Named outputs are checked against their declared Draft 7 JSON schemas, and `result` must equal the complete successful response or `{}` on error/unknown. Ready and empty context responses retain their original text/null values; no-op candidate receipts retain `candidate=null`. Rendering metadata does not weaken nullable object or integer revision validation.
 - The daemon probe imports the pinned official `plugin_entities.ToolDeclaration`/`ToolParameter` types and round-trips SDK registrations with Go `encoding/json`. Dify's real Pydantic parameter models and official model-schema builder then produce valid Draft 7 schemas for all 19 tools. All 26 decoded structured/nullable schemas remain in model-visible descriptions; defaults match the string transport. The compose fixture confirms that the tested daemon corresponds to the host's default version. This is executable source-boundary evidence, not installation or live daemon dispatch.
 - The HTTP/SQLite tests invoke all 19 loaded tools. Memory write/list/search/prepare/get/revise/retire remains usable through exact citations; Source capture retains structured metadata and a Unicode Source ID.
 - Complete Handoff JSON passes prepare/finalize/temporary continue/commit/exact/latest readback. Full objects and references survive the SDK messages.
@@ -71,14 +73,14 @@ The compatibility scenarios require Node 22.19+, Go satisfying the daemon's `go.
 
 Record Dify, plugin-daemon, SDK, CLI, Python, Server SHA, package checksum and model/backend versions. Record each scenario as passed, failed or not run with trace/log evidence.
 
-- [ ] Install the package in a clean Dify workspace; inspect icon, provider and all 19 tool declarations.
+- [ ] Install the package in a clean Dify workspace; inspect icon, provider and all 20 tool declarations.
 - [ ] Save/switch provider credentials, restart the daemon/application and invoke tools again.
 - [ ] Exercise actual plugin dispatch with JSON-text objects/arrays/nullable values, including exact references, draft/prepared Handoff, quoted nullable strings and nested metadata. Verify native JSON and named outputs in workflow nodes, with one Code-node serialization before reusing structured outputs as tool inputs.
 - [ ] Verify valid model-visible string schemas and retained decoded-schema descriptions through the installed default daemon. Exercise Agent-produced JSON text, optional omission/null and array defaults; confirm malformed inputs cannot write.
 - [ ] Verify HTTPS certificate validation and private-network HTTP configuration from the daemon.
 - [ ] Test read/write permissions with restricted principals and nested citations/Artifacts/Handoffs/candidates across Scope boundaries.
 - [ ] Overlap actual daemon requests using different credentials and Scopes; inspect credentials, Scope, outer deadlines and write outcomes.
-- [ ] Exercise all 19 operations with supported real generation providers, complete readback and failure/unknown branches.
+- [ ] Exercise all 20 tools with supported real generation providers, complete readback and failure/unknown branches. For Atomic Memory, verify exact current/historical content, the current `etag`, state/version readback, guarded revision/forgetting, and local rejection of legacy Memory citations.
 - [ ] Verify trusted application write controls; a model's self-reported consent must not authorize writing.
 - [ ] Agree publisher, namespace, contact and maintenance ownership, including coexistence/upgrade with `oceanbase/powermem`.
 - [ ] Submit the reviewed source/package to `langgenius/dify-plugins`; record repository acceptance and Marketplace availability separately.
