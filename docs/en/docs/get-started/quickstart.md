@@ -15,6 +15,32 @@ prepare their base URLs, model names, and API keys. Signing into a Codex or Clau
 provide these APIs to the PowerContext Server. Without separate model APIs, select basic memory to test explicit saves
 and recall; that does not enable automatic Topic Memory.
 
+## Choose Basic or Full memory before you start
+
+**Basic memory** is model-free: you can explicitly save and search durable Memory through Codex, but ordinary
+conversation is not automatically turned into Topic Memory, Profile, Experience, or Skill content. **Full memory** adds
+Generation and Embedding model APIs and the configured background pipelines. It enables those workflows when their own
+evidence and policy requirements are met; it does not create every Artifact from every prompt.
+
+PowerContext has seven Artifact families. Source is their evidence, and Tag is metadata rather than an Artifact. Use
+these examples to tell Codex what you want; they describe the intended workflow, not magic phrases that bypass checks.
+
+| Value | What it is for | How to start it in Codex | Requires Full memory? |
+| --- | --- | --- | --- |
+| Memory | Durable facts, decisions, constraints, and next steps | “Remember that this project uses uv.” Then ask to search it later. | No; explicit save and recall work in Basic memory. |
+| Topic Memory | Model-maintained topic summary with Source evidence | Discuss a related decision in ordinary prompts, then allow configured Topic processing to run. | Yes. |
+| Profile | Reviewed Scope background used in context preparation | Enable the Scope's Profile policy, then follow the Profile workflow. | Yes. |
+| Experience | A reusable lesson from an observed task outcome | Record a task outcome, then ask to generate or propose an Experience candidate and review it. | Generation needs Full memory; an authored proposal does not. |
+| Managed Skill | A reviewed procedure with instructions and validation | Ask to generate or propose a Skill candidate, review it, then export its approved Revision. | Generation needs Full memory; an authored proposal does not. |
+| Handoff | A durable milestone for continuing current work | “Handoff this work,” or preview it before committing. | No. |
+| Prompt | Scope-level operational configuration | Configure it deliberately through the documented prompt workflow, not through ordinary chat. | No. |
+| Source | Evidence captured from your prompt or supplied by an integration | Send an ordinary prompt after trusting the Hook, or use an explicit Source workflow. | No. |
+| Tag | Metadata that helps organize supported Artifacts | Ask to tag a Memory, Experience, Skill, or Handoff with a specific label. | No. |
+
+An approved Managed Skill is still stored on the Server. Approval neither installs it into Codex nor authorizes its
+execution: export the exact approved Revision to an Agent Skill target before the host can discover it. See
+[Experience and Skill lifecycle](../workflows/experience-and-skill-lifecycle.md) for the review and export steps.
+
 ## 1. Install and open the wizard
 
 ```bash
@@ -101,9 +127,14 @@ powercontext doctor codex
 codex
 ```
 
-Confirm that the PowerContext Hook and MCP have both loaded in Codex. For a non-default address, follow the Codex
-connection instructions in `.env.next-steps.md`: the installed plugin's `.mcp.json` must use the same Server as the Hook,
-with credentials configured when authentication is enabled. Installing the plugin does not start the Server.
+On the first new Codex session, Codex asks whether to trust the PowerContext `SessionStart` and `UserPromptSubmit`
+Hooks. Trust both when this is the Scope you intend to connect: `UserPromptSubmit` prepares bounded recall before a
+prompt and captures that prompt as Source evidence. If you decline trust, Codex still opens and MCP may still be
+available, but automatic recall and Source capture do not run; use `/hooks` to inspect or change that choice, then
+start a new session before testing. Confirm that the PowerContext Hook and MCP have both loaded in Codex. For a
+non-default address, follow the Codex connection instructions in `.env.next-steps.md`: the installed plugin's
+`.mcp.json` must use the same Server as the Hook, with credentials configured when authentication is enabled.
+Installing the plugin does not start the Server.
 
 These commands use Codex CLI. A desktop app may not inherit terminal environment variables. Before testing in the
 desktop app, verify that both its Hook and MCP receive the same URL and Scope, and credentials when authentication

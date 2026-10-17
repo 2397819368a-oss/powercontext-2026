@@ -14,6 +14,31 @@ description: 通过配置向导安装完整记忆能力，接入 Codex，并验�
 Codex 或 Claude 的订阅登录不会自动为 PowerContext Server 提供这些 API。只有 Agent 登录、没有模型 API 时，
 仍可选择基础记忆，验收显式保存与召回，但不能据此期待自动 Topic Memory。
 
+## 开始前先选择基础记忆或完整记忆
+
+**基础记忆**不依赖模型 API：可以通过 Codex 显式保存和搜索持久 Memory，但普通对话不会自动变成 Topic Memory、
+Profile、Experience 或 Skill。**完整记忆能力**需要 Generation 和 Embedding 模型 API，并启用相应后台处理。
+它会在满足各自证据和策略条件时启用这些流程；并不表示每条输入都会产生每一种 Artifact。
+
+PowerContext 目前有七个 Artifact family。Source 是它们的证据，Tag 是元数据，不是 Artifact。可以用下列示例告诉
+Codex 想做什么；它们说明的是预期工作流，并不是能跳过正常检查的“魔法口令”。
+
+| 值 | 用途 | 在 Codex 中如何开始 | 是否需要完整记忆？ |
+| --- | --- | --- | --- |
+| Memory | 持久保存事实、决定、约束和下一步 | “记住这个项目使用 uv。”之后再要求搜索它。 | 不需要；基础记忆可显式保存和召回。 |
+| Topic Memory | 带有 Source 证据、由模型维护的主题摘要 | 在普通输入中讨论相关决定，等待配置好的 Topic 处理运行。 | 需要。 |
+| Profile | 在上下文准备中使用的、已审核的 Scope 背景 | 为 Scope 启用 Profile 策略，再按 Profile 工作流操作。 | 需要。 |
+| Experience | 从已观察任务结果提炼的可复用经验 | 记录 task outcome，再要求生成或提交 Experience candidate 并完成审核。 | 生成需要；人工提交 proposal 不需要。 |
+| Managed Skill | 含指令和校验项、需要审核的流程 | 要求生成或提交 Skill candidate，审核后导出已批准的 Revision。 | 生成需要；人工提交 proposal 不需要。 |
+| Handoff | 用于继续当前工作的持久里程碑 | “交接当前工作”，或先预览再提交。 | 不需要。 |
+| Prompt | Scope 级别的运行配置 | 按文档中的 Prompt 工作流审慎配置，不通过普通对话设置。 | 不需要。 |
+| Source | 从输入或集成中采集的证据 | 信任 Hook 后发送普通输入，或使用显式 Source 工作流。 | 不需要。 |
+| Tag | 组织受支持 Artifact 的元数据 | 要求为一个 Memory、Experience、Skill 或 Handoff 添加明确标签。 | 不需要。 |
+
+已批准的 Managed Skill 仍保存在 Server 中。批准既不代表它已安装到 Codex，也不代表它可以执行：必须将确切的已批准
+Revision 导出到 Agent Skill target，宿主才能发现它。审核和导出步骤见
+[Experience 和 Skill 生命周期](../workflows/experience-and-skill-lifecycle.md)。
+
 ## 1. 安装并进入配置向导
 
 ```bash
@@ -97,7 +122,10 @@ powercontext doctor codex
 codex
 ```
 
-在 Codex 中确认 PowerContext Hook 和 MCP 均已加载。非默认地址还需按 `.env.next-steps.md` 的 Codex 连接说明，
+首次新建 Codex 会话时，Codex 会询问是否信任 PowerContext 的 `SessionStart` 和 `UserPromptSubmit` Hook。若这是你要连接的
+Scope，请信任二者：`UserPromptSubmit` 会在输入前准备有界召回，并将该输入采集为 Source 证据。若拒绝信任，Codex 仍可打开，
+MCP 也可能仍可用，但自动召回和 Source 采集不会运行；用 `/hooks` 查看或修改该选择后，重新开启一个会话再验收。
+然后确认 PowerContext Hook 和 MCP 均已加载。非默认地址还需按 `.env.next-steps.md` 的 Codex 连接说明，
 检查已安装插件的 `.mcp.json`：MCP 的 URL 必须和 Hook 使用同一 Server，启用认证时还需配置凭据。
 仅安装插件不会启动 Server。
 
