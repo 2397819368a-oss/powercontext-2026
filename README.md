@@ -11,120 +11,6 @@
 
 [Website](https://powercontext.oceanbase.io/) · [Quickstart](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) · [Integrations](https://powercontext.oceanbase.io/en/docs/integrations/) · [Benchmarks](https://powercontext.oceanbase.io/en/benchmarks/) · [Interfaces](https://powercontext.oceanbase.io/en/docs/develop/interfaces/)
 
-## Quick start
-
-PowerContext keeps durable project context outside any single chat. A first run follows this path:
-
-```text
-Agent input → Source evidence → Memory / Topic Memory → PreparedContext → next session or Agent
-```
-
-PowerContext 1.3.0 includes an interactive setup wizard. You need Python 3.11+, Git, and
-[uv](https://docs.astral.sh/uv/getting-started/installation/); uv can provision Python when needed. To connect an Agent,
-also install its CLI. In the wizard, choose Basic memory for explicit saves and recall without model APIs; Full memory
-requires separate Generation and Embedding API credentials. For a local Server without model APIs, see
-[Install and run](docs/en/docs/get-started/install-and-run.md).
-macOS and Linux are supported; Windows support is `experimental`.
-
-Choose the path that matches your goal:
-
-| Goal | Choose | What you need |
-| --- | --- | --- |
-| Try explicit saves and recall | **Basic memory** | CLI and Server; no model API |
-| Process Sources automatically and use Topic Memory or semantic retrieval | **Full memory** | Separate Generation and Embedding API credentials; schedules and Scope policies still apply |
-| Learn the core workflows in Python | The first seven Jupyter tutorials | A repository checkout and `uv`; no model or API key |
-
-### 1. Install and run the wizard
-
-```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
-mkdir -p powercontext-config && cd powercontext-config
-powercontext config init --language en --output .env
-powercontext config validate --env-file .env
-powercontext server run --env-file .env      # keep this terminal open
-```
-
-The wizard asks about storage, local or remote usage, memory capabilities, Dashboard/access, and Agent connections. SQLite is the simplest first storage choice; choose embedded seekdb only when you need it and can approve its dependency install.
-
-The wizard writes one `.env` environment file and `.env.next-steps.md`. These files can contain credentials; do not
-commit them. Keep Server running; in another terminal, return to `powercontext-config`, reload the generated environment
-file, and check the connection:
-
-```bash
-set -a
-. ./.env
-set +a
-powercontext ready
-powercontext capabilities
-```
-
-Continue with `.env.next-steps.md` to create and bind the selected Scopes. Use the real `scope_id` returned by the
-creation request; a planned `codex-...` title is not an ID. Changing directories does not create isolation; use the
-same Server and Scope in the Dashboard and Agent. Then install the matching plugins and launch a new Agent session.
-The [complete walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) covers Codex and Claude
-Code, Dashboard login, SSH forwarding, HTTPS prerequisites, and observable acceptance checks. For example, the matching
-Codex installation is:
-
-```bash
-powercontext setup codex --ref powercontext-v1.3.0
-powercontext doctor codex
-```
-
-### 2. Verify the first end-to-end result
-
-This checks the path that makes PowerContext useful: Source capture → background processing → cross-session recall. In
-the new Agent session bound to the same Scope, send a concrete decision such as:
-
-```text
-We are designing the Aurora acceptance project. Use uv for Python dependencies and .env for configuration.
-The first deployment runs on one Linux server, with a Mac connecting through an SSH tunnel.
-Restate these constraints without changing any code.
-```
-
-If you enabled Dashboard, open the URL printed by the wizard; an empty Dashboard before capture is expected. Then:
-
-1. Confirm that the prompt appears as a Source.
-2. After the configured inspection interval and model processing, confirm that a related Topic Memory appears.
-3. Send a related update and confirm that the new Source arrives and the topic content or revision history reflects it.
-4. Start a new Agent session with the same Scope and ask for the Aurora decisions with citations.
-
-`doctor codex` checks installation and connectivity only. Source capture does not by itself create Memory or Topic
-Memory, and processing can wait for configured schedules and model work. In Basic memory mode, explicitly ask the Agent
-to save a decision, then search for it in a new session; that does not test automatic extraction.
-
-### 3. Explore Python first — no API key
-
-The tutorials run from a repository checkout and take their dependencies from a `uv` dependency group, so they are not
-part of the `powercontext` package. From the repository root:
-
-```bash
-uv sync --locked --group notebooks
-uv run --locked --group notebooks jupyter lab --notebook-dir=examples/jupyter
-```
-
-Start with [01 · Memory across sessions](examples/jupyter/01_memory_across_sessions.ipynb), then work through the
-[22 Chinese Jupyter tutorials and a complete team workflow](examples/jupyter/README.md) to run Memory, context
-preparation, Handoff, Experience, Skill, and a real Agent step by step. The first seven tutorials need no model or API
-key.
-
-### Common issues
-
-- `doctor codex` verifies Codex installation and connectivity. To verify automatic memory, check that a real prompt
-  becomes a Source, produces a Topic, evolves after a related prompt, and can be recalled in a new session using the
-  same Scope.
-- If Python dependency downloads are slow or fail, configure a package index for
-  [uv](https://docs.astral.sh/uv/configuration/indexes/) and retry.
-- Choose **Full memory capabilities** to test automatic Memory and Topic Memory; this requires separate Generation and
-  Embedding API credentials. An Agent subscription does not provide those Server credentials. Choose **Basic memory** to
-  save and retrieve memories explicitly without additional model APIs.
-- If seekdb needs installing, the wizard asks once and installs the dependency in the background.
-- The optional recall-sufficiency gate records scope-local daily search effort and budget omissions for later policy
-  evaluation. See the [configuration reference](docs/en/docs/operate/configuration.md) for its recording and failure
-  behavior.
-- For a Server on another machine, use HTTPS or follow the
-  [remote connection guide](docs/en/docs/operate/connect-remote-server.md). Setup recognizes remote HTTP URLs from flags
-  or environment variables and asks for explicit consent; automated setup uses `--allow-insecure-http`.
-
 ## What is PowerContext?
 
 **PowerContext is an open-source context service for AI agents.** It keeps the durable part of your work — decisions,
@@ -258,6 +144,120 @@ Full methods, results, and limitations: [benchmarks](https://powercontext.oceanb
 would rather state than bury: the six LoCoMo Plus scores above were supplied by the project owner, and their run
 artifacts are not publicly available for verification — the published instructions reproduce the harness, not those
 scores. Windows support is `experimental`.
+
+## Quick start
+
+PowerContext keeps durable project context outside any single chat. A first run follows this path:
+
+```text
+Agent input → Source evidence → Memory / Topic Memory → PreparedContext → next session or Agent
+```
+
+PowerContext 1.3.0 includes an interactive setup wizard. You need Python 3.11+, Git, and
+[uv](https://docs.astral.sh/uv/getting-started/installation/); uv can provision Python when needed. To connect an Agent,
+also install its CLI. In the wizard, choose Basic memory for explicit saves and recall without model APIs; Full memory
+requires separate Generation and Embedding API credentials. For a local Server without model APIs, see
+[Install and run](docs/en/docs/get-started/install-and-run.md).
+macOS and Linux are supported; Windows support is `experimental`.
+
+Choose the path that matches your goal:
+
+| Goal | Choose | What you need |
+| --- | --- | --- |
+| Try explicit saves and recall | **Basic memory** | CLI and Server; no model API |
+| Process Sources automatically and use Topic Memory or semantic retrieval | **Full memory** | Separate Generation and Embedding API credentials; schedules and Scope policies still apply |
+| Learn the core workflows in Python | The first seven Jupyter tutorials | A repository checkout and `uv`; no model or API key |
+
+### 1. Install and run the wizard
+
+```bash
+uv tool install --force "powercontext[cli,server]==1.3.0"
+mkdir -p powercontext-config && cd powercontext-config
+powercontext config init --language en --output .env
+powercontext config validate --env-file .env
+powercontext server run --env-file .env      # keep this terminal open
+```
+
+The wizard asks about storage, local or remote usage, memory capabilities, Dashboard/access, and Agent connections. SQLite is the simplest first storage choice; choose embedded seekdb only when you need it and can approve its dependency install.
+
+The wizard writes one `.env` environment file and `.env.next-steps.md`. These files can contain credentials; do not
+commit them. Keep Server running; in another terminal, return to `powercontext-config`, reload the generated environment
+file, and check the connection:
+
+```bash
+set -a
+. ./.env
+set +a
+powercontext ready
+powercontext capabilities
+```
+
+Continue with `.env.next-steps.md` to create and bind the selected Scopes. Use the real `scope_id` returned by the
+creation request; a planned `codex-...` title is not an ID. Changing directories does not create isolation; use the
+same Server and Scope in the Dashboard and Agent. Then install the matching plugins and launch a new Agent session.
+The [complete walkthrough](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) covers Codex and Claude
+Code, Dashboard login, SSH forwarding, HTTPS prerequisites, and observable acceptance checks. For example, the matching
+Codex installation is:
+
+```bash
+powercontext setup codex --ref powercontext-v1.3.0
+powercontext doctor codex
+```
+
+### 2. Verify the first end-to-end result
+
+This checks the path that makes PowerContext useful: Source capture → background processing → cross-session recall. In
+the new Agent session bound to the same Scope, send a concrete decision such as:
+
+```text
+We are designing the Aurora acceptance project. Use uv for Python dependencies and .env for configuration.
+The first deployment runs on one Linux server, with a Mac connecting through an SSH tunnel.
+Restate these constraints without changing any code.
+```
+
+If you enabled Dashboard, open the URL printed by the wizard; an empty Dashboard before capture is expected. Then:
+
+1. Confirm that the prompt appears as a Source.
+2. After the configured inspection interval and model processing, confirm that a related Topic Memory appears.
+3. Send a related update and confirm that the new Source arrives and the topic content or revision history reflects it.
+4. Start a new Agent session with the same Scope and ask for the Aurora decisions with citations.
+
+`doctor codex` checks installation and connectivity only. Source capture does not by itself create Memory or Topic
+Memory, and processing can wait for configured schedules and model work. In Basic memory mode, explicitly ask the Agent
+to save a decision, then search for it in a new session; that does not test automatic extraction.
+
+### 3. Explore Python first — no API key
+
+The tutorials run from a repository checkout and take their dependencies from a `uv` dependency group, so they are not
+part of the `powercontext` package. From the repository root:
+
+```bash
+uv sync --locked --group notebooks
+uv run --locked --group notebooks jupyter lab --notebook-dir=examples/jupyter
+```
+
+Start with [01 · Memory across sessions](examples/jupyter/01_memory_across_sessions.ipynb), then work through the
+[22 Chinese Jupyter tutorials and a complete team workflow](examples/jupyter/README.md) to run Memory, context
+preparation, Handoff, Experience, Skill, and a real Agent step by step. The first seven tutorials need no model or API
+key.
+
+### Common issues
+
+- `doctor codex` verifies Codex installation and connectivity. To verify automatic memory, check that a real prompt
+  becomes a Source, produces a Topic, evolves after a related prompt, and can be recalled in a new session using the
+  same Scope.
+- If Python dependency downloads are slow or fail, configure a package index for
+  [uv](https://docs.astral.sh/uv/configuration/indexes/) and retry.
+- Choose **Full memory capabilities** to test automatic Memory and Topic Memory; this requires separate Generation and
+  Embedding API credentials. An Agent subscription does not provide those Server credentials. Choose **Basic memory** to
+  save and retrieve memories explicitly without additional model APIs.
+- If seekdb needs installing, the wizard asks once and installs the dependency in the background.
+- The optional recall-sufficiency gate records scope-local daily search effort and budget omissions for later policy
+  evaluation. See the [configuration reference](docs/en/docs/operate/configuration.md) for its recording and failure
+  behavior.
+- For a Server on another machine, use HTTPS or follow the
+  [remote connection guide](docs/en/docs/operate/connect-remote-server.md). Setup recognizes remote HTTP URLs from flags
+  or environment variables and asks for explicit consent; automated setup uses `--allow-insecure-http`.
 
 ## Connect your Agent
 
