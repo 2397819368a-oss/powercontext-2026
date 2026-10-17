@@ -36,7 +36,7 @@ from powercontext.builtin.persistence.processing_migration import (
     plan_processing_migration,
     verify_processing_migration,
 )
-from powercontext.builtin.persistence.seekdb import SeekDBConfig, SeekDBProfile
+from powercontext.builtin.persistence.seekdb import SeekDBConfig, SeekDBInspectionError, SeekDBProfile
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
 from powercontext.builtin.runtime.atomic_memory_rebuild import rebuild_atomic_memory_projection
@@ -127,6 +127,8 @@ def processing_migrate(
             if action == "apply":
                 raise
             raise typer.BadParameter(_missing_read_only_database(error)) from error
+        except SeekDBInspectionError as error:
+            raise typer.BadParameter(str(error)) from error
     if not ready:
         raise typer.Exit(code=1)
 
@@ -256,6 +258,8 @@ def atomic_memory_migrate(
             if action == "apply":
                 raise
             raise typer.BadParameter(_missing_read_only_database(error)) from error
+        except SeekDBInspectionError as error:
+            raise typer.BadParameter(str(error)) from error
         except OperationalError as error:
             sqlite_code = getattr(error.orig, "sqlite_errorcode", None)
             if (

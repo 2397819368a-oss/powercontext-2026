@@ -97,3 +97,37 @@ def test_processing_inspection_never_provisions_the_configured_database(tmp_path
     assert result.exit_code == 2, result.output
     assert "require an existing database" in unstyle(result.output)
     assert "configured_db" in unstyle(result.output)
+
+
+@pytest.mark.parametrize("action", ["plan", "verify"])
+@pytest.mark.parametrize("target_state", ["missing", "empty", "file", "unrecognized"])
+def test_processing_inspection_preserves_uninitialized_seekdb_target(tmp_path, monkeypatch, action, target_state):
+    for key in tuple(os.environ):
+        if key.startswith("POWERCONTEXT_SERVER_"):
+            monkeypatch.delenv(key)
+    path = tmp_path / "missing-parent" / "seekdb"
+    if target_state == "empty":
+        path.mkdir(parents=True)
+    elif target_state == "file":
+        path.parent.mkdir()
+        path.write_bytes(b"retained evidence")
+    elif target_state == "unrecognized":
+        path.mkdir(parents=True)
+        (path / "user-content.txt").write_bytes(b"retained evidence")
+    original = {
+        item.relative_to(tmp_path): item.read_bytes() if item.is_file() else None for item in tmp_path.rglob("*")
+    }
+
+    def unexpected_binding():
+        pytest.fail("inspection must reject an uninitialized target before starting the native engine")
+
+    monkeypatch.setattr("powercontext.builtin.persistence.seekdb.profile._load_binding", unexpected_binding)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_KIND", "seekdb")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_PATH", str(path))
+    result = CliRunner().invoke(create_cli([app]), ["server", "processing-migrate", "--action", action])
+
+    assert result.exit_code == 2, result.output
+    assert "existing seekdb instance" in unstyle(result.output)
+    assert {
+        item.relative_to(tmp_path): item.read_bytes() if item.is_file() else None for item in tmp_path.rglob("*")
+    } == original

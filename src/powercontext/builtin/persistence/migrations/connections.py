@@ -108,7 +108,7 @@ class MaintenanceConnections:
                 nonempty = path.exists() and any(path.iterdir())
                 if not writable and not nonempty:
                     return operation(None, identity, lambda: None)
-                if nonempty and not _seekdb_storage_exists(path):
+                if nonempty and not seekdb_profile.has_native_storage(path):
                     raise MigrationError(
                         "unsupported_target", "A nonempty seekdb directory must contain recognized native storage."
                     )
@@ -231,11 +231,6 @@ class MaintenanceConnections:
                         return await connection.run_sync(execute)
         finally:
             await _dispose_engine(engine)
-
-
-def _seekdb_storage_exists(path: Path) -> bool:
-    # These native markers are verified by the isolated seekdb reopen test.
-    return (path / "etc" / "seekdb.data_version.bin").is_file() and (path / "store" / "sstable" / "meta.db").is_file()
 
 
 def _directory_inode(path: Path) -> tuple[int, int]:

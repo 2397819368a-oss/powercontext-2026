@@ -77,6 +77,10 @@ class SeekDBUnavailableError(PersistenceError):
         super().__init__("Embedded seekdb requires powercontext[seekdb] on a supported Linux or macOS platform")
 
 
+class SeekDBInspectionError(PersistenceError):
+    """Read-only inspection cannot initialize or replace native seekdb storage."""
+
+
 class SeekDBConfig(BaseModel):
     """Validated configuration for one embedded seekdb instance."""
 
@@ -154,7 +158,10 @@ class SeekDBProfile:
         provision: bool,
     ) -> AsyncIterator[SeekDBProfile]:
         path = config.path.expanduser().resolve()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if provision:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            _require_existing_storage(path)
         module = _load_binding()
         instance = await _open_instance(module, path)
         try:
@@ -184,6 +191,24 @@ class SeekDBProfile:
                     raise
         finally:
             instance.close()
+
+
+def has_native_storage(path: Path) -> bool:
+    """Recognize the native storage markers used for seekdb reopen and maintenance."""
+    return (path / "etc" / "seekdb.data_version.bin").is_file() and (path / "store" / "sstable" / "meta.db").is_file()
+
+
+def _require_existing_storage(path: Path) -> None:
+    if not path.exists() or (path.is_dir() and not any(path.iterdir())):
+        raise SeekDBInspectionError(  # noqa: TRY003
+            "Read-only inspection requires an existing seekdb instance. The configured path is missing or empty; "
+            "start the Server to initialize it, then repeat the inspection."
+        )
+    if not path.is_dir() or not has_native_storage(path):
+        raise SeekDBInspectionError(  # noqa: TRY003
+            "Read-only inspection requires an existing seekdb instance. The configured path is not a directory "
+            "with recognized native storage; select an initialized seekdb directory. Existing contents were preserved."
+        )
 
 
 def _load_binding() -> ModuleType:

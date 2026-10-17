@@ -17,6 +17,7 @@
 from powercontext.builtin.persistence.seekdb.profile import (
     LegacySeekDBDatabaseError,
     SeekDBConfig,
+    SeekDBInspectionError,
     SeekDBProfile,
     SeekDBUnavailableError,
 )
@@ -24,6 +25,7 @@ from powercontext.builtin.persistence.seekdb.profile import (
 __all__ = (
     "LegacySeekDBDatabaseError",
     "SeekDBConfig",
+    "SeekDBInspectionError",
     "SeekDBProfile",
     "SeekDBUnavailableError",
 )

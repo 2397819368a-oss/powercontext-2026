@@ -237,6 +237,10 @@ connection target. Read-only inspection (`plan`, `verify`, and the `db-migrate` 
 missing OceanBase or embedded seekDB database; explicit writable seekDB maintenance can provision its configured database
 before applying its bundle.
 
+Read-only seekDB inspection requires an initialized instance directory. A missing or empty path is rejected before
+starting the native engine, without creating parent directories or storage files. A file or a nonempty directory without
+recognized native storage is also rejected without changing its contents. Ordinary startup still initializes new instances.
+
 ## Verify the installation
 
 ```bash
