@@ -1,5 +1,4 @@
 # PowerContext
-
 **作業とともに残るコンテキスト —— セッション、Agent、人をまたいで。**
 
 [![PyPI version](https://img.shields.io/pypi/v/powercontext)](https://pypi.org/project/powercontext/)
@@ -9,7 +8,7 @@
 
 *[English](README.md) · [中文](README_CN.md) · [日本語](README_JP.md)*
 
-[Web サイト](https://powercontext.oceanbase.io/en/) · [クイックスタート](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) · [Agent 連携](https://powercontext.oceanbase.io/en/docs/integrations/) · [ベンチマーク](https://powercontext.oceanbase.io/en/benchmarks/) · [インターフェース](https://powercontext.oceanbase.io/en/docs/develop/interfaces/)
+[Web サイト](https://powercontext.oceanbase.io/en/) · [クイックスタート](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/) · [手動起動](docs/en/docs/get-started/manual-start.md) · [Agent 連携](https://powercontext.oceanbase.io/en/docs/integrations/) · [ベンチマーク](https://powercontext.oceanbase.io/en/benchmarks/) · [インターフェース](https://powercontext.oceanbase.io/en/docs/develop/interfaces/)
 
 ## クイックスタート
 
@@ -28,6 +27,8 @@ PowerContext 1.3.0 には対話式セットアップウィザードが含まれ�
 | 明示的な保存と想起を試す | **Basic memory** | CLI と Server。モデル API は不要 |
 | Source を自動処理し、Topic Memory やセマンティック検索を使う | **Full memory** | Generation と Embedding API の個別の認証情報。スケジュールと Scope ポリシーも適用されます |
 | Python で基本ワークフローを学ぶ | 最初の 7 本の Jupyter チュートリアル | リポジトリの checkout と `uv`。モデルや API キーは不要 |
+
+手動で PowerContext を設定して起動したい場合は、[手動起動ガイド](docs/en/docs/get-started/manual-start.md)を参照してください。
 
 ### 1. ウィザードをインストールして実行する
 
