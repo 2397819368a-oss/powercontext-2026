@@ -321,7 +321,7 @@ def run_kimi_diagnostics(
         checks["server"] = Diagnostic(skipped, "Node is required for readonly probes")
         return checks
     try:
-        arguments = [node, str(destination / "scripts/doctor.mjs"), "--cwd", str((cwd or Path.cwd()).resolve())]
+        arguments = [node, str(destination / "scripts/doctor.mjs"), "--cwd", os.path.abspath(cwd or Path.cwd())]
         if runtime:
             arguments.append("--runtime")
             if session_id is not None:

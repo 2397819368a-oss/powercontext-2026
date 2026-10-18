@@ -542,6 +542,27 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
             assert scope_action("unbind", other_workspace)["binding"]["status"] == "cleared"
             assert scope_action("resolve", other_workspace)["scope_id"] == gateway.scope_id
             assert scope_action("resolve", workspace)["scope_id"] == gateway.scope_id
+            alias = tmp_path / "workspace alias"
+            subprocess.run(
+                [
+                    node,
+                    "--input-type=module",
+                    "-e",
+                    "import { symlinkSync } from 'node:fs'; "
+                    "symlinkSync(process.argv[1], process.argv[2], process.platform === 'win32' ? 'junction' : 'dir')",
+                    str(other_workspace),
+                    str(alias),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=6,
+            )
+            assert scope_action("bind", alias, other_scope_id)["scope_id"] == other_scope_id
+            observed = run_kimi_diagnostics(cwd=alias)
+            assert observed["scope"].checks is not None
+            assert observed["scope"].checks["scope_id"] == other_scope_id
+            assert scope_action("resolve", other_workspace)["scope_id"] == gateway.scope_id
         (tmp_path / "evidence.json").write_text(
             json.dumps(
                 {
