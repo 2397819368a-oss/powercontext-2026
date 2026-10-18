@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 import { isIP } from 'node:net'
@@ -106,12 +106,14 @@ export function isScopeId(value) {
 
 export function workspaceKey(cwd) {
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) throw new Failure('workspace_required')
+  let directory = resolve(cwd)
+  try { directory = realpathSync.native(directory) } catch { /* Retain lexical identity when the path cannot be resolved. */ }
   return { integration: 'kimi-code', kind: 'workspace',
-    external_id: createHash('sha256').update(resolve(cwd)).digest('hex') }
+    external_id: createHash('sha256').update(directory).digest('hex') }
 }
 
 export async function resolveScope(settings, signal, input = {}) {
-  const keys = input.cwd === undefined && settings.scopeId ? [] : [workspaceKey(input.cwd)]
+  const keys = settings.scopeId ? [] : [workspaceKey(input.cwd)]
   const { status, value } = await request(settings, 'POST', '/v1/scope-bindings/resolve', {
     explicit_scope_id: settings.scopeId, binding_keys: keys,
   }, signal)

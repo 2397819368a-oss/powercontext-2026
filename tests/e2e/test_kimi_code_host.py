@@ -558,11 +558,26 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
                 check=True,
                 timeout=6,
             )
-            assert scope_action("bind", alias, other_scope_id)["scope_id"] == other_scope_id
-            observed = run_kimi_diagnostics(cwd=alias)
-            assert observed["scope"].checks is not None
-            assert observed["scope"].checks["scope_id"] == other_scope_id
+            assert scope_action("bind", other_workspace, other_scope_id)["scope_id"] == other_scope_id
+            variants = [alias]
+            if os.name == "nt":
+                variants.extend([Path(str(other_workspace).lower()), Path(str(other_workspace).upper())])
+            for variant in variants:
+                assert scope_action("resolve", variant)["scope_id"] == other_scope_id
+                observed = run_kimi_diagnostics(cwd=variant)
+                assert observed["scope"].checks is not None
+                assert observed["scope"].checks["scope_id"] == other_scope_id
+            start = len(gateway.requests)
+            invoke("PC_KIMI_SEARCH: Find this workspace decision through its alias.", token=None, cwd=alias)
+            assert any(
+                "second-workspace" in json.dumps(message)
+                for request in gateway.requests[start:]
+                for message in request["messages"]
+                if message["role"] == "tool"
+            )
+            assert scope_action("bind", alias, gateway.scope_id)["scope_id"] == gateway.scope_id
             assert scope_action("resolve", other_workspace)["scope_id"] == gateway.scope_id
+            assert scope_action("unbind", alias)["binding"]["status"] == "cleared"
         (tmp_path / "evidence.json").write_text(
             json.dumps(
                 {

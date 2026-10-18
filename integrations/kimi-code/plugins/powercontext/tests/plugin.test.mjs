@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -106,11 +106,19 @@ test('context and capture use the explicit Scope and shared runtime token', asyn
   assert.equal(f.captures[0].metadata.session_id, 'session-test')
   assert.ok(f.requests.every(r => r.authorization === 'Bearer synthetic-token'))
   assert.equal(f.requests[0].body.explicit_scope_id, 'scope-test')
-  assert.equal(f.requests[0].body.binding_keys[0].integration, 'kimi-code')
-  assert.equal(f.requests[0].body.binding_keys[0].kind, 'workspace')
-  assert.match(f.requests[0].body.binding_keys[0].external_id, /^[a-f0-9]{64}$/u)
+  assert.deepEqual(f.requests[0].body.binding_keys, [])
   await f.invoke(undefined, { POWERCONTEXT_KIMI_TOKEN: 'synthetic-token' })
   assert.notEqual(f.captures[0].source_id, f.captures[1].source_id)
+})
+
+test('explicit Scope supplies context and captures without an absolute workspace', async t => {
+  const f = await fixture(t)
+  for (const cwd of ['relative/workspace', null, undefined]) {
+    const result = await f.invoke({ hook_event_name: 'UserPromptSubmit', cwd, prompt })
+    assert.match(result.output.message, /Historical context/)
+    assert.equal(f.captures.at(-1).scope_id, 'scope-test')
+  }
+  assert.equal(f.captures.length, 3)
 })
 
 test('disabled capture still supplies context', async t => {
@@ -363,6 +371,7 @@ test('workspace bindings route Hooks and doctor while explicit Scope still overr
   assert.equal((await f.scope('resolve')).scope_id, 'scope-default')
   const other = join(f.workspace, '..', 'other-workspace')
   for (const [cwd, scopeId] of [[f.workspace, 'scope-first'], [other, 'scope-second']]) {
+    await mkdir(cwd, { recursive: true })
     const bound = await f.scope('bind', scopeId, cwd)
     assert.equal(bound.binding.status, 'saved')
     assert.equal(bound.bound_scope_is_current, true)
@@ -373,6 +382,20 @@ test('workspace bindings route Hooks and doctor while explicit Scope still overr
     assert.equal((await f.status('session-test', cwd)).scope_id, scopeId)
     assert.equal((await f.doctor(cwd)).checks.scope.checks.scope_id, scopeId)
   }
+  const alias = join(f.workspace, '..', 'workspace-alias')
+  await symlink(f.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  const variants = [alias, ...(process.platform === 'win32' ? [f.workspace.toLowerCase(), f.workspace.toUpperCase()] : [])]
+  for (const cwd of variants) {
+    assert.equal((await f.scope('resolve', undefined, cwd)).scope_id, 'scope-first')
+    const result = await f.invoke({ cwd, session_id: 'session-test', hook_event_name: 'UserPromptSubmit', prompt })
+    assert.match(result.output.message, /scope-first/)
+    assert.equal(f.captures.at(-1).scope_id, 'scope-first')
+    assert.equal((await f.doctor(cwd)).checks.scope.checks.scope_id, 'scope-first')
+  }
+  assert.equal((await f.scope('bind', 'scope-alias', alias)).binding.status, 'saved')
+  assert.equal((await f.scope('resolve')).scope_id, 'scope-alias')
+  assert.equal((await f.scope('unbind', undefined, alias)).binding.status, 'cleared')
+  assert.equal((await f.scope('resolve')).scope_id, 'scope-default')
   assert.ok(f.requests.filter(item => item.body?.key).every(item => !JSON.stringify(item.body.key).includes(f.workspace)))
   const settingsPath = join(f.installed, 'powercontext.json')
   const settings = JSON.parse(await readFile(settingsPath, 'utf8'))

@@ -70,7 +70,9 @@ node "<Kimi home>/plugins/managed/powercontext/scripts/scope.mjs" unbind --cwd /
 
 修改安装模式后开启新 Kimi 会话。显式 `--scope-id` 优先于工作区绑定；`--workspace-scope` 清除显式选择，两者互斥。更新时均省略则保留当前模式；首次安装必须选择其中一种。
 
-Hook、Scope 脚本和 doctor 共用 Server 的解析顺序：显式 Scope、工作区绑定、Server 默认 Scope。绑定目标缺失或不可用时解析失败，客户端不自行回退或创建 Scope。绑定键使用 integration `kimi-code`、kind `workspace`，external_id 为规范化绝对工作目录的 SHA-256，不含原始路径。请使用 Kimi 会话实际提交的工作目录；子目录具有独立身份。本接入不提供 session binding。
+Hook、Scope 脚本和 doctor 共用 Server 的解析顺序：显式 Scope、工作区绑定、Server 默认 Scope。绑定目标缺失或不可用时解析失败，客户端不自行回退或创建 Scope。显式 Scope 解析不要求工作区键；工作区模式要求绝对工作目录。
+
+绑定键使用 integration `kimi-code`、kind `workspace`，external_id 为绝对工作目录经原生真实路径解析后的 SHA-256，不含原始路径。对于已有目录，symlink/junction 别名和文件系统认可的大小写变体共用绑定。请使用 Kimi 会话实际提交的工作目录；子目录保留独立身份，不查找 Git 根目录。真实路径解析失败时，使用词法规范化后的绝对路径。请绑定已存在且可访问的目录；解析身份变化后需要重新绑定。本接入不提供 session binding。
 
 bind/unbind 只修改该工作区在 Server 上的绑定。JSON 将 `binding` 写入结果与后续解析分开：绑定保存成功后仍可能被显式 Scope 遮盖（`bound_scope_is_current: false`），或在后续解析失败时继续保留。无法确认的写入为 `unknown`，不自动重试；重新 resolve 成功后才能宣称当前 Scope 已切换。
 
