@@ -109,8 +109,18 @@ async def outside_scope_accesses(
 
 
 def outside_scope(events: Sequence[AccessAuditEvent], scope_id: str) -> tuple[OutsideScopeAccess, ...]:
-    """Keep the API and MCP decisions about another Scope, or about the Server as a whole, such as listing Scopes."""
+    """Keep the API and MCP decisions about another Scope, or about the Server as a whole, such as listing Scopes.
 
+    A request can be allowed one check and denied the next, which rejects it, so each decision also records whether
+    its request was denied any check under the same operation, on any Scope. Checks a request makes for another purpose,
+    such as which actions it may offer on a Candidate, are recorded under their own operation and do not reject it.
+    """
+
+    rejected = {
+        (event.request_id, event.operation)
+        for event in events
+        if event.request_id is not None and not event.allowed and event.transport in REQUEST_TRANSPORTS
+    }
     accesses: list[OutsideScopeAccess] = []
     for event in events:
         resource = event.resource.root
@@ -120,11 +130,13 @@ def outside_scope(events: Sequence[AccessAuditEvent], scope_id: str) -> tuple[Ou
         accesses.append(
             OutsideScopeAccess(
                 occurred_at=event.occurred_at,
+                request_id=event.request_id,
                 transport=event.transport,
                 operation=event.operation,
                 action=event.action.value,
                 scope_id=target,
                 allowed=event.allowed,
+                request_rejected=not event.allowed or (event.request_id, event.operation) in rejected,
             )
         )
     return tuple(accesses)
@@ -133,13 +145,13 @@ def outside_scope(events: Sequence[AccessAuditEvent], scope_id: str) -> tuple[Ou
 def reached_another_scope(accesses: Sequence[OutsideScopeAccess]) -> bool:
     """Whether the Server allowed the run a request on another Scope, or a Server-wide request returning Scope content.
 
-    Any request on another Scope counts except those that return no content, including the Access API's: a write
-    there is no use to the run, but it shows the integration acting outside its Scope, as when it falls back to the
-    Default Scope.
+    Any request on another Scope counts except those that return no content, including the Access API's, and those the
+    Server rejected: a write there is no use to the run, but it shows the integration acting outside its Scope, as when
+    it falls back to the Default Scope.
     """
 
     return any(
-        access.allowed
+        not access.request_rejected
         and (
             access.operation in SERVER_WIDE_CONTENT_OPERATIONS
             if access.scope_id is None

@@ -48,12 +48,13 @@ def _event(
     action: str = "scope.read",
     allowed: bool = True,
     cursor: int = 1,
+    request_id: str | None = None,
 ) -> AccessAuditEvent:
     return AccessAuditEvent.model_validate({
         "cursor": cursor,
         "event_id": f"evt-{cursor}",
         "occurred_at": _START + timedelta(seconds=cursor),
-        "request_id": None,
+        "request_id": request_id,
         "transport": transport,
         "operation": operation,
         "principal": {"type": "service", "id": "server-token"},
@@ -144,6 +145,57 @@ def test_outside_scope_keeps_api_and_mcp_decisions_about_other_scopes_and_the_se
 )
 def test_a_run_reaches_another_scope_only_through_a_request_that_can_return_its_content(events) -> None:
     assert not reached_another_scope(outside_scope(events, _OWN))
+
+
+def test_a_request_the_server_rejected_does_not_reach_another_scope() -> None:
+    # Allowed to contribute to the Scope but denied the write, the request fails without touching its content.
+    events = (
+        _event(_scope(_EARLIER), action="scope.contribute", operation="propose_experience", request_id="req-1"),
+        _event(
+            _artifact(_EARLIER),
+            action="artifact.write",
+            operation="propose_experience",
+            allowed=False,
+            request_id="req-1",
+            cursor=2,
+        ),
+    )
+
+    accesses = outside_scope(events, _OWN)
+
+    assert [(access.request_id, access.request_rejected) for access in accesses] == [("req-1", True), ("req-1", True)]
+    assert not reached_another_scope(accesses)
+
+
+def test_a_denial_on_the_runs_own_scope_rejects_the_whole_request() -> None:
+    events = (
+        _event(_scope(_EARLIER), operation="prepare_context", request_id="req-1"),
+        _event(_scope(_OWN), operation="prepare_context", allowed=False, request_id="req-1", cursor=2),
+    )
+
+    assert not reached_another_scope(outside_scope(events, _OWN))
+
+
+@pytest.mark.parametrize(
+    "denial",
+    [
+        pytest.param(
+            _event(_scope(_EARLIER), action="scope.review", operation="candidate_permissions", request_id="req-1"),
+            id="check-for-another-purpose",
+        ),
+        pytest.param(
+            _event(
+                _artifact(_EARLIER), action="artifact.write", operation="get_artifact_candidate", request_id="req-2"
+            ),
+            id="another-request",
+        ),
+    ],
+)
+def test_only_a_denial_of_the_same_request_and_operation_rejects_it(denial) -> None:
+    allowed = _event(_scope(_EARLIER), operation="get_artifact_candidate", request_id="req-1", cursor=2)
+    denied = denial.model_copy(update={"allowed": False})
+
+    assert reached_another_scope(outside_scope((denied, allowed), _OWN))
 
 
 def test_writing_to_another_scope_reaches_it() -> None:

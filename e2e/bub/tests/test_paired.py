@@ -935,6 +935,7 @@ class _AuditedServer(_FlushingClient):
             items=[
                 SimpleNamespace(
                     occurred_at=window[0],
+                    request_id=None,
                     transport=event["transport"],
                     operation=event["operation"],
                     action=SimpleNamespace(value="scope.read"),

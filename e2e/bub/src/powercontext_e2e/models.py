@@ -225,11 +225,15 @@ class OutsideScopeAccess(EvidenceModel):
     """One API or MCP authorization decision, made while an ON arm ran, about anything but the arm's own Scope."""
 
     occurred_at: datetime
+    request_id: str | None = None
     transport: str
     operation: str
     action: str
     scope_id: str | None = Field(description="The other Scope, or none for the Server as a whole, as when listing.")
     allowed: bool
+    request_rejected: bool = Field(
+        description="Whether the request was denied this or another check under the same operation, which rejects it."
+    )
 
 
 class PairedArmObservation(EvidenceModel):
