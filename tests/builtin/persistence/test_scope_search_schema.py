@@ -25,9 +25,12 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 
 
-def test_sqlite_scope_search_migration_backfills_legacy_rows_idempotently(tmp_path) -> None:
-    database = tmp_path / "legacy-scopes.db"
+def test_sqlite_scope_search_migration_backfills_legacy_rows_idempotently(initialized_sqlite_database) -> None:
+    database = initialized_sqlite_database
     with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE pc_scope_bindings")
+        connection.execute("DROP TABLE pc_scope_external_references")
+        connection.execute("DROP TABLE pc_scopes")
         connection.execute(
             """
             CREATE TABLE pc_scopes (
