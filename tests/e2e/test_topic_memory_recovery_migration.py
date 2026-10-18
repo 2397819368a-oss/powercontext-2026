@@ -18,12 +18,15 @@
 # ruff: noqa: S608
 
 import asyncio
+import json
+import os
 import shutil
 import sqlite3
 from contextlib import closing
 
 import pytest
 from sqlalchemy import Engine, event
+from typer.testing import CliRunner
 
 from powercontext.builtin.persistence.errors import ArtifactProcessingLeadershipLostError
 from powercontext.builtin.persistence.migrations import MigrationError
@@ -32,7 +35,11 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.supervision import ArtifactProcessingLeaseRepository
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.persistence.topic_memory_recovery_schema import recovery_statements
+from powercontext.builtin.records import ArtifactWrite
+from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
 from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecoveryService
+from powercontext.cli.app import create_cli
+from powercontext.server.cli import app
 from tests.builtin.runtime.test_topic_memory_processing import _repositories
 from tests.builtin.runtime.test_topic_memory_scope import BINDING, _capture
 from tests.builtin.runtime.test_topic_memory_terminal_frontier import _budget, _seed
@@ -118,6 +125,120 @@ def _legacy(path):
 
 def _apply(runner):
     return runner.apply(plan_id=runner.plan().plan_id, accepted=True, maintenance_confirmed=True)
+
+
+@pytest.fixture
+def atomic_maintenance_database(tmp_path, monkeypatch):
+    path = tmp_path / "atomic-maintenance.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}")
+    for key in tuple(os.environ):
+        if key.startswith("POWERCONTEXT_SERVER_"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_KIND", "sqlite")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", config.url)
+    result = CliRunner().invoke(
+        create_cli([app]), ["server", "atomic-memory-migrate", "--action", "apply", "--maintenance-confirmed"]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["ready"] is True
+    return path, config
+
+
+def test_atomic_maintenance_continuation_preserves_backup_and_remains_writable(atomic_maintenance_database, tmp_path):
+    path, config = atomic_maintenance_database
+    original = path.read_bytes()
+    runner = TopicMemoryRecoveryMigrationRunner(config)
+    assert runner.plan().state == "uninitialized"
+    assert path.read_bytes() == original
+    result = _apply(runner)
+    assert result.backup_state == "completed"
+    assert runner.verify().state == "ready"
+    after = path.read_bytes()
+    assert not runner.apply().changed and path.read_bytes() == after
+
+    restored = tmp_path / "restored-atomic.db"
+    shutil.copyfile(result.backup_ref, restored)
+
+    async def write_and_reopen(database):
+        async with open_builtin_contexts(BuiltinConfig(database=database)) as contexts:
+            await contexts.get("scope-a")
+            assert (await TopicMemoryRecoveryService(contexts.database).status("scope-a")).state == "idle"
+            created = await contexts.records.create_artifact(
+                "scope-a",
+                "atomic-memory",
+                ArtifactWrite(content={"kind": "fact", "text": "Preserve Atomic initialization."}),
+            )
+            original = await contexts.atomic_memory.for_scope("scope-a").get(created.artifact_id)
+            status = await TopicMemoryRecoveryService(contexts.database).status("scope-a")
+        async with open_builtin_contexts(BuiltinConfig(database=database)) as contexts:
+            memory = await contexts.atomic_memory.for_scope("scope-a").get(created.artifact_id)
+            assert memory == original
+            assert await TopicMemoryRecoveryService(contexts.database).status("scope-a") == status
+
+    # The restored maintenance output must also support ordinary initialization.
+    asyncio.run(write_and_reopen(config))
+    asyncio.run(write_and_reopen(SQLiteConfig(url=f"sqlite+aiosqlite:///{restored}")))
+
+
+@pytest.mark.parametrize("continuation", ["startup", "migration"])
+def test_atomic_maintenance_continuation_rolls_back_before_retry(atomic_maintenance_database, continuation):
+    path, config = atomic_maintenance_database
+    runner = TopicMemoryRecoveryMigrationRunner(config)
+
+    async def reopen():
+        async with SQLiteProfile.open(config, tables=BUILTIN_TABLES):
+            pass
+
+    def proceed():
+        return _apply(runner) if continuation == "migration" else asyncio.run(reopen())
+
+    def interrupt(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().startswith("CREATE TABLE pc_topic_memory_work_budgets"):
+            raise RuntimeError("injected initialization interruption")  # noqa: TRY003 - real SQLite transactional DDL
+
+    with closing(sqlite3.connect(path)) as connection:
+        original = list(connection.iterdump())
+    event.listen(Engine, "before_cursor_execute", interrupt)
+    try:
+        with pytest.raises(RuntimeError, match="injected initialization interruption"):
+            proceed()
+    finally:
+        event.remove(Engine, "before_cursor_execute", interrupt)
+    with closing(sqlite3.connect(path)) as connection:
+        assert list(connection.iterdump()) == original
+    proceed()
+    assert runner.verify().state == "ready"
+
+
+@pytest.mark.parametrize("damage", ["column", "missing_fts", "trigger", "archive", "unknown_table"])
+def test_unknown_atomic_maintenance_output_is_rejected_before_writes(atomic_maintenance_database, damage):
+    path, config = atomic_maintenance_database
+    with closing(sqlite3.connect(path)) as connection, connection:
+        if damage == "column":
+            connection.execute("ALTER TABLE pc_atomic_memory_current ADD COLUMN unexpected TEXT")
+        elif damage == "missing_fts":
+            connection.execute("DROP TABLE pc_atomic_memory_current_fts")
+        elif damage == "trigger":
+            connection.execute("DROP TRIGGER pc_atomic_memory_fts_insert")
+        elif damage == "archive":
+            connection.execute(
+                "INSERT INTO pc_memory_artifact_archive VALUES ('scope','memory','old',1,X'7B7D',NULL,X'7B7D')"
+            )
+        else:
+            connection.execute("CREATE TABLE pc_sources(position INTEGER PRIMARY KEY)")
+    original = path.read_bytes()
+    runner = TopicMemoryRecoveryMigrationRunner(config)
+    with pytest.raises(MigrationError, match="unknown_baseline"):
+        runner.plan()
+
+    async def reopen():
+        async with SQLiteProfile.open(config, tables=BUILTIN_TABLES):
+            pytest.fail("An unregistered Atomic maintenance output must be rejected")
+
+    with pytest.raises(MigrationError, match="unknown_baseline"):
+        asyncio.run(reopen())
+    assert path.read_bytes() == original
+    assert not runner.directory.exists()
 
 
 def test_attempts_upgrade_preserves_receipts_allowance_unknown_ranges_and_backup_restore(tmp_path):

@@ -330,7 +330,7 @@ class TopicMemoryRecoveryMigrationRunner:
             not required <= evidence.keys()
             or any(not isinstance(evidence[name], str) for name in required)
             or evidence["database_id"] != identity.database_id
-            or evidence["source"] not in {"empty", "budget-v0", "attempts-v0"}
+            or evidence["source"] not in {"empty", "atomic-maintenance-sqlite-v1", "budget-v0", "attempts-v0"}
             or evidence["state"] not in {"preparing", "active", "complete"}
             or evidence["backup_policy"] not in {"auto", "manual", "skip"}
             or (
@@ -391,7 +391,7 @@ class TopicMemoryRecoveryMigrationRunner:
             else "ready"
             if layout == "ready"
             else "uninitialized"
-            if layout == "empty"
+            if layout in {"empty", "atomic-maintenance-sqlite-v1"}
             else "migration_required"
         )
         policy = options.get("backup_policy", "auto")
@@ -495,6 +495,11 @@ class TopicMemoryRecoveryMigrationRunner:
             verify()
             if connection.dialect.name == "sqlite":
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
+            if evidence["source"] == "atomic-maintenance-sqlite-v1" and recovery_layout(connection) not in {
+                "atomic-maintenance-sqlite-v1",
+                "ready",
+            }:
+                raise MigrationError("plan_changed", "The Atomic maintenance initialization baseline changed.")
             if _budgets(connection) != evidence["budgets"]:
                 raise MigrationError("evidence_conflict", "Consumed Topic allowance changed during maintenance.")
             if (
@@ -571,7 +576,7 @@ class TopicMemoryRecoveryMigrationRunner:
         return evidence
 
     def _expand(self, connection, evidence, path, verify):
-        if evidence["source"] == "empty":
+        if evidence["source"] in {"empty", "atomic-maintenance-sqlite-v1"}:
             actual = recovery_inventory(connection)
             for shape in recovery_resource()["initialization"]:
                 name = next(iter(recovery_shape(shape, connection.dialect.name)))

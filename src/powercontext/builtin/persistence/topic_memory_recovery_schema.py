@@ -154,6 +154,32 @@ def recovery_inventory(connection: Connection, *, include_leases: bool = False) 
     return result
 
 
+def _atomic_maintenance_initialization(connection: Connection) -> bool:
+    """Recognize the complete, pristine SQLite output of Atomic maintenance.
+
+    This is a registered continuation, not permission to initialize an arbitrary
+    partial database. Include the FTS helpers and triggers and reject orphaned
+    Atomic evidence before creating any Topic objects.
+    """
+    if connection.dialect.name != "sqlite":
+        return False
+    expected = recovery_resource()["atomic_maintenance_sqlite_v1"]
+    ignored = _BOOTSTRAP_COMPANIONS | set(OBJECTS)
+    actual = [
+        list(row)
+        for row in connection.exec_driver_sql(
+            "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name"
+        )
+        if row[2] not in ignored
+    ]
+    if actual != expected["schema"]:
+        return False
+    return all(
+        connection.exec_driver_sql(f'SELECT 1 FROM "{name}" LIMIT 1').first() is None  # noqa: S608 - frozen identifiers
+        for name in expected["empty_tables"]
+    )
+
+
 def recovery_layout(connection: Connection) -> str:
     actual = recovery_inventory(connection)
     dialect = connection.dialect.name
@@ -164,9 +190,15 @@ def recovery_layout(connection: Connection) -> str:
             and connection.exec_driver_sql("SELECT 1 FROM pc_topic_memory_work_blocks LIMIT 1").first() is None
         ):
             return "empty"
+        if connection.exec_driver_sql(
+            "SELECT 1 FROM pc_topic_memory_work_blocks LIMIT 1"
+        ).first() is None and _atomic_maintenance_initialization(connection):
+            return "atomic-maintenance-sqlite-v1"
         raise MigrationError("unknown_baseline", "An incomplete recovery database contains existing evidence.")
     if not actual:
         if set(inspect(connection).get_table_names()) - _BOOTSTRAP_COMPANIONS:
+            if _atomic_maintenance_initialization(connection):
+                return "atomic-maintenance-sqlite-v1"
             raise MigrationError("unknown_baseline", "An existing partial database has no registered Topic budget.")
         return "empty"
     for name, shapes in (
@@ -192,14 +224,18 @@ def recovery_matches(actual: dict[str, Any], expected: dict[str, Any], dialect: 
 
 
 async def prepare_topic_memory_recovery_schema(engine: AsyncEngine, *, initialize: bool = True) -> None:
-    """Initialize only an empty database; reject upgrades before any business writes."""
+    """Initialize registered bootstrap states; reject upgrades before business writes."""
     async with engine.begin() as connection:
         if not initialize and not await connection.run_sync(recovery_inventory):
             return
         layout = await connection.run_sync(recovery_layout)
-        if layout == "empty" and initialize:
+        if layout in {"empty", "atomic-maintenance-sqlite-v1"} and initialize:
             if connection.dialect.name == "sqlite":
                 await connection.exec_driver_sql("BEGIN IMMEDIATE")
+                if await connection.run_sync(recovery_layout) != layout:
+                    raise MigrationError(
+                        "plan_changed", "The initialization baseline changed while acquiring the lock."
+                    )
             actual = await connection.run_sync(recovery_inventory)
             for shape in recovery_resource()["initialization"]:
                 name = {"blocks_v1": BLOCKS, "budget_v1": BUDGET}[shape]
@@ -208,9 +244,7 @@ async def prepare_topic_memory_recovery_schema(engine: AsyncEngine, *, initializ
                 for statement in recovery_statements(shape, connection.dialect.name):
                     await connection.exec_driver_sql(statement)
             if await connection.run_sync(recovery_layout) != "ready":
-                raise MigrationError(
-                    "recovery_required", "Empty Topic recovery initialization did not reach its target."
-                )
+                raise MigrationError("recovery_required", "Topic recovery initialization did not reach its target.")
         elif layout not in {"empty", "ready"}:
             raise MigrationError(
                 "migration_required",

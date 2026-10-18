@@ -42,8 +42,14 @@ attempts 表，成功和被取代行仍保存在恢复点中。未知或不一�
 准确阻塞查询和已受理 retry 回放不自动过期。
 
 空恢复存储先创建阻塞表，再创建预算；SQLite 原子提交两张表。只有冻结、空的阻塞表前缀且没有其他业务状态时才可
-继续初始化。允许已知的 Access bootstrap 和独立 Code 图表先存在，且不改变它们；其他业务表或回执在写入前拒绝，
-不能在保留恢复证据的同时静默重建缺失预算。
+继续初始化。允许已知的 Access bootstrap 和独立 Code 图表先存在，且不改变它们；除下述已登记的 SQLite Atomic
+维护初始化产物外，其他业务表或回执在写入前拒绝，不能在保留恢复证据的同时静默重建缺失预算。
+
+SQLite 的 `server atomic-memory-migrate --action apply --maintenance-confirmed` 可以在正常 Server 启动前初始化
+新数据库。登记的产物包含准确的 Atomic current 表、FTS5 表与触发器、Memory archive，且没有 Atomic 行或归档证据。
+正常启动可以原子地补齐初始化，`--bundle topic-memory-recovery` 也支持对该状态执行 `plan/apply/verify`。离线路径
+会先备份已有数据库再添加 Topic 表，不将维护产物视为空库。缺失或改变的对象、额外业务表及已有 Atomic 证据仍在
+写入前拒绝。此续建路径仅适用于登记的 SQLite 布局，不新增 OceanBase 或 seekDB 基线。
 
 转换通过递增 generation、按 UTC 使 lease 过期并设置维护窗口 holder，一次性撤销所有旧 processing lease；中断
 恢复时不重复推进这个 holder。这沿用既有 processing 维护的 fence 转换，要求共享这些 lease 的所有工作流均停写。

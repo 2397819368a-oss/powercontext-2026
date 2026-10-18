@@ -62,8 +62,17 @@ no automatic expiry.
 
 Empty recovery initialization creates blocks before budgets. SQLite commits both tables atomically. Only a frozen empty
 block-table prefix without other business state can resume initialization. The known Access bootstrap and independent
-Code graph tables may already exist and remain untouched; other business tables or receipts are rejected before writes.
+Code graph tables may already exist and remain untouched; other business tables or receipts are rejected before writes,
+except for the registered pristine SQLite Atomic maintenance output described below.
 Missing budget storage is never silently recreated beside retained recovery evidence.
+
+On SQLite, `server atomic-memory-migrate --action apply --maintenance-confirmed` can initialize a fresh database before
+normal Server startup. Its registered output contains the exact Atomic current table, FTS5 tables/triggers and Memory
+archive, with no Atomic rows or archived evidence. Normal startup can complete this initialization atomically, and
+`--bundle topic-memory-recovery` also supports `plan/apply/verify` for this state. The offline path backs up the existing
+database before adding Topic tables; it does not treat the maintenance output as an empty database. Missing or altered
+objects, unexpected business tables and retained Atomic evidence are rejected before writes. This continuation is
+specific to the registered SQLite layout and does not register additional OceanBase or seekDB baselines.
 
 The conversion revokes every old processing lease once by advancing its generation, expiring it in UTC, and assigning
 the maintenance-window holder. Repeating an interrupted conversion does not advance that holder again. This follows
