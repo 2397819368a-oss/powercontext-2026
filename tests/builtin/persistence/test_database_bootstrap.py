@@ -86,13 +86,15 @@ class Engine:
         return self.connect()
 
     async def exec_driver_sql(self, statement: str):
+        if self.dialect.paramstyle in {"format", "pyformat"}:
+            statement = statement % ()
         self.instance.statements.append(statement)
         if statement.startswith("CREATE DATABASE"):
             if self.instance.on_create is not None:
                 self.instance.on_create()
             if self.instance.creation_failure is not None:
                 raise driver_error(self.instance.creation_failure)
-            self.instance.databases.add("custom-db")
+            self.instance.databases.add(statement.split("`", 2)[1])
         row = ("pc_sources",) if self.instance.legacy_tables else None
         value = self.instance.case_mode if statement == "SELECT @@lower_case_table_names" else self.name
         return SimpleNamespace(first=lambda: row, scalar_one=lambda: value)
@@ -179,17 +181,18 @@ def test_usable_database_needs_no_creation_privileges() -> None:
     asyncio.run(scenario())
 
 
-def test_missing_database_is_created_with_a_quoted_identifier() -> None:
+@pytest.mark.parametrize("name", ["custom-db", "team%ctx", "team%%ctx"])
+def test_missing_database_is_created_with_a_quoted_identifier(name: str) -> None:
     async def scenario() -> None:
         instance = Instance(set())
         await ensure_database(
-            cast(AsyncEngine, instance.engine("custom-db")),
+            cast(AsyncEngine, instance.engine(name)),
             lambda: cast(AsyncEngine, instance.engine(None)),
-            name="custom-db",
+            name=name,
         )
-        assert instance.databases == {"custom-db"}
+        assert instance.databases == {name}
         assert [sql for sql in instance.statements if sql.startswith("CREATE")] == [
-            "CREATE DATABASE IF NOT EXISTS `custom-db` CHARACTER SET utf8mb4"
+            f"CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4"
         ]
         assert all(engine.disposed for engine in instance.engines if engine.name is None)
 
@@ -197,17 +200,18 @@ def test_missing_database_is_created_with_a_quoted_identifier() -> None:
 
 
 @pytest.mark.parametrize("code", [1044, 1142, 1227])
-def test_missing_database_permission_error_has_manual_instructions(code: int) -> None:
+@pytest.mark.parametrize("name", ["custom-db", "team%ctx", "team%%ctx"])
+def test_missing_database_permission_error_has_manual_instructions(code: int, name: str) -> None:
     async def scenario() -> None:
         instance = Instance(set())
         instance.creation_failure = code
         with pytest.raises(DatabaseCreationError, match="administrator") as error:
             await ensure_database(
-                cast(AsyncEngine, instance.engine("custom-db")),
+                cast(AsyncEngine, instance.engine(name)),
                 lambda: cast(AsyncEngine, instance.engine(None)),
-                name="custom-db",
+                name=name,
             )
-        assert "CREATE DATABASE IF NOT EXISTS `custom-db`" in str(error.value)
+        assert f"CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4;" in str(error.value)
         assert "same instance/tenant" in str(error.value)
         assert instance.databases == set()
 
@@ -297,16 +301,18 @@ def test_attached_oceanbase_engine_requires_an_explicit_database() -> None:
     asyncio.run(scenario())
 
 
-def test_access_denied_does_not_claim_database_is_missing_or_attempt_creation() -> None:
+@pytest.mark.parametrize("name", ["custom-db", "team%ctx", "team%%ctx"])
+def test_access_denied_does_not_claim_database_is_missing_or_attempt_creation(name: str) -> None:
     async def scenario() -> None:
         instance = Instance(set())
         instance.failure = 1044
-        with pytest.raises(DatabaseAccessError, match="If it is missing"):
+        with pytest.raises(DatabaseAccessError, match="If it is missing") as error:
             await ensure_database(
-                cast(AsyncEngine, instance.engine("custom-db")),
+                cast(AsyncEngine, instance.engine(name)),
                 lambda: cast(AsyncEngine, instance.engine(None)),
-                name="custom-db",
+                name=name,
             )
+        assert f"CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4;" in str(error.value)
         assert instance.statements == []
 
     asyncio.run(scenario())
@@ -407,13 +413,14 @@ def test_read_only_inspection_reports_a_missing_database_without_creating_it() -
     asyncio.run(scenario())
 
 
-def test_read_only_inspection_reports_denied_access_without_claiming_absence() -> None:
+@pytest.mark.parametrize("name", ["custom-db", "team%ctx", "team%%ctx"])
+def test_read_only_inspection_reports_denied_access_without_claiming_absence(name: str) -> None:
     async def scenario() -> None:
         instance = Instance(set())
         instance.failure = 1044
         with pytest.raises(DatabaseAccessError, match="denied") as error:
-            await require_existing_database(cast(AsyncEngine, instance.engine("custom-db")), name="custom-db")
-        assert "CREATE DATABASE IF NOT EXISTS `custom-db`" in str(error.value)
+            await require_existing_database(cast(AsyncEngine, instance.engine(name)), name=name)
+        assert f"CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4;" in str(error.value)
         assert not any(statement.startswith("CREATE") for statement in instance.statements)
 
     asyncio.run(scenario())

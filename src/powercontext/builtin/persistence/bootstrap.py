@@ -120,7 +120,7 @@ async def ensure_database(
     require_backend: Callable[[AsyncConnection], Awaitable[None]] | None = None,
 ) -> None:
     """Reuse usable databases without issuing CREATE or listing other databases."""
-    statement = creation_statement(engine, name)
+    statement = creation_statement(name)
     try:
         if await database_is_available(engine, name=name):
             return
@@ -135,7 +135,10 @@ async def ensure_database(
             async with admin.begin() as connection:
                 if require_backend is not None:
                     await require_backend(connection)
-                await connection.exec_driver_sql(statement)
+                driver_statement = statement
+                if admin.dialect.paramstyle in {"format", "pyformat"}:
+                    driver_statement = statement.replace("%", "%%")
+                await connection.exec_driver_sql(driver_statement)
         except DBAPIError as error:
             await _recover_creation_race(engine, name, statement, error)
     finally:
@@ -152,14 +155,14 @@ async def require_existing_database(engine: AsyncEngine, *, name: str) -> None:
     except DBAPIError as error:
         if mysql_error_code(error) != 1044:
             raise
-        raise DatabaseAccessError(name, creation_statement(engine, name)) from None
+        raise DatabaseAccessError(name, creation_statement(name)) from None
     if not available:
         raise MissingDatabaseError(name)
 
 
-def creation_statement(engine: AsyncEngine, name: str) -> str:
+def creation_statement(name: str) -> str:
     """Render the exact statement an administrator runs to provision this database."""
-    quoted = engine.dialect.identifier_preparer.quote_identifier(validate_database_name(name))
+    quoted = f"`{validate_database_name(name)}`"
     return f"CREATE DATABASE IF NOT EXISTS {quoted} CHARACTER SET utf8mb4"
 
 
