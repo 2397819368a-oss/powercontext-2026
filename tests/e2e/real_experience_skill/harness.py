@@ -105,7 +105,6 @@ _SCOPE_TABLES = (
     "pc_access_relationships",
     "pc_memory_vector_entries",
     "pc_memory_entry_heads",
-    "pc_memory_entry_evidence",
     "pc_memory_entry_versions",
     "pc_skill_publications",
     "pc_candidate_heads",
