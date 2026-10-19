@@ -26,6 +26,7 @@ import httpx
 import pytest
 from pydantic import model_serializer
 
+from powercontext.builtin.records import ArtifactRevisionActor, ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, open_builtin_contexts, open_builtin_runtime
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.builtin.sources import CONTENT_SOURCE_DEFINITION, ContentCapture
@@ -195,5 +196,70 @@ def test_record_and_native_capture_stamp_the_same_declaration(
         for capture in (native, recorded) if native_first else (recorded, native):
             await capture()
         await native()
+
+    asyncio.run(scenario())
+
+
+def test_artifact_rollback_preserves_source_declaration_and_revision_metadata(
+    migration_backend: MigrationBackend,
+) -> None:
+    declaration = MemoryEvidenceDeclaration(
+        authority=MemoryEvidenceAuthority.SYSTEM_ATTESTED, verification=MemoryEvidenceVerification.VERIFIED
+    )
+    registry = SourceDefinitionRegistry((replace(CONTENT_SOURCE_DEFINITION, memory_evidence=declaration),))
+    config = BuiltinConfig(database=migration_backend.config)
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Rollback", summary="Source declaration on rollback", idempotency_key="rollback")
+            )
+        async with open_builtin_contexts(config, source_registry=registry) as contexts:
+            context = await contexts.get(scope.scope_id)
+            records = contexts.records
+            await records.create_artifact(
+                scope.scope_id, "profile", ArtifactWrite(content={"content": "# Approved profile"})
+            )
+            first = await records.get_artifact(scope.scope_id, "profile", "profile")
+            await records.replace_artifact(
+                scope.scope_id,
+                "profile",
+                "profile",
+                '"revision:1"',
+                ArtifactWrite(content={"content": "# Later profile"}),
+            )
+            restored = await records.replace_artifact(
+                scope.scope_id,
+                "profile",
+                "profile",
+                '"revision:2"',
+                ArtifactWrite(
+                    content={"content": first.content["content"]},
+                    restored_from_revision=1,
+                    reason="Restore approved profile",
+                ),
+                actor_type="user",
+                actor_id="operator",
+            )
+            assert restored.revision == 3
+            assert restored.restored_from_revision == 1
+            assert restored.reason == "Restore approved profile"
+            assert restored.created_by == ArtifactRevisionActor(type="user", id="operator")
+            assert restored.content["content"] == first.content["content"]
+            generation = restored.content["generation"]
+            assert isinstance(generation, dict)
+            assert generation["mode"] == "rollback"
+            sources = {source.name: source for source in await context.sources.list()}
+            for record in (first, restored):
+                assert record.sources
+                for ref in record.sources:
+                    assert sources[ref.source_id].memory_evidence == declaration
+
+        async with open_builtin_contexts(config) as contexts:
+            context = await contexts.get(scope.scope_id)
+            assert await contexts.records.get_artifact(scope.scope_id, "profile", "profile") == restored
+            sources = {source.name: source for source in await context.sources.list()}
+            assert all(sources[ref.source_id].memory_evidence == declaration for ref in restored.sources)
 
     asyncio.run(scenario())
