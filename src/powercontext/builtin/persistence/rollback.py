@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from powercontext.artifacts import Artifact, ArtifactRef
 from powercontext.builtin.artifacts.profile.models import ProfileContent, ProfileWriteContent
 from powercontext.builtin.artifacts.skill.models import SkillContent
-from powercontext.builtin.artifacts.skill.package import build_instruction_skill_package
+from powercontext.builtin.artifacts.skill.package import comparable_skill_content
 from powercontext.builtin.artifacts.topic_memory.models import TopicMemoryContent, TopicMemoryProjection
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
@@ -130,7 +130,6 @@ def _stored_body(family: str, content: BaseModel) -> object:
         return (topic.title, topic.summary, topic.detail)
     if family == "handoff":
         return content.model_dump(mode="json", by_alias=True, exclude={"generation"})
-    if family == "skill" and isinstance(content, SkillContent) and content.package is None:
-        # Legacy instruction-only revisions and new ones compare in their packaged form.
-        content = build_instruction_skill_package(content).as_skill_content()
+    if family == "skill" and isinstance(content, SkillContent):
+        content = comparable_skill_content(content)
     return content.model_dump(mode="json", by_alias=True)

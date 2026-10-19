@@ -302,6 +302,49 @@ def test_prompt_page_shows_the_selected_revision(dashboard: TestClient) -> None:
     assert 'id="compare-revision"' not in missing.text
 
 
+@pytest.mark.parametrize(("historical_mode", "current_mode"), [("custom", "auto"), ("auto", "custom")])
+def test_prompt_mode_matches_the_opened_revision(
+    dashboard: TestClient, historical_mode: str, current_mode: str
+) -> None:
+    writer = cast(Any, dashboard.app).state.application._records()._family_writers.get("prompt")
+    writer._registry = PromptRegistry(builtin_prompt_definitions(), supported=frozenset(PROMPT_KEYS))
+    scope = create_scope(dashboard, "Prompt mode history")["scope_id"]
+    key = "experience.generate"
+    content = {
+        "schema_version": "powercontext.prompt.v1",
+        "mode": historical_mode,
+        "instructions": "Keep the approved prompt." if historical_mode == "custom" else "",
+        "demonstrations": [],
+    }
+    created = dashboard.post(
+        f"/v1/scopes/{scope}/artifacts", json={"family": "prompt", "prompt_key": key, "content": content}
+    )
+    assert created.status_code == 201, created.text
+    _put_content(
+        dashboard,
+        scope,
+        "prompt",
+        key,
+        {
+            **content,
+            "mode": current_mode,
+            "instructions": "Use the current prompt." if current_mode == "custom" else "",
+        },
+    )
+    opened = dashboard.get(
+        "/dashboard/prompts",
+        params={"scope": scope, "prompt_key": key, "prompt_revision": "1", "lang": "en"},
+    )
+    assert opened.status_code == 200, opened.text
+    historical_card = next(card for card in opened.text.split("</article>") if f">{key}</code>" in card)
+    assert f"Mode: {historical_mode.title()}" in historical_card
+    assert f"Mode: {current_mode.title()}" not in historical_card
+    current = dashboard.get("/dashboard/prompts", params={"scope": scope, "lang": "en"})
+    assert current.status_code == 200, current.text
+    current_card = next(card for card in current.text.split("</article>") if f">{key}</code>" in card)
+    assert f"Mode: {current_mode.title()}" in current_card
+
+
 def _put_content(
     client: TestClient, scope: str, family: str, artifact_id: str, content: dict[str, Any]
 ) -> dict[str, Any]:
@@ -499,11 +542,59 @@ def test_dashboard_restores_a_legacy_instruction_only_skill_revision(dashboard: 
             "AND revision = 1",
             (json.dumps(legacy).encode(), scope, skill_id),
         )
+    changed = dashboard.get(
+        "/dashboard/skill",
+        params={"scope": scope, "artifact": skill_id, "revision": "1", "compare": "2", "lang": "en"},
+    )
+    assert changed.status_code == 200, changed.text
+    assert "- Run the approved compatibility tests." in unescape(changed.text)
+    assert "+ Run a later set of tests." in unescape(changed.text)
+    assert 'action="/dashboard/rollback"' in changed.text
     restored = _rollback(dashboard, scope, "skill", skill_id, 2)
     assert restored.status_code == 200, restored.text
     head = dashboard.get(f"/v1/scopes/{scope}/artifacts/skill/{skill_id}").json()
     assert head["revision"] == 3
     assert head["content"]["instructions"].startswith("Run the approved compatibility tests.")
+    equivalent = dashboard.get(
+        "/dashboard/skill",
+        params={"scope": scope, "artifact": skill_id, "revision": "1", "compare": "3", "lang": "en"},
+    )
+    assert equivalent.status_code == 200, equivalent.text
+    assert "The content matches the current revision" in equivalent.text
+    assert not re.findall(r"<pre\b[^>]*>.*?</pre>", equivalent.text, re.DOTALL)
+    assert 'action="/dashboard/rollback"' not in equivalent.text
+
+
+def test_legacy_skill_history_remains_readable_without_package_name_compatibility(
+    dashboard: TestClient, tmp_path: Path
+) -> None:
+    content = {
+        "name": "compatibility-check",
+        "description": "Check compatibility before release",
+        "instructions": "Run the approved compatibility tests.",
+        "validation": ["Compatibility tests pass"],
+    }
+    scope = create_scope(dashboard, "Legacy skill name")["scope_id"]
+    created = dashboard.post(f"/v1/scopes/{scope}/artifacts", json={"family": "skill", "content": content})
+    assert created.status_code == 201, created.text
+    skill_id = created.json()["artifact_id"]
+    _put_content(dashboard, scope, "skill", skill_id, {**content, "instructions": "Run current tests."})
+    # Legacy names allowed spaces and uppercase letters; standard packages do not.
+    with sqlite3.connect(tmp_path / "data.db") as connection:
+        connection.execute(
+            "UPDATE pc_artifacts SET content = ? WHERE scope_id = ? AND family = 'skill' AND artifact_id = ? "
+            "AND revision = 1",
+            (json.dumps({**content, "name": "Legacy Helper"}).encode(), scope, skill_id),
+        )
+    opened = dashboard.get(
+        "/dashboard/skill",
+        params={"scope": scope, "artifact": skill_id, "revision": "1", "compare": "2", "lang": "en"},
+    )
+    assert opened.status_code == 200, opened.text
+    assert "- Legacy Helper" in unescape(opened.text)
+    assert "+ compatibility-check" in unescape(opened.text)
+    assert "- Run the approved compatibility tests." in unescape(opened.text)
+    assert "+ Run current tests." in unescape(opened.text)
 
 
 def test_dashboard_rolls_back_experience_skill_topic_and_handoff(dashboard: TestClient) -> None:

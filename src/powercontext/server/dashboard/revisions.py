@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import difflib
 import json
+from contextlib import suppress
 from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import Request
 
+from powercontext.builtin.artifacts.skill.models import SkillContent
+from powercontext.builtin.artifacts.skill.package import SkillPackageError, comparable_skill_content
 from powercontext.server.dashboard.api import DashboardAPI, ReadError, segment
 from powercontext.server.dashboard.pagination import PAGE_SIZE
 
@@ -55,10 +58,18 @@ def canonical_view(family: str, content: dict[str, Any]) -> object:
     if family == "experience":
         return {name: content.get(name) for name in _EXPERIENCE_FIELDS}
     if family == "skill":
-        return {name: content.get(name) for name in _SKILL_FIELDS}
+        return _skill_view(content)
     if family == "handoff":
         return {name: content.get(name) for name in _HANDOFF_FIELDS}
     return content
+
+
+def _skill_view(content: dict[str, Any]) -> dict[str, Any]:
+    skill = SkillContent.model_validate(content)
+    # Historical names and sizes can be valid without satisfying modern package constraints.
+    with suppress(SkillPackageError):
+        skill = comparable_skill_content(skill)
+    return skill.model_dump(mode="json")
 
 
 def replace_body(family: str, content: dict[str, Any], source_revision: int, reason: str) -> dict[str, Any]:
@@ -141,6 +152,8 @@ def comparison(family: str, left: dict[str, Any], right: dict[str, Any]) -> list
     if family == "experience":
         return [_text_row(name, left.get(name), right.get(name)) for name in _EXPERIENCE_FIELDS]
     if family == "skill":
+        left = _skill_view(left)
+        right = _skill_view(right)
         return [_text_row(name, left.get(name), right.get(name)) for name in _SKILL_FIELDS]
     if family == "handoff":
         return [_text_row(name, left.get(name), right.get(name)) for name in _HANDOFF_FIELDS]

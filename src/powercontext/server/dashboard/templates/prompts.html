@@ -23,10 +23,11 @@ limitations under the License.
 {% else %}
   <div class="row row-cards">
   {% for prompt in data.prompts %}
+    {% set opened = prompt_opened if prompt_opened and prompt.prompt_key == prompt_key else none %}
+    {% set mode = opened.content.mode if opened else prompt.mode %}
     <section class="col-12 col-xl-6"><article class="card h-100">
-      <div class="card-header"><div><h2 class="card-title mb-1">{{ t.get(prompt.prompt_key, prompt.prompt_key) }}</h2><code class="small d-block mb-1">{{ prompt.prompt_key }}</code><div class="text-secondary small">{{ t.prompt_status }}: {{ prompt.status }}</div></div><span class="badge bg-blue-lt">{{ t.prompt_mode }}: {{ t.prompt_custom if prompt.mode == 'custom' else t.prompt_auto }}</span></div>
+      <div class="card-header"><div><h2 class="card-title mb-1">{{ t.get(prompt.prompt_key, prompt.prompt_key) }}</h2><code class="small d-block mb-1">{{ prompt.prompt_key }}</code><div class="text-secondary small">{{ t.prompt_status }}: {{ prompt.status }}</div></div><span class="badge bg-blue-lt">{{ t.prompt_mode }}: {{ t.prompt_custom if mode == 'custom' else t.prompt_auto }}</span></div>
       <div class="card-body">
-        {% set opened = prompt_opened if prompt_opened and prompt.prompt_key == prompt_key else none %}
         {% if prompt.prompt_key == prompt_key and errors.get('prompt_selected') %}
         {{ read_error(errors.prompt_selected, t.prompt_revision) }}
         {% else %}
