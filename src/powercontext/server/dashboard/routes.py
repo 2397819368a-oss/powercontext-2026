@@ -34,10 +34,10 @@ from powercontext.server.dashboard.navigation import (
     positive_revision,
     request_reading_return,
 )
+from powercontext.server.dashboard.page import load_builtin_page
 from powercontext.server.dashboard.pagination import PAGE_SIZE
 from powercontext.server.dashboard.preferences import CATALOGS, presentation, remember_language
-from powercontext.server.dashboard.presenters import source_view
-from powercontext.server.dashboard.reading import set_scope
+from powercontext.server.dashboard.presenters import set_scope, source_view
 from powercontext.server.dashboard.review import load_review, submit_review
 from powercontext.server.dashboard.session import login_response
 
@@ -180,8 +180,6 @@ def reading_link_context(
 
 def initial_context(request: Request, page: str) -> dict[str, Any]:
     method_kind = request.query_params.get("kind", "experience")
-    if method_kind == "all":
-        method_kind = "experience"
     ctx: dict[str, Any] = {
         **presentation(request),
         "page": page,
@@ -218,7 +216,6 @@ def initial_context(request: Request, page: str) -> dict[str, Any]:
         "status": 200,
         "stats": None,
         "selected_note": None,
-        "requested_entry": request.query_params.get("entry"),
         "requested_note": request.query_params.get("artifact") if page == "notes" else None,
         "notes_pager": None,
         "notes_page_size": PAGE_SIZE,
@@ -244,26 +241,32 @@ def initial_context(request: Request, page: str) -> dict[str, Any]:
     return ctx
 
 
-async def default_scope(api: DashboardAPI, ctx: dict[str, Any]) -> None:
+async def default_scope(api: DashboardAPI, ctx: dict[str, Any]) -> dict[str, Any] | None:
     if ctx["scope"] is None:
         try:
             descriptor = await api.read("/v1/scopes/default")
-            ctx["scope"] = descriptor["scope_id"]
         except ReadError as error:
             if error.status != 404:
                 ctx["errors"]["default_scope"] = error
+        else:
+            ctx["scope"] = descriptor["scope_id"]
+            return descriptor
+    return None
 
 
-async def scope_context(api: DashboardAPI, ctx: dict[str, Any]) -> None:
-    if not ctx["scope"] or api.connection is not None:
+async def scope_context(api: DashboardAPI, ctx: dict[str, Any], descriptor: dict[str, Any] | None = None) -> None:
+    if not ctx["scope"]:
         return
     try:
-        descriptor = await api.read(f"/v1/scopes/{segment(ctx['scope'])}")
+        if descriptor is None:
+            descriptor = await api.read(f"/v1/scopes/{segment(ctx['scope'])}")
+        else:
+            await api.authorize_scope(ctx["scope"], "dashboard_scope")
     except ReadError as error:
         record_page = (
             ctx["page"] in RECORDS
             or ctx["page"] == "handoff-download"
-            or (ctx["page"] == "notes" and (ctx["requested_note"] or ctx["requested_entry"]))
+            or (ctx["page"] == "notes" and ctx["requested_note"])
         )
         if record_page and error.status in {403, 404}:
             ctx["record_only"] = True
@@ -325,7 +328,6 @@ def validate_selection(page: str, ctx: dict[str, Any]) -> None:
 
 @router.get("")
 @router.get("/")
-@router.get("/guide")
 async def index(request: Request) -> RedirectResponse:
     return RedirectResponse("/dashboard/home" + ("?" + str(request.query_params) if request.query_params else ""))
 
@@ -337,8 +339,8 @@ async def evidence(request: Request, source_id: str) -> HTMLResponse:
     api = DashboardAPI(request)
     ctx.update(source_id=source_id, origin=ctx["page"], source_type=request.query_params.get("source_type", ""))
     try:
-        await default_scope(api, ctx)
-        await scope_context(api, ctx)
+        descriptor = await default_scope(api, ctx)
+        await scope_context(api, ctx, descriptor)
         await load_content(api, request, ctx)
         if not any(
             item["source_id"] == source_id and item["source_type"] == ctx["source_type"]
@@ -427,10 +429,10 @@ async def screen(request: Request, page: str) -> HTMLResponse:
     api = DashboardAPI(request)
     try:
         validate_selection(page, ctx)
-        await default_scope(api, ctx)
-        async with api.operation(ctx):
+        if not await load_builtin_page(api, request, ctx):
+            descriptor = await default_scope(api, ctx)
             if ctx["scope"]:
-                await scope_context(api, ctx)
+                await scope_context(api, ctx, descriptor)
             if ctx["scope"] and page == "review":
                 await load_review(api, request, ctx)
             elif ctx["scope"] and page != "entry":

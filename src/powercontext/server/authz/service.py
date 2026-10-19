@@ -28,10 +28,10 @@ from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from powercontext.limits import MAX_POLICY_REVISION_LENGTH
 from powercontext.server.authz.errors import (
@@ -69,6 +69,10 @@ from powercontext.server.authz.profiles import (
     validate_binding_role,
     validate_binding_subject,
 )
+
+if TYPE_CHECKING:
+    from powercontext.server.authz.casbin import CasbinAuthorizationProvider
+
 
 _T = TypeVar("_T")
 _MAX_AUTHORIZED_FILTER_IDENTITIES = 10_000
@@ -636,31 +640,38 @@ class AccessControlService:
         bound.relationships = bound.audit = repository
         return bound
 
-    def for_read(self, connection: AsyncConnection) -> AccessControlService:
-        """Use a local policy snapshot when available, preserving external point decisions."""
+    def supports_read_snapshot(self, engine: AsyncEngine) -> bool:
+        """Whether binding local policy to this engine preserves the Provider's rules."""
+        from powercontext.server.authz.repository import RelationalAccessRepository
 
-        access = self
         provider = self.provider
         canonical = type(provider) is BuiltinAuthorizationProvider
         if not canonical and type(provider).__module__ == "powercontext.server.authz.casbin":
             from powercontext.server.authz.casbin import CasbinAuthorizationProvider
 
             canonical = type(provider) is CasbinAuthorizationProvider
-        if canonical:
-            from powercontext.server.authz.repository import RelationalAccessRepository
+        if not canonical:
+            return False
+        repository = cast("BuiltinAuthorizationProvider | CasbinAuthorizationProvider", provider)._repository
+        if type(repository) is not RelationalAccessRepository:
+            return False
+        policy_engine = repository._database.engine
+        return policy_engine.url == engine.url and not (
+            engine.dialect.name == "sqlite"
+            and engine.url.database in {None, "", ":memory:"}
+            and policy_engine is not engine
+        )
 
-            repository = provider._repository
-            # Binding either a Provider or Repository subclass could discard its custom rules.
-            if type(repository) is RelationalAccessRepository:
-                try:
-                    bound_repository = repository.with_connection(connection)
-                except AccessUnavailableError as error:
-                    if error.code != "transactional_relationships_unavailable":
-                        raise
-                    # A separate policy database still supports its original point decision.
-                else:
-                    access = copy(self)
-                    access.provider = provider.with_repository(bound_repository)
+    def for_read(self, connection: AsyncConnection) -> AccessControlService:
+        """Use a local policy snapshot when available, preserving external point decisions."""
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
+        if not self.supports_read_snapshot(connection.engine):
+            return self
+        access = copy(self)
+        provider = cast("BuiltinAuthorizationProvider | CasbinAuthorizationProvider", self.provider)
+        repository = cast(RelationalAccessRepository, provider._repository).with_connection(connection)
+        access.provider = provider.with_repository(repository)
         return access
 
     async def require_scope_read(self, principal, scope_id: str, *, connection, context: AccessAuditContext):

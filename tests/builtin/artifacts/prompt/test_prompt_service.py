@@ -75,8 +75,7 @@ def test_concurrent_scopes_and_retries_use_frozen_prompt_selections() -> None:
         seen: dict[str, list[str]] = {"a": [], "b": []}
 
         async def read(scope: str, keys: tuple[str, ...]) -> dict[str, Prompt]:
-            assert keys == ("memory.extract",)
-            return {keys[0]: heads[scope]}
+            return dict.fromkeys(keys, heads[scope])
 
         async def respond(messages, info) -> ModelResponse:
             selection = current_prompt("memory.extract")

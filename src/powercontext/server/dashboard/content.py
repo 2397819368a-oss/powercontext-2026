@@ -57,19 +57,26 @@ async def load_collection(api: DashboardAPI, request: Request, ctx: dict[str, An
         ctx["errors"][family] = ReadError.from_exception(error)
 
 
-async def load_notes(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
-    searching = ctx["page"] == "notes" and bool(ctx["search_query"])
-    if ctx["page"] == "notes" and not searching and "notes_page" in request.query_params:
+def validate_note_selection(request: Request, ctx: dict[str, Any]) -> None:
+    if ctx["page"] != "notes":
+        return
+    query = request.query_params
+    if (
+        "entry" in query
+        or (not ctx["search_query"] and "notes_page" in query)
+        or ("artifact" in query) != ("revision" in query)
+    ):
         raise ReadError(422, "invalid_request")
-    if ctx["page"] == "notes":
-        query = request.query_params
-        if ("artifact" in query) != ("revision" in query):
-            raise ReadError(422, "invalid_request")
-        ctx["note_selection"] = (
-            {"artifact_id": query["artifact"], "revision": positive_revision(query["revision"])}
-            if "artifact" in query
-            else None
-        )
+    ctx["note_selection"] = (
+        {"artifact_id": query["artifact"], "revision": positive_revision(query["revision"])}
+        if "artifact" in query
+        else None
+    )
+
+
+async def load_notes(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
+    validate_note_selection(request, ctx)
+    searching = ctx["page"] == "notes" and bool(ctx["search_query"])
     try:
         if searching:
             result = await api.read(
@@ -146,16 +153,11 @@ async def load_record(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
 
 
 async def load_home(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
-    reads = (
+    await asyncio.gather(
         load_notes(api, request, ctx),
         load_stats(api, ctx),
         *(load_collection(api, request, ctx, family) for family in ("handoff", "experience", "skill")),
     )
-    if api.connection is None:
-        await asyncio.gather(*reads)
-    else:
-        for read in reads:
-            await read
 
 
 async def load_content(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:

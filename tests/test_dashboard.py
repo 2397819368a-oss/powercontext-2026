@@ -15,6 +15,7 @@
 """Exercise HTML against real runtime operations and isolated databases."""
 
 import re
+from datetime import UTC, datetime
 from html import unescape
 from pathlib import Path
 from secrets import token_urlsafe
@@ -25,8 +26,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy import insert
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.persistence.tables import MODEL_USAGE_DAILY_TABLE
 from powercontext.server.dashboard.routes import LABELS
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import (
@@ -122,8 +125,15 @@ def create_scope(client: TestClient, title: str, parent: str | None = None) -> d
     return result.json()
 
 
-def test_dashboard_audit_failure_does_not_expose_page_content(dashboard: TestClient, monkeypatch) -> None:
+@pytest.mark.parametrize("scope_selection", ["explicit", "default"])
+def test_dashboard_audit_failure_does_not_expose_page_content(
+    dashboard: TestClient, monkeypatch, scope_selection: str
+) -> None:
     scope = create_scope(dashboard, "Audit protected scope title")
+    params = {"scope": scope["scope_id"]} if scope_selection == "explicit" else {}
+    if scope_selection == "default":
+        selected = dashboard.put("/v1/scopes/default", json={"scope_id": scope["scope_id"]})
+        assert selected.status_code == 200, selected.text
     saved = dashboard.post(
         "/v1/memory/remember",
         json={"scope_id": scope["scope_id"], "kind": "fact", "text": "Audit protected memory body."},
@@ -138,15 +148,51 @@ def test_dashboard_audit_failure_does_not_expose_page_content(dashboard: TestCli
         for headers in ({}, {"HX-Request": "true"}):
             with monkeypatch.context() as patch:
                 patch.setattr(audit, "append_audits", unavailable)
-                response = dashboard.get(f"/dashboard/{page}", params={"scope": scope["scope_id"]}, headers=headers)
+                response = dashboard.get(f"/dashboard/{page}", params=params, headers=headers)
             assert response.status_code == 503, response.text
             assert scope["title"] not in response.text
             assert "Audit protected memory body." not in response.text
-            recovered = dashboard.get(f"/dashboard/{page}", params={"scope": scope["scope_id"]}, headers=headers)
+            recovered = dashboard.get(f"/dashboard/{page}", params=params, headers=headers)
             assert recovered.status_code == 200, recovered.text
             assert scope["title"] in recovered.text
             if page != "usage":
                 assert "Audit protected memory body." in recovered.text
+
+
+@pytest.mark.parametrize("page", ["home", "usage"])
+def test_malformed_usage_preserves_authorized_page_sections(dashboard: TestClient, page: str) -> None:
+    scope = create_scope(dashboard, "Readable scope with damaged usage")
+    saved = dashboard.post(
+        "/v1/memory/remember",
+        json={"scope_id": scope["scope_id"], "kind": "fact", "text": "Unaffected content remains readable."},
+    )
+    assert saved.status_code == 200, saved.text
+    runtime = cast(FastAPI, dashboard.app).state.application
+
+    async def damage_usage():
+        async with runtime.primary_database.transaction() as connection:
+            await connection.execute(
+                insert(MODEL_USAGE_DAILY_TABLE).values(
+                    scope_id=scope["scope_id"],
+                    usage_date=datetime.now(UTC).date(),
+                    purpose="unknown-purpose",
+                    operation="generation",
+                    requests=1,
+                    input_tokens=1,
+                    output_tokens=1,
+                    input_complete=True,
+                    output_complete=True,
+                )
+            )
+
+    assert dashboard.portal is not None
+    dashboard.portal.call(damage_usage)
+    response = dashboard.get(f"/dashboard/{page}", params={"scope": scope["scope_id"]})
+    assert response.status_code == 200, response.text
+    assert scope["title"] in response.text
+    assert LABELS["error_503"] in response.text
+    if page == "home":
+        assert "Unaffected content remains readable." in response.text
 
 
 def test_dashboard_preserves_injected_atomic_read_rules(dashboard: TestClient, monkeypatch) -> None:
@@ -262,12 +308,6 @@ def test_language_survives_navigation_without_translating_records(dashboard: Tes
     assert "Release work" in partial.text
     assert '<html lang="zh-CN">' in dashboard.get("/dashboard/home?lang=zh").text
     assert '<html lang="zh-CN">' in dashboard.get("/dashboard/home?lang=invalid").text
-
-
-def test_legacy_bookmark_preserves_scope_on_redirect(dashboard: TestClient) -> None:
-    response = dashboard.get("/dashboard/guide?scope=chosen&period=30d", follow_redirects=False)
-    assert response.is_redirect
-    assert response.headers["location"] == "/dashboard/home?scope=chosen&period=30d"
 
 
 def page_link(html: str, label: str) -> str:
@@ -909,19 +949,57 @@ def test_disabled_dashboard_does_not_offer_token_login(tmp_path: Path) -> None:
         assert client.get("/dashboard/home", headers={"Authorization": f"Bearer {token}"}).status_code == 404
 
 
-@pytest.mark.parametrize("broken_family", ["atomic-memory", "handoff"])
-def test_home_corrupt_body_does_not_hide_other_families(dashboard: TestClient, broken_family: str) -> None:
+@pytest.mark.parametrize("broken_family", [None, "atomic-memory", "handoff", "experience", "skill"])
+def test_home_previews_are_independent_of_missing_or_corrupt_notes(
+    dashboard: TestClient, broken_family: str | None
+) -> None:
     from sqlalchemy import update
 
     from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE
 
     scope = create_scope(dashboard, "Independent content sections")["scope_id"]
-    created = dashboard.post(
-        f"/v1/scopes/{scope}/artifacts",
-        json={"family": "atomic-memory", "content": {"kind": "fact", "text": "Healthy atomic preview."}},
-    )
-    assert created.status_code == 201
+    if broken_family is not None:
+        created = dashboard.post(
+            f"/v1/scopes/{scope}/artifacts",
+            json={"family": "atomic-memory", "content": {"kind": "fact", "text": "Healthy atomic preview."}},
+        )
+        assert created.status_code == 201
     commit_handoff(dashboard, scope)
+    previews = {
+        "experience": {
+            "situation": "Independent preview",
+            "action": "Read the report",
+            "outcome": "Unknown",
+            "lesson": "Healthy experience preview.",
+        },
+        "skill": {
+            "name": "healthy-skill-preview",
+            "description": "Read the report",
+            "instructions": "Preserve its limits.",
+            "validation": ["Keep unknown outcomes."],
+        },
+    }
+    for family, proposal in previews.items():
+        proposed = dashboard.post(
+            f"/v1/{family}/propose",
+            json={
+                "scope_id": scope,
+                "proposal": proposal,
+                "source_refs": [{"name": "content", "source_id": "review"}],
+                "artifact_refs": [],
+            },
+        )
+        assert proposed.status_code == 201, proposed.text
+        candidate = proposed.json()
+        approved = dashboard.post(
+            "/v1/candidates/approve",
+            json={
+                "scope_id": scope,
+                "candidate_id": candidate["candidate_id"],
+                "expected_version": candidate["version"],
+            },
+        )
+        assert approved.status_code == 200, approved.text
 
     async def corrupt_body() -> None:
         async with cast(FastAPI, dashboard.app).state.application.primary_database.transaction() as connection:
@@ -932,9 +1010,12 @@ def test_home_corrupt_body_does_not_hide_other_families(dashboard: TestClient, b
             )
 
     assert dashboard.portal is not None
-    dashboard.portal.call(corrupt_body)
+    if broken_family is not None:
+        dashboard.portal.call(corrupt_body)
     response = dashboard.get("/dashboard/home", params={"scope": scope})
     assert response.status_code == 200
-    assert 'class="alert alert-warning my-3"' in response.text
-    assert ("Healthy atomic preview." in response.text) is (broken_family != "atomic-memory")
+    assert (LABELS["error_503"] in response.text) is (broken_family is not None)
+    assert ("Healthy atomic preview." in response.text) is (broken_family not in {None, "atomic-memory"})
     assert ("Review the HTTP contract" in response.text) is (broken_family != "handoff")
+    assert ("Healthy experience preview." in response.text) is (broken_family != "experience")
+    assert ("healthy-skill-preview" in response.text) is (broken_family != "skill")

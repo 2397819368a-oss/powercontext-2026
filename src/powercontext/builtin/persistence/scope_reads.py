@@ -9,19 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bounded built-in page projections; DashboardAPI owns authorization and snapshots."""
+"""Bounded Scope projections over authoritative Artifact heads."""
 
 from sqlalchemy import func, literal, select, union_all
 
-from powercontext.builtin.persistence.artifact_governance import decode_artifact_governance
 from powercontext.builtin.persistence.artifacts import with_artifact_content
-from powercontext.builtin.persistence.atomic_memory import _atomic_state
-from powercontext.builtin.persistence.statistics import daily_usage_statement, decode_daily_usage
+from powercontext.builtin.persistence.statistics import daily_usage_statement
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACT_LINEAGE_SOURCES_TABLE, SCOPES_TABLE
-from powercontext.builtin.runtime.statistics import _as_utc, _recall_statistics, _resolve_period, _usage_statistics
-from powercontext.builtin.statistics import StatisticsPeriod
-from powercontext.server.dashboard.errors import ReadError
-from powercontext.server.dashboard.pagination import PAGE_SIZE
 
 _HEAD_FIELDS = (
     "scope_id",
@@ -57,16 +51,6 @@ def _with_header(statement, scope, kind):
     )
 
 
-def set_scope(ctx, descriptor):
-    if descriptor is None:
-        raise ReadError(404, "not_found")
-    ctx["scope_descriptor"] = {name: descriptor[name] for name in ("scope_id", *_HEADER_FIELDS)}
-    ctx["data"].update(title=descriptor["title"], summary=descriptor["summary"])
-    parent = descriptor["parent_scope_id"]
-    if parent:
-        ctx["parent_scope"] = {"scope_id": parent, "display_title": parent}
-
-
 def _content_rows(statement, kind, *, current_revision=None, source_count=None):
     rows = statement.subquery(f"{kind}_rows")
     return select(
@@ -77,28 +61,10 @@ def _content_rows(statement, kind, *, current_revision=None, source_count=None):
     )
 
 
-def preview(repository, row):
-    content = repository.decode_content(row).model_dump(mode="json", by_alias=True)
-    head = decode_artifact_governance({**row, "revision": row["current_revision"]})
-    ref = {"family": row["family"], "artifact_id": row["artifact_id"], "revision": row["revision"]}
-    value = {**content, **ref}
-    if row["family"] == "atomic-memory":
-        value.update(
-            artifact=ref,
-            note_key=f"atomic-memory/{ref['artifact_id']}@{ref['revision']}",
-            **_atomic_state(head).model_dump(mode="json"),
-            current_artifact=head.artifact.model_dump(mode="json"),
-            is_current=ref == head.artifact.model_dump(),
-        )
-    elif row["family"] == "experience":
-        value["source_count"] = int(row["source_count"])
-    return value
-
-
-def other_previews(scope):
+def family_previews(scope, families):
     head, sources = ARTIFACT_HEADS_TABLE, ARTIFACT_LINEAGE_SOURCES_TABLE
     statements = []
-    for family in ("skill", "handoff", "experience"):
+    for family in families:
         page = (
             select(head)
             .where(
@@ -123,52 +89,9 @@ def other_previews(scope):
     return statements
 
 
-async def usage(connection, runtime, ctx):
-    header = ctx["page"] == "usage"
-    scope = ctx["scope"]
-    resolved = _resolve_period(StatisticsPeriod(ctx["period"]), _as_utc(runtime._clock()).date())
-    estimator = runtime._statistics(scope)._token_estimator
-    statement = daily_usage_statement(
-        (scope,),
-        resolved.start_date,
-        resolved.end_date,
-        estimator=None if estimator is None else (estimator.estimator_id, estimator.version),
-    )
-    rows = (
-        (await connection.execute(_with_header(statement, scope, "usage_kind") if header else statement))
-        .mappings()
-        .all()
-    )
-    if header:
-        set_scope(ctx, next((row for row in rows if row["usage_kind"] == "scope"), None))
-        rows = [row for row in rows if row["usage_kind"] != "scope"]
-    usage, recall = decode_daily_usage(rows, (scope,))
-    return (
-        _usage_statistics(resolved, usage[scope]).model_dump(mode="json"),
-        _recall_statistics(resolved, estimator, recall[scope]).model_dump(mode="json"),
-    )
-
-
-async def note_rows(connection, runtime, request, ctx, context):
-    record_only = ctx["record_only"]
-    scope, page = ctx["scope"], ctx["page"]
-    query = request.query_params
-    selected = ctx.get("note_selection")
-    atomic = runtime.atomic_memory._application.for_scope(scope)
-    limit = 3 if page == "home" else PAGE_SIZE
-    statements = []
-    bound = after = None
-    if not record_only:
-        statement, bound, after = atomic.list_query(
-            connection,
-            states=(ctx["note_state"],),
-            limit=limit,
-            cursor=query.get("notes_cursor") if page == "notes" else None,
-            context=context,
-        )
-        statements.append(_content_rows(statement, "notes"))
-    if page == "home":
-        statements.extend(other_previews(scope))
+async def content_rows(connection, scope, *, browse=None, families=(), selected=None, include_scope=True):
+    statements = [] if browse is None else [_content_rows(browse, "notes")]
+    statements.extend(family_previews(scope, families))
     if selected is not None:
         revision = selected["revision"]
         head = ARTIFACT_HEADS_TABLE
@@ -192,21 +115,34 @@ async def note_rows(connection, runtime, request, ctx, context):
             )
         )
     statement = union_all(*statements) if len(statements) > 1 else statements[0]
-    if not record_only:
+    if include_scope:
         statement = _with_header(statement, scope, "read_kind")
     rows = (await connection.execute(statement)).mappings().all()
-    if not record_only:
-        set_scope(ctx, next((row for row in rows if row["read_kind"] == "scope"), None))
-    note_rows = sorted((row for row in rows if row["read_kind"] == "notes"), key=lambda row: row["artifact_id"])
-    last = note_rows[min(len(note_rows), limit) - 1]["artifact_id"] if note_rows else after
-    cursor = atomic.application.cursor.encode(bound, last) if len(note_rows) > limit else None
-    return rows, note_rows[:limit], cursor
+    descriptor = None
+    if include_scope:
+        descriptor = next((row for row in rows if row["read_kind"] == "scope"), None)
+    return rows, descriptor
 
 
-async def scope_header(connection, ctx):
-    descriptor = (
-        (await connection.execute(select(SCOPES_TABLE).where(SCOPES_TABLE.c.scope_id == ctx["scope"])))
+async def usage_rows(connection, scope, period, estimator, *, include_scope=False):
+    statement = daily_usage_statement(
+        (scope,),
+        period.start_date,
+        period.end_date,
+        estimator=None if estimator is None else (estimator.estimator_id, estimator.version),
+    )
+    rows = (
+        (await connection.execute(_with_header(statement, scope, "usage_kind") if include_scope else statement))
+        .mappings()
+        .all()
+    )
+    descriptor = next((row for row in rows if row["usage_kind"] == "scope"), None) if include_scope else None
+    return [row for row in rows if row["usage_kind"] != "scope"], descriptor
+
+
+async def scope_header(connection, scope):
+    return (
+        (await connection.execute(select(SCOPES_TABLE).where(SCOPES_TABLE.c.scope_id == scope)))
         .mappings()
         .one_or_none()
     )
-    set_scope(ctx, descriptor)

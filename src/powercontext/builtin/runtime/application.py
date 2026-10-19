@@ -331,6 +331,7 @@ if TYPE_CHECKING:
 
     from powercontext.builtin.handoff_report.application import HandoffReportApplication
     from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingSupervisors
+    from powercontext.builtin.runtime.scope_reads import ScopeReadSnapshot
 
 
 class TopicMemorySearch(Protocol):
@@ -3761,6 +3762,32 @@ class BuiltinRuntime:
         if self._primary_database is None:
             raise _RuntimeStateError("database")
         return self._primary_database
+
+    @asynccontextmanager
+    async def read_snapshot(self, scope_id: str, *, flush_usage: bool = False) -> AsyncIterator[ScopeReadSnapshot]:
+        """Borrow one built-in Scope read snapshot without granting remote authority.
+
+        The caller owns the PEP and audit completion. Scope existence is included
+        in bounded projections, avoiding an independent preflight read.
+        """
+        from powercontext.builtin.runtime.scope_reads import ScopeReadSnapshot
+
+        scope = validate_scope_id(scope_id)
+        async with self._operation():
+            if self.atomic_memory is None:
+                raise _RuntimeStateError("atomic-memory")
+            with self._scope_cache.lease(scope):
+                statistics = self._statistics(scope)
+                if flush_usage:
+                    await statistics.flush_model_usage()
+                async with self.primary_database.transaction(consistent_snapshot=True) as connection:
+                    yield ScopeReadSnapshot(
+                        connection,
+                        scope,
+                        self.atomic_memory._application.for_scope(scope),
+                        statistics,
+                        self._clock(),
+                    )
 
     async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         await self.close()

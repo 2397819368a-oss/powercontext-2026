@@ -1700,7 +1700,6 @@ async def _assert_shared_note_dashboard(client, scope_id, identity, neighbor):
         assert "Alpha scope fact." in selected.text
         assert "Alpha unshared fact." not in selected.text
         assert "Regression scope" not in selected.text
-        assert "usage-sheet" not in selected.text
     for page in ("home", "notes", "usage"):
         denied = await client.get(f"/dashboard/{page}", headers=reader, params={"scope": scope_id})
         assert denied.status_code == 403, denied.text

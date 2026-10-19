@@ -193,6 +193,11 @@ class ScopeApplication:
             scope_id = await self._repository.default_scope_id(connection)
             return None if scope_id is None else await self._binding_target(connection, scope_id)
 
+    async def default_scope_id(self) -> str | None:
+        """Resolve the host pointer without expanding or authorizing its target."""
+        async with self._database.transaction() as connection:
+            return await self._repository.default_scope_id(connection)
+
     async def set_default(self, scope_id: str, /) -> ScopeDescriptor:
         async with self._write_lock:
             try:

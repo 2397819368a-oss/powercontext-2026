@@ -19,8 +19,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from contextlib import asynccontextmanager, nullcontext, suppress
-from typing import Any, cast
+from contextlib import suppress
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -30,15 +30,10 @@ from pydantic import ValidationError
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.topic_memory import TopicMemoryBrowseCursor
 from powercontext.builtin.runtime.models import GetTopicMemoryRequest
-from powercontext.builtin.sources import validate_scope_id
 from powercontext.errors import ArtifactNotFoundError
 from powercontext.server import mapping
-from powercontext.server.authz import AccessAction, AccessDeniedError, ResourceRef
-from powercontext.server.authz.casbin import CasbinAuthorizationProvider
-from powercontext.server.authz.repository import RelationalAccessRepository
-from powercontext.server.authz.service import BuiltinAuthorizationProvider, _require_allowed, access_control_for_mode
-from powercontext.server.context import current_principal
-from powercontext.server.dashboard import reading
+from powercontext.server.authz import AccessAction, ResourceRef
+from powercontext.server.authz.service import access_control_for_mode
 from powercontext.server.dashboard.errors import ReadError as ReadError
 from powercontext.server.dashboard.session import authentication_headers
 
@@ -48,15 +43,12 @@ def segment(value: str) -> str:
 
 
 class DashboardAPI:
-    """Use an in-process HTTP transport with the incoming user's credentials."""
+    """Adapt public reads with incoming credentials, including authorized built-in batches."""
 
     def __init__(self, request: Request) -> None:
         self.app = request.app
         self.request = request
-        self.connection = None
         self.builtin = _builtin_runtime(request)
-        self._note_rows = ()
-        self._previews = ()
         headers = authentication_headers(request.scope)
         headers = {key: value for key, value in headers.items() if key in {"authorization", "cookie"}}
         headers["X-PowerContext-Dream-Contract"] = "2"
@@ -66,98 +58,10 @@ class DashboardAPI:
             headers=headers,
         )
 
-    @asynccontextmanager
-    async def operation(self, ctx):  # noqa: C901
-        """Authorize once, then retain the page's policy and content snapshot."""
-        self.ctx = ctx
-        runtime = self.builtin
-        if runtime is None or not ctx["scope"] or ctx["page"] not in {"home", "notes", "usage"} or ctx["search_query"]:
-            yield
-            return
-        from powercontext.server.app import _access_audit_context, _atomic_execution_context
-
-        access = access_control_for_mode(self.app.state.access_control, mode=self.app.state.access_mode)
-        page_error = None
-        try:
-            scope = validate_scope_id(ctx["scope"])
-            resource = ResourceRef.scope(scope)
-            audit = _access_audit_context(f"dashboard_{ctx['page']}")
-            self.context = _atomic_execution_context(self.request, audit.operation)
-            self.runtime = runtime
-            checks = [(AccessAction.SCOPE_READ, resource)]
-            if ctx["page"] == "notes" and ctx["requested_note"]:
-                checks.append((
-                    AccessAction.ARTIFACT_READ,
-                    ResourceRef.artifact(scope, family="atomic-memory", artifact_id=ctx["requested_note"]),
-                ))
-            async with asyncio.timeout(20), runtime._operation():
-                if ctx["page"] in {"home", "usage"}:
-                    await runtime._statistics(scope).flush_model_usage()
-                with runtime._scope_cache.lease(scope):
-                    for attempt in range(2):
-                        async with (
-                            access.defer_decision_audit() if access is not None else nullcontext(),
-                            runtime.primary_database.transaction(consistent_snapshot=True) as connection,
-                        ):
-                            try:
-                                if access is not None:
-                                    decisions = await access.for_read(connection).check_batch(
-                                        current_principal(), checks, context=audit
-                                    )
-                                    ctx["record_only"] = not decisions[0].allowed
-                                    _require_allowed(decisions[-1] if ctx["record_only"] else decisions[0])
-                            except AccessDeniedError:
-                                if (
-                                    attempt
-                                    or access is None
-                                    or not access.can_bootstrap_static_scope(
-                                        current_principal(), AccessAction.SCOPE_READ, resource
-                                    )
-                                ):
-                                    raise
-                            else:
-                                self.connection = connection
-                                try:
-                                    yield
-                                except Exception as error:
-                                    page_error = error
-                                    if ctx["scope_descriptor"] is None and not ctx["record_only"]:
-                                        await reading.scope_header(connection, ctx)
-                                    raise
-                                finally:
-                                    self.connection = None
-                                return
-                        if access is not None:
-                            await access.bootstrap_static_scope(current_principal(), scope, context=audit)
-        except Exception as error:
-            if error is not page_error:
-                # A failed transaction or audit must not expose its page projections.
-                from powercontext.server.dashboard.routes import initial_context
-
-                empty = initial_context(self.request, ctx["page"])
-                ctx.clear()
-                ctx.update(empty)
-            raise ReadError.from_exception(error) from error
-
     async def atomic_memory_list(self, scope, *, state, limit, cursor):
-        if self.connection is None:
-            return await self.read(
-                "/v1/atomic-memory/list", {"scope_id": scope, "states": [state], "limit": limit, "cursor": cursor}
-            )
-        try:
-            self._note_rows, rows, cursor = await reading.note_rows(
-                self.connection, self.runtime, self.request, self.ctx, self.context
-            )
-        except Exception as error:
-            self._previews = ReadError.from_exception(error)
-            if self.ctx["page"] == "home":
-                await reading.scope_header(self.connection, self.ctx)
-            raise self._previews from error
-        self._previews = self._note_rows
-        return {
-            "items": [reading.preview(self.runtime._records()._artifacts, row) for row in rows],
-            "next_cursor": cursor,
-        }
+        return await self.read(
+            "/v1/atomic-memory/list", {"scope_id": scope, "states": [state], "limit": limit, "cursor": cursor}
+        )
 
     async def read(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
@@ -184,19 +88,6 @@ class DashboardAPI:
     async def atomic_memory_get(self, scope: str, artifact: str, revision: int) -> dict[str, Any]:
         """Read an exact content revision and label its independent current state."""
 
-        if self.connection is not None:
-            row = next(
-                (row for row in self._note_rows if row["artifact_id"] == artifact and row["revision"] == revision), None
-            )
-            if row is None:
-                raise ReadError(404, "not_found")
-            repository = self.runtime._records()._artifacts
-            value = (await repository.decode_many(self.connection, scope, (row,)))[0]
-            return {
-                **reading.preview(repository, row),
-                "sources": [source.model_dump(mode="json") for source in value.lineage.sources],
-                "artifacts": [ref.model_dump(mode="json") for ref in value.lineage.artifacts],
-            }
         value, state = await asyncio.gather(
             self.artifact_revision(scope, "atomic-memory", artifact, revision),
             self.read(f"/v1/scopes/{segment(scope)}/artifacts/atomic-memory/{segment(artifact)}/state"),
@@ -231,32 +122,24 @@ class DashboardAPI:
             "artifacts": value["artifact_refs"],
         }
 
-    async def _authorize_scope(self, scope: str, operation: str) -> None:
+    async def authorize_scope(self, scope: str, operation: str) -> None:
         from powercontext.server.app import _authorize_checks
 
         access = access_control_for_mode(self.app.state.access_control, mode=self.app.state.access_mode)
         if access is not None:
-            await _authorize_checks(
-                self.request,
-                access,
-                ((AccessAction.SCOPE_READ, ResourceRef.scope(scope)),),
-                operation=operation,
-            )
+            try:
+                await _authorize_checks(
+                    self.request,
+                    access,
+                    ((AccessAction.SCOPE_READ, ResourceRef.scope(scope)),),
+                    operation=operation,
+                )
+            except Exception as error:
+                raise ReadError.from_exception(error) from error
 
     async def records(
         self, scope: str, family: str, *, cursor: str | None = None, limit: int = 12, query: str | None = None
     ) -> dict[str, Any]:
-        if self.connection is not None:
-            if isinstance(self._previews, ReadError):
-                raise self._previews
-            return {
-                "items": [
-                    reading.preview(self.runtime._records()._artifacts, row)
-                    for row in self._previews
-                    if row["family"] == family
-                ],
-                "next_cursor": None,
-            }
         if family == "skill":
             maximum = 1 if limit == 1 else 200
             result = await self.read("/v1/skill/library", {"scope_id": scope, "limit": maximum, "query": query})
@@ -277,7 +160,7 @@ class DashboardAPI:
             return {"items": items, "next_cursor": page["next_cursor"]}
         try:
             async with asyncio.timeout(20):
-                await self._authorize_scope(scope, "list_artifacts")
+                await self.authorize_scope(scope, "list_artifacts")
                 page = await self.builtin.records.for_scope(scope).query_artifacts(family, limit=limit, cursor=cursor)
             return {
                 "items": [
@@ -296,7 +179,7 @@ class DashboardAPI:
             # On failure, individual reads retain independent grants and per-key errors.
             with suppress(Exception):
                 async with asyncio.timeout(20):
-                    await self._authorize_scope(scope, "get_prompt_configuration")
+                    await self.authorize_scope(scope, "get_prompt_configuration")
                     values = await self.builtin.prompts.for_scope(scope).read_configurations(keys)
                 return [
                     {
@@ -315,8 +198,6 @@ class DashboardAPI:
 
     async def usage(self, scope: str, period: str) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
-            if self.connection is not None:
-                return await reading.usage(self.connection, self.runtime, self.ctx)
             result = await self.read(
                 "/v1/stats", {"selection": {"mode": "exact", "scope_ids": [scope]}, "period": period}
             )
@@ -392,18 +273,6 @@ def _builtin_runtime(request):
     if runtime is None or runtime is not getattr(request.app.state, "dashboard_runtime", None):
         return None
     access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
-    if access is not None:
-        if type(access.provider) not in {BuiltinAuthorizationProvider, CasbinAuthorizationProvider}:
-            return None
-        provider = cast(BuiltinAuthorizationProvider | CasbinAuthorizationProvider, access.provider)
-        if type(provider._repository) is not RelationalAccessRepository:
-            return None
-        policy_engine = provider._repository._database.engine
-        engine = runtime.primary_database.engine
-        if policy_engine.url != engine.url or (
-            engine.dialect.name == "sqlite"
-            and engine.url.database in {None, "", ":memory:"}
-            and policy_engine is not engine
-        ):
-            return None
+    if access is not None and not access.supports_read_snapshot(runtime.primary_database.engine):
+        return None
     return runtime

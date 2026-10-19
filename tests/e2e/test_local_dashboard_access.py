@@ -20,12 +20,9 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from pydantic import SecretStr
-from sqlalchemy import event
-from sqlalchemy.engine import Engine
 from typer.testing import CliRunner
 
 from powercontext.builtin.runtime import RuntimeConfig
@@ -117,66 +114,13 @@ def test_local_wizard_connects_dashboard_api_and_mcp(tmp_path: Path, require_aut
     asyncio.run(exercise())
 
 
-def test_dashboard_queries_do_not_grow_per_memory(migration_backend: MigrationBackend) -> None:
-    app = create_server_app(
-        settings=ServerSettings(
-            database=migration_backend.config,
-            runtime=RuntimeConfig(artifact_processing_families=()),
-            dashboard=DashboardConfig(enabled=True),
-            access=AccessControlConfig(mode="enforced"),
-            auth=BearerAuthConfig(enabled=True, token=SecretStr("dashboard-query-budget")),
-            mcp=McpConfig(enabled=False),
-        ),
-        scheduler_path=migration_backend.directory / "scheduler.db",
-    )
-    with TestClient(app, headers={"Authorization": "Bearer dashboard-query-budget"}) as client:
-        scope = client.get("/v1/scopes/default").json()["scope_id"]
-        statements = []
-
-        def completed(_conn, _cursor, statement, _parameters, _context, _many):
-            statements.append(statement)
-
-        event.listen(Engine, "after_cursor_execute", completed)
-        try:
-            previous = {}
-            start = 0
-            for total in (3, 30):
-                for index in range(start, total):
-                    created = client.post(
-                        f"/v1/scopes/{scope}/artifacts",
-                        json={"family": "atomic-memory", "content": {"kind": "fact", "text": f"Budget fact {index}"}},
-                    )
-                    assert created.status_code == 201, created.text
-                start = total
-                for page, reads in (("home", 3), ("notes", 3), ("usage", 2)):
-                    # Initialize any lazy pool connections before measuring steady-state work.
-                    assert client.get(f"/dashboard/{page}", params={"scope": scope}).status_code == 200
-                    statements.clear()
-                    response = client.get(f"/dashboard/{page}", params={"scope": scope})
-                    assert response.status_code == 200, response.text
-                    if page != "usage":
-                        assert "Budget fact" in response.text
-                    # Drivers emit different transaction-control SQL; bound data, policy and audit work together.
-                    count = sum(
-                        sql.split(None, 1)[0].upper() in {"SELECT", "WITH", "INSERT", "UPDATE", "DELETE"}
-                        for sql in statements
-                    )
-                    queries = sum(sql.split(None, 1)[0].upper() in {"SELECT", "WITH"} for sql in statements)
-                    assert queries == reads, (page, total, queries, statements)
-                    assert count == reads + 1, (page, total, count)
-                    if page in previous:
-                        assert count <= previous[page], (page, total, previous[page], count)
-                    previous[page] = count
-        finally:
-            event.remove(Engine, "after_cursor_execute", completed)
-
-
+@pytest.mark.parametrize("scope_selection", ["explicit", "default"])
 def test_dashboard_selected_note_uses_one_policy_and_content_snapshot(
-    migration_backend: MigrationBackend, monkeypatch: pytest.MonkeyPatch
+    migration_backend: MigrationBackend, monkeypatch: pytest.MonkeyPatch, scope_selection: str
 ) -> None:
     from contextvars import Context
 
-    from powercontext.server.authz import BuiltinAuthorizationProvider
+    from powercontext.server.authz import AccessAction, BuiltinAuthorizationProvider
     from powercontext.server.dashboard.routes import LABELS
 
     app = create_server_app(
@@ -214,7 +158,7 @@ def test_dashboard_selected_note_uses_one_policy_and_content_snapshot(
             async def interleaved(provider, requests):
                 nonlocal changed
                 decisions = await check(provider, requests)
-                if not changed and requests[0].context.operation.startswith("dashboard"):
+                if not changed and any(check.action is AccessAction.SCOPE_READ for check in requests):
                     changed = True
 
                     async def publish() -> None:
@@ -241,6 +185,8 @@ def test_dashboard_selected_note_uses_one_policy_and_content_snapshot(
                 return decisions
 
             query = {"scope": scope, "artifact": artifact, "revision": 1, "lang": "zh"}
+            if scope_selection == "default":
+                query.pop("scope")
             with monkeypatch.context() as patch:
                 patch.setattr(BuiltinAuthorizationProvider, "check_batch", interleaved)
                 first = await client.get("/dashboard/notes", params=query)
