@@ -3,7 +3,6 @@
   "collapsible": true,
   "defaultOpen": false,
   "pages": [
-    "continuous-integration",
     "releasing",
     "core-protocol",
     "memory-layer",
