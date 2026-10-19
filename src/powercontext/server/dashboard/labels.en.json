@@ -249,7 +249,6 @@
   "profile_historical": "Historical profile",
   "profile_history_empty": "No historical revisions",
   "revision_history": "Revision history",
-  "revision_unchanged": "No changes.",
   "revision_current": "Current",
   "revision_rollback_badge": "Rollback",
   "revision_unknown_time": "Time unknown",

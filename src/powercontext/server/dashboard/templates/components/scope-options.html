@@ -38,21 +38,19 @@ limitations under the License.
   {% endif %}
 </select>
 <span id="scope-switch-hint" class="visually-hidden">{{ t.scope_switch_hint }}</span>
-<span data-scope-error class="small text-secondary" role="status" hidden>{{ t.scope_list_unavailable }}</span>
 {% set scope_input %}<input type="text" aria-label="{{ t.scope_label }}">{% endset %}
 <script>
   me().run(component => {
     const controller = new AbortController();
-    const failure = me('[data-scope-error]', component);
     const picker = new TomSelect(me('select', component), {
       plugins: ['dropdown_input', 'virtual_scroll'],
       valueField: 'scope_id',
       labelField: 'display_title',
       searchField: ['title', 'display_title'],
-      preload: 'focus',
+      preload: true,
       loadThrottle: 300,
       firstUrl(query) {
-        return '/dashboard/scope-options?' + new URLSearchParams({query});
+        return '/dashboard/scope-options?' + new URLSearchParams({query, current: {{ scope|tojson }} || ''});
       },
       load(query, callback) {
         const url = this.getUrl(query);
@@ -60,22 +58,34 @@ limitations under the License.
         fetch(url, {credentials: 'same-origin', signal: controller.signal})
           .then(response => { if (!response.ok) throw new Error('scope discovery failed'); return response.json(); })
           .then(result => {
-            failure.hidden = true;
+            const failure = component.closest('form').querySelector('[data-scope-error]');
+            if (failure) failure.hidden = true;
             const next = result.next_cursor
-              ? '/dashboard/scope-options?' + new URLSearchParams({query, cursor: result.next_cursor})
+              ? '/dashboard/scope-options?' + new URLSearchParams({query, cursor: result.next_cursor, current: {{ scope|tojson }} || ''})
               : false;
             this.setNextUrl(query, next);
+            if (result.parent) {
+              this.addOption({...result.parent, $optgroup: 'parent'});
+            }
+            if (result.current) this.updateOption(result.current.scope_id, result.current);
+            const related = result.parent || result.items.some(item => item.parent_scope_id === {{ scope|tojson }});
             for (const item of result.items) {
-              item.$optgroup = item.parent_scope_id === {{ scope|tojson }} ? 'children' : 'others';
+              if (item.scope_id === {{ scope|tojson }}) continue;
+              item.$optgroup = result.parent && item.scope_id === result.parent.scope_id ? 'parent'
+                : !related ? undefined : item.parent_scope_id === {{ scope|tojson }} ? 'children' : 'others';
             }
             callback(result.items);
           })
           .catch(() => {
-            if (!controller.signal.aborted) failure.hidden = false;
+            if (!controller.signal.aborted) {
+              const failure = component.closest('form').querySelector('[data-scope-error]');
+              if (failure) failure.hidden = false;
+            }
             callback();
           });
       },
       optgroups: [
+        {value: 'parent', label: {{ t.parent_scope|tojson }}},
         {value: 'children', label: {{ t.child_scope|tojson }}},
         {value: 'others', label: {{ t.other_scopes|tojson }}},
       ],
@@ -85,6 +95,8 @@ limitations under the License.
       maxOptions: null,
       lockOptgroupOrder: true,
       render: {
+        loading_more: () => null,
+        no_more_results: () => null,
         no_results: (data, escape) => `<div class="no-results">${escape(component.dataset.noResults)}</div>`,
       },
     });

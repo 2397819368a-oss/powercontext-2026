@@ -74,7 +74,7 @@ def test_default_selection_requires_observer_even_with_scope_access(dashboard: T
     scope = _select_default(dashboard, "Observed default scope")
     assert dashboard.get("/dashboard/home").status_code == 200
     _revoke_observer(dashboard)
-    for page in ("home", "notes", "usage"):
+    for page in ("home", "notes", "usage", "handoff", "methods", "topics", "prompts", "profile", "review"):
         denied = dashboard.get(f"/dashboard/{page}")
         assert denied.status_code == 403, denied.text
         assert scope["title"] not in denied.text
@@ -132,7 +132,7 @@ def test_default_exact_share_is_independent_of_observer_and_scope_grants(
         assert "Private neighboring note." not in shared.text
         assert scope["title"] not in shared.text
         assert scope["summary"] not in shared.text
-        for page in ("home", "notes", "usage"):
+        for page in ("home", "notes", "usage", "handoff", "methods", "topics", "prompts", "profile", "review"):
             assert dashboard.get(f"/dashboard/{page}").status_code == 403
     _revoke(dashboard, exact_grant)
     with monkeypatch.context() as patch:
@@ -161,7 +161,7 @@ def test_dangling_default_binding_is_reported_without_repair(dashboard: TestClie
     # Simulate persisted corruption while keeping the original binding and grants.
     with sqlite3.connect(runtime.primary_database.engine.url.database) as connection:
         connection.execute("DELETE FROM pc_scopes WHERE scope_id = ?", (scope["scope_id"],))
-    for page in ("home", "notes", "usage"):
+    for page in ("home", "notes", "usage", "handoff", "methods", "topics", "prompts", "profile", "review"):
         response = dashboard.get(f"/dashboard/{page}")
         assert response.status_code == 409, response.text
         assert scope["title"] not in response.text
@@ -182,7 +182,7 @@ def test_absent_default_binding_still_requires_observer(dashboard: TestClient) -
     dashboard.portal.call(remove_binding)
     assert dashboard.get("/dashboard/home").status_code == 200
     _revoke_observer(dashboard)
-    for page in ("home", "notes", "usage"):
+    for page in ("home", "notes", "usage", "handoff", "methods", "topics", "prompts", "profile", "review"):
         response = dashboard.get(f"/dashboard/{page}")
         assert response.status_code == 403, response.text
 
@@ -197,8 +197,16 @@ def test_scope_audit_failure_does_not_expose_default_metadata(dashboard: TestCli
             raise RuntimeError
         return await append(event)
 
+    append_many = audit.append_audits
+
+    async def fail_scope_decisions(events):
+        if any(event.action is AccessAction.SCOPE_READ for event in events):
+            raise RuntimeError
+        return await append_many(events)
+
     with monkeypatch.context() as patch:
         patch.setattr(audit, "append_audit", fail_scope_decision)
+        patch.setattr(audit, "append_audits", fail_scope_decisions)
         response = dashboard.get("/dashboard/methods")
     assert response.status_code == 503, response.text
     assert scope["title"] not in response.text

@@ -4179,33 +4179,38 @@ async def import_external_skill(
 async def _candidate_response(
     request: Request, scope_id: str, candidate: RuntimeCandidate[Any] | RuntimeTagCandidate
 ) -> Candidate:
-    response = mapping.candidate_response(candidate)
-    if candidate.candidate_kind == "tag":
-        return response
+    return (await _candidate_responses(request, scope_id, (candidate,)))[0]
+
+
+async def _candidate_responses(request, scope_id, candidates):
+    responses = [mapping.candidate_response(candidate) for candidate in candidates]
     access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
-    if access is None:
-        return response
+    artifact_candidates = [candidate for candidate in candidates if candidate.candidate_kind == "artifact"]
+    if access is None or not artifact_candidates:
+        return responses
+    principal = _require_principal()
     decision = await access.check(
-        _require_principal(),
+        principal,
         AccessAction.SCOPE_REVIEW,
         ResourceRef.scope(scope_id),
         context=_access_audit_context("candidate_permissions"),
     )
-    pending = candidate.status.value == "pending"
-    attestation = (
-        await access.candidate_owner(scope_id, candidate.candidate_id)
+    owners = (
+        await access.candidate_owners(scope_id, tuple(candidate.candidate_id for candidate in artifact_candidates))
         if decision.allowed and access.provider_capabilities.relationship_management
-        else None
+        else {}
     )
-    response.permissions = CandidatePermissions(
-        can_revise=pending
-        and decision.allowed
-        and attestation is not None
-        and attestation.proposed_owner == _require_principal(),
-        can_approve=pending and decision.allowed and attestation is not None,
-        can_reject=pending and decision.allowed,
-    )
-    return response
+    for candidate, response in zip(candidates, responses, strict=True):
+        if candidate.candidate_kind == "tag":
+            continue
+        pending = candidate.status.value == "pending"
+        owner = owners.get(candidate.candidate_id)
+        response.permissions = CandidatePermissions(
+            can_revise=pending and decision.allowed and owner is not None and owner.proposed_owner == principal,
+            can_approve=pending and decision.allowed and owner is not None,
+            can_reject=pending and decision.allowed,
+        )
+    return responses
 
 
 async def _require_catalog_target_write(request: Request, scope_id: str, candidate: Any) -> None:
@@ -4229,9 +4234,7 @@ async def list_candidates(
 ) -> CandidatePage:
     result = await application.review.for_scope(request.scope_id).list(mapping.list_candidates_request(request))
     response = CandidatePage(candidates=[], next_cursor=result.next_cursor)
-    response.candidates = [
-        await _candidate_response(http_request, request.scope_id, value) for value in result.candidates
-    ]
+    response.candidates = await _candidate_responses(http_request, request.scope_id, result.candidates)
     return response
 
 

@@ -415,11 +415,10 @@ def test_atomic_memory_history_link_opens_that_exact_revision(dashboard: TestCli
     current = dashboard.get("/dashboard/notes", params={"scope": scope, "lang": "en"})
     assert current.status_code == 200, current.text
     assert "Revised note." in _reading(current.text)
-    history = dashboard.get(next(href for href in _hrefs(current.text) if "history=1" in href))
-    assert history.status_code == 200, history.text
+    assert "Revision history" in current.text
     older = next(
         href
-        for href in _hrefs(history.text)
+        for href in _hrefs(current.text)
         if f"artifact={artifact_id}" in href and "revision=1" in href.split("#")[0]
     )
     page = dashboard.get(older)
@@ -555,8 +554,7 @@ def test_dashboard_restores_a_legacy_instruction_only_skill_revision(dashboard: 
     assert "- Run the approved compatibility tests." in unescape(changed.text)
     assert "+ Run a later set of tests." in unescape(changed.text)
     assert 'action="/dashboard/rollback"' in changed.text
-    assert "No changes." in changed.text
-    assert "The content matches the current revision" not in changed.text
+    assert "The content matches the current revision, so rollback is unavailable." in changed.text
     restored = _rollback(dashboard, scope, "skill", skill_id, 2)
     assert restored.status_code == 200, restored.text
     head = dashboard.get(f"/v1/scopes/{scope}/artifacts/skill/{skill_id}").json()

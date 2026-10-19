@@ -138,7 +138,11 @@ from powercontext.builtin.code.service import CodeService
 from powercontext.builtin.context import BuiltinArtifacts, BuiltinSources
 from powercontext.builtin.dream.application import DreamApplication
 from powercontext.builtin.dream.service import CandidateAttester, DreamAuthorizer, DreamService
-from powercontext.builtin.evidence.resolver import AuthorizationContext, ScopedEvidenceAuthorizer
+from powercontext.builtin.evidence.resolver import (
+    AuthorizationContext,
+    ScopedEvidenceAuthorizer,
+    ScopedEvidenceBatchAuthorizer,
+)
 from powercontext.builtin.inference import (
     EmbeddingModel,
 )
@@ -3008,33 +3012,82 @@ class ScopedReviewApplication:
         self._runtime = runtime
         self.scope_id = validate_scope_id(scope_id)
 
-    async def list(self, request: ListCandidatesRequest, /) -> ReviewedCandidatePage:
-        async with self._runtime._scoped_operation(self.scope_id):
-            identities = await self._runtime._review(self.scope_id).candidate_identities(
-                status=request.status,
-                family=request.family,
-                candidate_kind=request.candidate_kind,
-                cursor=request.cursor,
-                limit=request.limit,
+    async def _candidate_page(self, request, *, metadata_only, connection):
+        async with (
+            self._runtime._scoped_operation(self.scope_id),
+            self._runtime._review_authorization_context(),
+            self._runtime._review(self.scope_id)._connection()
+            if connection is None
+            else nullcontext(connection) as connection,
+        ):
+            candidates, cursor = await self._runtime._review(self.scope_id).candidate_page(
+                request,
+                metadata_only=metadata_only,
+                connection=connection,
             )
-            return ReviewedCandidatePage(
-                candidates=tuple([
-                    await self.get(GetCandidateRequest(candidate_id=identity))
-                    for identity in identities[: request.limit]
-                ]),
-                next_cursor=identities[request.limit - 1] if len(identities) > request.limit else None,
-            )
+            tags = tuple(candidate for candidate in candidates if candidate.candidate_kind == "tag")
+            if tags:
+                await self._runtime._catalog_review(self.scope_id).authorize_candidates(tags, connection)
+            return candidates, cursor
 
-    async def get(self, request: GetCandidateRequest, /) -> ReviewedCandidate:
+    async def list(self, request: ListCandidatesRequest, /, *, connection=None) -> ReviewedCandidatePage:
+        candidates, cursor = await self._candidate_page(request, metadata_only=False, connection=connection)
+        return ReviewedCandidatePage(candidates=candidates, next_cursor=cursor)
+
+    async def catalog(self, request: ListCandidatesRequest, /, *, connection=None):
+        from powercontext.builtin.review.models import CandidateCatalogItem, CandidateCatalogPage
+
+        candidates, cursor = await self._candidate_page(request, metadata_only=True, connection=connection)
+        return CandidateCatalogPage(
+            candidates=tuple(
+                CandidateCatalogItem(
+                    candidate_id=value.candidate_id,
+                    candidate_kind=value.candidate_kind,
+                    family=value.proposal.target.family if value.candidate_kind == "tag" else value.family,
+                    version=value.version,
+                    status=value.status,
+                    reason=value.reason,
+                )
+                for value in candidates
+            ),
+            next_cursor=cursor,
+        )
+
+    async def get(self, request: GetCandidateRequest, /, *, connection=None) -> ReviewedCandidate:
         from powercontext.builtin.review.errors import CandidateNotFoundError
 
         async with self._runtime._scoped_operation(self.scope_id):
             try:
-                return await self._runtime._review(self.scope_id).get_candidate(request.candidate_id)
+                return await self._runtime._review(self.scope_id).get_candidate(
+                    request.candidate_id, connection=connection
+                )
             except CandidateNotFoundError:
                 if self._runtime.catalog_changes is None:
                     raise
-                return await self._runtime._catalog_review(self.scope_id).get(request.candidate_id)
+                return await self._runtime._catalog_review(self.scope_id).get(
+                    request.candidate_id, connection=connection
+                )
+
+    async def read_view(self, request: GetCandidateRequest, /, *, include_history=False, connection=None):
+        """Read a current proposal and optional immutable version metadata."""
+        async with self._runtime._scoped_operation(self.scope_id):
+            candidate = await self.get(request, connection=connection)
+            versions = None
+            if include_history:
+                if candidate.candidate_kind == "tag":
+                    history = await self._runtime._catalog_review(self.scope_id).history(
+                        request.candidate_id, connection=connection
+                    )
+                    versions = tuple(
+                        value.model_dump(mode="json", include={"version", "status", "reason", "decision_reason"})
+                        for value in history
+                    )
+                else:
+                    versions = await self._runtime._review(self.scope_id).history_summary(
+                        request.candidate_id,
+                        connection=connection,
+                    )
+            return candidate, versions
 
     async def history(self, request: GetCandidateRequest, /):
         async with self._runtime._scoped_operation(self.scope_id):
@@ -3649,6 +3702,7 @@ class BuiltinRuntime:
         self._review_action_authorizer: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None
         self._catalog_action_authorizer: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None
         self._review_evidence_authorizer: ScopedEvidenceAuthorizer | None = None
+        self._review_evidence_batch_authorizer: ScopedEvidenceBatchAuthorizer | None = None
         self._review_authorization_context: AuthorizationContext = nullcontext
         self._generation_slots = asyncio.Semaphore(generation_concurrency)
         self._generation_owners: set[asyncio.Task[Any]] = set()
@@ -3925,12 +3979,14 @@ class BuiltinRuntime:
         authorize_candidate: CandidateAttester | None = None,
         catalog_action: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None,
         review_action: Callable[[str, str, Candidate[Any]], Awaitable[None]] | None = None,
+        review_many: ScopedEvidenceBatchAuthorizer | None = None,
     ) -> None:
         """Bind a trusted Server adapter's current authorization policy."""
 
         self._review_action_authorizer = review_action
         self._catalog_action_authorizer = catalog_action
         self._review_evidence_authorizer = review
+        self._review_evidence_batch_authorizer = review_many
         self._review_authorization_context = context
         if self._dream_service is not None:
             self._dream_service.authorize = dream
@@ -4138,7 +4194,12 @@ class BuiltinRuntime:
         service.authorize_action = self._catalog_action_authorizer
         authorizer = self._review_evidence_authorizer
         if authorizer is not None:
-            service.configure_authorization(lambda ref: authorizer(scope, ref), self._review_authorization_context)
+            batch = self._review_evidence_batch_authorizer
+            service.configure_authorization(
+                lambda ref: authorizer(scope, ref),
+                self._review_authorization_context,
+                authorize_many=None if batch is None else lambda refs, connection: batch(scope, refs, connection),
+            )
         return service
 
     def _records(self) -> RecordService:

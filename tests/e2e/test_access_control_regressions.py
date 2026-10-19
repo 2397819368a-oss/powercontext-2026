@@ -999,6 +999,14 @@ def test_candidate_permissions_preserve_proposer_restriction(tmp_path):
                 assert response.json()["permissions"] == dict(
                     zip(("can_revise", "can_approve", "can_reject"), expected, strict=True)
                 )
+                listing = await client.post(
+                    "/v1/candidates/list",
+                    headers={"Authorization": f"Bearer {principal}"},
+                    json={"scope_id": scope_id, "status": "pending"},
+                )
+                assert listing.status_code == 200, listing.text
+                listed = next(item for item in listing.json()["candidates"] if item["candidate_id"] == candidate_id)
+                assert listed["permissions"] == response.json()["permissions"]
             revision = payload | {"candidate_id": candidate_id, "expected_version": created.json()["version"]}
             denied = await client.post("/v1/candidates/revise", headers={"Authorization": "Bearer bob"}, json=revision)
             assert denied.status_code == 403, denied.text

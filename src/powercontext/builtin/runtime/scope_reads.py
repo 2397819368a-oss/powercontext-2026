@@ -67,6 +67,7 @@ class ScopeReadSnapshot:
         selected=None,
         families: tuple[str, ...] = (),
         browse: bool = True,
+        include_scope: bool | None = None,
         context=None,
     ):
         statement = None
@@ -81,7 +82,7 @@ class ScopeReadSnapshot:
             browse=statement,
             families=families,
             selected=selected,
-            include_scope=browse,
+            include_scope=browse if include_scope is None else include_scope,
         )
         notes = sorted((row for row in rows if row["read_kind"] == "notes"), key=lambda row: row["artifact_id"])
         cursor = (

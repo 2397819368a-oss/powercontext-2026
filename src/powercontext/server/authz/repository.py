@@ -517,6 +517,22 @@ class RelationalAccessRepository:
             )
         return None if row is None else _decode_candidate_owner(row)
 
+    async def get_candidate_owners(self, scope_id, candidate_ids):
+        if not candidate_ids:
+            return {}
+        async with self._database.connection(self._bound_connection) as connection:
+            rows = (
+                await connection.execute(
+                    select(ACCESS_OWNERS_TABLE).where(
+                        ACCESS_OWNERS_TABLE.c.owner_kind == "candidate",
+                        ACCESS_OWNERS_TABLE.c.object_key_hash.in_(
+                            tuple(_candidate_owner_key(scope_id, identity) for identity in candidate_ids)
+                        ),
+                    )
+                )
+            ).mappings()
+            return {str(row["candidate_id"]): _decode_candidate_owner(row) for row in rows}
+
     async def delete_legacy_topic_memory_owners(self) -> int:
         """Drop Artifact owner rows retained for the Scope-owned Topic Memory family.
 

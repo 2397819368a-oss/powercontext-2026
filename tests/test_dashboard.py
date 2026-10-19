@@ -343,6 +343,28 @@ def collect_pages(client: TestClient, first: str, route: str, identity: str) -> 
         current = next_page.text
 
 
+def test_topic_pagination_keeps_every_record_readable(dashboard: TestClient) -> None:
+    scope = create_scope(dashboard, "Long topic directory")["scope_id"]
+    expected = set()
+    for index in range(51):
+        response = dashboard.post(
+            f"/v1/scopes/{scope}/artifacts",
+            json={
+                "family": "topic-memory",
+                "content": {
+                    "title": f"Topic {index}",
+                    "summary": "Saved topic summary.",
+                    "detail": f"Saved topic detail {index}.",
+                },
+            },
+        )
+        assert response.status_code == 201
+        expected.add(response.json()["artifact_id"])
+    first = dashboard.get("/dashboard/topics", params={"scope": scope})
+    assert first.status_code == 200
+    assert collect_pages(dashboard, first.text, "/dashboard/topics", "topic_artifact") == expected
+
+
 def test_memory_pagination_and_deep_link_select_the_corresponding_text(dashboard: TestClient) -> None:
     scope = create_scope(dashboard, "Long memory")["scope_id"]
     for index in range(75):

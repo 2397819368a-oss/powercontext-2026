@@ -143,6 +143,74 @@ class DashboardAPI:
         except Exception as error:
             raise ReadError.from_exception(error) from error
 
+    async def candidates(self, payload):
+        if self.builtin is None:
+            return await self.read("/v1/candidates/list", payload)
+        from powercontext.builtin.runtime.models import ListCandidatesRequest
+        from powercontext.server.app import _access_audit_context
+
+        scope = payload["scope_id"]
+        access = access_control_for_mode(self.app.state.access_control, mode=self.app.state.access_mode)
+        try:
+            async with (
+                access.defer_decision_audit() if access is not None else nullcontext(),
+                self.builtin.read_snapshot(scope) as reader,
+            ):
+                bound = None if access is None else access.for_read(reader.connection)
+                if bound is not None:
+                    await bound.require(
+                        current_principal(),
+                        AccessAction.SCOPE_READ,
+                        ResourceRef.scope(scope),
+                        context=_access_audit_context("dashboard_review"),
+                    )
+                page = await self.builtin.review.for_scope(scope).catalog(
+                    ListCandidatesRequest.model_validate(payload),
+                    connection=reader.connection,
+                )
+                result = page.model_dump(mode="json")
+        except Exception as error:
+            raise ReadError.from_exception(error) from error
+        else:
+            return result
+
+    async def review_inspection(self, scope, candidate_id, *, history=False):
+        """Authorize an opened Review disclosure without loading inbox permissions."""
+        if self.builtin is None:
+            await self.authorize_scope(scope, "dashboard_review_inspection")
+            candidate = await self.read("/v1/candidates/get", {"scope_id": scope, "candidate_id": candidate_id})
+            versions = None
+            if history:
+                versions = (
+                    await self.read("/v1/candidates/history", {"scope_id": scope, "candidate_id": candidate_id})
+                )["versions"]
+            return candidate, versions
+        from powercontext.builtin.runtime.models import GetCandidateRequest
+        from powercontext.server.app import _access_audit_context
+
+        access = access_control_for_mode(self.app.state.access_control, mode=self.app.state.access_mode)
+        try:
+            async with (
+                access.defer_decision_audit() if access is not None else nullcontext(),
+                self.builtin.read_snapshot(scope) as reader,
+            ):
+                if access is not None:
+                    await access.for_read(reader.connection).require_all(
+                        current_principal(),
+                        ((AccessAction.SCOPE_READ, ResourceRef.scope(scope)),),
+                        context=_access_audit_context("dashboard_review_inspection"),
+                    )
+                candidate, versions = await self.builtin.review.for_scope(scope).read_view(
+                    GetCandidateRequest(candidate_id=candidate_id),
+                    include_history=history,
+                    connection=reader.connection,
+                )
+                result = mapping.candidate_response(candidate).model_dump(mode="json"), versions
+        except Exception as error:
+            raise ReadError.from_exception(error) from error
+        else:
+            return result
+
     async def atomic_memory_get(self, scope: str, artifact: str, revision: int) -> dict[str, Any]:
         """Read an exact content revision and label its independent current state."""
 

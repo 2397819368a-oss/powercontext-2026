@@ -14,12 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 {% if history %}
-{% if not history.loaded %}
-<section class="mt-4">
-  {% if history.error is defined %}{{ read_error(history.error, t.revision_history) }}{% endif %}
-  <a class="btn" href="{{ history.open_url }}">{{ t.revision_history }}</a>
-</section>
-{% else %}
 <section class="card mt-4">
   <div class="card-header"><h2 class="card-title mb-0">{{ t.revision_history }}</h2></div>
   <div class="list-group list-group-flush">
@@ -39,15 +33,15 @@ limitations under the License.
           </div>
           <div class="btn-list">
             {% if history.family == "profile" %}
-              <a class="btn btn-sm" href="{{ link('profile', revision=item.revision, history='1') }}">{{ t.revision }} {{ item.revision }}</a>
+              <a class="btn btn-sm" href="{{ link('profile', revision=item.revision) }}">{{ t.revision }} {{ item.revision }}</a>
             {% elif history.family == "topic-memory" %}
-              <a class="btn btn-sm" href="{{ link('topics', topic_artifact=history.artifact_id, topic_revision=item.revision, history='1') }}">{{ t.revision }} {{ item.revision }}</a>
+              <a class="btn btn-sm" href="{{ link('topics', topic_artifact=history.artifact_id, topic_revision=item.revision) }}">{{ t.revision }} {{ item.revision }}</a>
             {% elif history.family == "prompt" %}
-              <a class="btn btn-sm" href="{{ link('prompts', prompt_key=history.artifact_id, prompt_revision=item.revision, history='1') }}">{{ t.revision }} {{ item.revision }}</a>
+              <a class="btn btn-sm" href="{{ link('prompts', prompt_key=history.artifact_id, prompt_revision=item.revision) }}">{{ t.revision }} {{ item.revision }}</a>
             {% elif history.family == "atomic-memory" %}
-              <a class="btn btn-sm" href="{{ link('notes', artifact=history.artifact_id, revision=item.revision, compare=none, history='1', fragment='note-reading') }}">{{ t.revision }} {{ item.revision }}</a>
+              <a class="btn btn-sm" href="{{ link('notes', artifact=history.artifact_id, revision=item.revision, compare=none, fragment='note-reading') }}">{{ t.revision }} {{ item.revision }}</a>
             {% else %}
-              <a class="btn btn-sm" href="{{ link(none, artifact=history.artifact_id, revision=item.revision, history='1') }}">{{ t.revision }} {{ item.revision }}</a>
+              <a class="btn btn-sm" href="{{ link(none, artifact=history.artifact_id, revision=item.revision) }}">{{ t.revision }} {{ item.revision }}</a>
             {% endif %}
             {% if item.revision != history.selected %}
               <a class="btn btn-sm" href="{{ link(none, compare=item.revision) }}">{{ t.revision_compare }}</a>
@@ -60,7 +54,7 @@ limitations under the License.
     {% endfor %}
   </div>
   {% if history.next_url %}
-    <div class="card-footer"><a href="{{ history.next_url }}">{{ t.next_page }}</a></div>
+    <div class="card-footer"><a href="{{ history.next_url }}">{{ t.profile_history }}</a></div>
   {% endif %}
   {% if history.error == "revision_conflict" %}<div class="card-body text-danger">{{ t.revision_conflict }}</div>
   {% elif history.error == "forbidden" %}<div class="card-body text-danger">{{ t.revision_forbidden }}</div>
@@ -75,7 +69,7 @@ limitations under the License.
           <pre class="page-body-pre text-break">{% for line in row.diff %}{% if line.kind == "add" %}+ {% elif line.kind == "remove" %}- {% else %}  {% endif %}{{ line.text }}
 {% endfor %}</pre>
         {% else %}
-          <p class="text-secondary">{{ t.revision_unchanged }}</p>
+          <p class="text-secondary">{{ t.revision_same }}</p>
         {% endif %}
       {% endfor %}
     </div>
@@ -117,5 +111,4 @@ limitations under the License.
     <div class="card-body text-secondary">{{ t.revision_same }}</div>
   {% endif %}
 </section>
-{% endif %}
 {% endif %}

@@ -114,6 +114,22 @@ class CandidatePage(BaseModel, Generic[ProposalT]):
     next_cursor: str | None = None
 
 
+class CandidateCatalogItem(BaseModel):
+    """Inbox identity and version metadata, without a proposal or evidence body."""
+
+    candidate_id: str
+    candidate_kind: Literal["artifact", "tag"]
+    family: str
+    version: int
+    status: CandidateStatus
+    reason: str | None = None
+
+
+class CandidateCatalogPage(BaseModel):
+    candidates: tuple[CandidateCatalogItem, ...]
+    next_cursor: str | None = None
+
+
 class CandidateEvidenceView(BaseModel):
     """Current Candidate evidence expanded under the reader's current authority."""
 

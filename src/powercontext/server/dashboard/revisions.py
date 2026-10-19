@@ -176,23 +176,7 @@ async def load_history(
     """Load one artifact's revision list and optional comparison."""
 
     scope = ctx["scope"]
-    if family == "profile":
-        selection = {"revision": selected}
-    elif family == "prompt":
-        selection = {"prompt_key": artifact_id, "prompt_revision": selected}
-    elif family == "topic-memory":
-        selection = {"topic_artifact": artifact_id, "topic_revision": selected}
-    else:
-        selection = {"artifact": artifact_id, "revision": selected}
-    opened = {"loaded": False, "open_url": ctx["link"](history="1", **selection)}
     query = request.query_params
-    requested = (
-        query.get("history") == "1"
-        or query.get("view") == "history"
-        or any(key in query for key in ("compare", cursor_key, "rollback_error"))
-    )
-    if not requested:
-        return opened
     compare = _revision_param(query.get("compare"))
     try:
         if api.builtin is not None:
@@ -208,7 +192,20 @@ async def load_history(
         else:
             result = await _public_history(api, request, scope, family, artifact_id, selected, cursor_key, compare)
     except ReadError as error:
-        return {**opened, "error": error}
+        return {
+            "loaded": False,
+            "error": error,
+            "selected": selected,
+            "head": selected,
+            "family": family,
+            "artifact_id": artifact_id,
+            "same_content": False,
+            "items": [],
+            "next_url": None,
+            "rows": None,
+            "can_rollback": False,
+            "compare_error": False,
+        }
     values = result["values"]
     head_revision = result["head"]
     left, right = values.get(selected), values.get(compare)

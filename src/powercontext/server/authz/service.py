@@ -672,6 +672,8 @@ class AccessControlService:
         provider = cast("BuiltinAuthorizationProvider | CasbinAuthorizationProvider", self.provider)
         repository = cast(RelationalAccessRepository, provider._repository).with_connection(connection)
         access.provider = provider.with_repository(repository)
+        if self.relationships is provider._repository:
+            access.relationships = repository
         return access
 
     async def require_scope_read(self, principal, scope_id: str, *, connection, context: AccessAuditContext):
@@ -1116,6 +1118,20 @@ class AccessControlService:
 
     async def candidate_owner(self, scope_id: str, candidate_id: str) -> CandidateOwnerAttestation | None:
         return await _access_call(self._relationship_reader().get_candidate_owner(scope_id, candidate_id))
+
+    async def candidate_owners(self, scope_id, candidate_ids):
+        """Read persisted owner attestations without deriving ownership from grants."""
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
+        repository = self._relationship_reader()
+        if type(repository) is RelationalAccessRepository:
+            return await _access_call(repository.get_candidate_owners(scope_id, candidate_ids))
+        owners = {}
+        for identity in candidate_ids:
+            owner = await _access_call(repository.get_candidate_owner(scope_id, identity))
+            if owner is not None:
+                owners[identity] = owner
+        return owners
 
     async def artifact_owner(self, resource: ResourceRef) -> ArtifactOwnerRelation | None:
         """Return owner metadata without reading the protected Artifact body."""

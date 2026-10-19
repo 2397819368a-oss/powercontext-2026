@@ -27,7 +27,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoes
 from pydantic import ValidationError
 
 from powercontext.server.dashboard.api import DashboardAPI, ReadError, segment
-from powercontext.server.dashboard.content import RECORDS, load_content
+from powercontext.server.dashboard.content import RECORDS, load_content, load_profile, load_record
 from powercontext.server.dashboard.markdown import handoff_markdown
 from powercontext.server.dashboard.navigation import (
     collection_return,
@@ -39,7 +39,7 @@ from powercontext.server.dashboard.page import load_builtin_page
 from powercontext.server.dashboard.pagination import PAGE_SIZE
 from powercontext.server.dashboard.preferences import CATALOGS, presentation, remember_language
 from powercontext.server.dashboard.presenters import set_scope, source_view
-from powercontext.server.dashboard.review import load_review, submit_review
+from powercontext.server.dashboard.review import load_review, load_review_inspection, submit_review
 from powercontext.server.dashboard.session import login_response, same_origin
 
 ROOT = Path(__file__).parent
@@ -249,6 +249,8 @@ def initial_context(request: Request, page: str) -> dict[str, Any]:
             "prompts": [],
             "profile": None,
         },
+        "scopes": [],
+        "scopes_cursor": None,
         "scope_descriptor": None,
         "record_only": False,
         "parent_scope": None,
@@ -324,6 +326,7 @@ async def scope_options(
     request: Request,
     query: str = Query(default="", max_length=256),
     cursor: str | None = Query(default=None, min_length=1, max_length=4096),
+    current: str | None = Query(default=None, max_length=256),
 ) -> JSONResponse:
     """Page the public Scope discovery surface using the browser's dashboard credentials."""
 
@@ -335,18 +338,24 @@ async def scope_options(
     api = DashboardAPI(request)
     try:
         result = await api.read("/v1/scopes?" + urlencode(params))
+        items = result["items"]
+        navigation = {}
+        if api.builtin is not None:
+            identities = tuple(item["scope_id"] for item in items) + (() if current is None else (current,))
+            navigation = await api.builtin.scopes.navigation(identities)
+        for item in items:
+            item["display_title"] = navigation.get(item["scope_id"], {}).get("display_title", item["title"])
+        selected = navigation.get(current)
+        parent = None if selected is None else navigation.get(selected["parent_scope_id"])
         return JSONResponse(
             {
                 "items": [
-                    {
-                        "scope_id": item["scope_id"],
-                        "title": item["title"],
-                        "display_title": item["title"] + " (" + item["scope_id"] + ")",
-                        "parent_scope_id": item["parent_scope_id"],
-                    }
-                    for item in result["items"]
+                    {key: item[key] for key in ("scope_id", "title", "display_title", "parent_scope_id")}
+                    for item in items
                 ],
                 "next_cursor": result["next_cursor"],
+                "current": selected,
+                "parent": parent,
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -385,7 +394,10 @@ async def evidence(request: Request, source_id: str) -> HTMLResponse:
     try:
         descriptor = await default_scope(api, ctx)
         await scope_context(api, ctx, descriptor)
-        await load_content(api, request, ctx)
+        if ctx["page"] == "profile":
+            await load_profile(api, request, ctx, include_history=False)
+        else:
+            await load_record(api, request, ctx, include_history=False)
         if not any(
             item["source_id"] == source_id and item["source_type"] == ctx["source_type"]
             for item in ctx["related_sources"]
@@ -507,6 +519,42 @@ def _rollback_return(scope: str, family: str, artifact_id: str, revision: int, e
     return f"/dashboard/{page}?{urlencode({key: value for key, value in params.items() if value is not None})}"
 
 
+@router.get("/entry/scopes")
+async def entry_scopes(request: Request) -> HTMLResponse:
+    ctx = initial_context(request, "entry")
+    api = DashboardAPI(request)
+    try:
+        await load_entry_scopes(api, request, ctx)
+    except ReadError as error:
+        ctx.update(page_error=error, status=error.status)
+    finally:
+        await api.client.aclose()
+    return render(request, ctx, "components/entry-scopes.html", "components/entry-scopes.html")
+
+
+async def load_entry_scopes(api, request, ctx):
+    params = {"limit": "25"}
+    if request.query_params.get("cursor"):
+        params["cursor"] = request.query_params["cursor"]
+    result = await api.read("/v1/scopes?" + urlencode(params))
+    ctx.update(scopes=result["items"], scopes_cursor=result["next_cursor"])
+
+
+@router.get("/review/inspect")
+async def review_inspection(request: Request) -> HTMLResponse:
+    ctx = initial_context(request, "review")
+    api = DashboardAPI(request)
+    try:
+        await load_review_inspection(api, request, ctx)
+    except ReadError as error:
+        if error.status == 401:
+            return login_response(request=request)
+        ctx.update(page_error=error, status=error.status)
+    finally:
+        await api.client.aclose()
+    return render(request, ctx, "components/review-inspection.html", "components/review-inspection.html")
+
+
 @router.post("/review/decision")
 async def review_decision(request: Request) -> Response:
     ctx = initial_context(request, "review")
@@ -532,7 +580,9 @@ async def screen(request: Request, page: str) -> HTMLResponse:
     api = DashboardAPI(request)
     try:
         validate_selection(page, ctx)
-        if not await load_builtin_page(api, request, ctx):
+        if page == "entry":
+            await load_entry_scopes(api, request, ctx)
+        elif not await load_builtin_page(api, request, ctx):
             descriptor = await default_scope(api, ctx)
             if ctx["scope"]:
                 await scope_context(api, ctx, descriptor)
@@ -542,6 +592,8 @@ async def screen(request: Request, page: str) -> HTMLResponse:
                 await load_content(api, request, ctx)
             if ctx["errors"] and not ctx["scope_descriptor"] and not ctx["record_only"]:
                 raise next(iter(ctx["errors"].values()))
+        if page != "entry" and not ctx["scope_descriptor"] and not ctx["record_only"]:
+            await load_entry_scopes(api, request, ctx)
     except ReadError as error:
         if error.status == 401:
             return login_response(request=request)

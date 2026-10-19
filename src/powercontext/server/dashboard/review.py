@@ -41,8 +41,7 @@ async def load_review(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
     ctx["review"] = view
     selected = request.query_params.get("candidate_id")
     try:
-        result = await api.read(
-            "/v1/candidates/list",
+        result = await api.candidates(
             {
                 "scope_id": ctx["scope"],
                 "status": status,
@@ -58,7 +57,17 @@ async def load_review(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
         selected_kind = request.query_params.get("candidate_kind", "artifact")
         if selected_kind not in KINDS:
             raise ReadError(422, "invalid_request")
-        candidate = await api.read("/v1/candidates/get", {"scope_id": ctx["scope"], "candidate_id": selected})
+        candidate = next(
+            (
+                item
+                for section in view["sections"]
+                for item in section["candidates"]
+                if item["candidate_id"] == selected and "proposal" in item
+            ),
+            None,
+        )
+        if candidate is None:
+            candidate = await api.read("/v1/candidates/get", {"scope_id": ctx["scope"], "candidate_id": selected})
         detail: dict[str, Any] = {
             "kind": candidate["candidate_kind"],
             "candidate": candidate,
@@ -103,9 +112,12 @@ async def _detail(api: DashboardAPI, request: Request, scope: str, detail: dict[
         if candidate["family"] == "profile":
             revision["proposal"] = {"content": proposal["content"]}
     if request.query_params.get("view") == "history":
-        detail["history"] = (
-            await api.read("/v1/candidates/history", {"scope_id": scope, "candidate_id": candidate["candidate_id"]})
-        )["versions"]
+        if api.builtin is None:
+            detail["history"] = (
+                await api.read("/v1/candidates/history", {"scope_id": scope, "candidate_id": candidate["candidate_id"]})
+            )["versions"]
+        else:
+            _candidate, detail["history"] = await api.review_inspection(scope, candidate["candidate_id"], history=True)
     detail["revision"] = formatted(revision)
     detail["proposal"] = formatted(proposal)
     detail["diff"] = "\n".join(
@@ -152,6 +164,23 @@ async def _evidence(
                 item["error"] = error
         items.append(item)
     return items
+
+
+async def load_review_inspection(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
+    """Read an opened disclosure independently of the inbox and selected editor."""
+    scope = ctx["scope"]
+    candidate_id = request.query_params.get("candidate_id")
+    if not scope or not candidate_id:
+        raise ReadError(422, "invalid_request")
+    history = request.query_params.get("view") == "history"
+    candidate, versions = await api.review_inspection(scope, candidate_id, history=history)
+    if history:
+        ctx["inspection"] = {"history": versions}
+    elif request.query_params.get("evidence") is not None:
+        evidence = await _evidence(api, scope, candidate, request.query_params["evidence"])
+        ctx["inspection"] = {"evidence": next(item for item in evidence if item["selected"])}
+    else:
+        raise ReadError(422, "invalid_request")
 
 
 async def submit_review(api: DashboardAPI, request: Request) -> tuple[str, str, str]:

@@ -119,6 +119,8 @@ async def content_rows(connection, scope, *, browse=None, families=(), selected=
                 current_revision="current_revision",
             )
         )
+    if not statements:
+        return [], await scope_header(connection, scope) if include_scope else None
     statement = union_all(*statements) if len(statements) > 1 else statements[0]
     if include_scope:
         statement = _with_header(statement, scope, "read_kind")

@@ -62,6 +62,17 @@ class ScopeRepository:
             select(SCOPES_TABLE).where(SCOPES_TABLE.c.scope_id.in_(scope_ids)).order_by(SCOPES_TABLE.c.scope_id),
         )
 
+    async def navigation(self, connection, scope_ids):
+        """Read only the names and parent links needed for Scope navigation."""
+        rows = (
+            await connection.execute(
+                select(SCOPES_TABLE.c.scope_id, SCOPES_TABLE.c.title, SCOPES_TABLE.c.parent_scope_id).where(
+                    SCOPES_TABLE.c.scope_id.in_(scope_ids)
+                )
+            )
+        ).mappings()
+        return tuple(dict(row) for row in rows)
+
     async def list(self, connection: AsyncConnection, /) -> tuple[ScopeDescriptor, ...]:
         return await self._load(connection, select(SCOPES_TABLE).order_by(SCOPES_TABLE.c.scope_id))
 

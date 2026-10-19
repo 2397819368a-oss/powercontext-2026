@@ -99,20 +99,22 @@ async def load_notes(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -
         ctx["errors"]["notes"] = ReadError.from_exception(error)
         return
     if searching:
-        items = memory_view({
-            "items": [
-                {**hit["memory"], "matched_by": hit["matched_by"], "score": hit["score"]} for hit in result["hits"]
-            ]
-        })
-        window = list_page(items, request.query_params.get("notes_page"))
-        ctx["data"]["notes"] = window["items"]
-        ctx["notes_pager"] = list_links(ctx, "notes", window)
-        ctx["search_limited"] = len(result["hits"]) == 50
-        ctx["search_used_mode"] = result["mode"]
+        present_search(result, request, ctx)
     else:
         ctx["data"]["notes"] = memory_view(result)
         if ctx["page"] == "notes":
             ctx["notes_pager"] = cursor_links(request, ctx, "notes", result["next_cursor"])
+
+
+def present_search(result, request, ctx):
+    items = memory_view({
+        "items": [{**hit["memory"], "matched_by": hit["matched_by"], "score": hit["score"]} for hit in result["hits"]]
+    })
+    window = list_page(items, request.query_params.get("notes_page"))
+    ctx["data"]["notes"] = window["items"]
+    ctx["notes_pager"] = list_links(ctx, "notes", window)
+    ctx["search_limited"] = len(result["hits"]) == 50
+    ctx["search_used_mode"] = result["mode"]
 
 
 async def load_stats(api: DashboardAPI, ctx: dict[str, Any]) -> None:
@@ -135,7 +137,7 @@ async def select_note(api: DashboardAPI, ctx: dict[str, Any]) -> None:
             ctx["selected_note"].update(matched_by=current["matched_by"], score=current["score"])
 
 
-async def load_record(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
+async def load_record(api: DashboardAPI, request: Request, ctx: dict[str, Any], *, include_history=True) -> None:
     page, scope = ctx["page"], ctx["scope"]
     family = RECORDS[page]
     artifact = request.query_params.get("artifact")
@@ -150,15 +152,16 @@ async def load_record(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
     ctx["data"][family] = record
     ctx["source_record"] = record
     ctx["related_sources"] = [source for source in record["sources"] if source["source_type"] == "content"]
-    ctx["history"] = await load_history(
-        api,
-        request,
-        ctx,
-        family=family,
-        artifact_id=artifact,
-        selected=revision_number,
-        cursor_key=f"{family}_revision_cursor",
-    )
+    if include_history:
+        ctx["history"] = await load_history(
+            api,
+            request,
+            ctx,
+            family=family,
+            artifact_id=artifact,
+            selected=revision_number,
+            cursor_key=f"{family}_revision_cursor",
+        )
 
 
 async def load_home(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
@@ -297,7 +300,7 @@ async def load_note_history(api: DashboardAPI, request: Request, ctx: dict[str, 
     )
 
 
-async def load_profile(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
+async def load_profile(api: DashboardAPI, request: Request, ctx: dict[str, Any], *, include_history=True) -> None:
     query = request.query_params
     revision = query.get("revision")
     view = query.get("view")
@@ -312,16 +315,17 @@ async def load_profile(api: DashboardAPI, request: Request, ctx: dict[str, Any])
         if not heads["items"]:
             return
         selected_revision = str(heads["items"][0]["revision"])
-    ctx["history"] = await load_history(
-        api,
-        request,
-        ctx,
-        family="profile",
-        artifact_id="profile",
-        selected=positive_revision(selected_revision),
-        cursor_key="profile_cursor" if view == "history" else "profile_revision_cursor",
-    )
-    if view == "history":
+    if include_history:
+        ctx["history"] = await load_history(
+            api,
+            request,
+            ctx,
+            family="profile",
+            artifact_id="profile",
+            selected=positive_revision(selected_revision),
+            cursor_key="profile_cursor" if view == "history" else "profile_revision_cursor",
+        )
+    if view == "history" and include_history:
         history = ctx["history"]
         if not history["loaded"]:
             raise history["error"]
