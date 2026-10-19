@@ -1,3 +1,5 @@
+> 实现说明（[#2060](https://github.com/oceanbase/powercontext/pull/2060)）：下文的 owner-pending 门禁让无关记录阻断已授权访问，并放大 Dashboard 查询成本。应由创建、批准和发布流程建立 ownership，读取按当前有效 grant 或已记录的 owner 关系授权，Artifact grant 不扩展为 Scope 集合权限。
+
 - Proposal Name: `handoff_access_control`
 - RFC Number: 1396
 - Start Date: 2026-08-30
@@ -440,7 +442,7 @@ A、相应 grant administrator 或 scope admin 可以撤销其管理边界内的
     Receipt、feedback、projection 和 fork 是独立资源或 operation，必须分别授权，并且不能修改原资源的 identity、content
     或 Revision。
 13. 每个 enabled 逻辑 Artifact 只有一条 immutable direct owner relation。公共 Binding 不能创建、替换或转移
-    `artifact.owner`；owner 权限必须来自真实 relation，独立的有效 Scope 或 Artifact grant 不依赖该 relation。
+    `artifact.owner`；owner 缺失时，Artifact authorization 必须 fail closed。
 14. Host-local Skill projection 必须在解析 `target_id` 或检查文件系统前同时通过 `server.observe` 和 `artifact.read`；remote
     target 管理要求 `scope.admin`，remote publication 还要求 `artifact.read`。这些 operation 都不授予宿主执行、工具、
     网络、文件系统或 secret 权限。
@@ -576,14 +578,16 @@ Server 把 ownership 与普通 `AccessBinding` 分开保存。`ArtifactOwnerRela
 `PrincipalRef`、可信创建时间、policy revision 和 idempotency key，刻意不包含 Artifact Revision。Owner relation
 不可变；只有相同 owner 和 key 的重复建立才是幂等操作，不同 owner 返回 conflict。本 RFC 不定义 ownership transfer。
 
-在 enforced mode 下，owner 权限只来自已建立的 relation；有效的 Scope 或 Artifact grant 可独立授权，不因缺少 owner 而失效。新 Memory
+在 enforced mode 下，owner relation 建立前的 Artifact authorization 以 `artifact_owner_pending` fail closed。新 Memory
 Entry 和首次 Handoff commit 由创建者拥有。新 Experience/Skill Candidate 记录 Server-side proposed-owner attestation，
 批准后再建立 ownership；以已有 identity 为 target 的 Candidate 必须保留原 owner。跨 Scope publication 的新 target
 identity 归 publisher 所有。
 
-对未记录 owner 的既有内容，Server 不推断或回填归属，也不授予 owner 权限；有独立有效 grant 的读取仍可执行。
-创建、批准和 publication 只有在对应 owner 建立完成后才返回成功。写入失败可能留下已持久化的业务结果；
-只有明确支持幂等重放的流程才能通过重试完成关系建立，读取不补建 owner。
+首版假设 deployment 在持久化第一个 Artifact 前就已启用 enforced mode。它不会为 access control disabled 期间已写入的
+catalog 回填或推断 owner，也不提供通用 owner repair 流程。未经过独立 operator migration 就把这类 catalog 切换到
+enforced mode 时，其中的 Artifact 按设计保持不可用。若 domain persistence 已成功但 owner establishment 失败，请求仍
+fail closed；只有明确支持幂等重放的业务流程才能通过重试修复 relation。通用 transactional outbox 和 operator recovery
+流程属于本 RFC 之外的未来工作。
 
 ### 内置关系型存储
 
@@ -1052,9 +1056,10 @@ Artifact logical receiver 通过 `/v1/access/resources/list` 的 Resource Kind �
 对应聚合查询。发布 target 不是授权资源，不出现在该列表中。可以发布所选 Skill Revision 的 Principal 通过 Skill domain
 preflight 取得脱敏 target 选项；详细运维状态通过受 `server.observe` 或 `server.admin` 保护的 Server operation 查询。
 
-Scope 级 collection 权限允许读取相应范围的集合。Memory list/search、Context Prepare、Artifact catalog、Dashboard
-Skill library 和 Report 均按当前授权返回结果；无关 identity 的 owner 缺失不阻断这些读取。Artifact 级 grant 只授权
-该逻辑资源，不授予 Scope collection 权限。没有匹配 grant 或 owner 权限时返回 403，不通过 owner 缺失暴露存在性。
+Scope 级 collection 权限通过后，Server 先从内容为空的 identity 目录检查 committed Artifact 和 Memory entry 的
+owner 是否就绪，再读取正文或准备上下文。任何 identity 缺少 owner 时，整个聚合请求返回 503
+`artifact_owner_pending`，包括 Memory list/search、Context Prepare、Artifact catalog、Dashboard Skill library 和 Report。
+对无匹配授权的调用方，缺少 owner 与已有但不可见的资源统一返回 403，避免暴露存在性。
 
 ## Audit and diagnostics
 
@@ -1266,7 +1271,7 @@ RFC 实现完成需要通过以下 observable scenarios：
   或解引用 lineage body；
 - `family=prompt` 报告 disabled、拒绝 Binding，且不把 `prompt.user` 作为 enabled Family 的可用 role；
 - logical-resource role 即使知道 expected version，也不能 revise、retire、replace 或提交共享原件的下一 Revision；
-- owner 权限需要真实 relation，独立的有效 grant 不依赖 owner；首次创建或批准建立唯一 immutable owner，公共 Binding API 不能
+- enabled Artifact 缺少 owner relation 时 fail closed；首次创建或批准建立唯一 immutable owner，公共 Binding API 不能
   分配或转移 `artifact.owner`；
 - Artifact owner 无需单独 viewer Binding 即可跨 Revision read/write/share 其逻辑 identity；scope/server administration
   不会隐式获得 owner write；

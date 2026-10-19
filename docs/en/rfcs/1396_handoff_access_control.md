@@ -1,3 +1,5 @@
+> Implementation note ([#2060](https://github.com/oceanbase/powercontext/pull/2060)): The owner-pending read gates below let unrelated incomplete records block authorized access and amplify Dashboard queries. Establish ownership during creation, approval, and publication; authorize reads using current grants or recorded ownership, without extending Artifact grants to Scope collections.
+
 - Proposal Name: `handoff_access_control`
 - RFC Number: 1396
 - Start Date: 2026-08-30
@@ -465,7 +467,7 @@ An implementation must preserve these invariants:
     shared content. Receipts, feedback, projections, and forks are separate resources or operations that require
     independent authorization and do not modify the original resource identity, content, or Revision.
 13. Every enabled logical Artifact has one immutable direct owner relation. Public Bindings cannot create, replace, or
-    transfer `artifact.owner`; owner-derived authority requires the relation, while valid Scope or Artifact grants stand independently.
+    transfer `artifact.owner`; a missing owner fails closed before Artifact authorization.
 14. Host-local Skill projection requires `server.observe` and `artifact.read` before resolving `target_id` or
     inspecting the filesystem. Remote target administration requires `scope.admin`, and remote publication also
     requires `artifact.read`. These operations never grant host execution, tools, networks, filesystems, or secrets.
@@ -617,16 +619,18 @@ logical resource, one `PrincipalRef`, trusted creation time, policy revision, an
 contains no Artifact Revision. The owner relation is immutable; creating it again is idempotent only for the same
 owner and key, and a different owner returns a conflict. Ownership transfer is not part of this RFC.
 
-In enforced mode, owner-derived authority requires an established relation. Valid Scope or Artifact grants remain effective independently of ownership. New
+In enforced mode, Artifact authorization fails closed with `artifact_owner_pending` until this relation exists. New
 Memory entries and first Handoff commits are owned by the creating Principal. A new Experience or Skill Candidate
 records a Server-side proposed-owner attestation; approval establishes that Principal as owner. A Candidate targeting
 an existing identity must retain its existing owner. Cross-Scope publication establishes the publisher as owner of
 the new target identity.
 
-The Server does not infer or backfill ownership for existing content without a recorded owner. Such content grants
-no owner authority; reads with independent valid grants remain available. Creation, approval, and publication return
-success only after establishing the required owner. A failed write may leave a persisted business result. Only a flow
-that explicitly supports idempotent replay can complete ownership on retry; reads do not establish ownership.
+The first version assumes that a deployment enables enforced mode before it persists its first Artifact. It does not
+backfill or infer owners for a catalog populated while access control was disabled, and it exposes no general owner
+repair workflow. Switching such a catalog to enforced mode without a separate operator migration leaves those
+Artifacts unavailable by design. If domain persistence succeeds but owner establishment fails, the request still
+fails closed; only a business flow that explicitly supports idempotent replay may repair the relation on retry. A
+general transactional outbox and operator recovery procedure are future work outside this RFC.
 
 ### Built-in relational persistence
 
@@ -1134,10 +1138,11 @@ publication target is not an authorization resource and does not appear in this 
 publish a selected Revision of the Skill obtains redacted target choices through the Skill-domain preflight. Detailed operational
 status is queried through a Server operation protected by `server.observe` or `server.admin`.
 
-Scope collection authority permits reading the corresponding collections. Memory list/search, Context Prepare,
-Artifact catalogs, the Dashboard Skill library, and reports apply current authority; an unrelated identity without an
-owner does not block these reads. An Artifact grant authorizes only its logical resource, not Scope collections.
-Without a matching grant or owner authority, return 403 without disclosing owner absence.
+After authorizing a scope collection, the Server checks committed Artifact and Memory entry owners through a
+content-free identity catalog before reading bodies or preparing context. A missing owner makes the whole aggregate
+return 503 `artifact_owner_pending`, including Memory list/search, Context Prepare, Artifact catalogs, the Dashboard
+Skill library, and reports. Callers without a matching grant receive the same 403 for missing-owner and existing but
+invisible resources, preventing existence disclosure.
 
 ## Audit and diagnostics
 
@@ -1372,7 +1377,7 @@ The implementation of this RFC is complete only when these observable scenarios 
   Family;
 - a logical-resource role cannot revise, retire, replace, or commit a later Revision of the shared original, even when
   the request supplies the expected version;
-- owner-derived authority requires a relation, while independent valid grants do not; first creation or approval establishes exactly one
+- an enabled Artifact without an owner relation fails closed; first creation or approval establishes exactly one
   immutable owner, and public Binding APIs cannot assign or transfer `artifact.owner`;
 - an Artifact owner can read, write, and share its logical identity across Revisions without receiving a separate
   viewer Binding; scope and server administration do not implicitly grant owner write access;
