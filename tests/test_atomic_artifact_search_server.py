@@ -19,8 +19,24 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from powercontext.artifacts.search import ArtifactSearchMatch
-from powercontext.builtin.artifacts.atomic_memory import AtomicMemory, AtomicMemoryContent
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemory, AtomicMemoryContent, AtomicMemoryState
 from powercontext.server.app import create_app
+
+
+def test_state_keeps_custom_applications_with_only_the_original_get_reader() -> None:
+    artifact = AtomicMemory(artifact_id="memory-a", revision=2, content=AtomicMemoryContent(kind="fact", text="Alpha"))
+
+    async def get(artifact_id, *, context=None):
+        return SimpleNamespace(ref=artifact.as_ref(), artifact=artifact, state=AtomicMemoryState())
+
+    application = SimpleNamespace(atomic_memory=SimpleNamespace(for_scope=lambda scope: SimpleNamespace(get=get)))
+    with TestClient(create_app(application=application)) as client:
+        path = "/v1/scopes/scope-a/artifacts/atomic-memory/memory-a/state"
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.json()["artifact"] == artifact.as_ref().model_dump()
+        assert response.headers["ETag"] == '"revision:2:state:0"'
+        assert client.get(path, headers={"If-None-Match": response.headers["ETag"]}).status_code == 304
 
 
 def test_unified_http_preserves_atomic_memory_content_json_alias() -> None:

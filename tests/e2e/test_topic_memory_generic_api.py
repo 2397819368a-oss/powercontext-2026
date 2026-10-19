@@ -223,6 +223,7 @@ def test_topic_lifecycle_tags_filtered_pages_and_publication_survive_restart(tmp
         )
         _create(client, scope, "unmatched")
         listing = f"/v1/scopes/{scope}/artifacts/topic-memory"
+        assert client.get(listing, params={"limit": 101}).status_code == 400
         first = client.get(listing, params={"tag": "CHOSEN", "limit": 1}).json()
         assert first["next_cursor"] and len(first["items"]) == 1
         assert first["items"][0]["artifact_id"] == second.json()["artifact_id"]

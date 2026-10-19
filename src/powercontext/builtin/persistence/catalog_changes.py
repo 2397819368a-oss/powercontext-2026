@@ -138,7 +138,7 @@ class CatalogCandidateRepository:
     async def history(
         self, connection: AsyncConnection, scope_id: str, candidate_id: str
     ) -> tuple[CatalogChangeCandidate, ...]:
-        await self.get(connection, scope_id, candidate_id, current=True)
+        await self.get(connection, scope_id, candidate_id)
         table = CANDIDATE_VERSIONS_TABLE
         payloads = await connection.scalars(
             select(table.c.proposal)
