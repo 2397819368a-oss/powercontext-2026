@@ -69,6 +69,7 @@ from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository
 from powercontext.builtin.persistence.atomic_memory_index import PreparedAtomicMemoryProjection
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
+from powercontext.errors import ArtifactNotFoundError
 from powercontext.sources import SourceRef
 
 if TYPE_CHECKING:
@@ -352,7 +353,7 @@ class AtomicMemoryService:
             current = await self.shared.states.get(connection, scope_id, "atomic-memory", artifact_id)
         await self.security.authorize(connection, scope_id, context, "read", ref)
         if current is None:
-            raise RepositoryNotFoundError("artifact", (scope_id, "atomic-memory", artifact_id))
+            raise ArtifactNotFoundError(ref)
         return AtomicMemoryRead(ref=current.artifact, **_atomic_state(current).model_dump())
 
     async def inspect_change(

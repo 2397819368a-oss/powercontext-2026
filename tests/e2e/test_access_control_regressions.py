@@ -798,10 +798,16 @@ def test_missing_memory_in_readable_scope_is_not_owner_pending(tmp_path, backend
                 assert missing.status_code == 404, missing.text
                 assert missing.json()["error"]["code"] == "artifact_not_found"
                 assert "PRIVATE_SCOPE_FACT" not in missing.text
-            missing = await client.get(
-                f"/v1/scopes/{source_scope}/artifacts/atomic-memory/absent-artifact/revisions/1", headers=reader
-            )
-            assert missing.status_code == 404, missing.text
+            for missing_suffix in ("", "/revisions/1", "/state"):
+                missing = await client.get(
+                    f"/v1/scopes/{source_scope}/artifacts/atomic-memory/absent-artifact{missing_suffix}", headers=reader
+                )
+                assert missing.status_code == 404, missing.text
+                assert missing.json()["error"] == {
+                    "code": "artifact_not_found",
+                    "message": "The requested Artifact was not found.",
+                    "details": None,
+                }
             denied = [
                 await client.get(f"/v1/scopes/{scope}{suffix}", headers={"Authorization": "Bearer stranger"})
                 for scope in (source_scope, empty_scope, "absent-scope")
@@ -1769,7 +1775,7 @@ def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_pa
             )
             assert additional.status_code == 200, additional.text
             additional_memory = additional.json()["records"][0]
-            await _grant(
+            exact_grant = await _grant(
                 client,
                 scope_id,
                 "reader",
@@ -1811,6 +1817,12 @@ def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_pa
             }
             if provider == "custom":
                 return
+            revised = await client.put(
+                path,
+                headers={"If-Match": '"revision:1"'},
+                json={"content": {"kind": "fact", "text": "Alpha scope fact. Updated current body."}},
+            )
+            assert revised.status_code == 200, revised.text
             for owner_present in (True, False):
                 if not owner_present:
                     with sqlite3.connect(tmp_path / "regressions.db") as connection:
@@ -1831,5 +1843,25 @@ def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_pa
             await _assert_shared_note_dashboard(
                 client, scope_id, identity, additional_memory["artifact"]["artifact_id"]
             )
+
+            query = {"scope": scope_id, "artifact": identity, "revision": 1}
+            historical = await client.get("/dashboard/notes", headers=reader, params=query)
+            assert historical.status_code == 200, historical.text
+            assert "Alpha scope fact." in historical.text
+            assert "Updated current body." not in historical.text
+            assert "Alpha unshared fact." not in historical.text
+            assert "Regression scope" not in historical.text
+            revoked = await client.post(
+                "/v1/access/bindings/revoke",
+                json={
+                    "binding_id": exact_grant["binding_id"],
+                    "expected_version": exact_grant["version"],
+                    "idempotency_key": "revoke-dashboard-artifact-viewer",
+                },
+            )
+            assert revoked.status_code == 200, revoked.text
+            denied = await client.get("/dashboard/notes", headers=reader, params=query)
+            assert denied.status_code == 403, denied.text
+            assert "Alpha scope fact." not in denied.text
 
     asyncio.run(scenario())
