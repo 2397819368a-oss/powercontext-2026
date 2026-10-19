@@ -152,17 +152,119 @@ and [shared tables](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b83
 
 ## Runtime ownership and composition
 
+### Deployment and execution boundaries
+
+The deployment view separates the model transport from context preparation and gate checks. The two Core boxes denote
+reuse of the same components in different deployment modes, not a requirement to run two Core instances. The storage
+symbol denotes current domain persistence supplied by each deployment; it does not require a database shared between
+embedded and service modes. Remote mode reuses the Server's authentication, delegation, and Scope enforcement.
+
 ```mermaid
-flowchart LR
-    H[Host: history, tools, adoption] --> E[Embedded executor or optional Rust GatewayRuntime]
-    E --> C[Existing scoped context preparation: ContextRuntime]
-    C --> P[Existing PreparedContext]
-    P --> E
-    E --> G[Core GateRuntime: cache plan, input/output checks]
-    G --> E
-    E --> U[Model service or verified downstream gateway]
-    C --> A[Existing Scope, Source, Artifact, Bootstrap, Work, Handoff]
+flowchart TB
+    HOST["Agent / application host<br/>History · tools · acceptance"]
+
+    subgraph PY["Path A · Python process"]
+        direction LR
+        BG["Core background stages<br/>Existing stage inputs"]
+        LOCAL["Embedded executor<br/>Existing adapters + gates"]
+        LCORE["Python Core<br/>ContextRuntime<br/>GateRuntime"]
+        BG --> LOCAL
+        LOCAL -. "In-process calls" .-> LCORE
+    end
+
+    subgraph GW["Path B · Optional Rust process"]
+        EXEC["GatewayRuntime<br/>Adapt · send · buffer<br/>Cancel · retry · measure"]
+    end
+
+    subgraph SERVER["PowerContext Server process"]
+        direction LR
+        API["Existing access boundary<br/>Auth · delegation · Scope"]
+        RCORE["Python Core<br/>ContextRuntime<br/>GateRuntime"]
+        API -. "Same implementation" .-> RCORE
+    end
+
+    STORE[("Existing domain persistence<br/>Scope · Source · Artifact<br/>Bootstrap receipts")]
+    ROUTE["Controlled upstream route<br/>Direct / verified gateway"]
+    MODEL["Model service<br/>Actual KV Cache"]
+
+    HOST --> LOCAL
+    HOST --> EXEC
+    EXEC -. "Existing context APIs + gate APIs" .-> API
+    LCORE -. "Domain reads / writes" .-> STORE
+    RCORE -. "Domain reads / writes" .-> STORE
+    LOCAL <-->|"Admitted request / raw response"| ROUTE
+    EXEC <-->|"Admitted request / raw response"| ROUTE
+    ROUTE <--> MODEL
+
+    classDef existing fill:#eff8f5,stroke:#337765,color:#183b32;
+    classDef added fill:#fff5e6,stroke:#ad6817,color:#663d0a;
+    classDef external fill:#f4f5f7,stroke:#697386,color:#252d3a;
+    class HOST,BG,API,STORE existing;
+    class LOCAL,LCORE,RCORE,EXEC added;
+    class ROUTE,MODEL external;
 ```
+
+Solid arrows show host/executor calls and actual upstream traffic; dashed arrows show preparation, checks, and existing
+domain access. A check RPC carries the content to inspect; a dashed line does not imply metadata-only transmission.
+The configured route may be direct or pass through a verified downstream gateway. Actual KV state remains in the model
+service. Core background stages can use the embedded executor without deploying Gateway.
+
+### Core components and reuse
+
+This component view expands the shared Core. Green identifies existing boundaries and components; amber identifies new
+gate policy or execution integration; gray identifies host/executor responsibilities or external services. These are
+responsibility groups within the existing composition root, not new persistent aggregates or mandatory wrapper classes.
+Edges show internal processing and domain dependencies; the later invocation sequence diagram expands messages crossing
+the Core/executor boundary.
+
+```mermaid
+flowchart TB
+    AUTH["Trusted Scope / authorization context<br/>From Server or embedding host"]
+
+    subgraph CORE["PowerContext Core · existing composition root"]
+        direction TB
+        subgraph CONTEXT["ContextRuntime · existing preparation"]
+            direction TB
+            PREP["ContextApplication.for_scope<br/>prepare"]
+            RECALL["Existing recall / assembly policy<br/>Artifact families + opt-in code"]
+            BUILD["PreparedContextBuilder<br/>Citations · trust · byte budget"]
+            VALUE["PreparedContext<br/>Existing four-field ephemeral value"]
+            PREP --> RECALL --> BUILD --> VALUE
+        end
+
+        subgraph GATE["GateRuntime · new gate behavior"]
+            direction TB
+            PROFILE["Controlled profile / gate policy<br/>Target · cache · security · limits"]
+            INPUT["input/check<br/>Full input safety / token admission"]
+            CACHE["Cache planner<br/>Boundaries · mode · affinity"]
+            OUTPUT["output/check<br/>Raw response / release decision"]
+            PROFILE -.-> INPUT
+            PROFILE -.-> OUTPUT
+            INPUT --> CACHE
+        end
+
+        CONTINUITY["Existing continuity services<br/>Bootstrap · Work · Handoff"]
+        DATA["Existing domain services / repositories<br/>Scope · Source / Artifact<br/>Indexes · receipts · transactions"]
+    end
+
+    AUTH -.-> CONTEXT
+    AUTH -.-> GATE
+    AUTH -.-> CONTINUITY
+    RECALL -->|"Authorized retrieval"| DATA
+    CONTINUITY -->|"Domain reads / writes"| DATA
+
+    classDef existing fill:#eff8f5,stroke:#337765,color:#183b32;
+    classDef added fill:#fff5e6,stroke:#ad6817,color:#663d0a;
+    class AUTH,PREP,RECALL,BUILD,VALUE,CONTINUITY,DATA existing;
+    class CACHE,INPUT,OUTPUT,PROFILE added;
+```
+
+Existing prepare owns recall, selection, citations, and supplementary byte limits. Its four-field value returns to the
+host/executor, which assembles the complete request and retains authorized reusable context. GateRuntime sees that
+complete request, plans caches, and admits the final representation; it does not independently select Memory. The
+optional render loop uses the same input check operation. The output gate receives the executor's raw response and
+returns a release decision. Bootstrap/Work/Handoff remain explicitly invoked domain services. New gates create no
+Source/Artifact record or inference table merely by checking content.
 
 | Owner | Owns | Integration constraint |
 | --- | --- | --- |

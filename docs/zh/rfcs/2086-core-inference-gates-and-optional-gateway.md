@@ -138,17 +138,113 @@ Memory 提取阶段继续使用现有 Source 窗口、指令、输出 schema 和
 
 ## 运行时归属与组合
 
+### 部署与执行边界
+
+部署图将真实模型传输与上下文准备、双闸检查分开。两个 Core 方框表示不同部署方式复用同一套组件，
+不要求同时运行两份 Core。存储符号表示各部署沿用的领域持久化，不要求嵌入式和服务化共用一个数据库。
+远端模式复用 Server 既有认证、委托与 Scope 权限校验。
+
 ```mermaid
-flowchart LR
-    H[Host: history, tools, adoption] --> E[Embedded executor or optional Rust GatewayRuntime]
-    E --> C[Existing scoped context preparation: ContextRuntime]
-    C --> P[Existing PreparedContext]
-    P --> E
-    E --> G[Core GateRuntime: cache plan, input/output checks]
-    G --> E
-    E --> U[Model service or verified downstream gateway]
-    C --> A[Existing Scope, Source, Artifact, Bootstrap, Work, Handoff]
+flowchart TB
+    HOST["Agent / 应用宿主<br/>历史 · 工具 · 采用"]
+
+    subgraph PY["路径 A · Python 进程"]
+        direction LR
+        BG["Core 后台阶段<br/>已有阶段输入"]
+        LOCAL["嵌入式执行器<br/>现有适配 + 双闸接入"]
+        LCORE["Python Core<br/>ContextRuntime<br/>GateRuntime"]
+        BG --> LOCAL
+        LOCAL -. "进程内调用" .-> LCORE
+    end
+
+    subgraph GW["路径 B · 可选 Rust 进程"]
+        EXEC["GatewayRuntime<br/>适配 · 传输 · 缓冲<br/>取消 · 重试 · 采集"]
+    end
+
+    subgraph SERVER["PowerContext Server 进程"]
+        direction LR
+        API["现有访问边界<br/>认证 · 委托 · Scope"]
+        RCORE["Python Core<br/>ContextRuntime<br/>GateRuntime"]
+        API -. "复用同一实现" .-> RCORE
+    end
+
+    STORE[("既有领域持久化<br/>Scope · Source · Artifact<br/>Bootstrap receipts")]
+    ROUTE["受控上游路由<br/>直连 / 已验收网关"]
+    MODEL["模型服务<br/>实际 KV Cache"]
+
+    HOST --> LOCAL
+    HOST --> EXEC
+    EXEC -. "已有上下文 API + 双闸 API" .-> API
+    LCORE -. "领域读写" .-> STORE
+    RCORE -. "领域读写" .-> STORE
+    LOCAL <-->|"获准请求 / 原始响应"| ROUTE
+    EXEC <-->|"获准请求 / 原始响应"| ROUTE
+    ROUTE <--> MODEL
+
+    classDef existing fill:#eff8f5,stroke:#337765,color:#183b32;
+    classDef added fill:#fff5e6,stroke:#ad6817,color:#663d0a;
+    classDef external fill:#f4f5f7,stroke:#697386,color:#252d3a;
+    class HOST,BG,API,STORE existing;
+    class LOCAL,LCORE,RCORE,EXEC added;
+    class ROUTE,MODEL external;
 ```
+
+实线表示宿主/执行器调用和真实上游流量，虚线表示准备、检查与已有领域访问。
+检查 RPC 会携带待检内容，虚线不代表只传元数据。上游路由可直连模型，也可经过已验收下游网关。
+实际 KV 状态位于模型服务；Core 后台阶段可直接使用嵌入式执行器，无需部署 Gateway。
+
+### Core 组件与复用关系
+
+组件图展开两种部署共用的 Core。绿色表示既有边界和组件，橙色表示新增闸口策略或执行接入，灰色表示宿主/执行器职责或外部服务。
+图中分组是既有组合根中的职责划分，不是新增持久聚合，也不要求为了命名增加包装类。
+连线表达组件内部处理与领域依赖；跨 Core / 执行器的消息顺序由后面的调用时序图展开。
+
+```mermaid
+flowchart TB
+    AUTH["可信 Scope / 授权上下文<br/>来自 Server 或嵌入宿主"]
+
+    subgraph CORE["PowerContext Core · 既有组合根"]
+        direction TB
+        subgraph CONTEXT["ContextRuntime · 复用既有链路"]
+            direction TB
+            PREP["ContextApplication.for_scope<br/>prepare"]
+            RECALL["既有召回 / 装配策略<br/>Artifact 家族 + 可选代码"]
+            BUILD["PreparedContextBuilder<br/>引用 · 信任包装 · 字节预算"]
+            VALUE["PreparedContext<br/>既有四字段临时值"]
+            PREP --> RECALL --> BUILD --> VALUE
+        end
+
+        subgraph GATE["GateRuntime · 新增双闸能力"]
+            direction TB
+            PROFILE["受控 profile / 闸口策略<br/>目标 · 缓存 · 安全 · 限制"]
+            INPUT["input/check<br/>完整请求安全 / token 准入"]
+            CACHE["缓存规划器<br/>边界 · 模式 · 亲和性"]
+            OUTPUT["output/check<br/>原始响应检查 / 释放判定"]
+            PROFILE -.-> INPUT
+            PROFILE -.-> OUTPUT
+            INPUT --> CACHE
+        end
+
+        CONTINUITY["既有连续性服务<br/>Bootstrap · Work · Handoff"]
+        DATA["既有领域服务 / 仓储<br/>Scope · Source / Artifact<br/>索引 · Receipt · 领域事务"]
+    end
+
+    AUTH -.-> CONTEXT
+    AUTH -.-> GATE
+    AUTH -.-> CONTINUITY
+    RECALL -->|"授权检索"| DATA
+    CONTINUITY -->|"领域读写"| DATA
+
+    classDef existing fill:#eff8f5,stroke:#337765,color:#183b32;
+    classDef added fill:#fff5e6,stroke:#ad6817,color:#663d0a;
+    class AUTH,PREP,RECALL,BUILD,VALUE,CONTINUITY,DATA existing;
+    class CACHE,INPUT,OUTPUT,PROFILE added;
+```
+
+原 prepare 负责召回、选择、引用和补充上下文字节限制，四字段结果交还宿主/执行器，由其装配完整请求并保留获准复用的上下文。
+GateRuntime 检查完整请求、规划缓存并对最终表示准入，不另行选择 Memory；可选重渲染循环仍使用同一 input/check 操作。
+输出闸接收执行器取得的原始响应，返回释放判定。Bootstrap/Work/Handoff 仍由调用者显式使用。
+新增闸口不会仅因检查内容就创建 Source/Artifact 记录或推理表。
 
 | 归属 | 负责内容 | 接入约束 |
 | --- | --- | --- |
