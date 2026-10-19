@@ -23,7 +23,7 @@ path or an application SDK without deploying Gateway.
 
 ContextRuntime decides what the model sees this turn and, after host confirmation, what subsequent turns inherit. It
 organizes history, Memory, and Handoff, managing complete-request token budgets, context transformations, cache prefixes,
-and optional persistent sessions. GateRuntime owns authorization, security rules, sensitive information handling,
+and optional persistent sessions. GateRuntime uses trusted authorization context and owns security rules, sensitive information handling,
 final-input admission, and output release. Budget reservations, execution identities, and authoritative ledgers reuse
 Core's shared execution services.
 
@@ -46,7 +46,7 @@ The inference service holds the actual KV state. Cache reads, write charges, and
 | --- | --- |
 | Deployment and languages | Core can be embedded in Python applications or deployed as a service; Gateway is an optional standalone Rust binary or container. |
 | Runtime boundaries | Core provides ContextRuntime and GateRuntime; optional Rust Gateway provides GatewayRuntime using the same Core contracts. |
-| Gate ownership | GateRuntime implements authorization, security rules, sensitive transformations, input admission, and output release independently of Gateway. |
+| Gate ownership | GateRuntime reuses authorization results and implements security rules, sensitive transformations, input admission, and output release independently of Gateway. |
 | Context authority | ContextRuntime manages sessions, frozen injections, summaries, evidence coverage, and request snapshots; GateRuntime owns security transformation rules. |
 | GatewayRuntime scope | Coordinate context preparation, checks, protocol adaptation, target/permit verification, calls, flow control, delivery, and evidence; reuse Core for domain decisions. |
 | Gate definition | Core checks inputs before a model request is sent and responses before output is released; executors enforce these checkpoints. |
@@ -211,7 +211,7 @@ Regardless of the executor, sending input and releasing responses must wait for 
 | Runtime | Core question | Authoritative responsibility |
 | --- | --- | --- |
 | ContextRuntime | What does this turn see, and what do later turns inherit? | Select context, manage logical token/window budgets, freeze injections, plan cache prefixes, reconstruct under policy, and handle adoption and branches. |
-| GateRuntime | May this input leave, and may this output be delivered? | Authorization, security rules, sensitive transformations, final-payload admission, raw-output checks, and release decisions. |
+| GateRuntime | May this input leave, and may this output be delivered? | Verify current authorization/delegation and apply security rules, sensitive transformations, final-payload admission, raw-output checks, and release decisions. |
 | GatewayRuntime | How does this actual model invocation complete? | Coordinate both Core runtimes, map protocols, propose eligible targets, enforce send/release constraints, control flow, cancel, retry under constraints, and report evidence. |
 
 ContextRuntime owns semantic context tradeoffs; GateRuntime owns the rules and execution of security transformations.
@@ -228,7 +228,7 @@ Source and Artifact domain lifecycles remain owned by their respective services.
 
 | Responsibility | Core | Replaceable executor (built-in / SDK / Rust Gateway) | Existing gateway / inference service |
 | --- | --- | --- | --- |
-| Users, Scope, and delegation | Authoritative checks by GateRuntime and owning data services | Validate credentials and pass restricted delegation | Use the configured provider identity |
+| Users, Scope, and delegation | Server Access Plane authorization; Core verifies trusted context, ownership, and delegation | Validate credentials and pass restricted delegation | Use the configured provider identity |
 | Sessions, branches, and history coverage | ContextRuntime owns authoritative state | Pass event identities without guessing history | Not an authority for cross-provider sessions |
 | Memory, Handoff, and evidence | ContextRuntime selects exact versions; domain services validate and persist | Deliver exact projections | Receive final model input |
 | Compaction, redaction, reversible encoding | ContextRuntime plans representation and coverage; GateRuntime performs sensitive transformations and policy checks | Preserve approved bodies without rewriting | Perform only declared transformations |
@@ -318,6 +318,12 @@ Repository references:
 [actual provider call adapter](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/inference/pydantic_ai.py),
 [usage recorder](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/_model_usage.py),
 [DecisionPolicy design](1770-decision-policy-governance.md).
+
+API and storage conventions also follow the baseline
+[scoped applications](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/application.py),
+[shared Server authorization entry](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/server/app.py),
+[shared table definitions](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/persistence/tables.py), and
+[transaction boundaries](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/persistence/database.py).
 
 ## Public values, errors, and compatibility
 
@@ -420,6 +426,7 @@ explicit compatibility rules.
 auxiliary is a trusted execution purpose, not permission a client can obtain through an arbitrary header.
 Client ingress validation and upstream protocol parsing are additional checkpoints, not substitutes for the gates.
 All three origins can use built-in executors without an independent Gateway deployment.
+All three explicitly bind a registered Scope; background stages and service identities do not bypass data authorization or Scope isolation.
 
 ## Execution of a primary-model call
 
@@ -508,9 +515,10 @@ The session identity, history, adoption, and recovery rules below apply to manag
 
 ### Minimum identities
 
-Core associates operations with tenant, authenticated principal, Scope, task, session, branch, turn request, and attempt.
-Scope is a data access boundary, not authentication. Different tasks and branches in the same project must not share one
-implicit session history.
+Core associates operations with trusted caller bindings, Scope, task, session, branch, turn request, and attempt;
+deployment tenant relationships come from trusted integration mappings. Scope is a business partition, with authentication
+and permissions supplied by existing Access Plane and trusted integration boundaries. Different tasks and branches in
+the same project must not share implicit history.
 
 Client-supplied model names, roles, Scope headers, and session IDs are inputs. Core must validate bindings against the
 authenticated identity. Gateway's service identity must not use a shared administrator token on behalf of all end users.
@@ -559,7 +567,7 @@ History that cannot be matched reliably returns an explicit error or enters an e
 similarity-based splicing is not supported. Reusing a request ID with different content or conflicting policy requirements
 returns a conflict.
 
-Tenant, authenticated principal, session, branch, and caller request ID define the idempotency boundary. Core atomically
+Scope, trusted caller binding, session/branch or background namespace, and caller request ID define the idempotency boundary. Core atomically
 establishes a unique operation before any paid preparation. Repeated prepare calls verify the original input and caller
 constraints and return the original operation's preparation state, plan, or existing result reference without repeating
 recall, Embedding, or compaction. Incomplete preparation returns a queryable in-progress state. Controlled recovery uses
@@ -626,31 +634,157 @@ return to Core for new final bytes and permits. Digests cover only the body sent
 provider protocol conversion follows the "Third-party gateway integration" section. It cannot claim byte identity with
 the first hop.
 
+### Shared Scope and caller identity
+
+Every new Core control request explicitly carries one `scope_id`, reusing existing Scope registration, selection, and
+binding mechanisms. Scope is an opaque business partition; it does not encode tenant, user, repository path, or session
+hierarchy, and supplying an ID does not grant access. Unknown Scopes use the existing `scope_not_found` semantics rather
+than being registered by inference requests. This proposal adds no separate tenant directory, login system, or Gateway
+session permission store. Tenant relationships use existing trusted identities and Scope bindings.
+
+Resource addresses are `(scope_id, session_id, branch_id)`, `(scope_id, operation_id)`, `(scope_id, attempt_id)`, and
+Scope-qualified exact projection references. Reads, updates, idempotency lookups, reservations, payload reads, recovery,
+and cleanup bind Scope before locating objects. Even globally unique IDs cannot justify a global lookup followed by a
+Scope check. After current-Scope authorization, IDs belonging to other Scopes appear absent in this Scope without
+confirming their actual existence or ownership.
+
+Within a Scope, sessions default to their trusted caller binding and restricted delegates; `scope.read` or knowledge of
+a session ID does not grant another caller's session. Initial support provides no session sharing or cross-Scope migration;
+cross-task delivery uses existing authorized Handoff workflows. Original Principals and delegation come from authentication
+boundaries, and `caller_binding_id` represents stable original-caller/integration ownership rather than an RBAC Binding ID,
+short-lived token, or executor instance. Credential rotation does not change idempotency identity; restricted delegation
+is reverified for current validity. Core stores only verifiable caller-binding references. Ordinary JSON, model roles, or compatibility-entry
+headers cannot self-declare Principals, tenants, administrators, or `core_background` authority. Model-compatible ingress
+resolves context identity from verified integration configuration and Scope bindings while preserving provider message shapes.
+
+Parent and context_references do not implicitly grant reads. Cross-Scope Source, Artifact, and Memory references retain
+original Scope and exact versions and require authorization for each read; frozen snapshots cannot bypass revocation.
+Preparation, recovery, and release perform the corresponding current authorization checks. Request, budget, and session
+state stay in the owning operation's Scope; reading referenced material does not advance history or debit another Scope.
+
 ### Service interfaces and remote control APIs
 
-Basic checks use before_inference and after_inference, coordinated automatically by a managed SDK or called explicitly
-by an application. Proposed remote endpoints are POST /v1/inference/gates/input and POST /v1/inference/gates/output,
-returning projections, decisions, and scope statements bound to the checked input. Calling a check API alone does not
-prove that the application sent or released content according to the result.
+Organize APIs by business capability, following the operation-oriented style of `/v1/context/prepare`,
+`/v1/memory/entries/get`, and `/v1/work/...`. New control operations consistently use POST, JSON `scope_id`, and snake_case
+operationIds; runtime names do not create another URL namespace. Existing `/v1/context/prepare` retains its ephemeral,
+read-only supplementary-context contract rather than becoming a full inference or session-write entry point.
 
-Persistent management uses the following operations. Python service interfaces and remote APIs share semantics;
-in-process calls do not need HTTP:
+Context preparation and basic checks share these entry points. Preparation results explicitly declare current-call or
+persistent state scope:
 
-Core managed entry points coordinate ContextRuntime for preparation/selection and GateRuntime for response checks and
-release recovery. Attempts, events, and queries reuse shared execution services. GatewayRuntime uses these operations
-without a separate context HTTP protocol or state store.
-
-| Operation | Proposed interface | Purpose |
+| Proposed interface | operationId | Input and result |
 | --- | --- | --- |
-| Prepare plan | `POST /v1/inference/plans/prepare` | Idempotently bind principal, session, and request and establish the operation first; repeats recover preparation state, the immutable plan, or result references. |
-| Begin attempt | `POST /v1/inference/plans/{plan_id}/attempts` | Verify policy and session version, select an eligible target, atomically reserve budget, and return an attempt and final execution permit. |
-| Submit response | `POST /v1/inference/attempts/{attempt_id}/response` | Check the raw response and delivery projection, save a permitted checked candidate, and return a release permit without adopting session history. |
-| Recover release | `POST /v1/inference/attempts/{attempt_id}/release` | Reauthorize a saved projection, check current output policy, and return the exact checked projection with a new executor-bound release permit without a new model attempt. |
-| Select answer | `POST /v1/inference/operations/{operation_id}/selection` | The host idempotently adopts or abandons a candidate using an expected session version and exact answer reference; only adoption advances selected history. |
-| Report events | `POST /v1/inference/attempts/{attempt_id}/events` | Idempotently record send, response, security, release, cancellation, usage, and uncertain-result events by event ID. |
-| Query operation | `GET /v1/inference/operations/{operation_id}` | Under current authorization, query plans, exact candidate references, selection/delivery states, costs, and evidence completeness; reads do not issue permits. |
+| `POST /v1/inference/prepare` | `prepare_inference` | `scope_id`, `request_id`, execution profile, purpose, and input; under an allowed profile, return a current-call logical plan or establish a persistent operation before returning preparation state, an immutable plan, or existing result references. Session mode also requires session, branch, and expected version. |
+| `POST /v1/inference/input/check` | `check_inference_input` | `scope_id`, current-call identity, and GateInput; return CheckedInput without creating persistent operations or issuing persistent execution permits. |
+| `POST /v1/inference/output/check` | `check_inference_output` | `scope_id`, corresponding checked input, and GateOutput; return CheckedOutput without automatically saving or adopting session history. |
 
-Plan preparation must establish an operation before triggering paid Embedding, classification, or compaction subcalls.
+Stateless preparation still uses ContextRuntime for window budgets, current-call frozen injections, and cache breakpoints.
+GatewayRuntime maps parameters, calls input/check, executes, and calls output/check without session or ledger tables.
+Persistent mode shares preparation semantics, then uses the attempt protocol below for recovery and budget guarantees.
+Authorized server execution profiles constrain state scope; callers cannot disable persistence to bypass a route's required
+retention, admission, or total budget.
+
+Persistent sessions are created explicitly with opaque IDs assigned by Core; external host session strings do not directly
+become server-side session identities:
+
+| Proposed interface | operationId | Input and result |
+| --- | --- | --- |
+| `POST /v1/context/sessions/create` | `create_context_session` | `scope_id`, `request_id`, and an allowed context profile; idempotently return the session, initial branch, and version. |
+| `POST /v1/context/sessions/get` | `get_context_session` | `scope_id`, `session_id`, and `branch_id`; under current authorization, return bounded metadata, branch version, and exact references without permits or unchecked history bodies. |
+| `POST /v1/context/branches/fork` | `fork_context_branch` | `scope_id`, `session_id`, `from_branch_id`, `from_version`, and `request_id`; create a branch from an exact recoverable history version without changing the original branch. |
+
+Persistent execution reuses one operation and attempt protocol:
+
+| Proposed interface | operationId | Input and result |
+| --- | --- | --- |
+| `POST /v1/inference/attempts/begin` | `begin_inference_attempt` | `scope_id`, `operation_id`, exact plan, and `request_id`; verify ownership/versions, bind target and executor, reserve budget as configured, and return the original attempt or single-use permit. |
+| `POST /v1/inference/responses/submit` | `submit_inference_response` | `scope_id`, `attempt_id`, `request_id`, raw response, and completion state; check and save an exact permitted candidate, returning release permission after confirmation without adopting history. |
+| `POST /v1/inference/releases/prepare` | `prepare_inference_release` | `scope_id`, `attempt_id`, `candidate_id`, and `request_id`; reauthorize/check the same saved candidate and issue an executor-bound release permit under recovery rules without a new model attempt. |
+| `POST /v1/inference/selections/commit` | `commit_inference_selection` | `scope_id`, session/branch, `operation_id`, exact candidate, expected version, `request_id`, and adopt/abandon action; process idempotently, advancing selected history only on adoption. |
+| `POST /v1/inference/events/append` | `append_inference_events` | `scope_id`, `attempt_id`, `request_id`, and a bounded batch with stable `event_id` values; verify executor/event authority and append evidence idempotently. |
+| `POST /v1/inference/operations/get` | `get_inference_operation` | `scope_id` and `operation_id`; return bounded plan/result references, states, costs, and evidence completeness without issuing permits. |
+
+ContextRuntime handles preparation, sessions, and selection; GateRuntime handles final checks and release recovery;
+shared execution services manage attempts, events, and budgets. GatewayRuntime uses those operations without another
+control protocol or duplicated state. Initial sessions advance serially; accept forks, version conflicts, and history
+baseline matching separately before enabling branching. Cross-branch candidate adoption is allowed only on an explicit
+fork within the same session, with its baseline verified against the original operation's exact input and current access.
+The selection belongs to the new branch without overwriting original adoption facts or automatically replaying tool effects.
+
+### DTOs, errors, and integration contracts
+
+- **Scope**: Every control DTO declares one required `scope_id`, reuses existing validation/length limits, and rejects undeclared fields; body, headers, and URLs cannot supply competing overrides. Child objects must belong to that Scope, and sessions, branches, operations, plans, attempts, and candidates must also match their complete parent relationships.
+- **Idempotency and versions**: Persistent mutations consistently use stable `request_id` values as their create, prepare, begin, submit, recover, or selection request keys. Same-key/different-body requests conflict. `expected_branch_version` expresses CAS; HTTP trace/request IDs are not idempotency keys. Events also retain `event_id`, preventing duplicates when retries regroup batches. Stateless request IDs provide current-call association without restart-safe deduplication; retries reuse a still-valid exact prepared plan.
+- **Results**: Use operation-specific typed requests/results and Scope-qualified exact identities/versions. Queries default to metadata and references; recovering bodies requires current GateRuntime release checks, without an unchecked body-download API. Only model-compatible ingress returns native provider shapes; do not wrap them in Core control results or arbitrary generic JSON dictionaries.
+  Preparation results distinguish `none` and `durable` through `persistence`; stateless mode returns a complete short-lived plan value rather than a reference requiring nonexistent storage. Remote current-call plans bind Scope, caller, content, and expiry for final admission; caller-rewritten policy fields are not trusted.
+- **Errors**: Reuse ErrorResponse's `error.code/message/details` and `X-PowerContext-Request-ID`. Distinguish 401, 403, 404, 409, 422, budget/rate-limit 429, and unavailable-dependency 503. Details reveal neither other Scopes nor sensitive content. A completed check may return 200 with a block decision; execution failure cannot masquerade as a successful model answer.
+- **Bounded reads**: Session and operation queries never implicitly expand all history, events, or child attempts; return exact references and completeness statements. Future lists use `limit/cursor`, binding cursors to Scope, caller, filters, ordering, and snapshot boundary, with authorization filtering before pagination.
+- **Capabilities**: Declare support independently for basic gates, persistent execution, persistent sessions, forks, and strict budgets. Reject unsupported capabilities before accepting writes or paid work. HTTP, SDKs, and integrated hosts declare support individually without automatically expanding MCP tool sets.
+
+Embedded entry points retain `application.context.for_scope(scope_id)`, extending that group with session methods.
+Proposed `application.inference.for_scope(scope_id)` groups checks and managed execution. The application group binds Scope;
+domain methods accept neither a competing Scope nor public principal, role, or permission parameters. Remote Clients retain
+flat typed methods such as `prepare_inference(PrepareInferenceRequest(scope_id=..., ...))`; Server adapters translate DTOs
+into scoped applications, sharing behavior between Python and HTTP.
+
+All new operations use the existing OpenAPI source and generation chain, declare `x-powercontext-scope-mode: current`, and
+use `x-powercontext-access` for existing Server PEP enforcement rather than creating another PDP in Gateway or domain runtimes:
+
+| Operation category | Access Plane baseline | Additional domain constraints |
+| --- | --- | --- |
+| Basic checks and metadata reads | Owning Scope's `scope.read` | Session/operation caller binding, exact references, and current retention permissions; check costs remain constrained by permitted profiles and limits. |
+| Session creation, forks, inference preparation, selection | Owning Scope's `scope.contribute` | Host delegation, session ownership, branch versions, and allowed context capabilities; stateless preparation has the same admission permission. |
+| Attempts, responses, recovery, execution events | Owning Scope's `scope.contribute` | Restricted executor delegation, original caller binding, single-use permits, fencing, and operation-specific transitions. |
+| Injection or recovery of external material | Existing checks for every Scope / Artifact / evidence reference | Session, Handoff, or Gateway service credentials do not expand read permissions. |
+
+Server Access Plane owns authentication, role, and relationship authorization. Core receives trusted authorization context
+and checks ownership, delegation, and state invariants. GateRuntime uses current authorization results for egress/release
+without copying the role store or trusting ordinary business fields as authority. Initial support reuses existing Scope
+actions and session-ownership constraints without a session role system; future sharing extends Access Plane consistently.
+Embedded applications configure their
+own trusted invocation boundary; calling `for_scope(...)` alone is not authentication.
+
+For example, persistent primary-model preparation submits business identity and input without self-declared tenant or
+administrator authority:
+
+```json
+{
+  "scope_id": "scp_project_a",
+  "request_id": "turn-17",
+  "session_id": "ctxs_example",
+  "branch_id": "ctxb_example",
+  "expected_branch_version": 6,
+  "execution_profile": "managed-session",
+  "purpose": "agent_main",
+  "target_profile": "coding-default",
+  "input": {"messages": [{"role": "user", "content": "Continue fixing the client."}]}
+}
+```
+
+This is a proposed DTO example. Returned operations, plans, candidates, and queries stay in the same Scope. Replacing
+an attempt or candidate with another Scope's ID must fail rather than checking only the parent request's Scope.
+
+The corresponding persistent preparation result returns readiness and exact references, leaving execution permission to begin:
+
+```json
+{
+  "scope_id": "scp_project_a",
+  "operation_id": "iop_example",
+  "persistence": "durable",
+  "status": "ready",
+  "plan_ref": {"scope_id": "scp_project_a", "plan_id": "ipl_example", "version": 1},
+  "branch_ref": {
+    "scope_id": "scp_project_a",
+    "session_id": "ctxs_example",
+    "branch_id": "ctxb_example",
+    "version": 6
+  }
+}
+```
+
+### Plan preparation and attempt admission
+
+Persistent plan preparation must establish an operation before triggering paid Embedding, classification, or compaction subcalls.
 Auxiliary calls share parent-task association and total budgets, use separate restricted execution purposes, and do not
 reenter primary-model plan preparation. Primary-model traffic does not gain a model Judge by default.
 Core does not hold session write locks or database transactions across external model calls: obtain versioned input,
@@ -1018,9 +1152,11 @@ non-semantic metadata added by this system. Business timestamps, versions, and o
 are preserved.
 
 Changes to model, provider, deployment, account, tools, representation, or privacy policy can affect cache compatibility.
-Cache routing keys use stable values that do not reveal identities and are partitioned by tenant and permission scope.
+Cache routing keys use stable values that do not reveal identities and bind Scope, caller privacy, and permission boundaries.
 Identical text does not permit cross-permission response reuse. Local cache keys or context digests support association
 and deduplication, not proof that a provider holds actual KV state.
+Actual provider cache isolation follows the target service contract. Profiles constrain accounts or deployments when
+separate privacy boundaries are required and validate them; local Scope grouping is not physical provider KV isolation.
 
 Official OpenAI documentation requires matching reusable rendered prefixes and distinguishes model-specific cache controls
 and billing. Anthropic describes cache hierarchy across tools, system, and messages. Gemini distinguishes implicit and
@@ -1337,52 +1473,118 @@ Record simulated inputs, direct hook calls, real proxy services, and complete ho
 
 ### Core operational records
 
-The following repositories and tables apply to modes with persistent sessions, budgets, or ledgers enabled. Their existence
-does not impose database creation on basic ContextRuntime or GateRuntime.
+Basic ContextRuntime and GateRuntime run statelessly without new databases or tables. Compose persistent capabilities by
+dependency: persistent execution uses four table groups for payloads, operations, attempts, and execution events; session
+continuity adds sessions, branches, and context events; strict budgets add budget accounts. These tables belong to the
+existing Core database and migration system, without separate databases or dynamic tables per runtime, Scope, or Gateway.
 
-New records are separated by responsibility: sessions and events, frozen snapshots and injections, execution plans and
-permits, budget reservations, and execution and usage events. They use independent tables or repositories within the
-existing database and migration system, reference exact Source/Artifact identities, and do not enter long-term Memory.
+### Reusing existing storage and proposed tables
 
-Organize logical repositories around session selection, execution records, and budget ledgers rather than creating one
-table for every object name. Before implementation, map physical tables to reusable content storage and define primary
-and unique keys, transaction boundaries, retention/deletion, and migration of existing records. Content blocks may reuse
-object-storage interfaces, but deduplication does not turn runtime history into Source or cache keys into business identity.
-ContextRuntime manages session/projection semantics, GateRuntime manages check policies and decisions, and shared execution
-services manage identities, permits, and budget evidence. Runtime boundaries neither duplicate repositories nor split
-transactions spanning those responsibilities.
-Strict persistent mode guarantees these atomic conditions in the same database transaction; complete object bodies before
-publishing readable references:
+The baseline uses shared SQLAlchemy table definitions, AsyncDatabase transactions, and canonical binary payloads.
+Existing `pc_scopes` is the Scope catalog, and Source/Artifact tables remain evidence and Artifact authorities.
+`pc_context_bootstrap_receipts` stores specific host delivery receipts, `pc_decision_observations` stores bounded judgment
+records, and `pc_model_usage_daily` is a potentially incomplete daily aggregate. None directly supplies session bodies,
+single-use execution permits, or a recoverable cost ledger. Reuse connections, codecs, identity columns, migrations,
+backups, and statistical projections while preserving existing table meanings.
+
+The following persistent-mode design lists fields needed for queries and consistency. Freeze concrete lengths, DDL, and
+backend compatibility constraints before implementation:
+
+| Proposed table | Primary key and main fields | Responsibility and constraints |
+| --- | --- | --- |
+| `pc_context_sessions` | PK `(scope_id, session_id)`; caller binding, create-request key, context profile/delegation versions, retention policy, creation time | Session metadata; FK to registered Scope, with creation idempotent within Scope and caller. |
+| `pc_context_branches` | PK `(scope_id, session_id, branch_id)`; `version`, exact head manifest, epoch, fork source branch/version | CAS head for selected history; same-Scope session FK, with forks neither rewriting the original branch nor copying all history. |
+| `pc_context_events` | PK `(scope_id, session_id, event_id)`; monotonic sequence, source branch, event kind, exact input/injection/tool-result references, selection request key/candidate association | Append context facts; sequence unique within session and selection keys unique within branch/caller; locate candidates through execution records and payload references. |
+| `pc_context_payloads` | PK `(scope_id, payload_id)`; kind, owning-object reference, schema/representation version, digest, binary payload, recoverability state, retention boundary | Typed immutable content blocks, manifests, snapshots, plan versions, and checked candidates share storage; sensitive mappings use a restricted kind rather than separate tables for every value. |
+| `pc_inference_operations` | PK `(scope_id, operation_id)`; caller binding, non-null idempotency namespace/request key, input digest, purpose, parent operation, optional session/branch, plan/snapshot references, preparation state | Authoritative logical-work identity; establish uniqueness before paid preparation and retain exact historical plan references. |
+| `pc_inference_attempts` | PK `(scope_id, attempt_id)`; operation, begin-request key, exact plan, target, executor/fencing, send facts, checked-candidate references, release generation, optional reservation/settlement version | One controlled execution; begin requests unique within operation, with send, save, release, and adoption kept distinct. |
+| `pc_inference_events` | PK `(scope_id, attempt_id, event_id)`; event sequence, producer, kind, evidence version, body-free payload, creation time | Append send, cancel, release, and usage evidence; duplicate events verify content and corrections append evidence without overwriting or charging twice. |
+| `pc_inference_budget_accounts` | PK `(scope_id, budget_id)`; task/caller binding, currency, limit, reserved/settled amounts, version | Strict-budget mode only; same-Scope attempts compete atomically, amounts use fixed precision or minor currency units, and unknown costs remain explicit. |
+
+Checked candidates have exact identities in attempt records and typed payloads. On adoption, context events reference those
+candidates without duplicating answers or inserting Memory Review Candidates. Execution/usage events and context semantic
+events retain separate authority and link through exact references rather than inferring tool execution, user receipt, or
+adoption. Background work without sessions does not create fake sessions; its operation uses a trusted workload namespace
+while retaining Scope and execution ownership.
+
+Initially keep payloads in the same relational database using existing binary codecs; the baseline does not provide a
+general object repository that already implements this design. Structured metadata uses canonical codecs; final transport
+bodies retain exact bytes and verify their recovered digests rather than substituting approximately equivalent
+reserialization. Chunk large bodies, with manifests referencing immutable shared prefixes and incremental tails.
+External body storage requires explicit authorized reads, complete-write-before-
+publication, recovery, backups, and garbage collection before claiming recoverability; adding an object URL is insufficient.
+Source/Artifact references always retain original Scope and exact versions. Payload digests do not replace business
+identities or read credentials.
+
+### Scope constraints, indexes, and atomic commits
+
+All proposed tables lead primary keys and common indexes with `scope_id`. Foreign keys between same-Scope operational
+records carry Scope and complete parent identities. Root records such as sessionless operations still reference `pc_scopes`;
+optional session and branch values must both be absent or identify the same session branch. For example, attempts reference operations through
+`(scope_id, operation_id)`, branches reference sessions through `(scope_id, session_id)`, and plan/candidate payload
+references verify Scope, kind, and owning object. Explicit cross-Scope evidence references use existing data authorization
+instead of permitting arbitrary joins between operational partitions. Identity columns reuse `identity_string` exact
+comparison semantics.
+
+Operation idempotency uses `(scope_id, caller_binding_id, request_namespace, request_id)`, all non-null. Core derives the
+namespace from session/branch or trusted background workload; it neither relies on UNIQUE behavior for nullable session
+columns nor allows client namespaces to impersonate other purposes. Begin, response, release, and selection requests also
+deduplicate within exact parents. Tenant deployments distinguish identities through trusted caller bindings and Scope
+relationships rather than introducing a freely supplied `tenant_id` partition.
+
+Read incremental context by `(scope_id, session_id, sequence)` and execution evidence by
+`(scope_id, attempt_id, sequence)`. Operation queries index Scope, caller, and creation time; retention cleanup indexes Scope
+and expiry. Apply caller restrictions in SQL before pagination instead of loading all Scope bodies and filtering later.
+Append new content/references per turn using shared prefixes and bounded manifest checkpoints without copying full bodies
+or reference lists. Acceptance verifies query plans, body/event batch limits, long-session read/write amplification, index
+sizes, and retention cleanup costs.
+
+Core services hold one `AsyncDatabase.transaction()` and AsyncConnection across repositories. Repositories do not commit
+independently, and locks do not span external model calls:
 
 | Operation | Records that must hold together |
 | --- | --- |
-| Establish operation | Request idempotency key, principal/session binding, original input constraints, and preparation state, before paid child calls. |
-| Begin attempt | Begin-request unique key, eligible target, executor ownership/fencing, attempt, budget reservation, and total-task budget check. |
-| Save candidate | Stable submission identity, exact projection digest/readable reference, checked policy, and response association, without changing the selected branch. |
-| Adopt answer | Selection idempotency key, expected branch version, exact input/candidate association, selected events, and new version, with no partial advancement on conflict. |
-| Settle usage | Evidence version for the unique attempt, reservation changes, and cost updates; repeated/out-of-order events do not charge twice, and corrections preserve original evidence. |
+| Create or fork session | Scope/caller idempotency key, session or new branch, exact baseline, and initial head; retries return original IDs. |
+| Establish operation | Request idempotency key, principal/session binding, original input constraints, and preparation state before paid child calls. |
+| Begin attempt | Begin-request unique key, eligible target, executor ownership/fencing, attempt, budget-account version, reservation, and total-budget check. |
+| Save candidate | Stable submission identity, exact complete payload, digest, checked policy, and attempt association without changing the selected branch. |
+| Adopt answer | Selection idempotency key, exact input/candidate association, selection event, new manifest, and branch CAS; conflicts roll everything back. |
+| Settle usage | Evidence version for the unique attempt, appended event, reservation changes, and account/cost updates without charging duplicate or out-of-order events twice. |
 
-Repository interfaces must not split these atomic conditions into independent commits. Cross-database designs need an
-equivalent explicit protocol before claiming the same guarantees.
+For example, advancing a branch requires its complete partition and expected version and shares a transaction with the
+selection event:
 
-Store shared history bodies as immutable content blocks. Snapshots hold ordered manifests, transformation parameters,
-rendering versions, and final-body digests. Frozen versions recover exact bodies without repeatedly persisting full history
-and producing quadratic storage growth with turn count. Manifests use immutable shared prefixes and incremental tails;
-copying the full reference list each turn would only move quadratic growth into metadata. Use bounded checkpoints and
-caches for reconstruction chains, measuring read, write, and space costs. Derived checkpoints preserve event identities,
-content ordering, and old rendering versions. Reconstruction verifies the original body digest rather than reinterpreting
-history using current knowledge. Content deduplication stays within authorization and retention boundaries; content hashes
-do not become cross-Scope read credentials. Object and database publication ensures references are readable: complete
-objects first, then publish manifests atomically. Collect unreferenced objects under an explicit policy.
+```sql
+UPDATE pc_context_branches
+SET version = version + 1, head_payload_id = :new_head
+WHERE scope_id = :scope_id AND session_id = :session_id
+  AND branch_id = :branch_id AND version = :expected_branch_version;
+```
 
-Content lacking persistence permission uses permitted redacted projections, restricted short-term storage with explicit
-expiry, or a mode without persistent continuity. Only records containing valid recoverable bodies promise replay and
-restart continuation. After retention expires, queries explicitly report unrecoverability rather than following new content
-to fill old snapshots.
+Adoption succeeds only when exactly one row changes. Account updates also check Scope and version; cross-database designs
+need an equivalent protocol before claiming these guarantees. Derived checkpoint recovery verifies original body digests,
+event identities, ordering, and old rendering versions without reinterpreting history using current knowledge. Deduplication
+stays within authorization and retention boundaries; equal hashes do not permit shared reads across Scopes or private sessions.
 
-Configure separate retention for bodies, metadata, placeholder mappings, and cost evidence. Retention periods and explicit
-cache TTLs are independent. Deleting session records does not imply synchronized deletion of provider caches or received
-data.
+### Migrations, retention, and statistics compatibility
+
+Use existing shared metadata, database profiles, migration versions, and backup/restore inventories. Verify identity columns,
+composite keys, indexes, constraints, and concurrency on SQLite, MySQL, and OceanBase. `create_all` does not upgrade existing
+structures, and one backend's acceptance does not establish all-backend support. Integrate new tables by capability group;
+do not backfill Source, Artifact, Handoff, bootstrap receipts, or daily statistics into inference sessions or cost evidence.
+Historical records missing execution evidence remain uncovered without fabricated attempts, adoption states, or cache hits.
+
+Configure separate retention for session bodies, projections, sensitive mappings, and billing evidence. Cleanup is bounded
+by Scope, preserving necessary evidence for unsettled attempts. After body expiry, permitted identity tombstones may remain;
+queries/recovery explicitly report unrecoverability without new recall or dangling ledger references. Scope retention
+cleanup or future deletion also preserves required unsettled evidence rather than cascading away budget and cost records.
+Disabling optimization does not delete evidence. Before rolling back versions, stop admission to new capabilities without discarding unsettled
+budgets. Session deletion does not imply synchronized provider KV deletion.
+
+`pc_model_usage_daily` may receive derived statistics from the new ledger, but each managed execution chooses one statistics
+writer so that old usage wrappers and ledger projections cannot count it twice. Daily aggregates remain display projections;
+admission, settlement, and recovery use authoritative execution records. Rebuild projections from checkpoints without
+modifying original attempts, evidence, or settlements.
 
 ### Deployment boundaries
 
@@ -1393,7 +1595,7 @@ from existing gateways when integrating them; direct connections let built-in ex
 stores. Core plans reference credential identities without returning keys. Deployment-level enforcement separately configures
 outbound traffic and configuration-change permissions.
 
-In persistent mode, Core owns database and object-storage recovery. Optional Gateway scales horizontally, with release
+In persistent mode, Core owns recovery of the database and configured body storage. Optional Gateway scales horizontally, with release
 checks for control protocol version intersections. Report availability separately for ContextRuntime, GateRuntime, the actual executor,
 upstream services, and enabled outboxes. Measure in-process and remote invocation overhead separately.
 
@@ -1466,8 +1668,10 @@ cross-process total budgets.
 
 After P0a is usable, enable persistent context-management delegation, frozen injections, and session adoption for ContextRuntime, alongside
 independently enabled operation idempotency, checked candidates, explicit selection, release recovery, and a minimal
-execution ledger. Begin with serial sessions and verified fixed targets. Declare persistent
-session and budget dependencies separately; each enabled capability must pass its atomicity and abnormal-recovery checks.
+execution ledger. Begin with serial sessions and verified fixed targets. Deliver idempotent session creation and bounded
+queries using the four-table execution group, three-table session group, and optional budget accounts; enable forks after
+separate acceptance. Declare persistent session and budget dependencies separately; each enabled capability must pass its
+atomicity and abnormal-recovery checks.
 Add one LiteLLM profile and two fixed, verifiable models to test tool flows and switching, recording cold-cache costs and
 actual attempt boundaries.
 
@@ -1494,7 +1698,9 @@ overheads. Claim benefits only after predefined quality and cost thresholds pass
 
 Extend Rust HTTP/SSE, backpressure, cancellation, and reliable outboxes while retaining the same Core detection rules.
 Accept one real host and native protocol before another, covering Responses, Anthropic Messages, signed/encrypted blocks,
-history truncation, tool lifecycles, reconnection, context-management delegation, session-selection acknowledgments, and actual authorization. Integrate
+history truncation, tool lifecycles, reconnection, context-management delegation, session-selection acknowledgments, and actual authorization. Enable
+explicit forks only after verifying old-version baselines, cross-branch selection, and tool-effect isolation; unaccepted
+branch protocols are not implicitly supported. Integrate
 Bifrost, New API, and remaining Core inference paths with versioned capability matrices. Complete revocation propagation,
 multi-instance takeover, catastrophic outbox loss, provider reconciliation, and high-concurrency deployment acceptance.
 Native hosts, multimodal content, and unintegrated endpoints do not inherit full compatibility from a basic cache success.
@@ -1516,7 +1722,11 @@ insufficient while preserving context delivery and mandatory security.
 | Basic gates only | Current-call checks need no session or ledger database and make no claims of persistent replay or cross-process total budgets. |
 | Executor consistency | Built-in, SDK, and Rust paths receive the same Core decision for the same checked content and policy, without early sending or release. |
 | prepare / manual check only | Explicitly report checked content scope without claiming protection for host-appended history or unreported outputs. |
+| Cross-Scope objects and private sessions | Equal request keys in two Scopes do not conflict; borrowing another Scope's session/plan/attempt/candidate ID cannot read, release, adopt, or debit. Other callers in the same Scope cannot bypass session ownership. |
+| Authorization and reference revocation | Real Server acceptance enables Access Plane and uses different identities and revocation; referenced Scope material is authorized individually, frozen snapshots do not bypass revocation, and changing Scope under a shared token is not authorization isolation. |
+| API and table isolation agree | New DTOs, generated contracts, scoped applications, SQL predicates, composite keys, and FKs retain the same Scope; nullable background sessions do not bypass operation uniqueness. |
 | Context-management delegation | Current-payload checks do not grant session authority; no recall, compaction, truncation, or history advancement outside delegated scope. |
+| Stateless cache preparation | The same prepare entry point returns current-call context/cache plans for Gateway execution through both gates without new tables or claims of persistent idempotency/recovery. |
 | Single coordination entry point | Hooks, hosts, and ContextRuntime do not duplicate automatic injections; external history edits trigger explicit branch or reconstruction checks. |
 | Safe projection changes input | Recheck tokens, prefixes, and breakpoints and check the final payload again; never reuse an old byte permit or claim the original prefix hit. |
 | Tool turns and insufficient window | Ordinary tool turns replay frozen injections; insufficient windows create a new epoch under accepted policies or explicitly reject and request handoff, without silently dropping unfinished actions. |
@@ -1603,7 +1813,8 @@ evidence, not substitutes for one another.
 | Core ContextRuntime | Context delegation, material/history selection, window budgets, frozen projections, cache plans, and explicit adoption. | Basic planning has no persistence dependency; sessions, reconstruction, and adoption stay within delegation/acceptance scope, without repeated recall on ordinary tool turns. |
 | Core GateRuntime | Authorization, sensitive transformations, final input/output checks, release, and failure semantics. | Usable without Gateway or persistent sessions; changed input triggers context-plan rechecks and actual-byte checks cannot be skipped. |
 | Built-in and SDK execution | Provider adapters, final-request checkpoints, raw-response checkpoints, and managed calls. | Every actual attempt is checked, support limits are explicit, and strict never releases early. |
-| Core control contract | In-process/remote checks, delegation, idempotent plans/attempts, responses, release recovery, selection, and queries. | Shared semantics without mandatory loopback HTTP; lost acknowledgments recover exact results without duplicate calls or adoption. |
+| Core control contract | Unified Scope DTOs, operationIds, errors/capabilities, scoped applications, Access Plane metadata, and managed execution protocol. | Python/HTTP share semantics; cross-Scope IDs and caller substitutions fail; lost acknowledgments do not duplicate calls/adoption, without mandatory loopback HTTP. |
+| Relational storage and migrations | Scope-keyed four-table execution group, optional three-table sessions, and budget accounts; shared codecs, transactions, migrations, and backup inventories. | Each backend accepts ownership, idempotency, CAS, recovery, retention, and incremental costs independently, preserving existing table meanings without double-counted statistics. |
 | Core sessions and projections | Incremental events, frozen injections, candidates/explicit adoption, branches, manifests, retention, and Handoff associations. | Separate saving, release, adoption, and receipt; reproducible replay, concurrency, restart, and retention boundaries. |
 | Cache planning and execution | InferencePlan.cache_policy, eligible breakpoints, target affinity, parameter mapping, normalized usage, and per-turn views. | Real Gateway cache reads, faithful prefixes/controls, and complete-task costs including writes and other overhead meeting thresholds. |
 | Optional Rust GatewayRuntime | Both Core runtime clients, invocation coordination, HTTP/TLS, permit verification, SSE, backpressure, cancellation, and outbox. | Reuses Core context/security decisions, bounds state/resources, does not automatically resend during cancellation/recovery, and never releases early. |
