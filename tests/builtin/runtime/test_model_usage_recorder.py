@@ -72,7 +72,10 @@ def _offer(recorder: _ModelUsageRecorder, usage: InferenceUsage | None = None) -
 
 async def _rows(database: AsyncDatabase) -> tuple[StoredModelUsage, ...]:
     async with database.transaction() as connection:
-        return await StatisticsRepository().usage(connection, _SCOPE, _DAY, _DAY)
+        usage, _recall = await StatisticsRepository().daily_usage_many(
+            connection, (_SCOPE,), _DAY, _DAY, estimator=None
+        )
+        return usage[_SCOPE]
 
 
 async def _assert_connection_restored(database: AsyncDatabase, busy_timeout: int = 5_000) -> None:

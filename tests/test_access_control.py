@@ -35,7 +35,6 @@ from powercontext.server.authz import (
     AccessResourceType,
     AccessRole,
     AccessRoleCardinality,
-    AccessUnavailableError,
     BuiltinAuthorizationProvider,
     CreateBinding,
     GroupRef,
@@ -45,7 +44,7 @@ from powercontext.server.authz import (
     ReplaceBinding,
     ResourceRef,
 )
-from powercontext.server.authz.composition import open_builtin_access_control
+from powercontext.server.authz.composition import open_builtin_access_control, open_casbin_access_control
 from powercontext.server.authz.repository import (
     ACCESS_TABLES,
     RelationalAccessRepository,
@@ -416,13 +415,54 @@ def test_resource_cursor_is_bound_to_trusted_group_membership() -> None:
     asyncio.run(scenario())
 
 
-def test_missing_owner_is_fail_closed_and_owner_is_immutable() -> None:
+@pytest.mark.parametrize("backend", ["builtin", "casbin"])
+def test_missing_owner_preserves_explicit_grants_and_owner_is_immutable(backend: str) -> None:
     async def scenario() -> None:
-        async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(ADMIN,)) as service:
+        opener = open_builtin_access_control if backend == "builtin" else open_casbin_access_control
+        async with opener(SQLiteConfig(), bootstrap_administrators=(ADMIN,)) as service:
+            scope = ResourceRef.scope("scope-a")
             skill = ResourceRef.artifact("scope-a", family="skill", artifact_id="skill-a")
-            with pytest.raises(AccessUnavailableError, match="owner"):
-                await service.require(ADMIN, AccessAction.ARTIFACT_SHARE, skill, context=AUDIT)
+            neighbor = ResourceRef.artifact("scope-a", family="skill", artifact_id="skill-b")
+            await service.require(ADMIN, AccessAction.ARTIFACT_SHARE, skill, context=AUDIT)
+            for principal, action in (
+                (ADMIN, AccessAction.ARTIFACT_READ),
+                (ALICE, AccessAction.ARTIFACT_READ),
+                (ALICE, AccessAction.ARTIFACT_WRITE),
+                (ALICE, AccessAction.ARTIFACT_SHARE),
+            ):
+                with pytest.raises(AccessDeniedError):
+                    await service.require(principal, action, skill, context=AUDIT)
+            scope_grant = await service.create_binding(
+                ADMIN,
+                CreateBinding(subject=BOB, resource=scope, role=AccessRole.SCOPE_VIEWER, idempotency_key="scope-read"),
+                context=AUDIT,
+            )
+            direct_grant = await service.create_binding(
+                ADMIN,
+                CreateBinding(
+                    subject=BOB, resource=skill, role=AccessRole.ARTIFACT_VIEWER, idempotency_key="artifact-read"
+                ),
+                context=AUDIT,
+            )
+            await service.require(BOB, AccessAction.ARTIFACT_READ, skill, context=AUDIT)
+            await service.require(BOB, AccessAction.ARTIFACT_READ, neighbor, context=AUDIT)
+            with pytest.raises(AccessDeniedError):
+                await service.require(BOB, AccessAction.ARTIFACT_WRITE, skill, context=AUDIT)
+            await service.revoke_binding(
+                ADMIN, scope_grant.binding_id, expected_version=1, idempotency_key="revoke-scope", context=AUDIT
+            )
+            await service.require(BOB, AccessAction.ARTIFACT_READ, skill, context=AUDIT)
+            for action, resource in ((AccessAction.SCOPE_READ, scope), (AccessAction.ARTIFACT_READ, neighbor)):
+                with pytest.raises(AccessDeniedError):
+                    await service.require(BOB, action, resource, context=AUDIT)
+            await service.revoke_binding(
+                ADMIN, direct_grant.binding_id, expected_version=1, idempotency_key="revoke-artifact", context=AUDIT
+            )
+            with pytest.raises(AccessDeniedError):
+                await service.require(BOB, AccessAction.ARTIFACT_READ, skill, context=AUDIT)
             await service.establish_artifact_owner(skill, ALICE, idempotency_key="owner-a", context=AUDIT)
+            for action in (AccessAction.ARTIFACT_READ, AccessAction.ARTIFACT_WRITE, AccessAction.ARTIFACT_SHARE):
+                await service.require(ALICE, action, skill, context=AUDIT)
             repeated = await service.establish_artifact_owner(skill, ALICE, idempotency_key="owner-a", context=AUDIT)
             assert repeated.owner == ALICE
             with pytest.raises(AccessConflictError, match="different owner"):

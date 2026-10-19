@@ -68,6 +68,7 @@ class DreamAccess:
         runtime.configure_evidence_authorization(
             dream=self.authorize,
             review=self.review,
+            review_many=self.review_many,
             context=self.access.defer_decision_audit,
             attest_candidate=self.attest_candidate,
             authorize_candidate=self.authorize_candidate,
@@ -114,6 +115,35 @@ class DreamAccess:
         if principal is None:
             raise AccessIdentityRequiredError
         await self.authorize(scope_id, principal_identity(principal), "read", ref)
+
+    async def review_many(self, scope_id, refs, connection):
+        if not refs:
+            return
+        access = self.access.for_read(connection)
+        if not access.provider_capabilities.multi_requirement_check:
+            for ref in refs:
+                await self.review(scope_id, ref)
+            return
+        principal = current_principal()
+        if principal is None:
+            raise AccessIdentityRequiredError
+        checks = {}
+        for ref in refs:
+            resource = _resource(scope_id, ref)
+            action = AccessAction.SCOPE_READ if resource == ResourceRef.scope(scope_id) else AccessAction.ARTIFACT_READ
+            checks[action, resource.key] = (action, resource)
+        try:
+            await access.require_all(
+                principal,
+                tuple(checks.values()),
+                context=AccessAuditContext(
+                    request_id=current_request_id(), transport="background", operation="artifact_dreaming"
+                ),
+            )
+        except AccessDeniedError as error:
+            raise DreamError("access_revoked") from error
+        except AccessControlError as error:
+            raise DreamError("access_unavailable") from error
 
     async def attest_candidate(
         self, connection: AsyncConnection, record: DreamRecord, candidate_id: str, family: str

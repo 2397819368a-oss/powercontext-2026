@@ -32,7 +32,7 @@ from powercontext.builtin.artifacts.handoff import HandoffDraft, HandoffGenerati
 from powercontext.builtin.inference import GenerationResult
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime.config import InferenceConfig, RuntimeConfig
-from powercontext.client import ForbiddenResponseError, PowerContextClient, UnavailableResponseError
+from powercontext.client import ForbiddenResponseError, PowerContextClient
 from powercontext.http import (
     AccessAction,
     AccessResourceType,
@@ -469,12 +469,7 @@ def test_scheduled_memory_processing_uses_the_static_service_principal_as_owner(
             )
             entries = None
             for _ in range(1500):
-                try:
-                    entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
-                except UnavailableResponseError as error:
-                    assert error.code == "artifact_owner_pending"
-                    await asyncio.sleep(0.02)
-                    continue
+                entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
                 if entries.entries:
                     break
                 await asyncio.sleep(0.02)
