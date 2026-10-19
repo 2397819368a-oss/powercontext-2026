@@ -166,7 +166,7 @@ design-first OpenAPI changes. Publish a separate production issue with the repro
 ```bash
 uv run pytest tests/workbuddy_plugin/test_hook.py
 uv run pytest evaluation/memory/capture_ownership/tests
-uv run --project evaluation --extra capture-ownership ty check
+uv run --project evaluation --extra capture-ownership ty check --project evaluation
 uv run prek run -a
 uv run ty check
 ```

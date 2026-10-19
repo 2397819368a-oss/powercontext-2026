@@ -52,16 +52,21 @@ def audit(directory: Path) -> dict[str, Any]:
         case = cases[case_id]
         claim = next(item for item in case.claims if item.claim_id == claim_id)
         support = [span for span in case.spans if span.span_id in claim.span_ids]
-        current = "".join(case.prompt[span.start:span.end] for span in case.spans if span.owner == "current")
-        if literal in current or not any(literal in case.prompt[span.start:span.end] for span in support):
+        current = "".join(case.prompt[span.start : span.end] for span in case.spans if span.owner == "current")
+        if literal in current or not any(literal in case.prompt[span.start : span.end] for span in support):
             raise ValueError("canary does not establish exclusively non-current support")
         if any(span.owner == "current" for span in support):
             raise ValueError("canary support crosses the current-user boundary")
         for row in run["rows"]:
             if row["case_id"] != case_id or row["arm"] != "joined-source-v1":
                 continue
-            paired = next(item for item in run["rows"] if item["case_id"] == case_id
-                          and item["repetition"] == row["repetition"] and item["arm"] == "host-turn-candidate-v1")
+            paired = next(
+                item
+                for item in run["rows"]
+                if item["case_id"] == case_id
+                and item["repetition"] == row["repetition"]
+                and item["arm"] == "host-turn-candidate-v1"
+            )
             quality = reported[(case_id, "host-turn-candidate-v1", row["repetition"])]
             if quality["required_current_retention"] != 1 or quality["critical_candidates"] != 0:
                 raise ValueError("the paired output did not preserve the required current fact cleanly")
@@ -70,23 +75,42 @@ def audit(directory: Path) -> dict[str, Any]:
             for index, candidate in enumerate(row["candidates"]):
                 if literal not in candidate["text"]:
                     continue
-                entries.append({
-                    "case_id": case_id, "repetition": row["repetition"], "candidate_index": index,
-                    "candidate_sha256": fingerprint(candidate), "claim_id": claim_id,
-                    "literal_sha256": fingerprint(literal),
-                    "support": [{"span_id": span.span_id, "owner": span.owner,
-                                 "start": span.start, "end": span.end, "byte_start": span.byte_start,
-                                 "byte_end": span.byte_end,
-                                 "span_sha256": fingerprint(case.prompt[span.start:span.end])} for span in support],
-                    "literal_in_candidate": True, "literal_in_frozen_support": True,
-                    "literal_absent_current": True, "literal_absent_paired_output": True,
-                    "required_current_literals_retained": True,
-                })
+                entries.append(
+                    {
+                        "case_id": case_id,
+                        "repetition": row["repetition"],
+                        "candidate_index": index,
+                        "candidate_sha256": fingerprint(candidate),
+                        "claim_id": claim_id,
+                        "literal_sha256": fingerprint(literal),
+                        "support": [
+                            {
+                                "span_id": span.span_id,
+                                "owner": span.owner,
+                                "start": span.start,
+                                "end": span.end,
+                                "byte_start": span.byte_start,
+                                "byte_end": span.byte_end,
+                                "span_sha256": fingerprint(case.prompt[span.start : span.end]),
+                            }
+                            for span in support
+                        ],
+                        "literal_in_candidate": True,
+                        "literal_in_frozen_support": True,
+                        "literal_absent_current": True,
+                        "literal_absent_paired_output": True,
+                        "required_current_literals_retained": True,
+                    }
+                )
     covered = {item["case_id"] for item in entries}
     if covered != set(report["reproduced_case_ids"]):
         raise ValueError("the synthetic canary audit does not cover every reported reproduction")
-    return {"schema_version": "capture-ownership.literal-audit.v1", "run_sha256": fingerprint(run),
-            "manifest_sha256": fingerprint(manifest.model_dump(mode="json")), "entries": entries}
+    return {
+        "schema_version": "capture-ownership.literal-audit.v1",
+        "run_sha256": fingerprint(run),
+        "manifest_sha256": fingerprint(manifest.model_dump(mode="json")),
+        "entries": entries,
+    }
 
 
 def main() -> None:
