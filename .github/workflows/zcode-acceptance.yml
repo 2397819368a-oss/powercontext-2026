@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [master]
+    branches: [main, master]
   workflow_dispatch:
   schedule:
     - cron: '23 3 * * 0'
@@ -24,7 +24,12 @@ env:
   HUSKY: '0'
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-changes.yml
+
   controlled-cli:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').zcode) }}
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:

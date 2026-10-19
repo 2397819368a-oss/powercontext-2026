@@ -3,6 +3,7 @@ name: E2E harness
 on:
   push:
     branches:
+      - main
       - master
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -24,12 +25,18 @@ env:
   UV_VERSION: "0.10.12"
 
 concurrency:
-  group: e2e-harness-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
-  cancel-in-progress: false
+  group: e2e-harness-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-changes.yml
+
   validate:
-    if: github.event_name != 'workflow_dispatch' || inputs.suite != 'recall-effort'
+    needs: changes
+    if: >-
+      ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.suite != 'recall-effort') &&
+          (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').harness) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -58,6 +65,8 @@ jobs:
           make harness-compose-check
 
   recall-effort:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').database) }}
     name: Recall effort (OceanBase)
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -175,7 +184,10 @@ jobs:
 
   atomic-memory-clean-oceanbase:
     name: Atomic Memory clean migration (OceanBase)
-    if: github.event_name != 'workflow_dispatch' || inputs.suite != 'recall-effort'
+    needs: changes
+    if: >-
+      ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.suite != 'recall-effort') &&
+          (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').database) }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:

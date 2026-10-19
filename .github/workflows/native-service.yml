@@ -3,9 +3,11 @@ name: Native personal service
 on:
   push:
     branches:
+      - main
       - master
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,7 +17,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-changes.yml
+
   linux-systemd-user:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').native) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -74,6 +81,8 @@ jobs:
           if-no-files-found: ignore
 
   macos-launchagent:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').native) }}
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -125,6 +134,8 @@ jobs:
           if-no-files-found: ignore
 
   windows-task-scheduler:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').native) }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:
