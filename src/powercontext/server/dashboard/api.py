@@ -40,6 +40,7 @@ from powercontext.server.dashboard.session import authentication_headers
 
 SEARCH_LIMIT = 200
 
+
 def segment(value: str) -> str:
     return quote(value, safe="")
 
@@ -259,7 +260,8 @@ class DashboardAPI:
             "artifact_id": item["artifact_id"],
             "revision": item["revision"],
             "sources": [
-                {"source_type": source["source_type"], "source_id": source["source_id"]} for source in lineage["sources"]
+                {"source_type": source["source_type"], "source_id": source["source_id"]}
+                for source in lineage["sources"]
             ],
             "artifacts": lineage["artifacts"],
         }
