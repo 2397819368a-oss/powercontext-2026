@@ -118,8 +118,8 @@ def test_failed_key_write_leaves_no_unreadable_key_behind(tmp_path, monkeypatch,
         with pytest.raises(OSError):
             resolve_cursor_secret(config, None)
 
-    # A part-written key fails every later start with ValueError, so a failed
-    # attempt must not publish one.
+    # A failed attempt must not publish a key it never finished writing; the
+    # next start still has to be able to create one.
     assert not key_path.exists()
     assert resolve_cursor_secret(config, None) == generated_secret
 
@@ -145,3 +145,32 @@ def test_key_write_without_progress_fails_instead_of_retrying(tmp_path, monkeypa
         patch.setattr(os, "write", stalled_write)
         with pytest.raises(OSError):
             resolve_cursor_secret(config, None)
+
+
+@pytest.mark.parametrize("length", [0, 5, 31])
+def test_key_left_by_an_interrupted_creation_is_replaced(tmp_path, generated_secret, length) -> None:
+    database_path = tmp_path / "powercontext.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database_path}")
+    key_path = tmp_path / ".powercontext.db.cursor-key"
+
+    # A process killed between os.open and os.write leaves a key of the wrong
+    # length and never returns it, so no cursor was signed with it.
+    key_path.write_bytes(b"\x00" * length)
+
+    secret = resolve_cursor_secret(config, None)
+
+    assert secret == generated_secret
+    assert key_path.read_bytes() == generated_secret
+    assert resolve_cursor_secret(config, None) == generated_secret
+
+
+def test_existing_complete_key_is_never_regenerated(tmp_path, generated_secret) -> None:
+    database_path = tmp_path / "powercontext.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database_path}")
+    key_path = tmp_path / ".powercontext.db.cursor-key"
+    existing = b"k" * 32
+
+    key_path.write_bytes(existing)
+
+    assert resolve_cursor_secret(config, None) == existing
+    assert key_path.read_bytes() == existing

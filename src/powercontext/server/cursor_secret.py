@@ -28,6 +28,7 @@ from powercontext.builtin.runtime.config import DatabaseConfig
 from powercontext.paths import powercontext_data_dir
 
 _CURSOR_SECRET_BYTES = 32
+_KEY_CREATE_ATTEMPTS = 3
 
 
 def resolve_cursor_secret(database: DatabaseConfig, configured_secret: str | None, /) -> bytes | None:
@@ -47,30 +48,41 @@ def resolve_cursor_secret(database: DatabaseConfig, configured_secret: str | Non
 
 def _load_or_create(path: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        return _read(path)
-    except FileNotFoundError:
-        pass
+    for _ in range(_KEY_CREATE_ATTEMPTS):
+        secret = _read(path)
+        if secret is not None:
+            return secret
 
-    generated = secrets.token_bytes(_CURSOR_SECRET_BYTES)
-    try:
-        # Windows text descriptors translate LF bytes even when using os.write.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        descriptor = os.open(path, flags, 0o600)
-    except FileExistsError:
-        return _read(path)
-    completed = False
-    try:
-        _write_key(descriptor, generated, path)
-        completed = True
-    finally:
-        os.close(descriptor)
-        if not completed:
-            # _read() rejects a short key, so publishing one turns a single
-            # failed write into a data location that never starts again.
-            with contextlib.suppress(OSError):
-                path.unlink(missing_ok=True)
-    return generated
+        # A key of the wrong length can only come from a creation that stopped
+        # before the writer returned it, so no cursor was signed with it: drop
+        # it and start over. Otherwise a process killed between os.open and
+        # os.write leaves the data location unstartable forever.
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+        generated = secrets.token_bytes(_CURSOR_SECRET_BYTES)
+        try:
+            # Windows text descriptors translate LF bytes even when using os.write.
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+            descriptor = os.open(path, flags, 0o600)
+        except FileExistsError:
+            # Another starter won the race; use the key it publishes.
+            continue
+        completed = False
+        try:
+            _write_key(descriptor, generated, path)
+            os.fsync(descriptor)
+            completed = True
+        finally:
+            os.close(descriptor)
+            if not completed:
+                # Do not leave a half-written key behind: the next start would
+                # have to discard it before it could create a usable one.
+                with contextlib.suppress(OSError):
+                    path.unlink(missing_ok=True)
+        return generated
+
+    raise OSError(f"failed to create cursor signing key: {path}")  # noqa: TRY003
 
 
 def _write_key(descriptor: int, secret: bytes, path: Path) -> None:
@@ -84,8 +96,13 @@ def _write_key(descriptor: int, secret: bytes, path: Path) -> None:
         remaining = remaining[written:]
 
 
-def _read(path: Path) -> bytes:
-    secret = path.read_bytes()
+def _read(path: Path) -> bytes | None:
+    """Return the stored key, or None when there is no complete key on disk."""
+
+    try:
+        secret = path.read_bytes()
+    except FileNotFoundError:
+        return None
     if len(secret) != _CURSOR_SECRET_BYTES:
-        raise ValueError(f"cursor signing key must contain {_CURSOR_SECRET_BYTES} bytes: {path}")  # noqa: TRY003
+        return None
     return secret
