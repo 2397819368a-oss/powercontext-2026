@@ -5,7 +5,7 @@ description: Unify security, context optimization, and cost governance in PowerC
 
 - Proposal Name: `core_inference_gates_and_optional_gateway`
 - Start Date: 2026-10-19
-- RFC PR: Not assigned
+- RFC PR: [oceanbase/powercontext#2086](https://github.com/oceanbase/powercontext/pull/2086)
 - Related RFCs: [RFC 0016](0016_pydantic_ai_inference_integration.md), [RFC 0028](0028_context_pack.md),
   [RFC 0046](0046_observability_foundations.md), [RFC 0048](0048_handoff_artifact.md),
   [RFC 1435](1435_explainable_prepared_context_receipts.md), [RFC 1770](1770-decision-policy-governance.md)
