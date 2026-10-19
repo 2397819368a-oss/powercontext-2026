@@ -29,6 +29,48 @@ export interface Release {
 // Only stable releases belong here; publish pre-release notes on GitHub Releases.
 export const releases: Release[] = [
   {
+    version: 'v1.4.0',
+    date: '2026-10-19',
+    title: {
+      en: 'Curated session startup context · Reviewed content revisions · Browse and compare history',
+      zh: '会话开场上下文 · 审核式内容修订 · 历史版本浏览与对比',
+    },
+    summary: {
+      en: 'PowerContext 1.4.0 helps Agents begin a session with selected project knowledge, propose evidence-backed revisions for review, and inspect how saved content changed. It adds source-backed Working Notes, experimental Kimi Code integration, broader DSH workflows, and more consistent multilingual retrieval. This release also changes Memory and Candidate contracts; existing database upgrades remain subject to the documented migration readiness limits.',
+      zh: 'PowerContext 1.4.0 支持在 Agent 会话开始时提供选定的项目知识，基于证据提出待审核的内容修订，并查看已保存内容的版本变化。新增基于 Source 的工作笔记、试验性 Kimi Code 集成，扩展 DSH 工作流，统一多语言检索。本次也调整了 Memory 和 Candidate 契约，已有数据库升级仍受文档所列迁移就绪条件限制。',
+    },
+    changes: {
+      en: [
+        'Opt in to bounded startup context in Codex and Claude Code. Select active Atomic Memories with the bootstrap-context tag and optionally supply an exact committed Handoff. Delivery receipts support lifecycle deduplication and keep fully delivered exact Memory revisions out of the first ordinary recall; content remains cited, untrusted history and the feature is disabled by default.',
+        'Propose revisions to Atomic Memory, Profile, Topic Memory, Handoff, Prompt configuration, and tags through Dream and the unified Candidate review flow. Inspect the proposal and evidence before explicit approval. Available operations depend on Server configuration; Skill revision remains disabled until its trusted evaluation requirement is met. Handoff approval publishes a revision without executing or continuing work.',
+        'Browse Artifact revision history and compare exact versions in the Dashboard. Roll supported historical content forward as a new revision with the source, reason, and actor recorded. Atomic Memory history and comparison are read-only here; restoration uses its separate preview and confirmation flow. New revision timestamps do not invent dates for older records.',
+        'Capture inspection results, abandoned approaches, validation evidence, unresolved questions, and host context as source-backed Working Notes. Notes retain exact Source identities and may be cited in a Handoff; they are excluded from automatic generation. Optional expiry prevents new consumption while preserving audit reads; physical cleanup and automatic promotion are not included.',
+        'Extend Atomic Memory retrieval through the shared Artifact search path, unify Chinese segmentation and English word analysis across supported backends, and configure full-text/vector fusion weights for Atomic Memory and Topic Memory. Preserve supporting Source language during generation, reduce answer-format noise in text queries, and handle long SQLite and OceanBase queries.',
+        'Add experimental Kimi Code setup, diagnostics, native MCP Memory operations, prompt capture, context injection, and content-free Hook runtime observations. Expand DSH to native MCP workflows with catalog checks, Scope enforcement, approval handling, and caller-content secret screening. Refresh generated host guidance while preserving locally edited guidance.',
+        'Add scope-local stable handles that permanently name an exact Artifact revision, alongside revision metadata for tracing replacements and restorations. Binding a handle requires Scope administration; resolving it preserves the referenced immutable version.',
+        'Add bounded request sanitization for decision backends, including structured subject and evidence values, known sensitive values, and supported provider-key formats. Projection changes do not rewrite authoritative content or decide write policy, and the sanitizer is not a general PII detector. The legacy collection MemoryWriteGate remains unsupported by the Atomic Runtime.',
+        'Standardize structured operational logs, metrics, and trace identity, expose extraction diagnostics in CLI capabilities, preserve exact captured Source identities on reads, and pin SQLite content before custom authorization. Improve cancellation cleanup and omit the placeholder x-api-key when Anthropic-compatible requests use an explicitly configured Authorization header.',
+        'Add cross-host work-continuity acceptance, offline Memory write-gate evaluation, and Dream generation baselines. Extend Kimi Code and ZCode acceptance workflows and refresh Desktop contract validation. These workflows do not establish a universal quality gain or change Windows Desktop preview qualification.',
+        'Upgrade Server, Client, CLI, MCP, and Agent integrations together. Legacy Memory collections and citation models leave online APIs; retained Memory routes return Atomic Memory records, and unsupported collection operations fail explicitly. Back up data, stop writers, and complete offline Atomic Memory conversion and verification. Candidate APIs move from /v1/artifact-candidates/* to /v1/candidates/* without aliases, and Dream requires contract 2. Existing Dream storage needs coordinated migration after draining unfinished runs; the current unified database bundle still reports server_ready=false and does not provide a complete production upgrade path. Do not bypass migration_required or migration_framework_not_ready.',
+      ],
+      zh: [
+        '在 Codex 和 Claude Code 中按需启用有界的会话开场上下文。通过 bootstrap-context 标签选择活跃 Atomic Memory，也可传入一个精确的已提交 Handoff。投递回执支持生命周期去重，并让首次常规召回跳过已完整投递的同一记忆版本；内容始终带有引用、作为不可信历史处理，该功能默认关闭。',
+        '通过 Dream 和统一 Candidate 审核流程，为 Atomic Memory、Profile、Topic Memory、Handoff、Prompt 配置及标签提出修订。先检查提案与证据，再显式批准。可用操作取决于 Server 配置；Skill 修订在满足可信评测要求前保持关闭。批准 Handoff 会发布新版本，不会执行或续接工作。',
+        '在 Dashboard 浏览 Artifact 修订历史、对比精确版本，并将支持的历史内容写为新的修订，记录恢复来源、原因和操作者。Atomic Memory 的历史与对比在此只读，恢复使用独立的预览和确认流程。新增修订时间信息不会为旧记录补造日期。',
+        '将检查结果、放弃的方案、验证证据、未解决问题和 Host 上下文采集为基于 Source 的工作笔记。笔记保留精确 Source 身份，可被 Handoff 引用，并排除在自动生成之外。可选过期时间会阻止新的消费，同时保留审计读取；不包含物理清理或自动晋升为长期记忆。',
+        '将 Atomic Memory 纳入统一 Artifact 检索路径，在支持的后端统一中文分词与英文词语分析，并为 Atomic Memory 和 Topic Memory 配置全文与向量融合权重。生成时保留支撑 Source 的语言，减少回答格式要求对文本查询的干扰，并处理 SQLite 与 OceanBase 长查询。',
+        '新增试验性 Kimi Code 安装、诊断、原生 MCP 记忆操作、提示采集、上下文注入及不含内容的 Hook 运行观测。DSH 扩展原生 MCP 工作流，检查工具目录、执行 Scope 约束、保留审批流程，并筛查调用方内容中的敏感值。更新自动生成的 Host 指引，同时保留本地修改。',
+        '新增 Scope 内的稳定句柄，永久指向一个精确 Artifact 版本，并通过修订元数据追踪替换和恢复。绑定句柄需要 Scope 管理权限，解析后仍读取其指向的不可变版本。',
+        '为决策后端增加有界的请求脱敏，覆盖结构化主体和证据、已知敏感值及支持的服务商密钥格式。请求投影不会改写权威内容或决定写入策略，脱敏器也不是通用个人信息检测器。Atomic Runtime 仍不支持旧集合式 MemoryWriteGate。',
+        '统一结构化运行日志、指标与追踪身份，在 CLI capabilities 中展示提取诊断，精确读取已采集的 Source，并在自定义授权前固定 SQLite 内容快照。改进取消时的连接清理；为 Anthropic 兼容请求显式配置 Authorization 请求头时，不再附加占位 x-api-key。',
+        '新增跨 Host 工作连续性验收、Memory 写入门控离线评测及 Dream 生成基线，扩展 Kimi Code、ZCode 验收工作流，并更新 Desktop 契约校验。这些工作流不代表普遍的质量提升，也不改变 Windows Desktop 的预览验收边界。',
+        'Server、Client、CLI、MCP 和 Agent 集成需一起升级。旧 Memory 集合与引用模型退出在线 API；保留的 Memory 路由返回 Atomic Memory 记录，不支持的集合操作会明确失败。先备份、停止写入，再完成 Atomic Memory 离线转换与验证。Candidate API 从 /v1/artifact-candidates/* 改为 /v1/candidates/*，不提供别名，Dream 要求契约 2。已有 Dream 存储需先排空未完成任务再协调迁移；当前统一数据库迁移包仍报告 server_ready=false，尚不构成完整的生产升级路径，不应绕过 migration_required 或 migration_framework_not_ready。',
+      ],
+    },
+    installCommand: 'uv tool install --force "powercontext[cli,server]==1.4.0"',
+    githubUrl: 'https://github.com/oceanbase/powercontext/releases/tag/powercontext-v1.4.0',
+  },
+  {
     version: 'v1.3.0',
     date: '2026-10-12',
     title: {
