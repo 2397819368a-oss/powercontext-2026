@@ -87,7 +87,7 @@ def repository(tmp_path: Path) -> Path:
         destination = tmp_path / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)
-    git(tmp_path, "init", "--initial-branch=main")
+    git(tmp_path, "init", "--initial-branch=master")
     git(tmp_path, "config", "user.name", "CI scope test")
     git(tmp_path, "config", "user.email", "ci-scope@example.invalid")
     git(tmp_path, "add", ".")
@@ -131,7 +131,7 @@ def test_diff_covers_all_pr_commits_and_excludes_base_branch_changes(repository:
     git(repository, "checkout", "-b", "feature")
     commit(repository, "integrations/pi/plugin.ts")
     head = commit(repository, "docs/zh/说明.md")
-    git(repository, "checkout", "main")
+    git(repository, "checkout", "master")
     base = commit(repository, "src/powercontext/unrelated.py")
     git(repository, "checkout", "feature")
 

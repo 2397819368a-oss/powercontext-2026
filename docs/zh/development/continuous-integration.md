@@ -28,7 +28,7 @@ Main 的 quality 任务和许可证检查对所有 PR 执行。quality 包含格
 跨多个范围的改动取检查集合的并集。插件中的 `SKILL.md` 是宿主输入，会触发宿主测试。
 Desktop、Skill guidance validation 和 SeekDB 锁诊断继续使用各自的路径过滤。
 
-推送到 `main`、`master` 时，范围选择器管理的检查全部执行。手动和定时执行也会选中所有检查组，
+推送到 `master` 时，范围选择器管理的检查全部执行。手动和定时执行也会选中所有检查组，
 同时保留工作流已有的 suite、installer 等显式参数。需要在指定分支执行全量验证时，
 可以对 Main 或 Native personal service 使用 **Run workflow**。PR 新增提交会取消其旧的 harness 执行。
 

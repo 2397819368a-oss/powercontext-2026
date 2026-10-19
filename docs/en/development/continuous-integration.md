@@ -30,7 +30,7 @@ Changes spanning several areas select the union of their checks. Packaged `SKILL
 host inputs and select host tests even though they are Markdown. Desktop, Skill guidance validation,
 and SeekDB lock diagnostics retain their own path filters.
 
-Pushes to `main` and `master` run all checks managed by the selector. Manual and scheduled runs
+Pushes to `master` run all checks managed by the selector. Manual and scheduled runs
 also select all suites, while preserving each workflow's explicit suite or installer inputs.
 Use **Run workflow** on Main or Native personal service to request full validation on a selected branch.
 New commits to a PR cancel its superseded harness run.
