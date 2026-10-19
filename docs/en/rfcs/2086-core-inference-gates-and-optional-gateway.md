@@ -31,6 +31,11 @@ The system provides a testable product capability: when a task switches models, 
 background, it can deliver context with provenance, prevent content prohibited by policy from being sent or delivered,
 and account for costs across the complete task.
 
+The gates also provide an execution loop for LLM KV Cache reuse: Core plans stable prefixes, reusable breakpoints, and
+cache policy; Gateway or another executor selects compatible targets under the permit, sends approved bytes faithfully,
+and collects actual cache usage. Checked output becomes replayable history only after explicit session adoption.
+The inference service holds the actual KV state. Cache reads, write charges, and complete-task outcomes establish benefits.
+
 | Design item | Decision |
 | --- | --- |
 | Deployment and languages | Core can be embedded in Python applications or deployed as a service; Gateway is an optional standalone Rust binary or container. |
@@ -43,7 +48,7 @@ and account for costs across the complete task.
 | Invocation origins | `agent_main` is an application or Agent's primary model call; `core_background` covers Core generation, extraction, Embedding, reranking, and similar calls. |
 | External gateway integration | Built-in executors, SDKs, and Rust Gateway can connect to LiteLLM and similar products through verified protocols, with additional evidence adapters as needed. |
 | Models and retries | Core approves models, candidates, and budgets; integration configuration explicitly assigns execution ownership and prohibits independent, unbounded expansion at two layers. |
-| KV Cache | The inference service holds the cache. Core plans stable representations, executors preserve cache controls, and provider usage is evidence of actual hits. |
+| KV Cache | Core plans prefixes, breakpoints, and target constraints; Gateway or another executor executes faithfully and collects cache evidence; adopted history supports later reuse, while the inference service holds actual KV state. |
 | Default cost reduction | Start with stable replay, lossless representation optimization, and explicit output budgets; validate lossy compaction, dynamic model upgrades, and semantic response caching separately. |
 | Default security | Mandatory rules check before release; block sending or delivery when authorization, security policy, or required scanning cannot be confirmed. |
 | Acceptance unit | Quality, total cost, latency, retries, and leakage counterexamples for complete tasks; input length or the presence of cache parameters alone is not evidence of benefit. |
@@ -72,6 +77,31 @@ host tool authorization, or provider billing.
 # Guide-level explanation
 
 ## User workflows
+
+### Reusing model caches through Gateway
+
+A user fixes code across successive turns through Gateway, retaining the selected model and protocol:
+
+1. Core's input gate authorizes and prepares rules, tool definitions, schemas, and permitted Memory. It freezes their representations and versions and records reusable-prefix and incremental-content boundaries in the plan.
+2. Gateway's adapter maps approved cache modes, breakpoints, and TTLs to the target protocol before submitting the final payload for checking. Once permitted, it sends exact bytes to the approved concrete target and preserves enforceable cache-affinity constraints.
+3. The inference service reuses an available matching prefix, processes new input, and generates a new answer. Gateway captures the raw response, actual target, and cache usage.
+4. Core's output gate checks the response. Persistent mode first saves a checked candidate; the host explicitly accepts it into session history. The next input preserves adopted content exactly and appends new messages and tool results at controlled positions.
+5. The user sees cache reads, cache writes, ordinary input, known costs, upstream first-token time, and final delivery time per turn. Missing cache evidence appears as unknown rather than a claimed hit because a parameter was set.
+
+This is a logical layout; actual rendering preserves protocol roles, message order, and complete tool exchanges:
+
+```text
+Turn 1: Stable rules, tools, and frozen Memory | Current request
+Turn 2: Same stable prefix + adopted turn 1 history | New request
+Turn 3: Same stable prefix + adopted turns 1 and 2 | New request
+```
+
+Both prefix content and reusable cache breakpoints determine eligibility. Complete input normally still travels on the
+wire; only cache references explicitly supported by the target protocol may replace that content. Benefits appear as
+provider cache reads and reduced prefill work, not automatic reductions in network traffic or input tokens because
+content was stored once locally. Model switches preserve portable context while the new model builds its own cache.
+Fixed-model multi-turn execution is the first cache demonstration. Basic mode can plan caches from caller-provided
+complete history and fixed templates without persistent sessions; restart recovery uses the persistent contract below.
 
 ### Switching models within a task
 
@@ -108,6 +138,9 @@ selected only when the deployment needs a unified entry point for model traffic.
 Normal requests retain the response shape of the verified protocol. Security blocks return an explicit reason category
 and a correlatable request ID without echoing sensitive fragments in the error body. The UI or diagnostic interface shows
 the actual model, any downgrade, context transformations, and known usage; missing values appear as unknown.
+The cache view separates local prefix changes, actual provider cache reads/writes, normalized ordinary input, cost
+completeness, and latency. Planned reusable lengths do not substitute for actual hits. strict reports upstream first-token
+and final-delivery time separately.
 Current user instructions, repository rules, and live facts always take precedence over historical material.
 
 ## System structure
@@ -150,12 +183,13 @@ Regardless of the executor, sending input and releasing responses must wait for 
 | Model and capability policies | Approve targets or a closed candidate set | Select or delegate according to the plan | Execute a fixed target or controlled routing |
 | Retries and total budgets | Policies, atomic reservations, settlement | Enforce admission and report uncertainty | Declare internal attempts and supply evidence |
 | Gates | Rules, detection, transformations, security and release decisions | Invoke and obey the gates at final send and first release | May add protections but cannot replace this system's guarantees |
-| KV Cache | Determine stable representations and cache policies | Preserve prefixes and pass cache parameters | Hold and reuse the actual cache |
+| KV Cache | Plan prefixes, breakpoints, modes, and target-affinity constraints; manage adopted history | Map parameters before permission, preserve bytes, and collect actual read/write usage | Hold and reuse the cache and return verifiable usage |
 | Ledger | Authoritative appends, recovery, and reconciliation | Collect and reliably report execution evidence | Return raw usage or reconciliation material |
 
 ### What "thin" means
 
-Gateway retains connection pools, active request state, SSE parsing, bounded buffers, policy snapshots, short-lived
+Gateway retains connection pools, active request state, SSE parsing, bounded buffers, policy snapshots, restricted cache
+execution metadata, short-lived
 execution credentials, and a body-free event outbox. It does not create another session database, decide whether Memory
 is stale, summarize Handoffs, compute semantic coverage, or maintain its own sensitive content detection or compaction
 engine.
@@ -384,6 +418,7 @@ Core stores the following separately:
 | Injection records | Record exact bodies or recoverable references, insertion positions, source versions, and actual delivery state. |
 | Model input projections | Represent redaction, encoding, compaction, and protocol representations actually used for outbound calls. |
 | Transformation records | Associate inputs and projections, policy and codec versions, known omissions, and transformation scope. |
+| Answer candidates and session selections | Separate saved checked answers, adopted branch history, and delivery receipts; saving alone does not advance selected history. |
 
 Sensitive bodies not authorized for persistence do not enter original event storage. When only redacted content may be
 stored, it is a clearly marked new collected observation, not a claim to preserve an unmodified original. Gateway logs
@@ -417,6 +452,13 @@ History that cannot be matched reliably returns an explicit error or enters an e
 similarity-based splicing is not supported. Reusing a request ID with different content or conflicting policy requirements
 returns a conflict.
 
+Tenant, authenticated principal, session, branch, and caller request ID define the idempotency boundary. Core atomically
+establishes a unique operation before any paid preparation. Repeated prepare calls verify the original input and caller
+constraints and return the original operation's preparation state, plan, or existing result reference without repeating
+recall, Embedding, or compaction. Incomplete preparation returns a queryable in-progress state. Controlled recovery uses
+the original operation, frozen child-call identities, and remaining budget rather than starting another set of paid work.
+Administrative policy upgrades use renewed authorization and plan versions, not a claim that the caller changed its input.
+
 ### Handoff and coverage
 
 Handoff retains existing prepare, inspection, finalize, and optional commit semantics. The session service separately
@@ -435,6 +477,10 @@ Core advances state using an expected session version. Concurrent conflicts requ
 control operation; two answers must not be mixed into one selected history. Event appends and request IDs use unique
 constraints. Frozen injections, plans, and recoverable content references must be persisted before promising restart-safe
 continuation.
+
+A persisted response is a candidate. Only an explicit session selection adds the request's input events and exact checked
+answer to the selected branch and advances its version. While the previous request awaits selection, a new request must
+first explicitly adopt or abandon the candidate, or branch. Response persistence alone never advances selected history.
 
 The server reads incremental events through indexes rather than rewriting all history, searching all data, or summarizing
 on every turn. If the client sends full history, network and parsing costs still grow with its length. Incremental server
@@ -456,7 +502,7 @@ is exposed through authenticated HTTP interfaces.
 | Object | Minimum content | Authority and purpose |
 | --- | --- | --- |
 | ContextSnapshot | Tenant, Scope, session and branch version, event range, exact injections, source versions, transformation versions, known omissions, and content references | Core's recoverable logical input snapshot; does not mean a model received it. |
-| InferencePlan | operation, purpose and stage, snapshot, eligible targets, protocol, output constraints, security policy, cache policy, budget, and expiration | Core-approved execution constraints; model switches cannot exceed candidate eligibility. |
+| InferencePlan | operation, purpose and stage, snapshot, eligible targets, protocol, output constraints, security policy, cache_policy, budget, and expiration | Core-approved constraints; cache plans are versioned inside this object, without a separate cache Artifact or plan interface. |
 | AttemptPermit | attempt, concrete target, upstream configuration fingerprint, final-body digest, budget reservation, executor instance, expiration, and single-use permit identity | Binds one concrete execution before sending; the actual executor must verify it before invoking the upstream. |
 
 Embedded runtimes call the same Core services directly. Remote executors obtain plans over internal TLS and authentication;
@@ -485,11 +531,13 @@ in-process calls do not need HTTP:
 
 | Operation | Proposed interface | Purpose |
 | --- | --- | --- |
-| Prepare plan | `POST /v1/inference/plans/prepare` | Bind principal and session, establish an operation, read or generate a snapshot, and return an immutable plan. |
+| Prepare plan | `POST /v1/inference/plans/prepare` | Idempotently bind principal, session, and request and establish the operation first; repeats recover preparation state, the immutable plan, or result references. |
 | Begin attempt | `POST /v1/inference/plans/{plan_id}/attempts` | Verify policy and session version, select an eligible target, atomically reserve budget, and return an attempt and final execution permit. |
-| Submit response | `POST /v1/inference/attempts/{attempt_id}/response` | Submit complete responses and delivery projections under control, check current output policy, persist according to retention permissions, and return a release permit. |
+| Submit response | `POST /v1/inference/attempts/{attempt_id}/response` | Check the raw response and delivery projection, save a permitted checked candidate, and return a release permit without adopting session history. |
+| Recover release | `POST /v1/inference/attempts/{attempt_id}/release` | Reauthorize a saved projection, check current output policy, and return the exact checked projection with a new executor-bound release permit without a new model attempt. |
+| Select answer | `POST /v1/inference/operations/{operation_id}/selection` | The host idempotently adopts or abandons a candidate using an expected session version and exact answer reference; only adoption advances selected history. |
 | Report events | `POST /v1/inference/attempts/{attempt_id}/events` | Idempotently record send, response, security, release, cancellation, usage, and uncertain-result events by event ID. |
-| Query operation | `GET /v1/inference/operations/{operation_id}` | Query plans, execution and delivery states, known costs, and evidence completeness. |
+| Query operation | `GET /v1/inference/operations/{operation_id}` | Under current authorization, query plans, exact candidate references, selection/delivery states, costs, and evidence completeness; reads do not issue permits. |
 
 Plan preparation must establish an operation before triggering paid Embedding, classification, or compaction subcalls.
 Auxiliary calls share parent-task association and total budgets, use separate restricted execution purposes, and do not
@@ -504,6 +552,9 @@ the same permit again. For cross-instance execution, Core establishes ownership 
 is lost and send state is uncertain, lease expiration is not proof that no call occurred and does not automatically allow
 a new permit. The network cannot provide exactly-once inference at a provider. Use provider idempotency mechanisms only
 when their contract is explicit.
+Beginning an attempt also carries a stable begin-request ID. Reusing it within an operation with the same constraints
+returns the original attempt and state without reserving again or creating another execution. Retrieving a permit does
+not authorize another send: attempts already sending or uncertain still follow single-use and recovery rules.
 
 ### Final plan bindings
 
@@ -539,7 +590,7 @@ permitted delivery content and transformation associations, then returns a relea
 instance, and expiration. The executor checks bytes against the permit and does not modify them afterward. Core must
 reconstruct valid protocol responses when redaction is needed rather than deleting arbitrary JSON strings.
 
-Response submission uses stable submission IDs and digests. Duplicate submissions do not advance a session twice;
+Response submission uses stable submission IDs and digests. Duplicate submissions recover the same checked candidate;
 changing submitted content returns a conflict. For blocked content, retention permissions determine the minimal
 non-sensitive decision record; storing raw secrets is not mandatory. Routes requiring persistent continuity must receive
 Core's persistent acknowledgment before releasing any content. Actual user receipt is reported separately.
@@ -550,6 +601,39 @@ observe or bounded mode may submit declared safety units, but only confirmed rec
 unconfirmed tails are explicitly incomplete. If policy prohibits storing recoverable response projections, select a mode
 without persistent continuity or reject routes requiring exact replay. Body-free events or client resubmission on the next
 turn cannot replace promised server-side persistent records.
+
+### Session adoption and response recovery
+
+Persistent primary-model calls distinguish these facts:
+
+| Fact | Effect on history |
+| --- | --- |
+| Checked candidate persisted | Exact delivery projection is recoverable; current branch version does not change. |
+| Release started or completed | Record executor write progress; it does not prove host acceptance or user receipt. |
+| Host adopts answer | Atomically verify the expected session version and add corresponding input events and this answer to selected history, advancing once. |
+| Host abandons candidate | Retain an auditable disposition without adding the candidate to history, reversing incurred costs, or assuming tools did not run. |
+| User receipt or tool-execution acknowledgment | Add the respective fact separately; neither adoption nor socket writes imply it. |
+
+selection comes from the authenticated host bound to the session or a restricted SDK delegation, never ordinary message
+content or arbitrary role fields. After accepting a complete checked answer, the host submits a stable selection ID, exact
+candidate reference, and expected version. Repeating the same selection returns the original result; choosing another
+answer requires an explicit branch rather than rewriting adopted history. Background domain commits retain their Artifact
+Services; primary-model selection does not replace Memory/Handoff validation or commit operations.
+
+For example, Core saves a checked answer containing a tool call and Gateway crashes before delivery. The caller repeats
+prepare with the original request ID to recover the same operation and candidate. A new executor invokes release to
+reauthorize and recover the same exact projection without invoking the model or treating the candidate as adopted.
+Recovery requires the retained projection to satisfy current check coverage; otherwise report blocking or unrecoverability.
+A policy change requiring a new projection assigns a new projection identity without rewriting the old candidate.
+The old executor must be effectively fenced, or its release permit expired, before a replacement receives a recovery
+permit. If this cannot be established, report uncertain delivery.
+
+If adoption committed but its acknowledgment was lost, repeating selection returns the original session version.
+Recovery does not automatically replay tool side effects when execution has happened or is uncertain. Without host
+deduplication or execution evidence, return state and references for explicit host resolution. Only adopted history feeds
+automatic replay and later cache prefixes; unselected or abandoned candidates cannot enter history to improve hit rates.
+Compatible ingress without session-adoption acknowledgments can still use basic gates and fixed-prefix caching, but does
+not claim the persistent session-recovery guarantee defined here.
 
 ## Security and sensitive information policies
 
@@ -704,7 +788,7 @@ Controlled configuration declares each upstream integration:
 | attempt_visibility | full, counts, or opaque. |
 | usage_provenance / completeness | Raw usage source, field semantics, and completeness. |
 | response_cache_mode | Whether responses are replayed and whether extra Embedding calls occur. |
-| prompt_cache_capabilities | Provider-supported cache controls and actual usage fields. |
+| prompt_cache_capabilities | Per-model implicit/explicit modes, breakpoint and lookup limits, minimum length, TTL, routing-key semantics, and actual read/write usage fields. |
 | streaming_mode / guardrail_owner | Streaming release mode and ownership of additional security rules. |
 
 These fields are deployment declarations and acceptance results, not client self-reports.
@@ -760,6 +844,13 @@ dependencies on the Python package.
 | upstream | Generic protocol adaptation and evidence collection for products such as LiteLLM. |
 | stream | SSE parsing, backpressure, transport fragment state, strict buffering, and interruptions; Core owns sensitive detection state. |
 | evidence | Body-free event outbox, replay, acknowledgment, and health status. |
+
+Gateway implements cache plans as concrete targets and transport parameters without selecting Memory again, rewriting
+adopted history, or deciding breakpoints. With multiple eligible targets, it proposes a concrete target under Core's
+approved affinity policy and sends only after obtaining admission bound to that target. Persistent mode uses attempt
+permits; basic mode retains current-call checked-input bindings without introducing a budget database. Failover requires
+readmission and records possible cold-cache costs; cache reuse cannot cross authorization, privacy, or model-capability
+boundaries.
 
 Adapter interfaces express only transport responsibilities such as prepare_transport, send, parse_event, extract_usage,
 and cancel. They do not accept callbacks to recall Memory again or decide which history to discard. Cancellation means a
@@ -828,6 +919,65 @@ Neither Core nor any executor guarantees hits before a call or migrates KV betwe
 models frequently within a task must include the cost of losing the original model's cache and building the new model's
 cache in model selection.
 
+### Cache plans and Gateway execution
+
+InferencePlan.cache_policy is Core's cache execution plan. It references existing snapshots and prefix manifests rather
+than creating a separate cache Artifact, cache session database, or budget. The input gate owns content and boundaries;
+executors map protocols and actual targets; the output gate and session selection maintain history for subsequent reuse.
+
+| Plan content | Contract |
+| --- | --- |
+| Stable prefix | Record versions, order, representation, and boundaries for templates, tools/schemas, exact injections, and adopted history, separately from the new tail. |
+| Reusable breakpoints | Refer to content blocks or message endings supported by the target protocol; equal local text or digests do not prove an eligible breakpoint exists. |
+| Mode and retention | Select off, implicit, or explicit mode and permitted TTL from the target profile, including minimum length, breakpoint count, and lookup-range eligibility. |
+| Targets and grouping | Bind model, deployment/account constraints, upstream configuration, privacy boundaries, and any necessary stable grouping key; the attempt permit fixes the concrete target. |
+| Evidence requirements | Specify provenance and field semantics for actual targets, cache reads/writes, ordinary input, costs, and timings; missing values remain unknown. |
+
+```mermaid
+flowchart LR
+    Ingress["Gateway ingress"] --> Input["Core input gate<br/>Stable prefix and cache plan"]
+    Input --> Execute["Gateway execution<br/>Verify permit after parameter mapping"]
+    Execute <-->|"Exact request / raw response and usage"| Model["LLM inference service<br/>Actual KV Cache"]
+    Execute -->|"Unreleased response and cache evidence"| Output["Core output gate"]
+    Output --> Deliver["Gateway delivery / host selection"]
+    Deliver -.->|"Adopted history, exact representation"| Input
+```
+
+Execution follows "Core plans logical prefixes and breakpoints → adapter maps protocol and cache parameters → Core checks
+the final payload → obtain a permit bound to concrete target and bytes → Gateway sends faithfully." Cache markers, modes,
+and output schemas are fixed before the final digest, never added after permission. A downstream gateway's permitted cache
+transformations belong to verified provider-conversion configuration. Each path has one breakpoint decision owner.
+Disable LiteLLM/Bifrost automatic injection or lock and accept it under Core-approved rules; it cannot independently
+rewrite cache boundaries alongside Core.
+[LiteLLM cache-marker injection](https://docs.litellm.ai/docs/tutorials/prompt_caching),
+[Bifrost Auto Prompt Caching](https://docs.getbifrost.ai/features/prompt-caching)
+
+Gateway preserves model, deployment, and account affinity within its control. Provider-internal machine routing follows
+the actual provider contract; HTTP connection reuse, session IDs, or local prefix digests do not pin a request to a machine
+holding KV state. Grouping keys contain no sensitive bodies and do not use the complete request digest that changes each
+turn. Their role comes from the model profile: current OpenAI documentation distinguishes older models' routing assistance
+from separate cache accounting on GPT-5.6 and later. One key parameter is not a universal hit switch. For targets supporting
+explicit caching, choose breakpoints after stable content to avoid repeatedly paying to cache dynamic suffixes used once.
+Multi-turn histories may advance breakpoints at protocol-supported boundaries. Mode changes must preserve required lookup
+boundaries rather than assuming implicit and explicit writes are interchangeable.
+
+The input gate preserves adopted prefixes and adds new project knowledge in a cited incremental region. User corrections,
+authorization, and security changes take precedence, establishing a new epoch and renewed checks when needed. Preserve
+business timestamps, user content, and tool-call identities. Cache reuse must not reorder tool exchanges or broaden unused
+tool permissions. Record prefix mismatches caused by template or tool changes explicitly.
+
+The output gate cannot manufacture a hit after generation or automatically summarize answers for caching. It checks the
+exact output projection; once the session module adopts it under the selection contract, the next turn replays confirmed
+content unchanged. Gateway collects raw usage and Core's ledger normalizes ordinary input and cache reads/writes without
+adding cached_tokens again when included in total input. Missing fields require coverage reporting, not inferred hits from
+matching prefixes. Response replay without a new call is always accounted for separately as response caching.
+
+Cache diagnostics expose locally verifiable prefix, tool, target, or policy changes alongside actual provider hits and
+costs. Without provider evidence, expiry, eviction, or internal routing remain unknown causes rather than Gateway facts.
+Association data belongs in authorized execution queries and the ledger; prefix content, grouping keys, session IDs, and
+request IDs do not enter operational metric labels. Record prefill benefits, upstream first-token time, strict waits,
+final delivery, and complete-task costs separately. Include cache writes and warm-up before calculating net savings.
+
 ### Caching Core background calls
 
 Background tasks use stable stage instructions, output schemas, and codecs. Templates and reusable material occupy
@@ -838,6 +988,21 @@ Record models and usage separately for Embedding, reranking, extraction, conflic
 Embedding model, dimensions, and profile are storage deployment contracts. A cheaper route must not change them per call
 and mix incompatible existing vectors. Likewise, background result representations can change only through independently
 accepted generation schemas or codecs.
+
+### Embedding input transformations and index compatibility
+
+The first Embedding gates only check or block, preserving actual model-input texts, order, and existing query/document
+semantics. Faithful request JSON serialization may vary, but the same profile must not silently redact, compact, rewrite
+texts, or substitute session-specific placeholders. Reject an Embedding path that cannot safely send its input rather than
+treating an unaccepted transformed projection's vector as the original input's vector.
+
+Future Embedding preprocessing binds its version, input types, and document/query compatibility rules into profile identity
+and fingerprints. Indexes retain original content identities separately from actual Embedding input digests, explicitly
+preserving legitimate asymmetric query/document processing. Changes to actual input semantics require a new profile and
+rebuild or explicit migration; new queries cannot silently mix with indexes built under older representations. An old
+profile remains usable only while its original processing chain stays authorized; otherwise explicitly disable vector
+search or degrade under declared capabilities. Cache, logging, or security changes affecting only generation do not
+automatically require re-embedding. Generation-model KV Cache capabilities do not imply equivalent Embedding cache semantics.
 
 ### Response caching
 
@@ -996,6 +1161,7 @@ and coverage is equivalent.
 | Stream breaks after content release | Explicit interruption without appended fallback; the host decides how to recover. |
 | Tool has executed or execution state is unknown | Do not automatically execute the tool again through model retries. |
 | Response record has no persistent acknowledgment | Routes requiring persistent continuity do not begin release; other modes explicitly record unconfirmed continuity. |
+| Candidate saved but release or adoption acknowledgment is lost | Recover state under the original request and selection identities; reauthorize release without another model call or assumptions about adoption or tool execution. |
 | Usage reporting temporarily fails | With reliable ledgers enabled, replay a body-free outbox; basic mode returns current known usage and missing-data statements without reversing calls already made. |
 | Source or Memory write fails | Report separately from model completion, retry under the corresponding identity, and do not claim Memory has been written. |
 
@@ -1008,6 +1174,8 @@ admission and is not a degradation path.
 Execution distinguishes at least prepared, reserved, send_started, upstream_completed, output_checked, release_started,
 gateway_release_completed, and failed/blocked/uncertain. Different facts use different events; one success flag cannot
 represent the complete process.
+Candidate persistence, adopted/abandoned branch selections, and host receipt are recorded separately, not as one transport
+terminal state.
 
 Completed executor writes do not prove host consumption or model use. A model response does not prove task completion.
 Source writes do not prove Memory extraction completion. Host acknowledgments, Task Outcome, and provider reconciliation
@@ -1057,6 +1225,24 @@ does not impose database creation on basic GateRuntime.
 New records are separated by responsibility: sessions and events, frozen snapshots and injections, execution plans and
 permits, budget reservations, and execution and usage events. They use independent tables or repositories within the
 existing database and migration system, reference exact Source/Artifact identities, and do not enter long-term Memory.
+
+Organize logical repositories around session selection, execution records, and budget ledgers rather than creating one
+table for every object name. Before implementation, map physical tables to reusable content storage and define primary
+and unique keys, transaction boundaries, retention/deletion, and migration of existing records. Content blocks may reuse
+object-storage interfaces, but deduplication does not turn runtime history into Source or cache keys into business identity.
+Strict persistent mode guarantees these atomic conditions in the same database transaction; complete object bodies before
+publishing readable references:
+
+| Operation | Records that must hold together |
+| --- | --- |
+| Establish operation | Request idempotency key, principal/session binding, original input constraints, and preparation state, before paid child calls. |
+| Begin attempt | Begin-request unique key, eligible target, executor ownership/fencing, attempt, budget reservation, and total-task budget check. |
+| Save candidate | Stable submission identity, exact projection digest/readable reference, checked policy, and response association, without changing the selected branch. |
+| Adopt answer | Selection idempotency key, expected branch version, exact input/candidate association, selected events, and new version, with no partial advancement on conflict. |
+| Settle usage | Evidence version for the unique attempt, reservation changes, and cost updates; repeated/out-of-order events do not charge twice, and corrections preserve original evidence. |
+
+Repository interfaces must not split these atomic conditions into independent commits. Cross-database designs need an
+equivalent explicit protocol before claiming the same guarantees.
 
 Store shared history bodies as immutable content blocks. Snapshots hold ordered manifests, transformation parameters,
 rendering versions, and final-body digests. Frozen versions recover exact bodies without repeatedly persisting full history
@@ -1135,39 +1321,55 @@ invalidation rules.
 
 ## Delivery phases
 
-### P0: Core gate execution without Gateway
+### P0a: Independently usable basic gates and cache planning
 
-The goal is input security, lossless representation optimization, cache planning, and output checks for Core background
-and application primary calls without deploying Rust Gateway, while verifying that sensitive markers are neither sent
-nor released before checks.
+First deliver one real generation adapter, a fixed-profile Embedding adapter, a built-in executor, and one managed SDK
+entry point. Generation supports complete non-streaming input/output for text and ordinary function tools. Embedding
+follows the initial check-or-block constraint. Input enforcing, deterministic sensitive rules, and output strict apply at
+actual send and raw-response boundaries, with every internal SDK retry readmitted.
 
-Scope:
+Choose one real compatible endpoint for a Core generation stage and application SDK using the same rules. Cache planning
+initially covers fixed instructions, tools/schemas, and stable material explicitly supplied by the caller, mapping
+breakpoints under target capabilities and collecting raw usage. Enable accepted lossless policies independently.
+Delivery does not depend on lossy compaction, a complete session database, reliable ledger, or Rust. Acceptance covers
+actual sensitive-marker blocks, complete tool exchanges, repeated generation with shared prefixes, and actual cache
+read/write evidence. Stateless mode provides current-call constraints and known usage, not restart recovery or
+cross-process total budgets.
 
-1. Add Core GateRuntime, initially supporting complete non-streaming input/output for text and ordinary function tools. Checks and policies do not depend on Rust.
-2. Provide a built-in executor and one managed SDK entry point with explicitly supported provider adapters. Check final serialized input at the input gate and raw responses before delivery or subsequent schema-repair flows at the output gate.
-3. Integrate at least one real Core generation stage and the fixed-profile Embedding path directly. Readmit every SDK-internal retry rather than wrapping only the outermost StructuredGenerator call.
-4. Use the application SDK to connect directly to one real compatible endpoint and to a LiteLLM deployment, without a new Rust service.
-5. Basic mode runs statelessly. Separately use a task requiring persistence to verify session binding, frozen injections, response acknowledgment, and a minimal execution ledger.
-6. Use input enforcing, deterministic Core sensitive rules, and output strict. Implement and accept explicitly supported lossless policies and record evidence-backed prompt cache usage.
-7. Use two fixed, verifiable models to test application tool flows and switching. Explicitly list unintegrated remote rerank paths, error paths, or specialized endpoints as uncovered.
+### P0b: Persistent continuity and strict budgets as needed
 
-P0 does not promise full compatibility with native Codex, Claude Code, arbitrary multimodal content, or all third-party
-gateways. Completion of basic gates does not depend on completing Gateway or launching persistent sessions.
-Persistent-budget mode admits verified fixed targets; stateless calls provide current-call constraints only. Missing
-upstream costs remain unknown.
+After P0a is usable, independently enable operation idempotency, frozen injections, checked candidates, explicit selection,
+release recovery, and a minimal execution ledger. Begin with serial sessions and verified fixed targets. Declare persistent
+session and budget dependencies separately; each enabled capability must pass its atomicity and abnormal-recovery checks.
+Add one LiteLLM profile and two fixed, verifiable models to test tool flows and switching, recording cold-cache costs and
+actual attempt boundaries.
 
-### P1: Optional Rust Gateway, real Coding Agents, and multiple gateways
+Before delivery, cover lost preparation acknowledgments, uncertain sends after reservation, crashes after saving candidates
+but before delivery, lost adoption acknowledgments, duplicate/out-of-order usage, recovery after policy upgrades, and
+unrecoverable bodies. Verify readback, unique identities, and budgets through real process restarts and supported databases
+rather than deferring these basic recovery conditions to Gateway. Unaccepted persistent capabilities remain unavailable
+without blocking P0a's basic gates.
 
-Implement Rust HTTP/SSE ingress and remote execution using the same Core gate interfaces from P0. Add permit and byte
-verification, buffering, backpressure, cancellation, and outboxes without porting or rewriting Core detection rules.
-Run built-in, SDK, and Rust paths with identical inputs, policies, and upstreams to verify consistent judgments and
-transformations and equivalent transport boundaries.
+### P1a: Gateway cache execution and visible benefits
 
-Prioritize one real host and its native protocol, then expand to another: Responses, Anthropic Messages, signed/encrypted
-blocks, host history truncation, tool lifecycles, reconnection, and real authorization. Add basic Bifrost and New API
-integration and enhanced evidence adapters, publishing capability matrices by version. Complete remaining Core inference
-paths, revocation propagation, provider reconciliation, restart recovery from abnormal states, and concurrent deployment
-acceptance.
+Build a minimal Rust remote executor on the same P0a Core contract, first delivering a fixed-model, non-streaming strict
+multi-turn cache demonstration. Gateway maps cache parameters, admits concrete targets, verifies permits and bytes, checks
+responses, and collects actual cache usage. Compare identical prefixes and upstreams against built-in and SDK paths to
+verify consistent decisions and faithful cache controls.
+
+This demonstration may use caller-provided complete history and fixed prefixes without waiting for all persistent
+subsystems or real Coding Agent compatibility. Server-frozen history, selection, and reliable ledgers require their P0b
+acceptance first. Deliver per-turn cache views and complete-task cost reports including writes, warm-up, and Core/Gateway
+overheads. Claim benefits only after predefined quality and cost thresholds pass.
+
+### P1b: Real Coding Agents, multiple gateways, and distributed recovery
+
+Extend Rust HTTP/SSE, backpressure, cancellation, and reliable outboxes while retaining the same Core detection rules.
+Accept one real host and native protocol before another, covering Responses, Anthropic Messages, signed/encrypted blocks,
+history truncation, tool lifecycles, reconnection, session-selection acknowledgments, and actual authorization. Integrate
+Bifrost, New API, and remaining Core inference paths with versioned capability matrices. Complete revocation propagation,
+multi-instance takeover, catastrophic outbox loss, provider reconciliation, and high-concurrency deployment acceptance.
+Native hosts, multimodal content, and unintegrated endpoints do not inherit full compatibility from a basic cache success.
 
 ### P2: Further optimization validated for quality
 
@@ -1190,6 +1392,9 @@ insufficient while preserving context delivery and mandatory security.
 | A analyzes, B edits | B receives the same goal, latest corrections, necessary tool results, and exact evidence without A's private session state. |
 | Complete client replay | History and injections do not duplicate; same-ID/different-body conflicts and unselected branches stay excluded. |
 | Restart continuation | Restore the same frozen input and permitted delivery content from Core without Gateway's in-process state. |
+| Crash after saving a candidate but before delivery | The original request recovers the same operation/candidate; release recovery reauthorizes without a new billable attempt or implicit adoption. |
+| Adoption committed but acknowledgment lost | Repeated selection returns the original branch version without appending inputs/answers again or triggering tools. |
+| Embedding policy changes | Initial actual texts remain unchanged; unaccepted rewriting is rejected, and future representation changes require a new profile and migration. |
 | Sensitive Memory injection | Test secrets added only by Core injections are blocked before final egress. |
 | JSON and cross-SSE fragments | Strings, numbers, escaping, Unicode, and cross-fragment sensitive markers are detected under declared rules; strict releases nothing early. |
 | External auxiliary models | Prohibited raw content does not reach classification or compaction services first; auxiliary requests do not recursively enrich. |
@@ -1200,9 +1405,10 @@ insufficient while preserving context delivery and mandatory security.
 | Unrecoverable content | Explicitly report continuity limits; new recall must not masquerade as old-snapshot replay. |
 | Implicit downstream retries | Compare observed attempts against actual logs; incomplete evidence remains unknown, and strict routes do not assume zero extra calls. |
 
-Local simulations protect parsing and state regressions. P0 real acceptance passes through Core, actual built-in or SDK
-executors, and LiteLLM or a directly connected model provider. P1 additionally verifies Rust Gateway paths. Record
-coverage separately per path; one successful path cannot substitute for another executor or complete-host acceptance.
+Local simulations protect parsing and state regressions. P0a real acceptance passes through Core, actual built-in or SDK
+executors, and a direct model provider. P0b separately accepts persistence and LiteLLM, P1a verifies the Gateway cache loop,
+and P1b verifies distributed operation and real hosts. Record coverage separately per path; one success cannot substitute
+for another executor or complete-host acceptance.
 
 ### Cost and quality
 
@@ -1233,14 +1439,39 @@ do not select favorable definitions after seeing results.
 Missing cache fields or unreconciled costs may still establish local representation changes or fewer requests, but do not
 support claims of provider cache hits or complete net savings.
 
+### Gateway cache demonstration and acceptance
+
+Fix the task, facts, tools, security policy, model, and actual deployment. Compare "Gateway forwards under provider defaults"
+against "the same Gateway executes Core's cache plan." Keep response caching off in both groups and verify real upstream
+generation each turn, varying exact-prefix and eligible-breakpoint reuse. Apply the cold/warm isolation, warm-up accounting,
+and quality rules above. At least one supported real target must report cache reads before accepting KV reuse for that path.
+
+| Scenario | Required evidence |
+| --- | --- |
+| Successive turns with a shared prefix | Final fields and breakpoints satisfy the profile; subsequent calls show actual cache reads, and each new request has its own upstream execution record. |
+| New history or Memory | Stable regions are not rewritten without cause, additions occupy permitted boundaries, and provider usage shows actual reuse. |
+| Tool, policy, or model changes | Invalidate/update plans or select a new target as required, recording prefix changes and cold starts without preserving expired permissions or incorrect facts for caching. |
+| Downstream automatic cache injection | Real outbound requests match approved rules without competing breakpoint owners; configuration drift invalidates eligibility. |
+| Unadopted candidates, including uncertain delivery | Candidates do not enter automatic history or cache prefixes; selection/release recovery adds no unauthorized model attempts, and unknown user receipt does not override confirmed host selection. |
+| Missing cache fields or misses | Distinguish unknown from observed zero; locally matching prefixes do not become claimed provider hits. |
+
+Per-turn queries show at least request/plan association, model and known actual deployment, prefix-version changes, cache
+reads/writes, normalized ordinary/total input, cost provenance/completeness, upstream first-token time, strict waits, and
+final delivery time. For records with complete fields, calculate token cache-read ratio as total cache-read tokens divided
+by total normalized input tokens,
+reporting usage-evidence coverage separately. Do not fill missing fields with zero or average per-request percentages.
+Cost reports include primary/auxiliary calls, failures, cache writes, warm-up, and Core/Gateway overhead. Input-gate planned
+lengths, faithful Gateway execution, and actual provider hits are separate evidence, not substitutes for one another.
+
 ## Implementation work and completion criteria
 
 | Work package | Deliverable | Completion criterion |
 | --- | --- | --- |
 | Core gate engine | Input/output checks, transformations, cache/token policies, and failure semantics. | Independently performs security and cost checks without Gateway or persistent sessions. |
 | Built-in and SDK execution | Provider adapters, final-request checkpoints, raw-response checkpoints, and managed calls. | Every actual attempt is checked, support limits are explicit, and strict never releases early. |
-| Core control contract | In-process services and remote checks, delegation, plans, permits, responses, events, and queries. | Shared semantics without mandatory loopback HTTP; persistent writes read back exactly. |
-| Core sessions and projections | Incremental events, frozen injections, branches, manifests, retention policies, and Handoff associations. | Reproducible boundaries for replay, concurrency, restarts, and content not permitted for retention. |
+| Core control contract | In-process/remote checks, delegation, idempotent plans/attempts, responses, release recovery, selection, and queries. | Shared semantics without mandatory loopback HTTP; lost acknowledgments recover exact results without duplicate calls or adoption. |
+| Core sessions and projections | Incremental events, frozen injections, candidates/explicit adoption, branches, manifests, retention, and Handoff associations. | Separate saving, release, adoption, and receipt; reproducible replay, concurrency, restart, and retention boundaries. |
+| Cache planning and execution | InferencePlan.cache_policy, eligible breakpoints, target affinity, parameter mapping, normalized usage, and per-turn views. | Real Gateway cache reads, faithful prefixes/controls, and complete-task costs including writes and other overhead meeting thresholds. |
 | Optional Rust execution component | HTTP/TLS, Core gate clients, permit verification, SSE, backpressure, cancellation, and outbox. | Reuses Core decisions without rule copies, has bounded resources, and never releases early. |
 | First upstream adapter | Direct and LiteLLM profiles, actual targets, and raw usage evidence. | Real services confirm fixed targets, attempt counts, and capability scope. |
 | Core background integration | Selected generation/Embedding stages use GateRuntime and built-in executors by default. | No Gateway dependency, recursive enrichment, or changes to existing domain and commit semantics. |
