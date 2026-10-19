@@ -1879,10 +1879,12 @@ def _unbounded_provider_factory(
 
             if headers:
                 default_headers = _resolve_headers(headers)
-                api_key = _pop_header(default_headers, "x-api-key")
+                api_key = _pop_header(default_headers, "x-api-key") or os.getenv("ANTHROPIC_API_KEY")
+                has_authorization = any(name.casefold() == "authorization" for name in default_headers)
                 client = AsyncAnthropic(
                     base_url=None if base_url is None else str(base_url),
-                    api_key=api_key or os.getenv("ANTHROPIC_API_KEY") or "api-key-not-set",
+                    # A configured Authorization header is the credential; gateways may reject any X-Api-Key.
+                    api_key=api_key or (None if has_authorization else "api-key-not-set"),
                     default_headers=default_headers,
                     http_client=_endpoint_http_client(follow_redirects=False) if base_url is not None else None,
                 )
