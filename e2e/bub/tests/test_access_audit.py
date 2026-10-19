@@ -179,9 +179,44 @@ def test_a_denial_on_the_runs_own_scope_rejects_the_whole_request() -> None:
 @pytest.mark.parametrize(
     "denial",
     [
+        # Approving a tag change on an Experience another principal owns needs a write the token is denied.
+        pytest.param(
+            _event(_artifact(_EARLIER), action="artifact.write", operation="review_catalog_change", request_id="req-1"),
+            id="catalog-change-write",
+        ),
+        pytest.param(
+            _event(_scope(_EARLIER), action="scope.admin", operation="review_candidate_target", request_id="req-1"),
+            id="candidate-target-write",
+        ),
+        # A Dream review records the checks on its target under the background transport, inside the request.
+        pytest.param(
+            _event(
+                _artifact(_EARLIER),
+                transport="background",
+                action="artifact.write",
+                operation="artifact_dreaming",
+                request_id="req-1",
+            ),
+            id="dream-review-write",
+        ),
+    ],
+)
+def test_a_denial_under_another_operation_of_the_same_request_rejects_it(denial) -> None:
+    allowed = _event(_scope(_EARLIER), action="scope.review", operation="approve_candidate", request_id="req-1")
+    events = (allowed, denial.model_copy(update={"allowed": False, "cursor": 2}))
+
+    accesses = outside_scope(events, _OWN)
+
+    assert accesses[0].request_rejected
+    assert not reached_another_scope(accesses)
+
+
+@pytest.mark.parametrize(
+    "denial",
+    [
         pytest.param(
             _event(_scope(_EARLIER), action="scope.review", operation="candidate_permissions", request_id="req-1"),
-            id="check-for-another-purpose",
+            id="candidate-permissions-probe",
         ),
         pytest.param(
             _event(
@@ -191,7 +226,7 @@ def test_a_denial_on_the_runs_own_scope_rejects_the_whole_request() -> None:
         ),
     ],
 )
-def test_only_a_denial_of_the_same_request_and_operation_rejects_it(denial) -> None:
+def test_a_probe_or_another_requests_denial_does_not_reject_a_request(denial) -> None:
     allowed = _event(_scope(_EARLIER), operation="get_artifact_candidate", request_id="req-1", cursor=2)
     denied = denial.model_copy(update={"allowed": False})
 

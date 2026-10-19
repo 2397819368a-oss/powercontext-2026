@@ -60,6 +60,9 @@ ACCESS_OPERATIONS = frozenset({
     "replace_access_binding",
     "list_access_audit",
 })
+# Checks the Server reports to the caller rather than enforces: which actions a Candidate offers, and the Access API's
+# permission check. Denying one does not reject the request that asked.
+PROBE_OPERATIONS = frozenset({"candidate_permissions", "check_access"})
 _PAGE_LIMIT = 500
 
 
@@ -112,14 +115,15 @@ def outside_scope(events: Sequence[AccessAuditEvent], scope_id: str) -> tuple[Ou
     """Keep the API and MCP decisions about another Scope, or about the Server as a whole, such as listing Scopes.
 
     A request can be allowed one check and denied the next, which rejects it, so each decision also records whether
-    its request was denied any check under the same operation, on any Scope. Checks a request makes for another purpose,
-    such as which actions it may offer on a Candidate, are recorded under their own operation and do not reject it.
+    its request was denied any check the Server enforces, on any Scope. A request's later checks can be recorded under
+    another operation, such as the write an approval needs, or under the background transport, such as a Dream review's
+    read of its evidence, so only the request ID ties them together. Probes do not reject the request.
     """
 
     rejected = {
-        (event.request_id, event.operation)
+        event.request_id
         for event in events
-        if event.request_id is not None and not event.allowed and event.transport in REQUEST_TRANSPORTS
+        if event.request_id is not None and not event.allowed and event.operation not in PROBE_OPERATIONS
     }
     accesses: list[OutsideScopeAccess] = []
     for event in events:
@@ -136,7 +140,7 @@ def outside_scope(events: Sequence[AccessAuditEvent], scope_id: str) -> tuple[Ou
                 action=event.action.value,
                 scope_id=target,
                 allowed=event.allowed,
-                request_rejected=not event.allowed or (event.request_id, event.operation) in rejected,
+                request_rejected=not event.allowed if event.request_id is None else event.request_id in rejected,
             )
         )
     return tuple(accesses)
@@ -151,7 +155,8 @@ def reached_another_scope(accesses: Sequence[OutsideScopeAccess]) -> bool:
     """
 
     return any(
-        not access.request_rejected
+        access.allowed
+        and not access.request_rejected
         and (
             access.operation in SERVER_WIDE_CONTENT_OPERATIONS
             if access.scope_id is None

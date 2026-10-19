@@ -209,9 +209,11 @@ its reward, because leaving out only the runs that passed would bias the rest. T
 MCP decision of that window about another Scope or about the Server as a whole, with its request ID. A request the
 Server rejected, the requests above that return no content, and the Server's other Server-wide operations, such as
 listing Scopes, which return descriptors, settings, or counts, are recorded without excluding the run. A request is
-rejected when any of its checks under the same operation was denied, on any Scope, even after an allowed one: allowed to
-contribute to a Scope but denied the write, it fails without touching the Scope's content. A flush is also left out
-because a host plugin's own end-of-session flush of the previous ON arm's Scope can still be extracting Memory after
+rejected when the Server denied any check it enforces with the request's ID, on any Scope and under any operation name,
+even after an allowed one: allowed to contribute to a Scope but denied the write, or allowed to review a Candidate but
+denied the write that approving it needs, it fails without touching the Scope's content. A denied probe, such as which
+actions a returned Candidate offers or an Access API permission check, does not reject its request. A flush is also left
+out because a host plugin's own end-of-session flush of the previous ON arm's Scope can still be extracting Memory after
 that arm ended. The Server's background processing records its decisions under its own transport and is not counted. The
 audit cannot tell the agent from the harness, which uses the same token, but the harness touches only the arm's own
 Scope while the arm runs. The check therefore needs a Server that no other client, such as a second paired run or the

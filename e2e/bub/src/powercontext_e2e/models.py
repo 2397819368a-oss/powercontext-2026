@@ -232,7 +232,7 @@ class OutsideScopeAccess(EvidenceModel):
     scope_id: str | None = Field(description="The other Scope, or none for the Server as a whole, as when listing.")
     allowed: bool
     request_rejected: bool = Field(
-        description="Whether the request was denied this or another check under the same operation, which rejects it."
+        description="Whether the Server denied the request this or another check it enforces, which rejects it."
     )
 
 
