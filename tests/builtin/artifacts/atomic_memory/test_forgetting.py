@@ -20,15 +20,17 @@ from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryStateValue
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication
 from powercontext.builtin.runtime.config import RuntimeConfig
 from powercontext.builtin.tags import ArtifactTagTarget, TagFilter
 
@@ -155,6 +157,55 @@ def test_atomic_memory_ignores_legacy_capacity_limits(database_config):
                 assert historical.state.state is AtomicMemoryStateValue.FORGOTTEN
                 assert historical.ref.revision == 1
                 assert historical.artifact.content.text == fact(created.index(item))
+
+    asyncio.run(scenario())
+
+
+def test_active_browse_rejects_stale_projection_before_pagination():
+    async def scenario():
+        async with open_builtin_contexts(BuiltinConfig(database=SQLiteConfig())) as contexts:
+            scope_id = "projection-browse"
+            await contexts.get(scope_id)
+            memory = contexts.atomic_memory.for_scope(scope_id)
+            created = sorted(
+                [
+                    await contexts.records.create_artifact(
+                        scope_id, "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": fact(i)})
+                    )
+                    for i in range(8)
+                ],
+                key=lambda item: item.artifact_id,
+            )
+            current = contexts.atomic_memory.index.table
+            async with contexts.database.transaction() as connection:
+                for item, values in zip(
+                    created[:3],
+                    ({"revision": 2}, {"state_version": 1}, {"projection_format": "obsolete"}),
+                    strict=True,
+                ):
+                    await connection.execute(
+                        update(current).where(current.c.artifact_id == item.artifact_id).values(**values)
+                    )
+                await connection.execute(
+                    update(ARTIFACT_HEADS_TABLE)
+                    .where(ARTIFACT_HEADS_TABLE.c.artifact_id == created[3].artifact_id)
+                    .values(lifecycle_state="deprecated")
+                )
+                await connection.execute(delete(current).where(current.c.artifact_id == created[4].artifact_id))
+            page = await memory.list(limit=2)
+            assert [item.ref.artifact_id for item in page.items] == [item.artifact_id for item in created[5:7]]
+            assert page.next_cursor
+            last = await memory.list(limit=2, cursor=page.next_cursor)
+            assert [item.ref.artifact_id for item in last.items] == [created[7].artifact_id]
+            assert last.next_cursor is None
+            assert (await memory.get(created[4].artifact_id, revision=1)).artifact.content.text
+            assert len((await memory.list(states=("active", "forgotten"))).items) == 8
+
+            class CustomIndex(SQLiteAtomicMemoryIndex):
+                pass
+
+            custom = AtomicMemoryApplication(contexts.database, contexts.atomic_memory.artifacts, CustomIndex())
+            assert len((await custom.for_scope(scope_id).list()).items) == 7
 
     asyncio.run(scenario())
 

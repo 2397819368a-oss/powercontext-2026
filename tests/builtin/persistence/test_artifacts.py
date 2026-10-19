@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import event, insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -97,6 +97,22 @@ def test_two_artifact_families_share_revisions_and_ordered_direct_lineage() -> N
                     "handoff",
                     "handoff-1",
                 ) == (handoff, revised)
+                reads = []
+
+                def count(_connection, _cursor, statement, *_args):
+                    if statement.lstrip().upper().startswith(("SELECT", "WITH")):
+                        reads.append(statement)
+
+                event.listen(profile.database.engine.sync_engine, "before_cursor_execute", count)
+                try:
+                    assert await repositories.artifacts.get_many(
+                        connection,
+                        "scope-a",
+                        (handoff.as_ref(), report.as_ref(), revised.as_ref()),
+                    ) == (handoff, report, revised)
+                finally:
+                    event.remove(profile.database.engine.sync_engine, "before_cursor_execute", count)
+                assert len(reads) == 2  # One exact-body read and one complete initial-lineage read.
 
     asyncio.run(scenario())
 

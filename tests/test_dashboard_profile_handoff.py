@@ -219,18 +219,17 @@ def test_handoff_download_stays_exact_and_retains_all_citations(dashboard):
 def test_handoff_directory_return_survives_refresh_and_login(dashboard, monkeypatch):
     scope = create_scope(dashboard, "Download recovery")["scope_id"]
     commit_handoff(dashboard, scope)
-    # Supply two public collection pages while keeping exact record reads and
-    # authorization real. New Handoff writes use the default singleton identity.
-    read = DashboardAPI.read
+    # Supply two collection pages while keeping exact records and authorization real.
+    # New Handoff writes use the default singleton identity.
+    records = DashboardAPI.records
 
-    async def paged(api, path, payload=None):
-        if path.startswith(f"/v1/scopes/{scope}/artifacts/handoff?"):
-            result = await read(api, f"/v1/scopes/{scope}/artifacts/handoff?limit=1")
-            result["next_cursor"] = None if "cursor=" in path else "saved-page-position"
-            return result
-        return await read(api, path, payload)
+    async def paged(api, selected_scope, family, *, cursor=None, limit=12, query=None):
+        result = await records(api, selected_scope, family, cursor=None, limit=1, query=query)
+        if selected_scope == scope and family == "handoff":
+            result["next_cursor"] = None if cursor else "saved-page-position"
+        return result
 
-    monkeypatch.setattr(DashboardAPI, "read", paged)
+    monkeypatch.setattr(DashboardAPI, "records", paged)
     first = dashboard.get("/dashboard/handoff", params={"scope": scope, "lang": "en"})
     next_page = next(url for url in _links(first.text, "/dashboard/handoff") if "cursor=" in url)
     second = dashboard.get(next_page)

@@ -18,10 +18,11 @@ import re
 from html import unescape
 from pathlib import Path
 from secrets import token_urlsafe
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -121,6 +122,79 @@ def create_scope(client: TestClient, title: str, parent: str | None = None) -> d
     return result.json()
 
 
+def test_dashboard_audit_failure_does_not_expose_page_content(dashboard: TestClient, monkeypatch) -> None:
+    scope = create_scope(dashboard, "Audit protected scope title")
+    saved = dashboard.post(
+        "/v1/memory/remember",
+        json={"scope_id": scope["scope_id"], "kind": "fact", "text": "Audit protected memory body."},
+    )
+    assert saved.status_code == 200, saved.text
+    audit = cast(FastAPI, dashboard.app).state.access_control.audit
+
+    async def unavailable(events):
+        raise RuntimeError
+
+    for page in ("home", "notes", "usage"):
+        for headers in ({}, {"HX-Request": "true"}):
+            with monkeypatch.context() as patch:
+                patch.setattr(audit, "append_audits", unavailable)
+                response = dashboard.get(f"/dashboard/{page}", params={"scope": scope["scope_id"]}, headers=headers)
+            assert response.status_code == 503, response.text
+            assert scope["title"] not in response.text
+            assert "Audit protected memory body." not in response.text
+            recovered = dashboard.get(f"/dashboard/{page}", params={"scope": scope["scope_id"]}, headers=headers)
+            assert recovered.status_code == 200, recovered.text
+            assert scope["title"] in recovered.text
+            if page != "usage":
+                assert "Audit protected memory body." in recovered.text
+
+
+def test_dashboard_preserves_injected_atomic_read_rules(dashboard: TestClient, monkeypatch) -> None:
+    from powercontext.builtin.runtime.application import BuiltinRuntime
+    from powercontext.builtin.runtime.atomic_memory import AtomicMemoryAccess, AtomicMemoryApplication
+    from powercontext.server.authz import AccessDeniedError
+
+    class DenyRead(AtomicMemoryAccess):
+        async def authorize(self, connection, scope_id, context, action, ref=None):
+            if action == "read":
+                raise AccessDeniedError
+            await super().authorize(connection, scope_id, context, action, ref)
+
+    scope = create_scope(dashboard, "Injected memory access")
+    saved = dashboard.post(
+        "/v1/memory/remember",
+        json={"scope_id": scope["scope_id"], "kind": "fact", "text": "Custom access protected memory."},
+    )
+    assert saved.status_code == 200, saved.text
+    app = cast(FastAPI, dashboard.app)
+    original = app.state.application
+    atomic = AtomicMemoryApplication(
+        original.primary_database, original._records()._artifacts, original.atomic_memory._application.index
+    )
+    atomic.security = DenyRead()
+    atomic.service.shared.security = atomic.security
+    injected = BuiltinRuntime(
+        provider=original._provider,
+        capabilities=original._capabilities,
+        primary_database=original.primary_database,
+        atomic_memory_application=atomic,
+        record_service=original._records(),
+        scope_application=original.scopes,
+    )
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(app.state, "application", injected)
+            denied = dashboard.post("/v1/atomic-memory/list", json={"scope_id": scope["scope_id"]})
+            assert denied.status_code == 403, denied.text
+            page = dashboard.get("/dashboard/notes", params={"scope": scope["scope_id"]})
+            assert page.status_code == 200, page.text
+            assert "Custom access protected memory." not in page.text
+            assert LABELS["error_403"] in page.text
+    finally:
+        assert dashboard.portal is not None
+        dashboard.portal.call(injected.close)
+
+
 def test_scope_selection_default_and_unknown_scope(dashboard: TestClient) -> None:
     parent = create_scope(dashboard, "Project")
     child = create_scope(dashboard, "Documentation", parent["scope_id"])
@@ -135,6 +209,36 @@ def test_scope_selection_default_and_unknown_scope(dashboard: TestClient) -> Non
     assert dashboard.get("/v1/scopes/default").json()["scope_id"] == child["scope_id"]
     assert dashboard.get("/dashboard/home?scope=missing").status_code == 404
     assert LABELS["entry_heading"] in dashboard.get("/dashboard/home?scope=").text
+
+
+def test_scope_picker_discovers_all_pages_without_loading_the_catalog_in_ssr(dashboard: TestClient) -> None:
+    scopes = [create_scope(dashboard, f"Picker scope {index:02}") for index in range(30)]
+    selected = scopes[-1]
+    page = dashboard.get("/dashboard/notes", params={"scope": selected["scope_id"]})
+    assert page.status_code == 200
+    assert selected["title"] in page.text
+    assert scopes[0]["title"] not in page.text
+    seen = []
+    cursor = None
+    while True:
+        params = {"query": "Picker scope"}
+        if cursor:
+            params["cursor"] = cursor
+        response = dashboard.get("/dashboard/scope-options", params=params)
+        assert response.status_code == 200
+        assert response.headers["Cache-Control"] == "no-store"
+        body = response.json()
+        assert len(body["items"]) <= 25
+        seen.extend(item["scope_id"] for item in body["items"])
+        assert all("summary" not in item and "external_references" not in item for item in body["items"])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+    assert len(seen) == len(set(seen)) == 30
+    assert set(seen) == {scope["scope_id"] for scope in scopes}
+    result = dashboard.get("/dashboard/scope-options", params={"query": selected["title"]})
+    assert [item["scope_id"] for item in result.json()["items"]] == [selected["scope_id"]]
+    assert dashboard.get("/dashboard/scope-options?query=" + "x" * 257).status_code == 422
 
 
 def test_language_survives_navigation_without_translating_records(dashboard: TestClient) -> None:
@@ -803,3 +907,34 @@ def test_disabled_dashboard_does_not_offer_token_login(tmp_path: Path) -> None:
         assert response.status_code == 401
         assert response.headers["content-type"].startswith("application/json")
         assert client.get("/dashboard/home", headers={"Authorization": f"Bearer {token}"}).status_code == 404
+
+
+@pytest.mark.parametrize("broken_family", ["atomic-memory", "handoff"])
+def test_home_corrupt_body_does_not_hide_other_families(dashboard: TestClient, broken_family: str) -> None:
+    from sqlalchemy import update
+
+    from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE
+
+    scope = create_scope(dashboard, "Independent content sections")["scope_id"]
+    created = dashboard.post(
+        f"/v1/scopes/{scope}/artifacts",
+        json={"family": "atomic-memory", "content": {"kind": "fact", "text": "Healthy atomic preview."}},
+    )
+    assert created.status_code == 201
+    commit_handoff(dashboard, scope)
+
+    async def corrupt_body() -> None:
+        async with cast(FastAPI, dashboard.app).state.application.primary_database.transaction() as connection:
+            await connection.execute(
+                update(ARTIFACTS_TABLE)
+                .where(ARTIFACTS_TABLE.c.scope_id == scope, ARTIFACTS_TABLE.c.family == broken_family)
+                .values(content=b"invalid stored body")
+            )
+
+    assert dashboard.portal is not None
+    dashboard.portal.call(corrupt_body)
+    response = dashboard.get("/dashboard/home", params={"scope": scope})
+    assert response.status_code == 200
+    assert 'class="alert alert-warning my-3"' in response.text
+    assert ("Healthy atomic preview." in response.text) is (broken_family != "atomic-memory")
+    assert ("Review the HTTP contract" in response.text) is (broken_family != "handoff")

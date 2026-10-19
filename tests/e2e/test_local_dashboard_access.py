@@ -20,14 +20,27 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from pydantic import SecretStr
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from typer.testing import CliRunner
 
+from powercontext.builtin.runtime import RuntimeConfig
 from powercontext.cli.config import app as config_app
 from powercontext.cli.env_file import parse_environment
 from powercontext.server.configuration import server_settings_context
 from powercontext.server.factory import create_server_app
+from powercontext.server.settings import (
+    AccessControlConfig,
+    BearerAuthConfig,
+    DashboardConfig,
+    McpConfig,
+    ServerSettings,
+)
+from tests.e2e.atomic_memory_migration_backend import MigrationBackend
 
 
 @pytest.mark.parametrize("require_authentication", [False, True], ids=["anonymous-default", "authenticated"])
@@ -102,3 +115,144 @@ def test_local_wizard_connects_dashboard_api_and_mcp(tmp_path: Path, require_aut
             assert text in notes.text
 
     asyncio.run(exercise())
+
+
+def test_dashboard_queries_do_not_grow_per_memory(migration_backend: MigrationBackend) -> None:
+    app = create_server_app(
+        settings=ServerSettings(
+            database=migration_backend.config,
+            runtime=RuntimeConfig(artifact_processing_families=()),
+            dashboard=DashboardConfig(enabled=True),
+            access=AccessControlConfig(mode="enforced"),
+            auth=BearerAuthConfig(enabled=True, token=SecretStr("dashboard-query-budget")),
+            mcp=McpConfig(enabled=False),
+        ),
+        scheduler_path=migration_backend.directory / "scheduler.db",
+    )
+    with TestClient(app, headers={"Authorization": "Bearer dashboard-query-budget"}) as client:
+        scope = client.get("/v1/scopes/default").json()["scope_id"]
+        statements = []
+
+        def completed(_conn, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+
+        event.listen(Engine, "after_cursor_execute", completed)
+        try:
+            previous = {}
+            start = 0
+            for total in (3, 30):
+                for index in range(start, total):
+                    created = client.post(
+                        f"/v1/scopes/{scope}/artifacts",
+                        json={"family": "atomic-memory", "content": {"kind": "fact", "text": f"Budget fact {index}"}},
+                    )
+                    assert created.status_code == 201, created.text
+                start = total
+                for page, reads in (("home", 3), ("notes", 3), ("usage", 2)):
+                    # Initialize any lazy pool connections before measuring steady-state work.
+                    assert client.get(f"/dashboard/{page}", params={"scope": scope}).status_code == 200
+                    statements.clear()
+                    response = client.get(f"/dashboard/{page}", params={"scope": scope})
+                    assert response.status_code == 200, response.text
+                    if page != "usage":
+                        assert "Budget fact" in response.text
+                    # Drivers emit different transaction-control SQL; bound data, policy and audit work together.
+                    count = sum(
+                        sql.split(None, 1)[0].upper() in {"SELECT", "WITH", "INSERT", "UPDATE", "DELETE"}
+                        for sql in statements
+                    )
+                    queries = sum(sql.split(None, 1)[0].upper() in {"SELECT", "WITH"} for sql in statements)
+                    assert queries == reads, (page, total, queries, statements)
+                    assert count == reads + 1, (page, total, count)
+                    if page in previous:
+                        assert count <= previous[page], (page, total, previous[page], count)
+                    previous[page] = count
+        finally:
+            event.remove(Engine, "after_cursor_execute", completed)
+
+
+def test_dashboard_selected_note_uses_one_policy_and_content_snapshot(
+    migration_backend: MigrationBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextvars import Context
+
+    from powercontext.server.authz import BuiltinAuthorizationProvider
+    from powercontext.server.dashboard.routes import LABELS
+
+    app = create_server_app(
+        settings=ServerSettings(
+            database=migration_backend.config,
+            runtime=RuntimeConfig(artifact_processing_families=()),
+            dashboard=DashboardConfig(enabled=True),
+            access=AccessControlConfig(mode="enforced"),
+            auth=BearerAuthConfig(enabled=True, token=SecretStr("dashboard-snapshot")),
+            mcp=McpConfig(enabled=False),
+        ),
+        scheduler_path=migration_backend.directory / "scheduler.db",
+    )
+
+    async def scenario() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+                headers={"Authorization": "Bearer dashboard-snapshot"},
+            ) as client,
+        ):
+            scope = (await client.get("/v1/scopes/default")).json()["scope_id"]
+            created = await client.post(
+                f"/v1/scopes/{scope}/artifacts",
+                json={"family": "atomic-memory", "content": {"kind": "fact", "text": "Original snapshot body."}},
+            )
+            assert created.status_code == 201, created.text
+            artifact = created.json()["artifact_id"]
+            path = f"/v1/scopes/{scope}/artifacts/atomic-memory/{artifact}"
+            check = BuiltinAuthorizationProvider.check_batch
+            changed = False
+
+            async def interleaved(provider, requests):
+                nonlocal changed
+                decisions = await check(provider, requests)
+                if not changed and requests[0].context.operation.startswith("dashboard"):
+                    changed = True
+
+                    async def publish() -> None:
+                        revised = await client.put(
+                            path,
+                            headers={"If-Match": '"revision:1"'},
+                            json={"content": {"kind": "fact", "text": "Revised snapshot body."}},
+                        )
+                        assert revised.status_code == 200, revised.text
+                        forgotten = await client.post(
+                            "/v1/atomic-memory/lifecycle",
+                            json={
+                                "scope_id": scope,
+                                "target": {
+                                    "artifact": {"family": "atomic-memory", "artifact_id": artifact, "revision": 2},
+                                    "state_version": 0,
+                                },
+                                "state": "forgotten",
+                            },
+                        )
+                        assert forgotten.status_code == 200, forgotten.text
+
+                    await asyncio.create_task(publish(), context=Context())
+                return decisions
+
+            query = {"scope": scope, "artifact": artifact, "revision": 1, "lang": "zh"}
+            with monkeypatch.context() as patch:
+                patch.setattr(BuiltinAuthorizationProvider, "check_batch", interleaved)
+                first = await client.get("/dashboard/notes", params=query)
+            assert changed
+            assert first.status_code == 200, first.text
+            assert "Original snapshot body." in first.text
+            assert "Revised snapshot body." not in first.text
+            assert LABELS["historical_revision"] not in first.text
+            current = await client.get("/dashboard/notes", params=query)
+            assert current.status_code == 200, current.text
+            assert "Original snapshot body." in current.text
+            assert LABELS["historical_revision"] in current.text
+            assert f"{LABELS['current_memory_state']}: {LABELS['memory_state_forgotten']}" in current.text
+
+    asyncio.run(scenario())

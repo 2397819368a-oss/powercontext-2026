@@ -267,6 +267,7 @@ def create_server_app(  # noqa: C901
                 await _remove_legacy_topic_owners(active_access_control)
             readiness_probe.bind(runtime)
             app.state.application = runtime
+            app.state.dashboard_runtime = runtime
             app.state.access_control = active_access_control
             app.state.authentication_provider = configured_authentication
             capabilities = await _server_capabilities(runtime)
@@ -291,6 +292,7 @@ def create_server_app(  # noqa: C901
                 _log_lifecycle("server.stopping", "PowerContext Server is stopping")
                 readiness_probe.unbind()
                 app.state.application = None
+                app.state.dashboard_runtime = None
                 app.state.capability_provider = None
                 app.state.access_control = configured_access_control
                 app.state.authentication_provider = configured_authentication

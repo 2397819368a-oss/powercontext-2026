@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from powercontext.artifacts import Artifact, ArtifactRef, StableHandle
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
 from powercontext.builtin.persistence.artifact_handles import ArtifactHandleRepository
-from powercontext.builtin.persistence.artifacts import ArtifactRepository
+from powercontext.builtin.persistence.artifacts import ArtifactRepository, with_artifact_content
 from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import (
@@ -495,24 +495,29 @@ class RelationalRecordService:
         }
         after_text = self._cursor_after_text(cursor, expected_cursor)
         async with self._database.transaction() as connection:
-            try:
-                current = await self._artifacts.latest(connection, scope_id, family, artifact_id)
-            except RepositoryNotFoundError:
-                raise BaseValueNotFoundError("artifact", (scope_id, family, artifact_id)) from None
+            current_revision = await connection.scalar(
+                select(ARTIFACT_HEADS_TABLE.c.revision).where(
+                    ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
+                    ARTIFACT_HEADS_TABLE.c.family == family,
+                    ARTIFACT_HEADS_TABLE.c.artifact_id == artifact_id,
+                )
+            )
+            if current_revision is None:
+                raise BaseValueNotFoundError("artifact", (scope_id, family, artifact_id))
             if after_text:
                 try:
                     snapshot_text, revision_text = after_text.split(":")
                     snapshot, after = int(snapshot_text), int(revision_text)
                 except ValueError:
                     raise InvalidCursorError from None
-                if not 1 <= after <= snapshot <= current.revision:
+                if not 1 <= after <= snapshot <= current_revision:
                     raise InvalidCursorError
             else:
-                snapshot, after = current.revision, current.revision + 1
+                snapshot, after = current_revision, current_revision + 1
             revisions = tuple(
                 (
                     await connection.execute(
-                        select(ARTIFACTS_TABLE.c.revision)
+                        select(ARTIFACTS_TABLE)
                         .where(
                             ARTIFACTS_TABLE.c.scope_id == scope_id,
                             ARTIFACTS_TABLE.c.family == family,
@@ -523,17 +528,13 @@ class RelationalRecordService:
                         .order_by(ARTIFACTS_TABLE.c.revision.desc())
                         .limit(limit + 1)
                     )
-                ).scalars()
+                ).mappings()
             )
             selected = revisions[:limit]
-            artifacts = await self._artifacts.get_many(
-                connection,
-                scope_id,
-                tuple(ArtifactRef(family=family, artifact_id=artifact_id, revision=revision) for revision in selected),
-            )
+            artifacts = await self._artifacts.decode_many(connection, scope_id, selected)
             items = tuple(_artifact_collection_item(scope_id, artifact) for artifact in artifacts)
         next_cursor = (
-            self._encode_cursor(expected_cursor, f"{snapshot}:{selected[-1]}")
+            self._encode_cursor(expected_cursor, f"{snapshot}:{selected[-1]['revision']}")
             if len(revisions) > limit and selected
             else None
         )
@@ -593,6 +594,8 @@ class RelationalRecordService:
         async with self._database.transaction() as connection:
             statement = (
                 select(
+                    ARTIFACT_HEADS_TABLE.c.scope_id,
+                    ARTIFACT_HEADS_TABLE.c.family,
                     ARTIFACT_HEADS_TABLE.c.artifact_id,
                     ARTIFACT_HEADS_TABLE.c.revision,
                 )
@@ -617,21 +620,19 @@ class RelationalRecordService:
                         tag_filter,
                     )
                 )
-            rows = (await connection.execute(statement)).all()
-            selected_rows = rows[:limit]
-            artifacts = await self._artifacts.get_many(
-                connection,
-                scope_id,
-                tuple(
-                    ArtifactRef(family=family, artifact_id=str(row.artifact_id), revision=int(row.revision))
-                    for row in selected_rows
-                ),
+            heads = statement.subquery("selected_artifact_heads")
+            rows = (
+                (await connection.execute(with_artifact_content(select(heads), heads).order_by(heads.c.artifact_id)))
+                .mappings()
+                .all()
             )
+            selected_rows = rows[:limit]
+            artifacts = await self._artifacts.decode_many(connection, scope_id, selected_rows)
             items = tuple(_artifact_collection_item(scope_id, artifact) for artifact in artifacts)
 
         next_cursor = None
         if len(rows) > limit and selected_rows:
-            next_cursor = self._encode_cursor(expected_cursor, str(selected_rows[-1].artifact_id))
+            next_cursor = self._encode_cursor(expected_cursor, str(selected_rows[-1]["artifact_id"]))
         return ArtifactRecordPage(
             items=items,
             next_cursor=next_cursor,
@@ -854,6 +855,7 @@ def _artifact_collection_item(scope_id: str, artifact: Artifact[Any]) -> Artifac
         sources=artifact.lineage.sources,
         artifacts=artifact.lineage.artifacts,
         content_digest=_content_digest(content),
+        content=content,
     )
 
 

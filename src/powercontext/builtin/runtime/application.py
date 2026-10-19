@@ -270,7 +270,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     build_recall_candidates,
     recall_effort,
 )
-from powercontext.builtin.runtime.skill_search import search_skill_library
+from powercontext.builtin.runtime.skill_search import SkillArtifactSearcher, search_skill_library
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics, overview_selection
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
@@ -788,11 +788,14 @@ class ScopedPromptApplication:
         self.scope_id = validate_scope_id(scope_id)
 
     async def read_configuration(self, key: str, /) -> PromptConfiguration:
+        return (await self.read_configurations((key,)))[0]
+
+    async def read_configurations(self, keys: tuple[str, ...], /) -> tuple[PromptConfiguration, ...]:
         async with self._runtime._scope_operation(self.scope_id):
             service = self._runtime._prompt_service
             if service is None:
                 raise PromptError("prompt_customization_unavailable")
-            return await service.read_configuration(self.scope_id, key)
+            return await service.read_configurations(self.scope_id, keys)
 
     async def generate_demonstrations(
         self, key: str, request: GeneratePromptDemonstrations, /
@@ -926,7 +929,6 @@ class StatisticsApplication:
             )
         return aggregate_statistics(
             selection,
-            tuple(scope.scope_id for scope in resolved),
             snapshots,
             captured_at,
         )
@@ -2444,6 +2446,10 @@ class ScopedSkillApplication:
     ) -> tuple[tuple[Skill, ArtifactGovernance], ...]:
         """Preserve the Skill Library's active search and bounded deprecated append rule."""
 
+        lister = self._runtime._skill_lister
+        if isinstance(lister, SkillArtifactSearcher):
+            async with self._runtime._scoped_operation(self.scope_id):
+                return await lister(self.scope_id, include_deprecated, limit, query=query)
         return await search_skill_library(self, query, limit, include_deprecated=include_deprecated)
 
     async def list(
@@ -3124,6 +3130,10 @@ class ScopedAtomicMemoryApplication:
         async with self._runtime._scope_operation(self.scope_id):
             return await self._scoped.get(artifact_id, revision=revision, context=context)
 
+    async def state(self, artifact_id: str, *, context=None):
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._scoped.state(artifact_id, context=context)
+
     async def _filter_current_candidates(self, candidates, *, context=None):
         async with self._runtime._scope_operation(self.scope_id):
             return await self._scoped._filter_current_candidates(candidates, context=context)
@@ -3690,6 +3700,7 @@ class BuiltinRuntime:
         self.decision_model = decision_model
         self.publications = publication_application
         self.scopes = scope_application
+        self._scope_operations: dict[tuple[asyncio.Task[Any] | None, str], ScopeDescriptor] = {}
         self._readiness = RuntimeReadinessChecks() if readiness is None else readiness
         self._clock = _utc_now if clock is None else clock
         self._tracing = tracing
@@ -3953,19 +3964,21 @@ class BuiltinRuntime:
     async def _scope_operation(self, scope_id: str) -> AsyncIterator[ScopeDescriptor]:
         scope = validate_scope_id(scope_id)
         async with self._operation():
+            key = (asyncio.current_task(), scope)
+            if key in self._scope_operations:
+                yield self._scope_operations[key]
+                return
             if self.scopes is None:
                 raise _RuntimeStateError("scope")
             registered = await self.scopes.get(scope)
             with self._scope_cache.lease(scope):
+                self._scope_operations[key] = registered
                 try:
                     yield registered
                 finally:
-                    # Every scoped operation, read or write, is a completion
-                    # boundary for the usage it accepted. The recorder owns its
-                    # own budget, so this never widens the operation's model
-                    # deadlines, and a Runtime without statistics has no recorder
-                    # to drain. One flush here covers the nested _scoped_operation
-                    # rather than paying for it twice.
+                    del self._scope_operations[key]
+                    # The outer scoped operation drains usage once, including nested work.
+                    # The recorder owns its budget without widening model deadlines.
                     if self._statistics_service is not None:
                         await self._statistics(scope).flush_model_usage()
 

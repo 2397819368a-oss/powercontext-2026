@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import Request
 
-from powercontext.server.dashboard.api import ReadError
+from powercontext.server.dashboard.errors import ReadError
 
 PAGE_SIZE = 6
 

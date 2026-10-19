@@ -53,14 +53,23 @@ async def load_collection(api: DashboardAPI, request: Request, ctx: dict[str, An
         for item in result["items"]:
             if "error" in item:
                 ctx["errors"][family] = item["error"]
-    except ReadError as error:
-        ctx["errors"][family] = error
+    except Exception as error:
+        ctx["errors"][family] = ReadError.from_exception(error)
 
 
 async def load_notes(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
     searching = ctx["page"] == "notes" and bool(ctx["search_query"])
     if ctx["page"] == "notes" and not searching and "notes_page" in request.query_params:
         raise ReadError(422, "invalid_request")
+    if ctx["page"] == "notes":
+        query = request.query_params
+        if ("artifact" in query) != ("revision" in query):
+            raise ReadError(422, "invalid_request")
+        ctx["note_selection"] = (
+            {"artifact_id": query["artifact"], "revision": positive_revision(query["revision"])}
+            if "artifact" in query
+            else None
+        )
     try:
         if searching:
             result = await api.read(
@@ -73,17 +82,14 @@ async def load_notes(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -
                 },
             )
         else:
-            result = await api.read(
-                "/v1/atomic-memory/list",
-                {
-                    "scope_id": ctx["scope"],
-                    "states": [ctx["note_state"]],
-                    "limit": 3 if ctx["page"] == "home" else PAGE_SIZE,
-                    "cursor": request.query_params.get("notes_cursor") if ctx["page"] == "notes" else None,
-                },
+            result = await api.atomic_memory_list(
+                ctx["scope"],
+                state=ctx["note_state"],
+                limit=3 if ctx["page"] == "home" else PAGE_SIZE,
+                cursor=request.query_params.get("notes_cursor") if ctx["page"] == "notes" else None,
             )
-    except ReadError as error:
-        ctx["errors"]["notes"] = error
+    except Exception as error:
+        ctx["errors"]["notes"] = ReadError.from_exception(error)
         return
     if searching:
         items = memory_view({
@@ -103,26 +109,16 @@ async def load_notes(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -
 
 
 async def load_stats(api: DashboardAPI, ctx: dict[str, Any]) -> None:
-    selection = {"mode": "exact", "scope_ids": [ctx["scope"]]}
     try:
-        result = await api.read("/v1/stats", {"selection": selection, "period": ctx["period"]})
-        ctx["stats"] = usage_view(result["usage"], result["recall"])
-        ctx["stats"]["scope_ids"] = result["scope_ids"]
+        usage, recall = await api.usage(ctx["scope"], ctx["period"])
+        ctx["stats"] = usage_view(usage, recall)
     except ReadError as error:
         ctx["errors"]["usage"] = error
 
 
-async def select_note(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
+async def select_note(api: DashboardAPI, ctx: dict[str, Any]) -> None:
     scope = ctx["scope"]
-    query = request.query_params
-    atomic_fields = {"artifact", "revision"}
-    if atomic_fields.intersection(query) and not atomic_fields.issubset(query):
-        raise ReadError(422, "invalid_request")
-    ref: dict[str, Any] | None = (
-        {"artifact_id": query["artifact"], "revision": positive_revision(query["revision"])}
-        if atomic_fields.issubset(query)
-        else next(iter(ctx["data"]["notes"]), None)
-    )
+    ref = ctx.get("note_selection") or next(iter(ctx["data"]["notes"]), None)
     if ref:
         ctx["selected_note"] = await api.atomic_memory_get(scope, ref["artifact_id"], ref["revision"])
         current = next(
@@ -149,30 +145,33 @@ async def load_record(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
     ctx["related_sources"] = [source for source in record["sources"] if source["source_type"] == "content"]
 
 
+async def load_home(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
+    reads = (
+        load_notes(api, request, ctx),
+        load_stats(api, ctx),
+        *(load_collection(api, request, ctx, family) for family in ("handoff", "experience", "skill")),
+    )
+    if api.connection is None:
+        await asyncio.gather(*reads)
+    else:
+        for read in reads:
+            await read
+
+
 async def load_content(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
     page = ctx["page"]
     if page == "home":
-        await asyncio.gather(
-            load_notes(api, request, ctx),
-            load_stats(api, ctx),
-            *(load_collection(api, request, ctx, family) for family in ("handoff", "experience", "skill")),
-        )
+        await load_home(api, request, ctx)
     elif page == "notes":
         await load_notes(api, request, ctx)
-        await select_note(api, request, ctx)
+        await select_note(api, ctx)
     elif page == "handoff":
         await load_collection(api, request, ctx, "handoff")
     elif page == "methods":
         await load_collection(api, request, ctx, ctx["method_kind"])
     elif page == "usage":
         await load_stats(api, ctx)
-    else:
-        await load_additional_page(api, request, ctx)
-
-
-async def load_additional_page(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
-    page = ctx["page"]
-    if page == "topics":
+    elif page == "topics":
         await load_topics(api, request, ctx)
     elif page == "profile":
         await load_profile(api, request, ctx)
@@ -187,13 +186,8 @@ async def load_topics(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
     query = ctx["artifact_query"]
     if query:
         try:
-            result = await api.topic_memory_search(ctx["scope"], query)
-            for hit in result["hits"]:
-                try:
-                    record = await api.topic_memory_get(ctx["scope"], hit["artifact"])
-                    ctx["data"]["topic_memory"].append({**hit, **record, "is_current": record["is_current"]})
-                except ReadError as error:
-                    ctx["errors"].setdefault("topic_memory", error)
+            result = await api.read("/v1/topic-memory/search", {"scope_id": ctx["scope"], "query": query})
+            ctx["data"]["topic_memory"] = result["hits"]
         except ReadError as error:
             ctx["errors"]["topic_memory"] = error
     else:
@@ -230,12 +224,11 @@ async def load_prompts(api: DashboardAPI, ctx: dict[str, Any]) -> None:
         "skill.generate",
         "handoff.generate",
     )
-    for key in keys:
-        try:
-            value = await api.prompt_configuration(ctx["scope"], key)
+    for value in await api.prompt_configurations(ctx["scope"], keys):
+        if isinstance(value, ReadError):
+            ctx["errors"].setdefault("prompts", value)
+        else:
             ctx["data"]["prompts"].append(value)
-        except ReadError as error:
-            ctx["errors"].setdefault("prompts", error)
 
 
 async def load_profile(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
@@ -246,7 +239,6 @@ async def load_profile(api: DashboardAPI, request: Request, ctx: dict[str, Any])
         raise ReadError(422, "invalid_request")
     scope = ctx["scope"]
     base = f"/v1/scopes/{segment(scope)}/artifacts/profile/profile"
-    ctx["profile_history_view"] = view == "history"
     selected_revision = revision
     if revision is None:
         # An absent artifact has no owner; the scope-authorized collection is the

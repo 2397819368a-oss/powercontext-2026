@@ -135,7 +135,7 @@ def test_subject_dual_write_rejects_revoked_target_contribution(tmp_path, explic
             first = await client.post(path, json=payload)
             assert first.status_code == 201, first.text
             target = first.json()["subject_scope_id"]
-            # Materialize the static preset before revoking every contribution grant.
+            # Creation initializes the preset; revocation must survive later reads and writes.
             scope = await client.get(f"/v1/scopes/{target}")
             assert scope.status_code == 200, scope.text
             bindings = await client.post(

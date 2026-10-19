@@ -716,6 +716,59 @@ def test_unprivileged_requests_cannot_distinguish_missing_owner(tmp_path, backen
 
 
 @pytest.mark.parametrize("backend", ["builtin", "casbin"])
+def test_static_preset_initializes_only_needed_permissions_without_reviving_revoked_bindings(tmp_path, backend):
+    from powercontext.builtin.scope import ScopeDraft
+
+    async def scenario():
+        async with _server(tmp_path, backend) as (app, client, _):
+            # An SDK-created Scope predates Server preset initialization.
+            created_scope = await app.state.application.scopes.create(
+                ScopeDraft(title="Existing", summary="No static preset", idempotency_key="existing-scope")
+            )
+            scope = created_scope.scope_id
+            resource = {"type": "scope", "scope_id": scope}
+            viewer = await client.post(
+                "/v1/access/bindings/create",
+                json={
+                    "subject": {"type": "service", "id": "admin"},
+                    "resource": resource,
+                    "role": "scope.viewer",
+                    "idempotency_key": "explicit-static-viewer",
+                },
+            )
+            assert viewer.status_code == 201, viewer.text
+            assert (await client.get(f"/v1/scopes/{scope}")).status_code == 200
+            bindings = await client.post("/v1/access/bindings/list", json={"management_resource": resource})
+            assert [item["binding_id"] for item in bindings.json()["items"]] == [viewer.json()["binding_id"]]
+            created = await client.post(f"/v1/scopes/{scope}/sources", json={"content": "Initialize contribution"})
+            assert created.status_code == 201, created.text
+            bindings = await client.post(
+                "/v1/access/bindings/list", json={"management_resource": resource, "role": "scope.contributor"}
+            )
+            (contributor,) = bindings.json()["items"]
+            revoked = await client.post(
+                "/v1/access/bindings/revoke",
+                json={
+                    "binding_id": contributor["binding_id"],
+                    "expected_version": contributor["version"],
+                    "idempotency_key": "revoke-static-contributor",
+                },
+            )
+            assert revoked.status_code == 200, revoked.text
+            denied = await client.post(f"/v1/scopes/{scope}/sources", json={"content": "Must stay denied"})
+            assert denied.status_code == 403, denied.text
+            assert (await client.get(f"/v1/scopes/{scope}")).status_code == 200
+            bindings = await client.post(
+                "/v1/access/bindings/list", json={"management_resource": resource, "role": "scope.contributor"}
+            )
+            assert [(item["binding_id"], item["state"]) for item in bindings.json()["items"]] == [
+                (contributor["binding_id"], "revoked")
+            ]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("backend", ["builtin", "casbin"])
 def test_missing_memory_in_readable_scope_is_not_owner_pending(tmp_path, backend):
     async def scenario():
         async with _server(tmp_path, backend) as (_, client, _):
@@ -759,9 +812,10 @@ def test_missing_memory_in_readable_scope_is_not_owner_pending(tmp_path, backend
     asyncio.run(scenario())
 
 
-def test_owner_failure_blocks_collections_and_context_before_content(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["builtin", "casbin"])
+def test_owner_failure_rolls_back_new_atomic_writes_without_blocking_explicit_reads(tmp_path, monkeypatch, backend):
     async def scenario():
-        async with _server(tmp_path) as (app, client, access):
+        async with _server(tmp_path, backend) as (app, client, access):
             scope_id = await _scope(client)
 
             async def unavailable(*args, **kwargs):
@@ -837,9 +891,41 @@ def test_owner_failure_blocks_collections_and_context_before_content(tmp_path, m
             ]
             for method, path, body in requests:
                 response = await client.request(method, path, json=body)
-                assert response.status_code == 503, (path, response.text)
-                assert response.json()["error"]["code"] == "artifact_owner_pending"
-                assert "OWNER_PENDING_PRIVATE_CONTENT" not in response.text
+                assert response.status_code == 200, (path, response.text)
+            exact = await client.get(artifact_url + f"/revisions/{stored['revision']}")
+            assert exact.json()["content"]["text"] == "OWNER_PENDING_PRIVATE_CONTENT"
+            state = await client.get(artifact_url + "/state")
+            assert state.status_code == 200, state.text
+            assert state.json()["artifact"]["artifact_id"] == stored["artifact_id"]
+            for path in (artifact_url, artifact_url + "/state"):
+                denied = await client.get(path, headers={"Authorization": "Bearer stranger"})
+                assert denied.status_code == 403, denied.text
+                assert "OWNER_PENDING_PRIVATE_CONTENT" not in denied.text
+            grant = await _grant(
+                client,
+                scope_id,
+                "reader",
+                "artifact.viewer",
+                _resource(scope_id, "atomic-memory", stored["artifact_id"]),
+            )
+            reader = {"Authorization": "Bearer reader"}
+            assert (
+                await client.get(artifact_url + f"/revisions/{stored['revision']}", headers=reader)
+            ).status_code == 200
+            assert (await client.get(artifact_url + "/state", headers=reader)).status_code == 200
+            assert (await client.get(f"/v1/scopes/{scope_id}", headers=reader)).status_code == 403
+            denied_list = await client.post("/v1/atomic-memory/list", headers=reader, json={"scope_id": scope_id})
+            assert denied_list.status_code == 403, denied_list.text
+            revoked = await client.post(
+                "/v1/access/bindings/revoke",
+                json={
+                    "binding_id": grant["binding_id"],
+                    "expected_version": grant["version"],
+                    "idempotency_key": "revoke-ownerless-reader",
+                },
+            )
+            assert revoked.status_code == 200, revoked.text
+            assert (await client.get(artifact_url, headers=reader)).status_code == 403
 
     asyncio.run(scenario())
 
@@ -1438,9 +1524,10 @@ def test_prompt_owner_cannot_mutate_after_scope_role_revocation(
     asyncio.run(scenario())
 
 
-def test_prompt_configuration_does_not_fall_back_when_saved_owner_is_pending(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["builtin", "casbin"])
+def test_prompt_configuration_reads_saved_content_through_scope_grant_without_owner(tmp_path, monkeypatch, backend):
     async def scenario():
-        async with _server(tmp_path) as (_, client, access):
+        async with _server(tmp_path, backend) as (_, client, access):
             scope = await _scope(client)
 
             async def unavailable(*args, **kwargs):
@@ -1463,9 +1550,17 @@ def test_prompt_configuration_does_not_fall_back_when_saved_owner_is_pending(tmp
                 )
                 assert created.status_code == 503
             response = await client.get(f"/v1/scopes/{scope}/prompts/atomic_memory.extract")
-            assert response.status_code == 503
-            assert response.json()["error"]["code"] == "artifact_owner_pending"
-            assert "effective" not in response.json()
+            assert response.status_code == 200, response.text
+            assert response.json()["artifact"] == {
+                "family": "prompt",
+                "artifact_id": "atomic_memory.extract",
+                "revision": 1,
+            }
+            assert response.json()["effective"] is not None
+            denied = await client.get(
+                f"/v1/scopes/{scope}/prompts/atomic_memory.extract", headers={"Authorization": "Bearer stranger"}
+            )
+            assert denied.status_code == 403, denied.text
 
     asyncio.run(scenario())
 
@@ -1495,13 +1590,13 @@ def test_atomic_state_read_keeps_content_and_lifecycle_in_one_snapshot(tmp_path,
             assert created.status_code == 201, created.text
             identity = created.json()["artifact_id"]
             path = f"/v1/scopes/{scope}/artifacts/atomic-memory/{identity}"
-            repository = app.state.application.atomic_memory._application.service.artifacts
-            latest = repository.latest
+            repository = app.state.application.atomic_memory._application.service.shared.states
+            get_state = repository.get
             changed = False
 
-            async def interleaved_latest(connection, scope_id, family, artifact_id, **kwargs):
+            async def interleaved_state(connection, scope_id, family, artifact_id, **kwargs):
                 nonlocal changed
-                value = await latest(connection, scope_id, family, artifact_id, **kwargs)
+                value = await get_state(connection, scope_id, family, artifact_id, **kwargs)
                 if not changed and artifact_id == identity and not kwargs.get("for_update", False):
                     changed = True
                     replaced = await client.put(
@@ -1525,18 +1620,22 @@ def test_atomic_state_read_keeps_content_and_lifecycle_in_one_snapshot(tmp_path,
                 return value
 
             with monkeypatch.context() as patch:
-                patch.setattr(repository, "latest", interleaved_latest)
+                patch.setattr(repository, "get", interleaved_state)
                 snapshot = await client.get(path + "/state")
             assert changed
             assert snapshot.status_code == 200, snapshot.text
             assert snapshot.json()["artifact"]["revision"] == 1
             assert snapshot.json()["state"] == "active"
             assert snapshot.json()["state_version"] == 0
+            assert snapshot.headers["ETag"] == '"revision:1:state:0"'
             current = await client.get(path + "/state")
             assert current.status_code == 200, current.text
             assert current.json()["artifact"]["revision"] == 2
             assert current.json()["state"] == "forgotten"
             assert current.json()["state_version"] == 1
+            assert current.headers["ETag"] == '"revision:2:state:1"'
+            unchanged = await client.get(path + "/state", headers={"If-None-Match": current.headers["ETag"]})
+            assert unchanged.status_code == 304
 
     asyncio.run(scenario())
 
@@ -1589,22 +1688,67 @@ def test_atomic_lifecycle_respects_a_custom_builtin_provider_denial(tmp_path):
     asyncio.run(scenario())
 
 
+async def _assert_shared_note_dashboard(client, scope_id, identity, neighbor):
+    reader = {"Authorization": "Bearer reader"}
+    for headers in (reader, {**reader, "HX-Request": "true"}):
+        selected = await client.get(
+            "/dashboard/notes",
+            headers=headers,
+            params={"scope": scope_id, "artifact": identity, "revision": 1, "notes_cursor": "invalid"},
+        )
+        assert selected.status_code == 200, selected.text
+        assert "Alpha scope fact." in selected.text
+        assert "Alpha unshared fact." not in selected.text
+        assert "Regression scope" not in selected.text
+        assert "usage-sheet" not in selected.text
+    for page in ("home", "notes", "usage"):
+        denied = await client.get(f"/dashboard/{page}", headers=reader, params={"scope": scope_id})
+        assert denied.status_code == 403, denied.text
+    for principal, artifact_id in (
+        ("reader", neighbor),
+        ("stranger", identity),
+    ):
+        denied = await client.get(
+            "/dashboard/notes",
+            headers={"Authorization": f"Bearer {principal}"},
+            params={"scope": scope_id, "artifact": artifact_id, "revision": 1},
+        )
+        assert denied.status_code == 403, denied.text
+
+
+async def _assert_scope_memory_dashboard(client, scope_id, identity):
+    reader = {"Authorization": "Bearer reader"}
+    path = f"/v1/scopes/{scope_id}/artifacts/atomic-memory/{identity}"
+    for page in ("home", "notes", "usage"):
+        allowed = await client.get(f"/dashboard/{page}", headers=reader, params={"scope": scope_id})
+        assert allowed.status_code == 200, allowed.text
+        assert "Regression scope" in allowed.text
+        if page == "notes":
+            assert "Alpha scope fact." in allowed.text
+            assert "Alpha unshared fact." in allowed.text
+        denied = await client.get(
+            f"/dashboard/{page}", headers={"Authorization": "Bearer stranger"}, params={"scope": scope_id}
+        )
+        assert denied.status_code == 403, denied.text
+    for endpoint in (path + "/revisions/1", path + "/state"):
+        allowed = await client.get(endpoint, headers=reader)
+        assert allowed.status_code == 200, allowed.text
+    listed = await client.post("/v1/atomic-memory/list", headers=reader, json={"scope_id": scope_id})
+    assert listed.status_code == 200, listed.text
+
+
 @pytest.mark.parametrize("provider", ["builtin", "casbin", "custom"])
 def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_path, provider):
-    class ConfiguredProvider:
-        def __init__(self, inner):
-            self.inner = inner
+    from types import SimpleNamespace
 
-        async def check(self, request):
-            return await self.inner.check(request)
-
-        async def check_batch(self, requests):
-            return await self.inner.check_batch(requests)
+    from powercontext.server.dashboard import mount_dashboard
 
     async def scenario():
-        async with _server(tmp_path, "builtin" if provider == "custom" else provider) as (_, client, access):
+        async with _server(tmp_path, "builtin" if provider == "custom" else provider) as (app, client, access):
             if provider == "custom":
-                access.provider = ConfiguredProvider(access.provider)
+                access.provider = SimpleNamespace(check=access.provider.check, check_batch=access.provider.check_batch)
+            else:
+                mount_dashboard(app)
             scope_id = await _scope(client)
             response = await client.post(
                 "/v1/memory/remember", json={"scope_id": scope_id, "kind": "fact", "text": "Alpha scope fact."}
@@ -1613,6 +1757,11 @@ def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_pa
             memory = response.json()["records"][0]
             identity = memory["artifact"]["artifact_id"]
             path = f"/v1/scopes/{scope_id}/artifacts/atomic-memory/{identity}"
+            additional = await client.post(
+                "/v1/memory/remember", json={"scope_id": scope_id, "kind": "fact", "text": "Alpha unshared fact."}
+            )
+            assert additional.status_code == 200, additional.text
+            additional_memory = additional.json()["records"][0]
             await _grant(
                 client,
                 scope_id,
@@ -1626,6 +1775,11 @@ def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_pa
                 },
             )
             reader = {"Authorization": "Bearer reader"}
+
+            if provider != "custom":
+                await _assert_shared_note_dashboard(
+                    client, scope_id, identity, additional_memory["artifact"]["artifact_id"]
+                )
             for endpoint in [path, path + "/revisions/1", path + "/revisions"]:
                 exact = await client.get(endpoint, headers=reader)
                 assert exact.status_code == 200, exact.text
@@ -1638,12 +1792,7 @@ def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_pa
             for endpoint, payload in queries:
                 denied = await client.post(endpoint, headers=reader, json=payload)
                 assert denied.status_code == 403, denied.text
-            additional = await client.post(
-                "/v1/memory/remember", json={"scope_id": scope_id, "kind": "fact", "text": "Alpha unshared fact."}
-            )
-            assert additional.status_code == 200, additional.text
-            additional_memory = additional.json()["records"][0]
-            await _grant(client, scope_id, "reader", "scope.viewer")
+            scope_grant = await _grant(client, scope_id, "reader", "scope.viewer")
             # Scope authority reads another principal's current memory.
             for endpoint, payload in queries:
                 allowed = await client.post(endpoint, headers=reader, json=payload)
@@ -1653,5 +1802,27 @@ def test_atomic_scope_search_and_list_keep_exact_artifact_shares_separate(tmp_pa
                 identity,
                 additional_memory["artifact"]["artifact_id"],
             }
+            if provider == "custom":
+                return
+            for owner_present in (True, False):
+                if not owner_present:
+                    with sqlite3.connect(tmp_path / "regressions.db") as connection:
+                        connection.execute(
+                            "DELETE FROM pc_access_owners WHERE scope_id = ? AND family = ? AND artifact_id = ?",
+                            (scope_id, "atomic-memory", identity),
+                        )
+                await _assert_scope_memory_dashboard(client, scope_id, identity)
+            revoked = await client.post(
+                "/v1/access/bindings/revoke",
+                json={
+                    "binding_id": scope_grant["binding_id"],
+                    "expected_version": scope_grant["version"],
+                    "idempotency_key": "revoke-dashboard-scope-viewer",
+                },
+            )
+            assert revoked.status_code == 200, revoked.text
+            await _assert_shared_note_dashboard(
+                client, scope_id, identity, additional_memory["artifact"]["artifact_id"]
+            )
 
     asyncio.run(scenario())

@@ -190,7 +190,6 @@ from powercontext.builtin.runtime.readiness import (
 )
 from powercontext.builtin.runtime.recall_sufficiency import RecallSufficiencyPolicy
 from powercontext.builtin.runtime.relational import RelationalContexts
-from powercontext.builtin.runtime.skill_search import SkillArtifactSearcher
 from powercontext.builtin.runtime.topic_memory_processing import (
     TopicMemoryWorkerSpec,
     run_topic_memory_worker,
@@ -736,9 +735,7 @@ async def open_builtin_runtime(
         artifact_search.register(
             ExperienceArtifactSearcher(contexts.database, contexts.repositories.artifacts, contexts.experience_index)
         )
-        artifact_search.register(
-            SkillArtifactSearcher(contexts.database, contexts.repositories.artifacts, contexts.experience_index)
-        )
+        artifact_search.register(contexts.list_skills)
         topic_memory_searcher = TopicMemorySearcher(
             search=contexts.search_topic_memories,
             get=contexts.get_topic_memory,

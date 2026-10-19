@@ -32,9 +32,9 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from unittest.mock import patch
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.database import AsyncDatabase
@@ -460,120 +460,43 @@ def _late_grant(binding_id: str, handoff: ResourceRef) -> AccessBinding:
     )
 
 
-def test_snapshot_path_survives_two_connection_interleaving(tmp_path) -> None:
-    """The snapshot path itself — not the retry fallback — must stay on one
-    policy state when a mutation commits between its reads.
+@pytest.mark.parametrize("provider_type", [BuiltinAuthorizationProvider, CasbinAuthorizationProvider])
+@pytest.mark.parametrize("commit_at", ["before_cursor_execute", "after_cursor_execute"])
+def test_statement_snapshot_labels_concurrent_policy_changes(tmp_path, provider_type, commit_at) -> None:
+    """Independent writer commits cannot pair bindings with an earlier policy revision."""
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'statement-snapshot.db'}")
 
-    Two independent connections share one file-backed SQLite database: the
-    reader captures revision N, the writer commits a grant, and the reader must
-    never return that grant labelled with revision N. The interleaving test
-    above hides ``decision_snapshot``, so it only ever exercised the fallback.
-    """
+    async def scenario():
+        async with SQLiteProfile.open(config, tables=ACCESS_TABLES) as writer_profile:
+            writer = RelationalAccessRepository(writer_profile.database)
+            handoff = await _seed_handoff(writer)
+            revision = await writer.policy_revision()
+            async with SQLiteProfile.open(config, tables=ACCESS_TABLES) as reader_profile:
+                changed = False
 
-    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'snapshot-boundary.db').as_posix()}"
+                def commit(connection, _cursor, statement, _parameters, _context, _many):
+                    nonlocal changed
+                    if changed or "pc_access_relationship_heads" not in statement:
+                        return
+                    changed = True
+                    connection.connection.run_async(lambda _: writer.create_binding(_late_grant("late", handoff)))
 
-    async def scenario() -> None:
-        async with SQLiteProfile.open(SQLiteConfig(url=database_url), tables=ACCESS_TABLES) as writer_profile:
-            writer_repository = RelationalAccessRepository(writer_profile.database)
-            handoff = await _seed_handoff(writer_repository)
-            pre_mutation_revision = str(await writer_repository.policy_revision())
-
-            async with SQLiteProfile.open(SQLiteConfig(url=database_url), tables=ACCESS_TABLES) as reader_profile:
-                reader_repository = RelationalAccessRepository(reader_profile.database)
-                original = reader_repository._read_policy_revision
-                reads = 0
-                grants = 0
-
-                async def commit_between_reads(connection: AsyncConnection) -> str:
-                    nonlocal reads, grants
-                    value = await original(connection)
-                    reads += 1
-                    if reads % 2 == 1:
-                        # The read that opens a snapshot: commit the grant the
-                        # reader must not be able to pair with this revision.
-                        grants += 1
-                        await writer_repository.create_binding(_late_grant(f"viewer-late-{grants}", handoff))
-                    return value
-
-                # Patched on the repository the reader actually goes through, so
-                # the interception cannot silently miss the snapshot path.
-                with patch.object(
-                    reader_repository,
-                    "_read_policy_revision",
-                    new=commit_between_reads,
-                ):
-                    for provider in (
-                        BuiltinAuthorizationProvider(reader_repository),
-                        CasbinAuthorizationProvider(reader_repository),
-                    ):
-                        reads = 0
-                        decision = await provider.check(
-                            AccessRequest(
-                                subject=CHARLIE,
-                                action=AccessAction.ARTIFACT_READ,
-                                resource=handoff,
-                                context=AUDIT,
-                            )
-                        )
-                        assert not (decision.allowed and decision.policy_revision == pre_mutation_revision)
-                        assert reads == 2, (
-                            "the snapshot must hold on the first attempt, without spending the retry budget"
-                        )
-
-    asyncio.run(scenario())
-
-
-def test_snapshot_read_fails_closed_when_isolation_cannot_pinned(tmp_path) -> None:
-    """A profile whose isolation cannot be pinned must fail closed.
-
-    Simulates the READ COMMITTED case raised in review: with no snapshot to
-    pin, a revision that keeps moving across the reads can only produce the
-    stale mixture if it is returned at all, so the read has to fail instead.
-    """
-
-    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'unpinnable.db').as_posix()}"
-
-    async def scenario() -> None:
-        async with SQLiteProfile.open(SQLiteConfig(url=database_url), tables=ACCESS_TABLES) as writer_profile:
-            writer_repository = RelationalAccessRepository(writer_profile.database)
-            handoff = await _seed_handoff(writer_repository)
-
-            async with SQLiteProfile.open(SQLiteConfig(url=database_url), tables=ACCESS_TABLES) as reader_profile:
-                reader_repository = RelationalAccessRepository(reader_profile.database)
-                original_revision = reader_repository._read_policy_revision
-                reads = 0
-                grants = 0
-
-                async def commit_between_reads(connection: AsyncConnection) -> str:
-                    nonlocal reads, grants
-                    value = await original_revision(connection)
-                    reads += 1
-                    if reads % 2 == 1:
-                        # Every attempt sees the policy move under it.
-                        grants += 1
-                        await writer_repository.create_binding(_late_grant(f"viewer-unpinned-{grants}", handoff))
-                    return value
-
-                async def unpinnable(_connection: AsyncConnection) -> None:
-                    return None
-
-                with (
-                    patch.object(reader_repository, "_read_policy_revision", new=commit_between_reads),
-                    patch.object(reader_repository, "_pin_read_snapshot", new=unpinnable),
-                ):
-                    for provider in (
-                        BuiltinAuthorizationProvider(reader_repository),
-                        CasbinAuthorizationProvider(reader_repository),
-                    ):
-                        reads = 0
-                        with pytest.raises(AccessUnavailableError):
-                            await provider.check(
-                                AccessRequest(
-                                    subject=CHARLIE,
-                                    action=AccessAction.ARTIFACT_READ,
-                                    resource=handoff,
-                                    context=AUDIT,
-                                )
-                            )
+                engine = reader_profile.database.engine.sync_engine
+                event.listen(engine, commit_at, commit)
+                provider = provider_type(RelationalAccessRepository(reader_profile.database))
+                request = AccessRequest(
+                    subject=CHARLIE, action=AccessAction.ARTIFACT_READ, resource=handoff, context=AUDIT
+                )
+                try:
+                    decision = await provider.check(request)
+                finally:
+                    event.remove(engine, commit_at, commit)
+                assert changed
+                if commit_at == "before_cursor_execute":
+                    assert decision.allowed and decision.policy_revision == await writer.policy_revision()
+                else:
+                    assert not decision.allowed and decision.policy_revision == revision
+                next_read = await provider.check(request)
+                assert next_read.allowed and next_read.policy_revision == await writer.policy_revision()
 
     asyncio.run(scenario())

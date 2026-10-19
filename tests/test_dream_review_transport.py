@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from html import unescape
 from typing import cast
 
 import httpx
@@ -291,7 +293,14 @@ def test_review_dashboard_exposes_evidence_and_requires_same_origin_decisions(da
     )
     assert page.status_code == 200, page.text
     assert "Tag change candidates" in page.text and "Artifact candidates" in page.text
-    assert "Confirmed delivery to the wrong address." in page.text
+    assert "Confirmed delivery to the wrong address." not in page.text
+    evidence_link = next(unescape(link) for link in re.findall(r'href="([^"]+)"', page.text) if "evidence=0" in link)
+    expanded = dashboard.get(evidence_link)
+    assert expanded.status_code == 200
+    assert "Confirmed delivery to the wrong address." in expanded.text
+    invalid = dashboard.get(evidence_link.replace("evidence=0", "evidence=1"))
+    assert invalid.status_code == 422
+    assert "Confirmed delivery to the wrong address." not in invalid.text
     assert "Approve this version" in page.text
     form = {
         "scope": scope,

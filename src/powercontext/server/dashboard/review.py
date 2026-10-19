@@ -25,7 +25,7 @@ from fastapi import Request
 
 from powercontext.server.dashboard.api import DashboardAPI, ReadError, segment
 
-KINDS = {"artifact": "/v1/candidates", "tag": "/v1/candidates"}
+KINDS = {"artifact", "tag"}
 
 
 def formatted(value: Any) -> str:
@@ -58,7 +58,7 @@ async def load_review(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
         selected_kind = request.query_params.get("candidate_kind", "artifact")
         if selected_kind not in KINDS:
             raise ReadError(422, "invalid_request")
-        candidate = await api.read(KINDS[selected_kind] + "/get", {"scope_id": ctx["scope"], "candidate_id": selected})
+        candidate = await api.read("/v1/candidates/get", {"scope_id": ctx["scope"], "candidate_id": selected})
         detail: dict[str, Any] = {
             "kind": candidate["candidate_kind"],
             "candidate": candidate,
@@ -67,18 +67,15 @@ async def load_review(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
             "history": [],
         }
         view["selected"] = detail
-        await _detail(api, ctx["scope"], detail)
+        await _detail(api, request, ctx["scope"], detail)
 
 
-async def _detail(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> None:
+async def _detail(api: DashboardAPI, request: Request, scope: str, detail: dict[str, Any]) -> None:
     candidate, kind = detail["candidate"], detail["kind"]
     proposal = candidate["proposal"]
     baseline: Any = None
     if kind == "tag":
         baseline, proposed = proposal["before_tags"], proposal["after_tags"]
-        detail["history"] = (
-            await api.read(KINDS[kind] + "/history", {"scope_id": scope, "candidate_id": candidate["candidate_id"]})
-        )["versions"]
         revision = {
             "proposal": proposal,
             "reason": candidate["reason"],
@@ -87,7 +84,14 @@ async def _detail(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> None
         }
     else:
         target = candidate.get("target")
-        baseline, proposed = await _artifact_comparison(api, scope, detail)
+        if target:
+            try:
+                baseline = (
+                    await api.artifact_revision(scope, target["family"], target["artifact_id"], target["revision"])
+                )["content"]
+            except ReadError as error:
+                detail["baseline_error"] = error
+        proposed = proposal
         revision = {
             "proposal": proposal,
             "source_refs": candidate["source_refs"],
@@ -98,9 +102,10 @@ async def _detail(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> None
         # The public revision input accepts Profile content, while the stored proposal also has generation metadata.
         if candidate["family"] == "profile":
             revision["proposal"] = {"content": proposal["content"]}
-    detail["history"] = (
-        await api.read("/v1/candidates/history", {"scope_id": scope, "candidate_id": candidate["candidate_id"]})
-    )["versions"]
+    if request.query_params.get("view") == "history":
+        detail["history"] = (
+            await api.read("/v1/candidates/history", {"scope_id": scope, "candidate_id": candidate["candidate_id"]})
+        )["versions"]
     detail["revision"] = formatted(revision)
     detail["proposal"] = formatted(proposal)
     detail["diff"] = "\n".join(
@@ -112,49 +117,41 @@ async def _detail(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> None
             lineterm="",
         )
     )
-    for source in candidate.get("sources", candidate.get("source_refs", [])):
-        source_type = source.get("source_type", source.get("name"))
-        await _evidence(
-            api,
-            detail,
-            source,
-            f"/v1/scopes/{segment(scope)}/sources/{segment(source_type)}/{segment(source['source_id'])}",
-        )
-    for artifact in candidate.get("artifacts", candidate.get("artifact_refs", [])):
-        await _evidence(
-            api,
-            detail,
-            artifact,
-            f"/v1/scopes/{segment(scope)}/artifacts/{segment(artifact['family'])}/{segment(artifact['artifact_id'])}/revisions/{artifact['revision']}",
-        )
-
-
-async def _artifact_comparison(api: DashboardAPI, scope: str, detail: dict[str, Any]) -> tuple[Any, Any]:
-    candidate = detail["candidate"]
-    proposal = candidate["proposal"]
-    baseline: Any = None
-    target = candidate.get("target")
-    if target:
-        try:
-            baseline = (
-                await api.artifact_revision(scope, target["family"], target["artifact_id"], target["revision"])
-            )["content"]
-        except ReadError as error:
-            detail["baseline_error"] = error
-    proposed = proposal
-
-    return baseline, proposed
+    detail["evidence"] = await _evidence(api, scope, candidate, request.query_params.get("evidence"))
 
 
 async def _evidence(
-    api: DashboardAPI, detail: dict[str, Any], ref: dict[str, Any], path: str, payload: dict[str, Any] | None = None
-) -> None:
-    item = {"reference": formatted(ref)}
+    api: DashboardAPI, scope: str, candidate: dict[str, Any], selected: str | None
+) -> list[dict[str, Any]]:
+    evidence = [
+        (
+            ref,
+            f"/v1/scopes/{segment(scope)}/sources/{segment(ref.get('source_type', ref.get('name')))}/{segment(ref['source_id'])}",
+        )
+        for ref in candidate.get("sources", candidate.get("source_refs", []))
+    ] + [
+        (
+            ref,
+            f"/v1/scopes/{segment(scope)}/artifacts/{segment(ref['family'])}/{segment(ref['artifact_id'])}/revisions/{ref['revision']}",
+        )
+        for ref in candidate.get("artifacts", candidate.get("artifact_refs", []))
+    ]
     try:
-        item["content"] = formatted(await api.read(path, payload))
-    except ReadError as error:
-        item["error"] = error
-    detail["evidence"].append(item)
+        index_to_read = int(selected) if selected is not None else None
+    except ValueError as error:
+        raise ReadError(422, "invalid_request") from error
+    if index_to_read is not None and not 0 <= index_to_read < len(evidence):
+        raise ReadError(422, "invalid_request")
+    items = []
+    for index, (ref, path) in enumerate(evidence):
+        item = {"reference": formatted(ref), "selected": index_to_read == index}
+        if item["selected"]:
+            try:
+                item["content"] = formatted(await api.read(path))
+            except ReadError as error:
+                item["error"] = error
+        items.append(item)
+    return items
 
 
 async def submit_review(api: DashboardAPI, request: Request) -> tuple[str, str, str]:
@@ -184,5 +181,5 @@ async def submit_review(api: DashboardAPI, request: Request) -> tuple[str, str, 
         payload.update(scope_id=scope, candidate_id=candidate_id, expected_version=int(form["expected_version"]))
     except (ValueError, KeyError, UnicodeDecodeError) as error:
         raise ReadError(422, "invalid_request") from error
-    await api.read(KINDS[kind] + "/" + action, payload)
+    await api.read("/v1/candidates/" + action, payload)
     return scope, kind, candidate_id
