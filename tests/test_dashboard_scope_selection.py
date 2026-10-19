@@ -122,7 +122,7 @@ def test_default_exact_share_is_independent_of_observer_and_scope_grants(
     )
     _revoke(dashboard, scope_grant)
     authentication = cast(FastAPI, dashboard.app).state.authentication_provider
-    query = {"artifact": artifact, "revision": 1}
+    query = {"artifact": artifact, "revision": 1, "history": "1"}
     with monkeypatch.context() as patch:
         # Select a different authenticated subject; all grants and content use HTTP.
         patch.setattr(authentication, "_principal", PrincipalRef(**reader))

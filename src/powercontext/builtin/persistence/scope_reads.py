@@ -15,7 +15,12 @@ from sqlalchemy import func, literal, select, union_all
 
 from powercontext.builtin.persistence.artifacts import with_artifact_content
 from powercontext.builtin.persistence.statistics import daily_usage_statement
-from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACT_LINEAGE_SOURCES_TABLE, SCOPES_TABLE
+from powercontext.builtin.persistence.tables import (
+    ARTIFACT_HEADS_TABLE,
+    ARTIFACT_LINEAGE_SOURCES_TABLE,
+    ARTIFACTS_TABLE,
+    SCOPES_TABLE,
+)
 
 _HEAD_FIELDS = (
     "scope_id",
@@ -145,4 +150,23 @@ async def scope_header(connection, scope):
         (await connection.execute(select(SCOPES_TABLE).where(SCOPES_TABLE.c.scope_id == scope)))
         .mappings()
         .one_or_none()
+    )
+
+
+async def revision_contents(connection, scope, family, artifact_id, revisions):
+    if not revisions:
+        return []
+    return (
+        (
+            await connection.execute(
+                select(ARTIFACTS_TABLE).where(
+                    ARTIFACTS_TABLE.c.scope_id == scope,
+                    ARTIFACTS_TABLE.c.family == family,
+                    ARTIFACTS_TABLE.c.artifact_id == artifact_id,
+                    ARTIFACTS_TABLE.c.revision.in_(revisions),
+                )
+            )
+        )
+        .mappings()
+        .all()
     )

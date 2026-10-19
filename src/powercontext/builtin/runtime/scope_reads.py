@@ -20,7 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from powercontext.builtin.persistence import scope_reads
 from powercontext.builtin.persistence.artifact_governance import decode_artifact_governance
 from powercontext.builtin.persistence.atomic_memory import _atomic_state
+from powercontext.builtin.persistence.revision_meta import meta_from_row
 from powercontext.builtin.persistence.statistics import decode_daily_usage
+from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE
 from powercontext.builtin.runtime.atomic_memory import ScopedAtomicMemory
 from powercontext.builtin.runtime.statistics import (
     RelationalScopedStatistics,
@@ -46,6 +48,7 @@ class ScopeReadSnapshot:
         atomic: ScopedAtomicMemory,
         statistics: RelationalScopedStatistics,
         as_of: datetime,
+        records,
     ) -> None:
         self.connection = connection
         self.scope_id = scope_id
@@ -53,6 +56,7 @@ class ScopeReadSnapshot:
         self._artifacts = atomic.application.artifacts
         self._statistics = statistics
         self._as_of = as_of
+        self._records = records
 
     async def content(
         self,
@@ -86,6 +90,39 @@ class ScopeReadSnapshot:
             else None
         )
         return rows, notes[:limit], cursor, descriptor
+
+    async def history(self, family, artifact_id, selected, *, limit, cursor=None, compare=None, include_current=False):
+        columns = tuple(
+            ARTIFACTS_TABLE.c[name]
+            for name in ("revision", "created_at", "created_by", "restored_from_revision", "rollback_reason")
+        )
+        rows, head, next_cursor = await self._records.revision_rows(
+            self.connection, self.scope_id, family, artifact_id, limit=limit, cursor=cursor, columns=columns
+        )
+        items = []
+        for row in rows:
+            meta = meta_from_row(row)
+            items.append({
+                "revision": row["revision"],
+                "created_at": None if meta.created_at is None else meta.created_at.isoformat(),
+                "created_by": None
+                if meta.created_by_id is None
+                else {
+                    "type": meta.created_by_type,
+                    "id": meta.created_by_id,
+                },
+                "restored_from_revision": meta.restored_from_revision,
+                "reason": meta.reason,
+            })
+        revisions = set() if compare is None else {selected, compare}
+        if include_current and selected != head:
+            revisions.update((selected, head))
+        bodies = await scope_reads.revision_contents(self.connection, self.scope_id, family, artifact_id, revisions)
+        values = {
+            row["revision"]: {"content": self._artifacts.decode_content(row).model_dump(mode="json", by_alias=True)}
+            for row in bodies
+        }
+        return {"items": items, "head": head, "next_cursor": next_cursor, "values": values}
 
     async def scope(self):
         return await scope_reads.scope_header(self.connection, self.scope_id)

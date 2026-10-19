@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
@@ -41,6 +42,11 @@ from powercontext.builtin.persistence.errors import (
     RepositoryNotFoundError,
     StoredPayloadConflictError,
 )
+from powercontext.builtin.persistence.revision_meta import (
+    attach_revision_meta,
+    meta_from_row,
+    rollback_columns,
+)
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_LINEAGE_ARTIFACTS_TABLE,
@@ -59,7 +65,12 @@ from powercontext.sources import SourceRef
 
 def with_artifact_content(statement: Select[Any], heads: FromClause = ARTIFACT_HEADS_TABLE) -> Select[Any]:
     """Join each selected head to its exact body, retaining dangling heads for validation."""
-    return statement.add_columns(ARTIFACTS_TABLE.c.content).outerjoin(
+    return statement.add_columns(
+        *(
+            ARTIFACTS_TABLE.c[name]
+            for name in ("content", "created_at", "created_by", "restored_from_revision", "rollback_reason")
+        )
+    ).outerjoin(
         ARTIFACTS_TABLE,
         and_(*(ARTIFACTS_TABLE.c[name] == heads.c[name] for name in ("scope_id", "family", "artifact_id", "revision"))),
     )
@@ -621,6 +632,8 @@ class ArtifactRepository:
         if not isinstance(content, BaseModel):
             raise TypeError("artifact content must be a BaseModel")  # noqa: TRY003
         payload = dump_model(content, kind="artifact", name=artifact_type.family)
+        created_at = datetime.now(UTC)
+        stamped = rollback_columns(ref.family, ref.artifact_id, ref.revision)
         await connection.execute(
             insert(ARTIFACTS_TABLE).values(
                 scope_id=scope_id,
@@ -628,6 +641,8 @@ class ArtifactRepository:
                 artifact_id=ref.artifact_id,
                 revision=ref.revision,
                 content=payload,
+                created_at=created_at,
+                **stamped,
             )
         )
         if lineage.sources:
@@ -669,6 +684,7 @@ class ArtifactRepository:
             content=content,
             lineage=lineage,
         )
+        attach_revision_meta(artifact, meta_from_row({"created_at": created_at, **stamped}))
         if artifact.as_ref() != ref:
             raise IdentityMismatchError("artifact", ref, artifact.as_ref())
         return artifact
@@ -692,6 +708,7 @@ class ArtifactRepository:
             content=content,
             lineage=lineage,
         )
+        attach_revision_meta(artifact, meta_from_row(row))
         if artifact.as_ref() != ref:
             raise IdentityMismatchError("artifact", ref, artifact.as_ref())
         return artifact

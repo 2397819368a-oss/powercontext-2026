@@ -6,7 +6,7 @@ The Dashboard is a content viewer for personal use and demonstrations, disabled 
 
 A user may open the Dashboard to check an agreement, find an experience relevant to a similar problem, or resume interrupted work. The page needs to make the current scope clear, help them find the relevant record, and provide access to source material when they need to check it.
 
-The core experience for 1.0 is reading saved content. Memories, experiences, skills and handoffs can exist independently. A scope containing only memories should work normally, and an empty scope should still have a clear entry point and page structure. Existing tools and APIs handle generation, review and saving. Reading their results should not require generation configuration.
+The core experience for 1.0 is reading saved content. Existing pages also list revision history, compare two revisions, and roll an exact stored revision forward through the same conditional replace the API already uses. Each Atomic Memory shows its own revisions and comparison read-only. Restoring an Atomic Memory belongs to its restoration flow, which previews every affected memory before confirmation. Memories, experiences, skills and handoffs can exist independently. A scope containing only memories should work normally, and an empty scope should still have a clear entry point and page structure. Existing tools and APIs handle generation, review and saving. Reading their results should not require generation configuration.
 
 Scope names, summaries and saved content supply the business topic. A payment service, customer interviews and personal research can use the same interface without separate navigation for each domain. Before adding a section, explain which task it helps the user complete and whether the available data supports what it claims.
 
@@ -81,6 +81,8 @@ Home's memories, handoffs, experiences, and skills remain independently readable
 An empty browse or search result does not establish that an exact historical revision is absent. Existing exact references remain readable under current authority. Rebuilding browse or search data must preserve historical bodies, references, and revision identities. Page reads do not establish ownership or repair broken default bindings; recovery uses the corresponding maintenance operation.
 
 The Scope selector supports paging and search. The selected Scope remains readable while other Scopes are unloaded. Review shows a candidate directory, opens the selected record, and exposes history and evidence bodies when the reader requests them.
+
+Opening a record preserves its exact body. Revision history is loaded when requested and remains paged. Comparisons show the two requested revisions; an unavailable comparison does not replace the opened body. History, comparison, and rollback controls use current authority. A rollback creates a new revision with its source, reason, and actor; a concurrent head change requires the user to review the new current revision before retrying.
 
 ## Keeping layout and interaction consistent
 

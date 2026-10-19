@@ -19,7 +19,7 @@ from powercontext.builtin.sources import validate_scope_id
 from powercontext.server.authz import AccessAction, AccessDeniedError, ResourceRef
 from powercontext.server.authz.service import _require_allowed, access_control_for_mode
 from powercontext.server.context import current_principal
-from powercontext.server.dashboard.content import validate_note_selection
+from powercontext.server.dashboard.content import load_note_history, validate_note_selection
 from powercontext.server.dashboard.errors import ReadError
 from powercontext.server.dashboard.pagination import PAGE_SIZE, cursor_links
 from powercontext.server.dashboard.presenters import memory_view, set_scope, usage_view
@@ -195,6 +195,8 @@ async def load_builtin_page(api, request, ctx) -> bool:
     async with _snapshot(runtime, request, ctx, default_scope=default_scope) as (snapshot, execution):
         if ctx["page"] in {"home", "notes"}:
             await _load_content(snapshot, request, ctx, execution)
+        if ctx["page"] == "notes":
+            await load_note_history(api, request, ctx, snapshot=snapshot)
         if ctx["page"] in {"home", "usage"}:
             await _load_usage(snapshot, ctx)
         if ctx["errors"] and not ctx["scope_descriptor"] and not ctx["record_only"]:

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from typing import Any
 from urllib.parse import quote
 
@@ -33,7 +33,8 @@ from powercontext.builtin.runtime.models import GetTopicMemoryRequest
 from powercontext.errors import ArtifactNotFoundError
 from powercontext.server import mapping
 from powercontext.server.authz import AccessAction, ResourceRef
-from powercontext.server.authz.service import access_control_for_mode
+from powercontext.server.authz.service import _require_allowed, access_control_for_mode
+from powercontext.server.context import current_principal
 from powercontext.server.dashboard.errors import ReadError as ReadError
 from powercontext.server.dashboard.session import authentication_headers
 
@@ -64,17 +65,26 @@ class DashboardAPI:
         )
 
     async def read(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        try:
-            async with asyncio.timeout(20):
-                result = await self.client.request("GET" if payload is None else "POST", path, json=payload)
-        except (TimeoutError, httpx.HTTPError) as error:
-            raise ReadError(503, "service_unavailable") from error
+        result = await self.send("GET" if payload is None else "POST", path, payload)
         if result.is_error:
             code = "service_unavailable"
             with suppress(ValueError, KeyError, TypeError):
                 code = result.json()["error"]["code"]
             raise ReadError(result.status_code, code, result.headers.get("X-PowerContext-Request-ID"))
         return result.json()
+
+    async def send(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        try:
+            async with asyncio.timeout(20):
+                return await self.client.request(method, path, json=payload, headers=headers)
+        except (TimeoutError, httpx.HTTPError) as error:
+            raise ReadError(503, "service_unavailable") from error
 
     async def record(self, scope: str, family: str, artifact: str, revision: int) -> dict[str, Any]:
         value = await self.artifact_revision(scope, family, artifact, revision)
@@ -84,6 +94,54 @@ class DashboardAPI:
         return await self.read(
             f"/v1/scopes/{segment(scope)}/artifacts/{family}/{segment(artifact)}/revisions/{revision}"
         )
+
+    async def revision_history(self, scope, family, artifact, selected, *, cursor, compare, snapshot=None):
+        """Authorize history and its optional write controls against the same read snapshot."""
+        from powercontext.server.app import (
+            _access_audit_context,
+            _path_artifact_read_access,
+            _path_artifact_write_access,
+        )
+        from powercontext.server.dashboard.pagination import PAGE_SIZE
+
+        access = access_control_for_mode(self.app.state.access_control, mode=self.app.state.access_mode)
+
+        async def read(reader):
+            writable = True
+            if access is not None:
+                target = {"scope_id": scope, "family": family, "artifact_id": artifact}
+                read_checks = _path_artifact_read_access(target, access.deployment_id)
+                write_checks = _path_artifact_write_access(target, access.deployment_id)
+                decisions = await access.for_read(reader.connection).check_batch(
+                    current_principal(),
+                    (*read_checks, *write_checks),
+                    context=_access_audit_context("dashboard_history"),
+                )
+                _require_allowed(decisions[0])
+                writable = decisions[1].allowed
+            result = await reader.history(
+                family,
+                artifact,
+                selected,
+                limit=PAGE_SIZE,
+                cursor=cursor,
+                compare=compare,
+                include_current=writable and family != "atomic-memory",
+            )
+            return {**result, "can_replace": writable}
+
+        try:
+            async with asyncio.timeout(20):
+                if snapshot is not None:
+                    return await read(snapshot)
+                async with (
+                    access.defer_decision_audit() if access is not None else nullcontext(),
+                    self.builtin.read_snapshot(scope) as reader,
+                ):
+                    result = await read(reader)
+                return result
+        except Exception as error:
+            raise ReadError.from_exception(error) from error
 
     async def atomic_memory_get(self, scope: str, artifact: str, revision: int) -> dict[str, Any]:
         """Read an exact content revision and label its independent current state."""

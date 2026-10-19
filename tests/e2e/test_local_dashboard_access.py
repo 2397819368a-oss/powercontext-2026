@@ -184,7 +184,7 @@ def test_dashboard_selected_note_uses_one_policy_and_content_snapshot(
                     await asyncio.create_task(publish(), context=Context())
                 return decisions
 
-            query = {"scope": scope, "artifact": artifact, "revision": 1, "lang": "zh"}
+            query = {"scope": scope, "artifact": artifact, "revision": 1, "history": "1", "compare": "2", "lang": "zh"}
             if scope_selection == "default":
                 query.pop("scope")
             with monkeypatch.context() as patch:
@@ -195,10 +195,12 @@ def test_dashboard_selected_note_uses_one_policy_and_content_snapshot(
             assert "Original snapshot body." in first.text
             assert "Revised snapshot body." not in first.text
             assert LABELS["historical_revision"] not in first.text
+            assert LABELS["revision_compare_missing"] in first.text
             current = await client.get("/dashboard/notes", params=query)
             assert current.status_code == 200, current.text
             assert "Original snapshot body." in current.text
             assert LABELS["historical_revision"] in current.text
+            assert "+ Revised snapshot body." in current.text
             assert f"{LABELS['current_memory_state']}: {LABELS['memory_state_forgotten']}" in current.text
 
     asyncio.run(scenario())
