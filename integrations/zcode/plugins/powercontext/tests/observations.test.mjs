@@ -44,6 +44,7 @@ test('Hook observations preserve latest-attempt order, unknown writes and conten
   let slowStarted, newerCaptured
   const slowReady = new Promise(resolve => { slowStarted = resolve })
   const newerCapture = new Promise(resolve => { newerCaptured = resolve })
+  const captureOrder = []
   let captures = 0, protectedStatus = 200, captureStatus = 202, receiptValid = true, empty = false
   const server = createServer(async (req, res) => {
     let raw = ''
@@ -56,8 +57,8 @@ test('Hook observations preserve latest-attempt order, unknown writes and conten
     else if (req.url === '/v1/context/prepare') {
       if (body.query === 'older private prompt') {
         slowStarted()
-        // Answer the older prompt only once the newer one is captured; the hook's own request timeout bounds this,
-        // and the timer releases the response if the newer capture never arrives.
+        // Answer the older prompt only once the newer one is captured. The hook's own 1 s request timeout bounds
+        // the wait: the older hook then captures anyway. The timer only keeps this handler from hanging.
         await new Promise(resolve => {
           const timer = setTimeout(resolve, 10_000)
           newerCapture.then(() => { clearTimeout(timer); resolve() })
@@ -68,6 +69,7 @@ test('Hook observations preserve latest-attempt order, unknown writes and conten
         content: empty ? null : content, content_bytes: empty ? 0 : Buffer.byteLength(content) }))
     } else if (req.url === '/v1/sources/content') {
       const position = ++captures
+      captureOrder.push(body.content)
       if (body.content === 'newer private prompt') newerCaptured()
       if (body.content === 'unknown capture private prompt') await new Promise(resolve => setTimeout(resolve, 1300))
       res.statusCode = captureStatus
@@ -115,7 +117,17 @@ test('Hook observations preserve latest-attempt order, unknown writes and conten
     await older
     const latest = await status()
     assert.equal(latest.result.status, 'observed')
-    assert.equal(latest.result.observation.stages.capture.source_position, 1)
+    const position = latest.result.observation.stages.capture.source_position
+    if (position !== 1) {
+      // The newer hook still has to capture within the older prepare request's 1 s timeout, so report both attempts.
+      const runtime = join(data, 'runtime')
+      const attempts = await Promise.all((await readdir(runtime)).filter(name => name.startsWith('attempt-')).map(async name => {
+        const { attempt_id, started_at, completed_at, stages } = JSON.parse(await readFile(join(runtime, name), 'utf8'))
+        return { attempt_id, started_at, completed_at, stages }
+      }))
+      assert.fail(`The newer capture received position ${position}. Captures arrived as ${JSON.stringify(captureOrder)}; ` +
+        `attempts: ${JSON.stringify(attempts)}`)
+    }
     assert.equal(latest.result.observation.stages.context_output.state, 'emitted')
     assert.equal(latest.result.observation.scope_id, 'scope-runtime')
     assert.doesNotMatch(latest.stdout, /private prompt|Private returned|synthetic-test-only|session-runtime/)
