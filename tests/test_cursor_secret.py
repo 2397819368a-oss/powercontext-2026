@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
@@ -23,6 +26,49 @@ from pydantic import SecretStr
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.server.cursor_secret import resolve_cursor_secret
+
+# Starter A reads the key (missing) and pauses after that read; starter B then
+# runs to completion. A real second process is used because the window under
+# test is the one between A's read and the cleanup that follows it, and holding
+# two starters in one process would also hold one lock twice.
+_STARTER_SCRIPT = """
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[4])
+import powercontext.server.cursor_secret as cursor_secret
+
+mode = sys.argv[1]
+key_path = Path(sys.argv[2])
+ready = Path(sys.argv[3])
+
+
+def load():
+    return cursor_secret._load_or_create(key_path).hex()
+
+
+if mode == "a":
+    real_read = cursor_secret._read
+    state = {"first": True}
+
+    def paused_read(path):
+        secret = real_read(path)
+        if state["first"]:
+            state["first"] = False
+            print("paused", flush=True)
+            deadline = time.monotonic() + 30
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            time.sleep(1.5)
+        return secret
+
+    cursor_secret._read = paused_read
+    print(load(), flush=True)
+else:
+    ready.write_text("1")
+    print(load(), flush=True)
+"""
 
 
 @pytest.fixture
@@ -85,10 +131,15 @@ def test_transient_short_key_write_completes_the_key(tmp_path, monkeypatch, gene
     seen_short_write = {"done": False}
 
     def limited_write(descriptor: int, data: bytes) -> int:
+        payload = bytes(data)
+        if len(payload) < 32:
+            # The creation lock writes a one-byte marker on Windows; only the
+            # key write itself is under test here.
+            return real_write(descriptor, payload)
         if seen_short_write["done"]:
-            return real_write(descriptor, bytes(data))
+            return real_write(descriptor, payload)
         seen_short_write["done"] = True
-        return real_write(descriptor, bytes(data)[:5])
+        return real_write(descriptor, payload[:5])
 
     with monkeypatch.context() as patch:
         patch.setattr(os, "write", limited_write)
@@ -107,10 +158,13 @@ def test_failed_key_write_leaves_no_unreadable_key_behind(tmp_path, monkeypatch,
     retries = {"count": 0}
 
     def stalled_write(descriptor: int, data: bytes) -> int:
+        payload = bytes(data)
+        if len(payload) < 32:
+            return real_write(descriptor, payload)
         retries["count"] += 1
         if retries["count"] > 64:
             raise AssertionError("a stalled write was retried instead of rejected")  # noqa: TRY003
-        real_write(descriptor, bytes(data)[:3])
+        real_write(descriptor, payload[:3])
         return 0
 
     with monkeypatch.context() as patch:
@@ -134,12 +188,15 @@ def test_key_write_without_progress_fails_instead_of_retrying(tmp_path, monkeypa
     # progress would loop forever, and a later write that does succeed must not
     # hide that the first one stalled.
     def stalled_write(descriptor: int, data: bytes) -> int:
+        payload = bytes(data)
+        if len(payload) < 32:
+            return real_write(descriptor, payload)
         calls["count"] += 1
         if calls["count"] > 64:
             raise AssertionError("a zero-byte write was retried instead of rejected")  # noqa: TRY003
         if calls["count"] == 1:
             return 0
-        return real_write(descriptor, bytes(data))
+        return real_write(descriptor, payload)
 
     with monkeypatch.context() as patch:
         patch.setattr(os, "write", stalled_write)
@@ -174,3 +231,42 @@ def test_existing_complete_key_is_never_regenerated(tmp_path, generated_secret) 
 
     assert resolve_cursor_secret(config, None) == existing
     assert key_path.read_bytes() == existing
+
+
+def test_starters_that_race_on_a_missing_key_agree_on_the_persisted_one(tmp_path) -> None:
+    key_path = tmp_path / ".powercontext.db.cursor-key"
+    ready = tmp_path / "b-ready"
+    script = tmp_path / "starter.py"
+    script.write_text(_STARTER_SCRIPT, encoding="utf-8")
+    source = str(Path(__file__).resolve().parents[1] / "src")
+
+    def start(mode: str) -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            [sys.executable, str(script), mode, str(key_path), str(ready), source],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    # A must be paused between its missing-key read and the cleanup that
+    # follows; only then does B get to publish a complete key in that window.
+    first = start("a")
+    processes = [first]
+    try:
+        assert first.stdout is not None
+        assert first.stdout.readline().strip() == "paused"
+        second = start("b")
+        processes.append(second)
+        second_out, second_err = second.communicate(timeout=90)
+        first_out, first_err = first.communicate(timeout=90)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+    assert first.returncode == 0, first_err
+    assert second.returncode == 0, second_err
+    keys = {first_out.strip().splitlines()[-1], second_out.strip().splitlines()[-1]}
+    assert len(keys) == 1, "starters published different keys; one of them lost cursors signed with it"
+    assert key_path.read_bytes().hex() in keys
