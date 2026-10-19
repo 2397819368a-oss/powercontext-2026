@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Run clean migration acceptance in bounded, isolated pytest processes on Linux CI."""
+"""Run backend acceptance in isolated Linux CI processes; default to clean migration."""
 
 from __future__ import annotations
 
@@ -90,32 +90,34 @@ def main() -> int:
     parser.add_argument("backend", choices=("seekdb", "oceanbase"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--collect-only", action="store_true")
+    parser.add_argument("--tests", nargs="+", default=SUITES, help="Pytest files to run instead of clean migration")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     collection = output / "collection.log"
-    if run_pytest(["--collect-only", "-q", *SUITES, "-k", args.backend], collection):
+    if run_pytest(["--collect-only", "-q", *args.tests, "-k", args.backend], collection):
         print(collection.read_text(errors="replace"), flush=True)
         return 1
-    nodes = [line for line in collection.read_text().splitlines() if line.startswith(tuple(f"{s}::" for s in SUITES))]
+    nodes = [
+        line for line in collection.read_text().splitlines() if line.startswith(tuple(f"{s}::" for s in args.tests))
+    ]
     if (
         not nodes
         or len(set(nodes)) != len(nodes)
-        or any(not any(n.startswith(f"{s}::") for n in nodes) for s in SUITES)
+        or any(not any(n.startswith(f"{s}::") for n in nodes) for s in args.tests)
     ):
-        print("Each clean migration suite must collect a nonempty, unique set of nodes.", flush=True)
+        print("Each backend suite must collect a nonempty, unique set of nodes.", flush=True)
         return 1
     (output / "nodes.txt").write_text("\n".join(nodes) + "\n")
-    print(f"Collected {len(nodes)} {args.backend} clean migration cases.", flush=True)
+    print(f"Collected {len(nodes)} {args.backend} cases.", flush=True)
     if args.collect_only:
         return 0
     # SeekDB must exit between cases. OceanBase cases share one tenant, so keep
-    # their schema creation and cleanup separate; this suite tests migration,
-    # not concurrent DDL across databases.
+    # their schema creation and cleanup separate from other test cases.
     for index, node in enumerate(nodes, 1):
         if not run_node(node, output / f"{index:03d}"):
             return 1
-    print(f"All {len(nodes)} {args.backend} clean migration cases passed without skips.", flush=True)
+    print(f"All {len(nodes)} {args.backend} cases passed without skips.", flush=True)
     return 0
 
 

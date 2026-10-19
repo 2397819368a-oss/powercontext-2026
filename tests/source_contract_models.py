@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_serializer
 
 from powercontext.sources import Source, SourceMaterialization
 from powercontext.sources.definitions import AdapterSourceDefinition
@@ -76,6 +76,50 @@ class CollisionSource(Source):
     captured: MemoryEvidenceDeclaration
 
 
+class SerializedChildSource(Source):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+
+    @model_serializer(mode="wrap")
+    def serialize_capture(self, handler):
+        value = handler(self)
+        value["content"] = value["content"].strip()
+        return value
+
+
+class SerializedBundleSource(Source):
+    child: SerializedChildSource
+
+
+class AliasedChildSource(Source):
+    model_config = ConfigDict(
+        extra="forbid",
+        serialize_by_alias=True,
+        alias_generator=lambda name: "evidence" if name == "memory_evidence" else name,
+    )
+
+    content: str
+
+
+class AliasedBundleSource(Source):
+    child: AliasedChildSource
+
+
+class AliasedCapture(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(alias="body")
+
+
+class DefaultAliasSource(Source):
+    captured: AliasedCapture = AliasedCapture(body="Captured evidence.")
+
+    @field_serializer("captured")
+    def serialize_capture(self, value: AliasedCapture):
+        return value.model_dump(mode="json", by_alias=True)
+
+
 @dataclass(frozen=True)
 class _CapturedAdapter:
     name: str
@@ -112,6 +156,24 @@ def source_contract_case(name: str) -> tuple[AdapterSourceDefinition[Source, Sou
             materialization=SourceMaterialization.CAPTURED,
             captured=MemoryEvidenceDeclaration(detail="Captured declaration-shaped data."),
         )
+    elif name == "custom_serializer":
+        source = SerializedBundleSource(
+            name="serialized-bundle",
+            materialization=SourceMaterialization.CAPTURED,
+            child=SerializedChildSource(
+                name="serialized-child", materialization=SourceMaterialization.CAPTURED, content="Child evidence."
+            ),
+        )
+    elif name == "aliased_declaration":
+        source = AliasedBundleSource(
+            name="aliased-bundle",
+            materialization=SourceMaterialization.CAPTURED,
+            child=AliasedChildSource(
+                name="aliased-child", materialization=SourceMaterialization.CAPTURED, content="Child evidence."
+            ),
+        )
+    elif name == "aliased_default":
+        source = DefaultAliasSource(name="aliased-default", materialization=SourceMaterialization.CAPTURED)
     else:
         raise ValueError(name)
     adapter = _CapturedAdapter(name=f"contract-{name}", input_class=type(source), source_class=type(source))

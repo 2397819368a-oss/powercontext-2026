@@ -35,10 +35,8 @@ from typing_extensions import override
 from powercontext._logging import log_safely
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.prompt.service import current_prompt
-from powercontext.builtin.artifacts.search import analyze_text
 from powercontext.builtin.artifacts.topic_memory import (
     MAX_TOPIC_MEMORY_QUERY_LENGTH,
-    MAX_TOPIC_MEMORY_QUERY_TERMS,
     TOPIC_MEMORY_SOURCE_WINDOW_BINDING,
     PublishedTopicMemory,
     TopicMemory,
@@ -46,6 +44,7 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemoryDraft,
     TopicMemoryProjection,
     TopicMemorySearchHit,
+    TopicMemorySearchMode,
     chunk_topic_memory_detail,
     prepare_topic_memory_projection,
 )
@@ -81,6 +80,7 @@ from powercontext.builtin.artifacts.topic_memory.relatedness import (
     topic_memory_related_components,
     topic_memory_vector_centroid,
 )
+from powercontext.builtin.artifacts.topic_memory.search import bounded_topic_memory_query
 from powercontext.builtin.inference import (
     EmbeddingModel,
     GenerationResult,
@@ -794,10 +794,15 @@ class TopicMemoryProcessor:
         ranked: dict[tuple[str, int], tuple[float, int, TopicMemorySearchHit]] = {}
         hits_by_probe: list[tuple[TopicMemorySearchHit, ...]] = []
         for probe_index, probe in enumerate(probes):
-            result = await self._search(
-                scope_id,
-                _bounded_probe_query(probe),
-                semantic_query=_bounded_semantic_probe_query(probe),
+            raw = " ".join(value.strip() for value in (probe.query, *probe.keywords) if value.strip())
+            result = (
+                await self._search(
+                    scope_id,
+                    bounded_topic_memory_query(raw),
+                    semantic_query=raw[:MAX_TOPIC_MEMORY_QUERY_LENGTH].strip(),
+                )
+                if raw
+                else ()
             )
             selected = _distinct_hits(hit for hit in result if hit.score >= self._history_threshold)
             if len(selected) < self._history_min:
@@ -987,21 +992,30 @@ class TopicMemoryProcessor:
         )
         secondary: list[frozenset[str]] = []
         vectors: list[tuple[float, ...] | None] = []
-        for proposal in proposals:
+        signatures = tuple(topic_memory_lexical_signature(proposal.content) for proposal in proposals)
+        for proposal, signature in zip(proposals, signatures, strict=True):
             if proposal.candidate_id is not None:
                 secondary.append(frozenset({proposal.candidate_id}))
                 vectors.append(None)
                 continue
-            signature = topic_memory_lexical_signature(proposal.content)
             vector = await self._signature_vector(proposal.content)
+            if not signature and vector is None:
+                secondary.append(frozenset())
+                vectors.append(None)
+                continue
             profile = None if self._embedding_model is None else self._embedding_model.profile
+            query = (
+                signature
+                or f"{proposal.content.title}\n{proposal.content.summary}"[:MAX_TOPIC_MEMORY_QUERY_LENGTH].strip()
+            )
+            mode: TopicMemorySearchMode = "fts" if vector is None else "hybrid" if signature else "vector"
             async with self._database.transaction() as connection:
                 result = await self._topics.search(
                     connection,
                     scope_id,
-                    signature,
+                    query,
                     limit=self._history_max,
-                    mode="hybrid" if vector is not None else "fts",
+                    mode=mode,
                     query_vector=vector,
                     embedding_profile=profile,
                 )
@@ -1021,6 +1035,7 @@ class TopicMemoryProcessor:
             proposals,
             secondary_candidates=tuple(secondary),
             vectors=tuple(vectors),
+            signatures=signatures,
         )
         coordinated: list[TopicMemoryProposal] = []
         for component_index, component in enumerate(components, start=1):
@@ -1439,31 +1454,6 @@ def _deterministic_plan(probes: tuple[TopicMemoryProbeCandidates, ...]) -> Topic
             )
         )
     return TopicMemoryPlannerOutput(items=tuple(items))
-
-
-def _bounded_probe_query(probe: TopicMemoryProbe) -> str:
-    """Close model-authored probes over the R4 query contract before I/O."""
-
-    raw = " ".join(value.strip() for value in (probe.query, *probe.keywords) if value.strip())
-    terms = tuple(dict.fromkeys(analyze_text(raw).split()))
-    selected: list[str] = []
-    characters = 0
-    for term in terms[:MAX_TOPIC_MEMORY_QUERY_TERMS]:
-        separator = int(bool(selected))
-        available = MAX_TOPIC_MEMORY_QUERY_LENGTH - characters - separator
-        if available < 1:
-            break
-        selected.append(term[:available])
-        characters += separator + min(len(term), available)
-    if selected:
-        return " ".join(selected)
-    fallback = raw[:MAX_TOPIC_MEMORY_QUERY_LENGTH].strip()
-    return fallback or "_"
-
-
-def _bounded_semantic_probe_query(probe: TopicMemoryProbe) -> str:
-    raw = " ".join(value.strip() for value in (probe.query, *probe.keywords) if value.strip())
-    return raw[:MAX_TOPIC_MEMORY_QUERY_LENGTH].strip() or "_"
 
 
 def _distinct_hits(values: Iterable[TopicMemorySearchHit]) -> tuple[TopicMemorySearchHit, ...]:

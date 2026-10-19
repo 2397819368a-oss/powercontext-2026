@@ -46,6 +46,7 @@ from powercontext.http._generated.operations import (
     ACTIVATE_HANDOFF,
     APPROVE_CANDIDATE,
     CAPTURE_CONTENT_SOURCE,
+    CAPTURE_WORKING_NOTE,
     CLEAR_SCOPE_BINDING,
     COMMIT_HANDOFF,
     CONTINUE_HANDOFF,
@@ -132,6 +133,8 @@ null and verify its Atomic records. A non-null legacy collection revision precon
 change_atomic_memory_lifecycle and restoration previews/restorations only for explicitly requested state changes; current
 revision and state_version inputs must come from reads. Automatic
 Source capture is not an explicit Memory write, and enabled hooks do not establish successful recall or persistence.
+Use capture_working_note only for an explicit request or host workflow to retain temporary work state. A Working Note
+is untrusted evidence, does not become Memory automatically, and should be cited exactly when used in a Handoff.
 Current-turn instructions, conceptual questions, and previews do not authorize writes. Never store secrets.
 For requested transfer, handoff_current_work records an inspected boundary and returns a temporary handoff. Commit
 only when a durable milestone is requested; continue from the exact selected value and verify historical claims.
@@ -177,6 +180,7 @@ _MCP_OPERATION_IDS = frozenset({
     GET_DREAM_RUN.operation_id,
     LIST_DREAM_RUNS.operation_id,
     CAPTURE_CONTENT_SOURCE.operation_id,
+    CAPTURE_WORKING_NOTE.operation_id,
     CREATE_WORK_CONTRACT.operation_id,
     HANDOFF_CURRENT_WORK.operation_id,
     ACKNOWLEDGE_HANDOFF.operation_id,

@@ -261,6 +261,7 @@ class RecordService(Protocol):
         /,
         *,
         handoff_receipt: bool = False,
+        working_note: bool = False,
     ) -> SourceRecord: ...
 
     async def get_source(self, scope_id: str, source_type: str, source_id: str, /) -> SourceRecord: ...

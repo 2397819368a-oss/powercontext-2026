@@ -1561,7 +1561,8 @@
             "anyOf": [
               {
                 "type": "object",
-                "additionalProperties": true
+                "additionalProperties": true,
+                "description": "Caller metadata. The reserved kind value `working_note` is rejected; use the dedicated Working Note capture operation instead."
               },
               {
                 "type": "null"

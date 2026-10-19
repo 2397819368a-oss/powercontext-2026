@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
+import time_machine
 
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.atomic_memory.extraction import (
@@ -32,14 +34,18 @@ from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import (
     BuiltinConfig,
     CaptureSource,
+    CaptureWorkingNote,
     CommitConnectorCheckpoint,
+    InvalidRuntimeRequestError,
     PrepareContextRequest,
     SubmitSourceObservation,
+    WorkingNoteKind,
     open_builtin_contexts,
     open_builtin_runtime,
 )
 from powercontext.builtin.scope import ScopeDraft, ScopeMutation, ScopeNotFoundError
 from powercontext.builtin.sources import CONTENT_SOURCE_DEFINITION, ContentCapture
+from powercontext.errors import SourceConflictError
 from powercontext.sources import ConnectorBinding, SourceDefinitionRegistry, project_source_for_transport
 from tests.e2e.dream_support import atomic_memory_pipeline, memory_source_text
 
@@ -164,6 +170,92 @@ def test_builtin_runtime_uses_sqlite_fts_without_vector_extension(tmp_path, monk
             assert no_memory.content is None
             assert no_match.status == "empty"
             assert no_match.content is None
+
+    asyncio.run(scenario())
+
+
+def test_working_note_capture_does_not_promote_into_memory() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            candidate_pipeline=atomic_memory_pipeline(_ContentCandidatePipeline()),
+        ) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Project", summary="Working note boundary", idempotency_key="working-note")
+            )
+            for field, field_value in (
+                ("kind", "working_note"),
+                ("session_id", "metadata-session"),
+                ("note_kind", "validation"),
+                ("expires_at", "2000-01-01T00:00:00+00:00"),
+            ):
+                with pytest.raises(InvalidRuntimeRequestError):
+                    await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                        CaptureWorkingNote(
+                            source_id=f"reserved-{field}",
+                            content="Caller metadata cannot set server-owned Working Note fields.",
+                            session_id="session-1",
+                            note_kind=WorkingNoteKind.VALIDATION,
+                            metadata={field: field_value},
+                        )
+                    )
+            captured = await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                CaptureWorkingNote(
+                    source_id="note-1",
+                    content="The rejected approach depended on an unavailable API.",
+                    session_id="session-1",
+                    note_kind=WorkingNoteKind.ABANDONED_APPROACH,
+                    expires_at=datetime(2099, 1, 1, tzinfo=timezone(-timedelta(hours=8))),
+                )
+            )
+            replayed = await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                CaptureWorkingNote(
+                    source_id="note-1",
+                    content="The rejected approach depended on an unavailable API.",
+                    session_id="session-1",
+                    note_kind=WorkingNoteKind.ABANDONED_APPROACH,
+                    expires_at=datetime(2099, 1, 1, 8, tzinfo=UTC),
+                )
+            )
+            with time_machine.travel(datetime(2100, 1, 1, tzinfo=UTC)):
+                expired_replay = await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                    CaptureWorkingNote(
+                        source_id="note-1",
+                        content="The rejected approach depended on an unavailable API.",
+                        session_id="session-1",
+                        note_kind=WorkingNoteKind.ABANDONED_APPROACH,
+                        expires_at=datetime(2099, 1, 1, 8, tzinfo=UTC),
+                    )
+                )
+                with pytest.raises(SourceConflictError):
+                    await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                        CaptureWorkingNote(
+                            source_id="note-1",
+                            content="Different content cannot reuse the identity.",
+                            session_id="session-1",
+                            note_kind=WorkingNoteKind.ABANDONED_APPROACH,
+                            expires_at=datetime(2099, 1, 1, 8, tzinfo=UTC),
+                        )
+                    )
+                with pytest.raises(InvalidRuntimeRequestError):
+                    await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                        CaptureWorkingNote(
+                            source_id="never-accepted",
+                            content="A new expired note is invalid.",
+                            session_id="session-1",
+                            note_kind=WorkingNoteKind.ABANDONED_APPROACH,
+                            expires_at=datetime(2099, 1, 1, 8, tzinfo=UTC),
+                        )
+                    )
+
+            assert runtime.atomic_memory is not None
+            flushed = await runtime.atomic_memory.for_scope(scope.scope_id).flush()
+
+            assert replayed == captured
+            assert expired_replay == captured
+            assert flushed.current_cursor == captured.sequence
+            assert flushed.memory_ref is None
 
     asyncio.run(scenario())
 

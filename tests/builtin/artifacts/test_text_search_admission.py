@@ -44,7 +44,7 @@ def test_answer_format_does_not_displace_topic_evidence(suffix: str) -> None:
         ),
         ("If no reliable backup is present, stop deployment.", "no reliable backup stop deployment"),
         ("Answer briefly and cite rollback_mode v2.7 without approval.", "rollback_mode v2.7 without approval"),
-        ("请保留 release_gate_v3 并且不要部署未审核的版本。", "release_gate_v3 不要部署未审核的版本"),
+        ("请保留 release_gate_v3 并且不要部署未审核的版本。", "release_gate_v3 不要部署未审核版本"),
     ],
 )
 def test_query_normalization_preserves_quotes_domain_conditions_and_identifiers(content: str, protected: str) -> None:

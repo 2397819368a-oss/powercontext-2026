@@ -103,6 +103,7 @@ from powercontext.builtin.persistence.atomic_memory_readiness import (
 )
 from powercontext.builtin.persistence.bootstrap_receipts import BootstrapReceiptRepository
 from powercontext.builtin.persistence.experience_index import ensure_artifact_head_searchable_text
+from powercontext.builtin.persistence.lexical_projection import refresh_lexical_projections
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.oceanbase.experience_index import OceanBaseExperienceFTSIndex
 from powercontext.builtin.persistence.oceanbase.profile import OceanBaseConfig, OceanBaseProfile
@@ -162,6 +163,11 @@ from powercontext.builtin.runtime.decision_model import (
     DecisionResult,
     FailOpenDecisionModel,
     LLMDecisionModel,
+)
+from powercontext.builtin.runtime.decision_policy import DecisionPolicyMode, DecisionPrivacyBoundary
+from powercontext.builtin.runtime.decision_projection import (
+    DecisionRequestProjectionSanitizer,
+    KnownSecretDecisionRequestSanitizer,
 )
 from powercontext.builtin.runtime.experience_search import ExperienceArtifactSearcher
 from powercontext.builtin.runtime.extraction_diagnostics import ExtractionDiagnostics
@@ -245,6 +251,9 @@ class BuiltinConfigurationError(RuntimeError):
             "database": "unsupported built-in database",
             "decision-model": (
                 "decision assistance requires a configured generation or decision model, or injected decision model"
+            ),
+            "decision-projection-sanitizer": (
+                "hosted_redacted Memory write-gate egress requires an explicitly selected decision projection sanitizer"
             ),
         }
         super().__init__(messages[issue])
@@ -357,10 +366,50 @@ def _require_decision_backend(runtime: RuntimeConfig, configured: DecisionModel 
         raise BuiltinConfigurationError("decision-model")
 
 
+def _resolve_memory_write_gate_sanitizer(
+    runtime: RuntimeConfig,
+    decision_request_sanitizer: DecisionRequestProjectionSanitizer | None,
+    decision_model: DecisionModel | None = None,
+) -> DecisionRequestProjectionSanitizer | None:
+    """Resolve the explicitly selected projection boundary for hosted Memory gate egress."""
+
+    if decision_request_sanitizer is not None:
+        if not callable(getattr(decision_request_sanitizer, "sanitize", None)) and not callable(
+            decision_request_sanitizer
+        ):
+            raise BuiltinConfigurationError("decision-projection-sanitizer")
+        return decision_request_sanitizer
+    if (
+        runtime.memory_write_gate_enabled
+        and runtime.memory_write_gate_mode is not DecisionPolicyMode.DISABLED
+        and runtime.memory_write_gate_privacy_boundary is DecisionPrivacyBoundary.HOSTED_REDACTED
+    ):
+        if decision_model is not None and bool(getattr(decision_model, "is_local_only", False)):
+            return None
+        if runtime.memory_write_gate_sanitizer == "known_secrets":
+            return KnownSecretDecisionRequestSanitizer()
+        raise BuiltinConfigurationError("decision-projection-sanitizer")
+    return decision_request_sanitizer
+
+
+def _resolve_runtime_decision_request_sanitizer(
+    runtime: RuntimeConfig,
+    decision_request_sanitizer: DecisionRequestProjectionSanitizer | None,
+    memory_write_gate: MemoryWriteGate | None,
+    decision_model: DecisionModel | None,
+) -> DecisionRequestProjectionSanitizer | None:
+    """Resolve projection safety only when Runtime owns the gate composition."""
+
+    if memory_write_gate is not None:
+        return decision_request_sanitizer
+    return _resolve_memory_write_gate_sanitizer(runtime, decision_request_sanitizer, decision_model)
+
+
 def _configured_memory_write_gate(
     injected: MemoryWriteGate | None,
     decision_model: DecisionModel | None,
     runtime: RuntimeConfig,
+    decision_request_sanitizer: DecisionRequestProjectionSanitizer | None = None,
 ) -> MemoryWriteGate | None:
     """Resolve the Memory write gate: an explicit injection wins, then configuration builds one.
 
@@ -373,6 +422,11 @@ def _configured_memory_write_gate(
         return injected
     if not runtime.memory_write_gate_enabled:
         return None
+    decision_request_sanitizer = _resolve_memory_write_gate_sanitizer(
+        runtime,
+        decision_request_sanitizer,
+        decision_model,
+    )
     gate = build_memory_write_gate(
         decision_model,
         enabled=True,
@@ -380,6 +434,7 @@ def _configured_memory_write_gate(
         threshold=runtime.memory_write_gate_threshold,
         mode=runtime.memory_write_gate_mode,
         privacy_boundary=runtime.memory_write_gate_privacy_boundary,
+        decision_request_sanitizer=decision_request_sanitizer,
     )
     if gate is None:
         log_safely(
@@ -442,6 +497,7 @@ async def open_builtin_runtime(
     token_estimator: TokenEstimator | None = None,
     memory_reranker: MemoryReranker | None = None,
     decision_model: DecisionModel | None = None,
+    decision_request_sanitizer: DecisionRequestProjectionSanitizer | None = None,
     memory_write_gate: MemoryWriteGate | None = None,
     instrumentation: InstrumentationSettings | None = None,
     scope_cache_observer: ScopeCacheObserver | None = None,
@@ -471,6 +527,7 @@ async def open_builtin_runtime(
 
     async with AsyncExitStack() as resources:
         configured_source_registry = source_registry or BUILTIN_SOURCE_REGISTRY
+        resolved_decision_request_sanitizer = decision_request_sanitizer
         _validate_processing_source_registry(config, artifact_processing_bindings, configured_source_registry)
         prompt_demonstrators: dict[str, DemonstrationGenerator] = {}
         (
@@ -543,7 +600,18 @@ async def open_builtin_runtime(
             tracing,
             timeout_seconds=config.inference.decision_timeout_seconds or config.inference.generation_timeout_seconds,
         )
-        configured_gate = _configured_memory_write_gate(memory_write_gate, configured_decision, config.runtime)
+        resolved_decision_request_sanitizer = _resolve_runtime_decision_request_sanitizer(
+            config.runtime,
+            decision_request_sanitizer,
+            memory_write_gate,
+            configured_decision,
+        )
+        configured_gate = _configured_memory_write_gate(
+            memory_write_gate,
+            configured_decision,
+            config.runtime,
+            resolved_decision_request_sanitizer,
+        )
         if embedding_model is None:
             configured_embedding_source, readiness_embedding = await _embedding_models(
                 config.inference,
@@ -1046,6 +1114,9 @@ async def open_builtin_contexts(
                 if not _topic_memory_worker:
                     await _initialize_atomic_memory_authority(connection)
                     await atomic_index.initialize(connection)
+                    await refresh_lexical_projections(
+                        connection, atomic_index.table if atomic_index.table in atomic_index.tables else None
+                    )
                     await ensure_artifact_head_searchable_text(connection)
                     await assert_atomic_memory_migration_ready(connection)
                     await experience_index.initialize(connection)
@@ -1122,6 +1193,9 @@ async def open_builtin_contexts(
             if not _topic_memory_worker:
                 await _initialize_atomic_memory_authority(connection)
                 await atomic_index.initialize(connection)
+                await refresh_lexical_projections(
+                    connection, atomic_index.table if atomic_index.table in atomic_index.tables else None
+                )
                 await ensure_artifact_head_searchable_text(connection)
                 await assert_atomic_memory_migration_ready(connection)
                 await experience_index.initialize(connection)
@@ -1659,17 +1733,28 @@ async def _generation_decision(
     return generated_decision, decision_readiness
 
 
-async def preflight_builtin_runtime(config: BuiltinConfig) -> None:
+async def preflight_builtin_runtime(
+    config: BuiltinConfig,
+    *,
+    decision_request_sanitizer: DecisionRequestProjectionSanitizer | None = None,
+    memory_write_gate: MemoryWriteGate | None = None,
+) -> None:
     """Validate Runtime composition without opening persistence or making requests."""
 
     async with AsyncExitStack() as resources:
-        await _generation_pipelines(
+        generated_pipelines = await _generation_pipelines(
             config.inference,
             config.runtime,
             resources,
             None,
             BUILTIN_SOURCE_REGISTRY,
         )
+        if memory_write_gate is None:
+            _resolve_memory_write_gate_sanitizer(
+                config.runtime,
+                decision_request_sanitizer,
+                generated_pipelines[7],
+            )
         if config.inference.embedding_model is not None:
             await _embedding_models(config.inference, resources, None)
         if config.runtime.schedule_seconds is not None and config.inference.generation_model is None:

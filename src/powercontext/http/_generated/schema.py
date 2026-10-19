@@ -958,6 +958,62 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "x-powercontext-scope-mode": "current",
             }
         },
+        "/v1/sources/working-notes": {
+            "post": {
+                "tags": ["sources"],
+                "summary": "Capture session-local working evidence",
+                "description": "Explicitly capture a short-lived "
+                "Working Note as Source evidence. "
+                "Use this only when the user or "
+                "host flow asks to retain "
+                "intermediate work state such as "
+                "inspected files, an abandoned "
+                "approach, a validation result, "
+                "an unresolved question, or host "
+                "context. The note is untrusted "
+                "historical material, not an "
+                "instruction or a durable Memory "
+                "entry. It is excluded from "
+                "automatic Artifact generation "
+                "and can support a Handoff only "
+                "through an exact Source "
+                "citation. Capture does not end "
+                "the session, expire older notes, "
+                "or promote the note into Memory. "
+                "An exact replay of an accepted "
+                "capture remains idempotent after "
+                "its logical expiry.",
+                "operationId": "capture_working_note",
+                "requestBody": {
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/CaptureWorkingNoteRequest"}}
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "202": {
+                        "description": "The Working Note is durably stored as Source evidence.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/CaptureContentSourceResponse"}
+                            }
+                        },
+                    },
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.contribute",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "x-powercontext-scope-mode": "current",
+            }
+        },
         "/v1/source-definitions/register": {
             "post": {
                 "tags": ["source-ingestion"],
@@ -3848,7 +3904,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "name": "source_id",
                         "in": "path",
                         "required": True,
-                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[\\x21-\\x7E]+$"},
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
                     },
                 ],
                 "responses": {
@@ -7576,11 +7632,89 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "dedicated "
                         "workflow.",
                     },
-                    "metadata": {"additionalProperties": True, "type": "object", "nullable": True},
+                    "metadata": {
+                        "additionalProperties": True,
+                        "type": "object",
+                        "description": "Caller "
+                        "metadata. "
+                        "The "
+                        "reserved "
+                        "kind "
+                        "value "
+                        "`working_note` "
+                        "is "
+                        "rejected; "
+                        "use "
+                        "the "
+                        "dedicated "
+                        "Working "
+                        "Note "
+                        "capture "
+                        "operation "
+                        "instead.",
+                        "nullable": True,
+                    },
                 },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["scope_id", "source_id", "content"],
+            },
+            "WorkingNoteKind": {
+                "type": "string",
+                "enum": ["inspection", "abandoned_approach", "validation", "unresolved", "host_context"],
+            },
+            "CaptureWorkingNoteRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "source_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "content": {"type": "string", "maxLength": 200000, "minLength": 1, "pattern": ".*\\S.*"},
+                    "session_id": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "description": "Host/session correlation only; it is not an authorization boundary.",
+                    },
+                    "note_kind": {"$ref": "#/components/schemas/WorkingNoteKind"},
+                    "expires_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Optional "
+                        "logical "
+                        "expiry. "
+                        "It "
+                        "must "
+                        "be "
+                        "in "
+                        "the "
+                        "future "
+                        "when "
+                        "captured. "
+                        "Expiry "
+                        "makes "
+                        "the "
+                        "note "
+                        "unavailable "
+                        "to "
+                        "new "
+                        "Handoff "
+                        "evidence "
+                        "resolution "
+                        "but "
+                        "does "
+                        "not "
+                        "physically "
+                        "delete "
+                        "or "
+                        "rewrite "
+                        "the "
+                        "Source.",
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "source_id", "content", "session_id", "note_kind"],
             },
             "CaptureContentSourceResponse": {
                 "properties": {
@@ -11112,7 +11246,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     },
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "source_type": {"type": "string", "enum": ["content"]},
-                    "source_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "source_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "content": {"description": "Persisted canonical JSON content."},
                     "position": {"type": "integer", "minimum": 1.0},
                     "content_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},

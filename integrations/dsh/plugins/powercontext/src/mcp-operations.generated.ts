@@ -29,6 +29,9 @@ export const MCP_OPERATIONS = {
   "capture_content_source": {
     "readOnly": false
   },
+  "capture_working_note": {
+    "readOnly": false
+  },
   "change_atomic_memory_lifecycle": {
     "readOnly": false
   },

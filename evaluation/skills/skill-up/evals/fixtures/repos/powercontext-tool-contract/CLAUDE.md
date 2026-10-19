@@ -30,6 +30,11 @@ not replace those schemas or enforce their constraints. It contains no scenario 
 - Required: `content: string`, `scope_id: string`, `source_id: string`.
 - Optional: `metadata: object | null`.
 
+## mcp__powercontext__capture_working_note
+
+- Required: `content: string`, `note_kind: "inspection" | "abandoned_approach" | "validation" | "unresolved" | "host_context"`, `scope_id: string`, `session_id: string`, `source_id: string`.
+- Optional: `expires_at: string | null`.
+
 ## mcp__powercontext__change_atomic_memory_lifecycle
 
 - Required: `scope_id: string`, `state: "forgotten"`, `target: AtomicMemoryInput`.

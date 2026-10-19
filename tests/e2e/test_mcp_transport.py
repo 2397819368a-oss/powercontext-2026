@@ -231,6 +231,7 @@ def test_mcp_projects_curated_tools_at_the_configured_server_path(tmp_path: Path
         "activate_handoff",
         "approve_candidate",
         "capture_content_source",
+        "capture_working_note",
         "clear_scope_binding",
         "commit_handoff",
         "continue_handoff",

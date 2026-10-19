@@ -24,24 +24,32 @@ from typing import cast
 
 import httpx
 import pytest
+from pydantic import model_serializer
 
 from powercontext.builtin.runtime import BuiltinConfig, CaptureSource, open_builtin_contexts, open_builtin_runtime
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.builtin.sources import CONTENT_SOURCE_DEFINITION, ContentCapture
+from powercontext.errors import InvalidSourceResultError
 from powercontext.server.app import ServerApplication, create_app
 from powercontext.sources import (
     MemoryEvidenceAuthority,
     MemoryEvidenceDeclaration,
     MemoryEvidenceVerification,
+    Source,
     SourceDefinitionRegistry,
+    SourceMaterialization,
     manifest_for_definition,
     project_source_for_transport,
 )
+from powercontext.sources.definitions import AdapterSourceDefinition
 from tests.e2e.atomic_memory_migration_backend import MigrationBackend
-from tests.source_contract_models import source_contract_case
+from tests.source_contract_models import _CapturedAdapter, source_contract_case
 
 
-@pytest.mark.parametrize("case", ["nested", "title_collision", "reference_collision"])
+@pytest.mark.parametrize(
+    "case",
+    ["nested", "title_collision", "reference_collision", "custom_serializer", "aliased_declaration", "aliased_default"],
+)
 def test_neutral_worker_upgrade_preserves_http_registration_and_replay(
     migration_backend: MigrationBackend,
     case: str,
@@ -91,6 +99,62 @@ def test_neutral_worker_upgrade_preserves_http_registration_and_replay(
                 )
                 assert replayed.status_code == 202, replayed.text
                 assert replayed.json() == receipt
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("attested", [False, True])
+def test_lossy_source_encoding_is_rejected_before_persistence(
+    migration_backend: MigrationBackend,
+    attested: bool,
+) -> None:
+    class LegacyEncodedSource(Source):
+        content: str
+
+        @model_serializer(mode="wrap")
+        def serialize_legacy(self, handler):
+            value = handler(self)
+            value.pop("memory_evidence", None)
+            return value
+
+    declaration = (
+        MemoryEvidenceDeclaration(
+            authority=MemoryEvidenceAuthority.SYSTEM_ATTESTED, verification=MemoryEvidenceVerification.VERIFIED
+        )
+        if attested
+        else MemoryEvidenceDeclaration()
+    )
+    definition = AdapterSourceDefinition(
+        _CapturedAdapter("legacy-encoded", LegacyEncodedSource, LegacyEncodedSource), memory_evidence=declaration
+    )
+    registry = SourceDefinitionRegistry((definition,))
+    config = BuiltinConfig(database=migration_backend.config)
+    source = LegacyEncodedSource(
+        name="same-input", materialization=SourceMaterialization.CAPTURED, content="Identical captured content."
+    )
+
+    async def scenario() -> None:
+        expected: tuple[Source, ...] = ()
+        async with open_builtin_runtime(config) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Capture", summary="Source encoding", idempotency_key="source-encoding")
+            )
+        async with open_builtin_contexts(config, source_registry=registry) as contexts:
+            context = await contexts.get(scope.scope_id)
+            if attested:
+                with pytest.raises(InvalidSourceResultError):
+                    await context.sources.add(source)
+                assert await context.sources.list() == ()
+            else:
+                stored = await context.sources.add(source)
+                expected = (stored,)
+                assert stored.memory_evidence == declaration
+                assert await context.sources.get(stored) == stored
+                assert await context.sources.add(source) == stored
+        async with open_builtin_contexts(config, source_registry=registry) as contexts:
+            context = await contexts.get(scope.scope_id)
+            assert await context.sources.list() == expected
 
     asyncio.run(scenario())
 

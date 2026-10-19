@@ -15,15 +15,18 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any, cast
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    GetCoreSchemaHandler,
     SerializationInfo,
     SerializerFunctionWrapHandler,
     field_validator,
-    model_serializer,
 )
+from pydantic_core import CoreSchema, core_schema
+from typing_extensions import override
 
 from powercontext.errors import InvalidSourceReferenceError
 from powercontext.limits import MAX_SOURCE_ID_LENGTH, MAX_SOURCE_TYPE_LENGTH, MAX_VERSION_LENGTH
@@ -109,6 +112,19 @@ class SourceProjectionKey(BaseModel):
 DECLARATION_OWNED_FIELDS = frozenset({"memory_evidence"})
 
 
+def _serialize_source(source: Source, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> Any:
+    value = handler(source)
+    if isinstance(value, dict) and isinstance(info.context, dict) and info.context.get("source_transport_payload"):
+        by_alias = info.by_alias
+        if by_alias is None:
+            by_alias = type(source).model_config.get("serialize_by_alias", False)
+        for name in DECLARATION_OWNED_FIELDS:
+            field = type(source).model_fields[name]
+            key = (field.serialization_alias or field.alias or name) if by_alias else name
+            value.pop(key, None)
+    return value
+
+
 class Source(BaseModel):
     """Base value for an adapter-owned Source description."""
 
@@ -118,15 +134,17 @@ class Source(BaseModel):
     description: str | None = None
     memory_evidence: MemoryEvidenceDeclaration = MemoryEvidenceDeclaration()
 
-    @model_serializer(mode="wrap")
-    def serialize_source(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):
-        value = handler(self)
-        if isinstance(info.context, dict) and info.context.get("source_transport_payload"):
-            for name in DECLARATION_OWNED_FIELDS:
-                field = type(self).model_fields[name]
-                key = (field.serialization_alias or field.alias or name) if info.by_alias else name
-                value.pop(key, None)
-        return value
+    @classmethod
+    @override
+    def __get_pydantic_core_schema__(cls, source: type[Any], handler: GetCoreSchemaHandler) -> CoreSchema:
+        schema = handler(source).copy()
+        # Keep the reference on the outer schema so recursive Sources also pass
+        # through this boundary, after any subclass's custom serializer.
+        serializer_schema = cast(CoreSchema, {key: value for key, value in schema.items() if key != "ref"})
+        schema["serialization"] = core_schema.wrap_serializer_function_ser_schema(
+            _serialize_source, info_arg=True, schema=serializer_schema
+        )
+        return schema
 
     @field_validator("definition_version")
     @classmethod

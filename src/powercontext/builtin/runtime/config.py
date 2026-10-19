@@ -149,6 +149,7 @@ class RuntimeConfig(BaseModel):
     memory_write_gate_enabled: bool = False
     memory_write_gate_mode: DecisionPolicyMode = DecisionPolicyMode.SHADOW
     memory_write_gate_privacy_boundary: DecisionPrivacyBoundary = DecisionPrivacyBoundary.NO_EXTERNAL_CALL
+    memory_write_gate_sanitizer: Literal["none", "known_secrets"] = "none"
     # Direction only: which verdict means "evidence is insufficient". The strength threshold
     # stays unset until a calibration probe establishes it, so a hold never depends on a made-up
     # number.
@@ -166,8 +167,6 @@ class RuntimeConfig(BaseModel):
     def validate_memory_capacity_order(self) -> RuntimeConfig:
         if self.memory_max_active_entries > self.memory_max_manifest_entries:
             raise ValueError("memory_max_active_entries cannot exceed memory_max_manifest_entries")  # noqa: TRY003
-        if self.memory_write_gate_privacy_boundary is DecisionPrivacyBoundary.HOSTED_REDACTED:
-            raise ValueError("memory_write_gate_privacy_boundary does not support hosted_redacted without a sanitizer")  # noqa: TRY003
         return self
 
     recall_gate_enabled: bool = False

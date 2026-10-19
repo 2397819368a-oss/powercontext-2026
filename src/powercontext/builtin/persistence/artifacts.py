@@ -105,6 +105,8 @@ class ArtifactRepository:
         artifact_id: str,
         draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
         /,
+        *,
+        allow_working_notes: bool = False,
     ) -> Artifact[Any]:
         """Create revision one, rejecting an already existing lifecycle."""
 
@@ -112,7 +114,13 @@ class ArtifactRepository:
         artifact_type = self._artifact_type(draft.family)
         self._require_content(draft.family, draft.content)
         ref = ArtifactRef(family=draft.family, artifact_id=artifact_id, revision=1)
-        await self._validate_lineage_sources(connection, scope_id, ref, draft.sources)
+        await self._validate_lineage_sources(
+            connection,
+            scope_id,
+            ref,
+            draft.sources,
+            allow_working_notes=allow_working_notes,
+        )
         conflict = await self._head_conflict(connection, scope_id, ref, draft)
         if conflict is not None:
             raise conflict
@@ -249,10 +257,18 @@ class ArtifactRepository:
         artifact: Artifact[Any],
         draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
         /,
+        *,
+        allow_working_notes: bool = False,
     ) -> Artifact[Any]:
         """Commit a next revision only when ``artifact`` remains the head."""
 
-        return await self._revise(connection, scope_id, artifact, draft)
+        return await self._revise(
+            connection,
+            scope_id,
+            artifact,
+            draft,
+            allow_working_notes=allow_working_notes,
+        )
 
     async def revise_for_restoration(
         self,
@@ -281,6 +297,7 @@ class ArtifactRepository:
         draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
         *,
         restoration: ArtifactGovernance | None = None,
+        allow_working_notes: bool = False,
     ) -> Artifact[Any]:
         _require_scope(scope_id)
         artifact_type = self._artifact_type(artifact.family)
@@ -292,7 +309,13 @@ class ArtifactRepository:
             artifact_id=artifact.artifact_id,
             revision=artifact.revision + 1,
         )
-        await self._validate_lineage_sources(connection, scope_id, target, draft.sources)
+        await self._validate_lineage_sources(
+            connection,
+            scope_id,
+            target,
+            draft.sources,
+            allow_working_notes=allow_working_notes,
+        )
 
         locked = await connection.execute(
             update(ARTIFACT_HEADS_TABLE)
@@ -917,6 +940,8 @@ class ArtifactRepository:
         scope_id: str,
         target: ArtifactRef,
         sources: tuple[SourceRef, ...],
+        *,
+        allow_working_notes: bool = False,
     ) -> None:
         if self._sources is None:
             return
@@ -931,6 +956,7 @@ class ArtifactRepository:
                     artifact_id=target.artifact_id,
                     revision=target.revision,
                 ),
+                allow_working_notes=allow_working_notes,
             )
 
 

@@ -232,7 +232,7 @@ jobs:
 
   atomic-memory-clean-seekdb:
     name: Atomic Memory clean migration (SeekDB)
-    timeout-minutes: 40
+    timeout-minutes: 50
     runs-on: ubuntu-latest
     env:
       POWERCONTEXT_TEST_MIGRATION_SEEKDB: "1"
@@ -257,6 +257,16 @@ jobs:
           mkdir -p "$TMPDIR"
           uv run --locked --extra seekdb python scripts/run_atomic_memory_clean_migration.py \
             seekdb --output "$MIGRATION_REPORTS"
+
+      - name: Test long-query retrieval and admission without skips
+        timeout-minutes: 10
+        env:
+          TMPDIR: ${{ runner.temp }}/am-seekdb
+        run: |
+          uv run --locked --extra seekdb python scripts/run_atomic_memory_clean_migration.py \
+            seekdb --output "$MIGRATION_REPORTS/long-query" --tests \
+            tests/e2e/test_atomic_artifact_search_http.py \
+            tests/e2e/test_atomic_memory_long_fts_query.py
 
       - name: Collect native diagnostics
         if: always()

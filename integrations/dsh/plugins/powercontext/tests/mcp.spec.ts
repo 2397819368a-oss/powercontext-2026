@@ -143,6 +143,9 @@ describe('PowerContext MCP bridge', () => {
     ['change_atomic_memory_lifecycle', { target: { artifact: { artifact_id: 'api_key=FAKE_REVIEW_MARKER' } } }],
     ['capture_content_source', { content: 'api_key=FAKE_REVIEW_MARKER' }],
     ['capture_content_source', { content: 'Safe Source content', metadata: { note: 'api_key=FAKE_METADATA_MARKER' } }],
+    ['capture_working_note', {
+      content: 'api_key=FAKE_REVIEW_CANARY', session_id: 'session-1', note_kind: 'validation',
+    }],
     ['create_work_contract', { contract: { objective: 'api_key=FAKE_REVIEW_CANARY' } }],
     ['create_work_contract', { contract: { facts: [{ text: 'api_key=FAKE_REVIEW_CANARY', evidence: [] }] } }],
     ['record_task_outcome', { outcome: { checks: [{ details: 'api_key=FAKE_REVIEW_CANARY' }] } }],

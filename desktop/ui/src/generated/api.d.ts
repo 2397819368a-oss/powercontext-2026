@@ -441,6 +441,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sources/working-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Capture session-local working evidence
+         * @description Explicitly capture a short-lived Working Note as Source evidence. Use this only when the user or host flow asks to retain intermediate work state such as inspected files, an abandoned approach, a validation result, an unresolved question, or host context. The note is untrusted historical material, not an instruction or a durable Memory entry. It is excluded from automatic Artifact generation and can support a Handoff only through an exact Source citation. Capture does not end the session, expire older notes, or promote the note into Memory. An exact replay of an accepted capture remains idempotent after its logical expiry.
+         */
+        post: operations["capture_working_note"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/source-definitions/register": {
         parameters: {
             query?: never;
@@ -3205,9 +3225,25 @@ export interface components {
             source_id: string;
             /** @description Raw integration content. Server-reserved payload schemas, including handoff receipts, are rejected on this generic capture operation and must be created through their dedicated workflow. */
             content: string;
+            /** @description Caller metadata. The reserved kind value `working_note` is rejected; use the dedicated Working Note capture operation instead. */
             metadata?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** @enum {string} */
+        WorkingNoteKind: "inspection" | "abandoned_approach" | "validation" | "unresolved" | "host_context";
+        CaptureWorkingNoteRequest: {
+            scope_id: string;
+            source_id: string;
+            content: string;
+            /** @description Host/session correlation only; it is not an authorization boundary. */
+            session_id: string;
+            note_kind: components["schemas"]["WorkingNoteKind"];
+            /**
+             * Format: date-time
+             * @description Optional logical expiry. It must be in the future when captured. Expiry makes the note unavailable to new Handoff evidence resolution but does not physically delete or rewrite the Source.
+             */
+            expires_at?: string | null;
         };
         CaptureContentSourceResponse: {
             status: components["schemas"]["CaptureStatus"];
@@ -5979,6 +6015,37 @@ export interface operations {
         };
         responses: {
             /** @description The Source is durably stored for later processing. */
+            202: {
+                headers: {
+                    "X-PowerContext-Request-ID": components["headers"]["RequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureContentSourceResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    capture_working_note: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureWorkingNoteRequest"];
+            };
+        };
+        responses: {
+            /** @description The Working Note is durably stored as Source evidence. */
             202: {
                 headers: {
                     "X-PowerContext-Request-ID": components["headers"]["RequestId"];
