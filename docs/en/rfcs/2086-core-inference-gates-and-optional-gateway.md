@@ -1,9 +1,9 @@
 ---
-title: Core Inference Gates and Optional Rust Gateway
-description: Unify security, context optimization, and cost governance in PowerContext Core, with built-in executors, SDK integration, and an optional Rust Gateway.
+title: ContextRuntime, GateRuntime, and Optional GatewayRuntime
+description: Manage model context through ContextRuntime, govern inputs and outputs through GateRuntime, and coordinate actual model calls through optional Rust GatewayRuntime.
 ---
 
-- Proposal Name: `core_inference_gates_and_optional_gateway`
+- Proposal Name: `context_gate_and_optional_gateway_runtimes`
 - Start Date: 2026-10-19
 - RFC PR: [oceanbase/powercontext#2086](https://github.com/oceanbase/powercontext/pull/2086)
 - Related RFCs: [RFC 0016](0016_pydantic_ai_inference_integration.md), [RFC 0028](0028_context_pack.md),
@@ -16,39 +16,46 @@ This RFC defines a design contract; it does not indicate that these capabilities
 The current capability baseline is repository commit e4efb39b. Source code determines implementation and release status;
 external gateway mechanisms depend on the specific version and deployment acceptance results.
 
-The input gate and output gate are public runtime capabilities of PowerContext Core. Core implements security checks,
-sensitive information handling, context transformations, token and cache policies, output checks, and optional session
-continuity and authoritative execution records. Users can use the same gates through Core's built-in execution path or
-an application SDK without deploying Gateway.
+PowerContext manages model context through ContextRuntime, governs inputs and outputs through GateRuntime, and uses
+GatewayRuntime to apply context plans and governance requirements to actual model calls. ContextRuntime and GateRuntime
+belong to PowerContext Core and can be embedded or service-based. Users can access them through Core's built-in execution
+path or an application SDK without deploying Gateway.
 
-PowerContext Gateway is an independently deployed, optional Rust protocol entry point and remote executor.
-It calls Core's gate interfaces, executes approved inputs, holds the necessary transport buffers, waits for release
-permission, and connects to inference services or existing model gateways through adapters. Executors control actual
-sending and delivery. Ownership of the gates by Core does not permit the transport layer to send or release content
-before checks complete.
+ContextRuntime decides what the model sees this turn and, after host confirmation, what subsequent turns inherit. It
+organizes history, Memory, and Handoff, managing complete-request token budgets, context transformations, cache prefixes,
+and optional persistent sessions. GateRuntime owns authorization, security rules, sensitive information handling,
+final-input admission, and output release. Budget reservations, execution identities, and authoritative ledgers reuse
+Core's shared execution services.
+
+The optional Rust Gateway hosts GatewayRuntime for the gateway-side invocation lifecycle: call both Core runtimes,
+map protocols, select targets, verify permits, send, buffer, cancel, retry under approved constraints, deliver results,
+and collect execution evidence. It connects to inference services or existing model gateways and follows Core's context
+and security decisions. Actual sending and delivery must wait for admission; content cannot be sent or released early.
 
 The system provides a testable product capability: when a task switches models, resumes across sessions, or runs in the
 background, it can deliver context with provenance, prevent content prohibited by policy from being sent or delivered,
 and account for costs across the complete task.
 
-The gates also provide an execution loop for LLM KV Cache reuse: Core plans stable prefixes, reusable breakpoints, and
-cache policy; Gateway or another executor selects compatible targets under the permit, sends approved bytes faithfully,
-and collects actual cache usage. Checked output becomes replayable history only after explicit session adoption.
+The three runtimes form an execution loop for LLM KV Cache reuse: ContextRuntime plans stable prefixes, reusable
+breakpoints, and cache policy; GateRuntime checks final payloads and responses; GatewayRuntime or another executor sends
+approved bytes faithfully and collects actual usage. ContextRuntime advances replayable history after the host explicitly
+adopts checked results.
 The inference service holds the actual KV state. Cache reads, write charges, and complete-task outcomes establish benefits.
 
 | Design item | Decision |
 | --- | --- |
 | Deployment and languages | Core can be embedded in Python applications or deployed as a service; Gateway is an optional standalone Rust binary or container. |
-| Gate ownership | Core GateRuntime implements shared rules, checks, transformations, and state semantics independently of Gateway. |
-| Context authority | Core manages session semantics, frozen injections, summaries, evidence coverage, redaction mappings, and request snapshots. |
-| Gateway scope | Protocols, connections, flow control, permit and byte verification, and execution evidence collection only; no second implementation of gate rules. |
+| Runtime boundaries | Core provides ContextRuntime and GateRuntime; optional Rust Gateway provides GatewayRuntime using the same Core contracts. |
+| Gate ownership | GateRuntime implements authorization, security rules, sensitive transformations, input admission, and output release independently of Gateway. |
+| Context authority | ContextRuntime manages sessions, frozen injections, summaries, evidence coverage, and request snapshots; GateRuntime owns security transformation rules. |
+| GatewayRuntime scope | Coordinate context preparation, checks, protocol adaptation, target/permit verification, calls, flow control, delivery, and evidence; reuse Core for domain decisions. |
 | Gate definition | Core checks inputs before a model request is sent and responses before output is released; executors enforce these checkpoints. |
 | Integration paths | Core's built-in executor, application SDK executors, and optional Rust Gateway share one gate contract. |
 | Persistence requirements | Basic checks can run statelessly; session replay, budgets that survive restarts, and an authoritative ledger enable their respective storage capabilities as needed. |
 | Invocation origins | `agent_main` is an application or Agent's primary model call; `core_background` covers Core generation, extraction, Embedding, reranking, and similar calls. |
 | External gateway integration | Built-in executors, SDKs, and Rust Gateway can connect to LiteLLM and similar products through verified protocols, with additional evidence adapters as needed. |
 | Models and retries | Core approves models, candidates, and budgets; integration configuration explicitly assigns execution ownership and prohibits independent, unbounded expansion at two layers. |
-| KV Cache | Core plans prefixes, breakpoints, and target constraints; Gateway or another executor executes faithfully and collects cache evidence; adopted history supports later reuse, while the inference service holds actual KV state. |
+| KV Cache | ContextRuntime plans prefixes, breakpoints, and affinity constraints; GateRuntime checks final payloads; GatewayRuntime executes faithfully and collects evidence. Adopted history supports later reuse; the inference service holds actual KV state. |
 | Default cost reduction | Start with stable replay, lossless representation optimization, and explicit output budgets; validate lossy compaction, dynamic model upgrades, and semantic response caching separately. |
 | Default security | Mandatory rules check before release; block sending or delivery when authorization, security policy, or required scanning cannot be confirmed. |
 | Acceptance unit | Quality, total cost, latency, retries, and leakage counterexamples for complete tasks; input length or the presence of cache parameters alone is not evidence of benefit. |
@@ -60,16 +67,17 @@ output validation when they do not deploy an independent model gateway. Making t
 would require Core background processing and application SDKs to deploy an additional proxy or maintain separate rules.
 That coupling increases adoption costs and gives the same policy different meanings on different invocation paths.
 
-This proposal addresses four specific problems:
+This proposal addresses five specific problems:
 
 1. **Capability availability**: Core background tasks, embedded applications, remote SDKs, and optional Gateway use the same gates; basic security requires neither a gateway nor a database.
 2. **Actual execution boundaries**: Check the final model input and raw response, rather than only business parameters before an SDK call or results that have already parsed successfully.
-3. **Task continuity**: When persistence is needed, preserve precise session, injection, handoff, and execution identities to avoid losing constraints or duplicating history on model switches.
-4. **Verifiable cost reduction**: Measure input optimization, provider caching, generation volume, and work steps separately, including auxiliary models, failures, retries, cache writes, and warm-up costs.
+3. **Context lifecycle**: Establish explicit ContextRuntime authority for per-turn material selection, window budgets, stable replay, and reconstruction, with the corresponding permissions delegated by the host.
+4. **Task continuity**: When persistence is needed, preserve precise session, injection, handoff, and execution identities to avoid losing constraints or duplicating history on model switches.
+5. **Verifiable cost reduction**: Measure input optimization, provider caching, generation volume, and work steps separately, including auxiliary models, failures, retries, cache writes, and warm-up costs.
 
-The goal is an independently usable Core GateRuntime and replaceable executors that follow a shared execution contract.
-Rust Gateway remains independent and optional, providing compatible HTTP/SSE entry points, a unified deployment boundary,
-and integration with third-party gateways. This RFC does not implement general Agent orchestration, migrate private
+The goal is independently usable Core ContextRuntime and GateRuntime capabilities, plus replaceable executors following
+a shared execution contract. Rust Gateway remains independent and optional; its GatewayRuntime provides compatible
+HTTP/SSE entry points, complete invocation coordination, and third-party gateway integration. This RFC does not implement general Agent orchestration, migrate private
 model state, automatically protect traffic outside the integration, or guarantee zero leakage for arbitrary content.
 It does not automatically promote generated results into Memory or replace Artifact lifecycles, evidence verification,
 host tool authorization, or provider billing.
@@ -78,14 +86,28 @@ host tool authorization, or provider billing.
 
 ## User workflows
 
+### Runtime-managed multi-turn context
+
+A user asks a Coding Agent to fix a client issue, and the host explicitly delegates context coordination for this task:
+
+1. ContextRuntime receives the current message and verifiable history boundaries. Under authorization, it selects project rules, relevant Memory, and required Handoff. It preserves current instructions, budgets the complete request against the target window, tool definitions, and output reservation, and freezes injection positions and source versions.
+2. GatewayRuntime or the managed SDK maps the logical plan to the target protocol. GateRuntime checks the final input, and the executor sends only after admission.
+3. When the model requests file reads or tests, GateRuntime checks tool arguments in the output. The host authorizes and executes tools, then submits results with provenance. Ordinary tool turns reuse frozen injections rather than recalling again or rewriting history on every invocation.
+4. Checked answers first become candidates. After explicit host adoption, ContextRuntime advances the selected branch with the corresponding input and answer; subsequent turns replay the same content. Delivery, adoption, and actual tool execution remain separate facts.
+5. Near the target window limit, ContextRuntime establishes a new context epoch under enabled policies, preserving the current goal, corrections, unfinished tool exchanges, and required evidence while recording reconstruction scope and omissions. Without an accepted reconstruction policy, report insufficient capacity or request an explicit handoff.
+
+New user intent, source versions, or permissions may trigger controlled preparation; retries of the same request reuse
+the original plan. Applications delegating only current-payload checks retain host-managed history without automatic
+cross-turn replay or compaction.
+
 ### Reusing model caches through Gateway
 
 A user fixes code across successive turns through Gateway, retaining the selected model and protocol:
 
-1. Core's input gate authorizes and prepares rules, tool definitions, schemas, and permitted Memory. It freezes their representations and versions and records reusable-prefix and incremental-content boundaries in the plan.
-2. Gateway's adapter maps approved cache modes, breakpoints, and TTLs to the target protocol before submitting the final payload for checking. Once permitted, it sends exact bytes to the approved concrete target and preserves enforceable cache-affinity constraints.
+1. ContextRuntime prepares rules, tool definitions, schemas, and permitted Memory within authorization. It freezes their representations and versions and records reusable-prefix and incremental-content boundaries in the plan.
+2. GatewayRuntime's adapter maps approved cache modes, breakpoints, and TTLs to the target protocol before submitting the final payload to GateRuntime. Once permitted, it sends exact bytes to the approved concrete target and preserves enforceable cache-affinity constraints.
 3. The inference service reuses an available matching prefix, processes new input, and generates a new answer. Gateway captures the raw response, actual target, and cache usage.
-4. Core's output gate checks the response. Persistent mode first saves a checked candidate; the host explicitly accepts it into session history. The next input preserves adopted content exactly and appends new messages and tool results at controlled positions.
+4. GateRuntime's output gate checks the response. Persistent mode first saves a checked candidate; after explicit host acceptance, ContextRuntime adopts it into session history. The next input preserves adopted content exactly and appends new messages and tool results at controlled positions.
 5. The user sees cache reads, cache writes, ordinary input, known costs, upstream first-token time, and final delivery time per turn. Missing cache evidence appears as unknown rather than a claimed hit because a parameter was set.
 
 This is a logical layout; actual rendering preserves protocol roles, message order, and complete tool exchanges:
@@ -148,51 +170,82 @@ Current user instructions, repository rules, and live facts always take preceden
 ```mermaid
 flowchart TB
     App["Application / Coding Agent"] --> SDK["Application SDK / framework adapter"]
-    App --> Gateway["Optional Rust Gateway"]
+    App --> Gateway["Optional Rust Gateway<br/>GatewayRuntime · invocation coordination"]
     subgraph Core["PowerContext Core · embedded or service deployment"]
-        Jobs["Built-in background and auxiliary calls"] --> InputGate["Input gate<br/>Security / redaction / token and cache planning"]
-        Context["Memory / Handoff / sessions / policies"] --> InputGate
-        OutputGate["Output gate<br/>Sensitive content / structure / release decision"]
-        Records["Optional persistent state<br/>Snapshots / responses / budgets and ledger"]
-        OutputGate --> Records
+        Materials["Memory / Handoff / adopted history"] --> Context["ContextRuntime<br/>Context selection / token and cache plans / session advancement"]
+        subgraph Gates["GateRuntime"]
+            InputGate["Input gate<br/>Authorization / safe projection / final-payload admission"]
+            OutputGate["Output gate<br/>Sensitive content / structure / release decision"]
+        end
+        Records["Shared execution services and optional storage<br/>operation / snapshots / responses / budgets and ledger"]
+        Context -.-> Records
+        InputGate -.-> Records
+        OutputGate -.-> Records
     end
-    SDK --> InputGate
-    Gateway -->|"Input check interface"| InputGate
-    InputGate -->|"Checked request"| Executor["Built-in / SDK executor"]
-    InputGate -.->|"Execution permit"| Gateway
+    SDK --> Executor["Built-in / SDK executor"]
+    Jobs["Core background and auxiliary calls"] --> Executor
+    Executor <-->|"Prepare plan / reuse stage input"| Context
+    Gateway <-->|"Prepare plan / context control"| Context
+    Executor <-->|"Final payload / admission"| InputGate
+    Gateway <-->|"Final payload / admission"| InputGate
     Executor <-->|"Directly or through an existing gateway"| Upstream["Model service / LiteLLM / Bifrost / New API<br/>Inference service holds KV Cache"]
     Gateway <-->|"Controlled execution"| Upstream
     Executor -->|"Raw response, not yet delivered"| OutputGate
     Gateway -->|"Response check interface"| OutputGate
-    OutputGate -.->|"Release permit"| Gateway
-    OutputGate -->|"After checks pass"| Recipient["Return to application or Core domain pipeline"]
+    OutputGate -.->|"Checked projection and release permit"| Gateway
+    OutputGate -.->|"Checked projection and release result"| Executor
+    Gateway -->|"Deliver after admission"| App
+    Executor -->|"Deliver after admission"| App
+    App -.->|"Explicit adoption / new tool results"| Context
 ```
 
 The embedded path calls Core's Python runtime directly; service-based SDKs and Rust Gateway use authenticated Core APIs.
+ContextRuntime and GateRuntime define responsibilities within Core; GatewayRuntime coordinates execution in the optional
+gateway. These names do not require three processes, three databases, or replacement of the existing Core composition
+entry point. Implementation will define the concrete interfaces consistently.
 Background tasks reuse prepared stage inputs without triggering primary-model context enrichment again.
 Regardless of the executor, sending input and releasing responses must wait for admission from the same GateRuntime.
+
+### Responsibilities of the three runtimes
+
+| Runtime | Core question | Authoritative responsibility |
+| --- | --- | --- |
+| ContextRuntime | What does this turn see, and what do later turns inherit? | Select context, manage logical token/window budgets, freeze injections, plan cache prefixes, reconstruct under policy, and handle adoption and branches. |
+| GateRuntime | May this input leave, and may this output be delivered? | Authorization, security rules, sensitive transformations, final-payload admission, raw-output checks, and release decisions. |
+| GatewayRuntime | How does this actual model invocation complete? | Coordinate both Core runtimes, map protocols, propose eligible targets, enforce send/release constraints, control flow, cancel, retry under constraints, and report evidence. |
+
+ContextRuntime owns semantic context tradeoffs; GateRuntime owns the rules and execution of security transformations.
+When a safe projection changes input, ContextRuntime associates the actual projection and version and updates affected
+token counts, prefixes, and breakpoints. GateRuntime checks the final payload after adapter protocol mapping. Changes to
+content, targets, or cache controls require renewed admission, without reusing an old body digest or execution permit.
+Restrictions on sensitive egress also apply before any auxiliary model call.
+
+Operations, attempts, reservations, and authoritative ledgers use Core's shared execution services. Managed entry points
+coordinate both runtimes and those services without creating separate session, budget, or billing systems per runtime.
+Source and Artifact domain lifecycles remain owned by their respective services.
 
 ### Responsibilities
 
 | Responsibility | Core | Replaceable executor (built-in / SDK / Rust Gateway) | Existing gateway / inference service |
 | --- | --- | --- | --- |
-| Users, Scope, and delegation | Authoritative checks | Validate credentials and pass restricted delegation | Use the configured provider identity |
-| Sessions, branches, and history coverage | Authoritative state | Pass event identities without guessing history | Not an authority for cross-provider sessions |
-| Memory, Handoff, and evidence | Selection, versions, validation, persistence | Deliver exact projections | Receive final model input |
-| Compaction, redaction, reversible encoding | Define and execute context transformations | Preserve approved bodies without rewriting | Perform only declared transformations |
+| Users, Scope, and delegation | Authoritative checks by GateRuntime and owning data services | Validate credentials and pass restricted delegation | Use the configured provider identity |
+| Sessions, branches, and history coverage | ContextRuntime owns authoritative state | Pass event identities without guessing history | Not an authority for cross-provider sessions |
+| Memory, Handoff, and evidence | ContextRuntime selects exact versions; domain services validate and persist | Deliver exact projections | Receive final model input |
+| Compaction, redaction, reversible encoding | ContextRuntime plans representation and coverage; GateRuntime performs sensitive transformations and policy checks | Preserve approved bodies without rewriting | Perform only declared transformations |
 | Model and capability policies | Approve targets or a closed candidate set | Select or delegate according to the plan | Execute a fixed target or controlled routing |
 | Retries and total budgets | Policies, atomic reservations, settlement | Enforce admission and report uncertainty | Declare internal attempts and supply evidence |
 | Gates | Rules, detection, transformations, security and release decisions | Invoke and obey the gates at final send and first release | May add protections but cannot replace this system's guarantees |
-| KV Cache | Plan prefixes, breakpoints, modes, and target-affinity constraints; manage adopted history | Map parameters before permission, preserve bytes, and collect actual read/write usage | Hold and reuse the cache and return verifiable usage |
+| KV Cache | ContextRuntime plans prefixes, breakpoints, modes, affinity, and adopted history; GateRuntime checks final payloads | Map parameters before permission, preserve bytes, and collect actual read/write usage | Hold and reuse the cache and return verifiable usage |
 | Ledger | Authoritative appends, recovery, and reconciliation | Collect and reliably report execution evidence | Return raw usage or reconciliation material |
 
-### What "thin" means
+### GatewayRuntime coordination and state boundaries
 
-Gateway retains connection pools, active request state, SSE parsing, bounded buffers, policy snapshots, restricted cache
-execution metadata, short-lived
-execution credentials, and a body-free event outbox. It does not create another session database, decide whether Memory
-is stale, summarize Handoffs, compute semantic coverage, or maintain its own sensitive content detection or compaction
-engine.
+GatewayRuntime coordinates the complete gateway-side invocation, managing request state, deadlines, concurrency,
+connections, SSE, bounded buffering, cancellation, controlled retries, release recovery, and evidence reporting. It actively
+requests context plans and security decisions and enforces Core's constraints. Local state includes active requests,
+valid policy/plan caches, restricted cache execution metadata, short-lived execution credentials, and a body-free event
+outbox. Memory selection, Handoff summaries, history coverage, compaction, and sensitive rules continue to use Core's
+authoritative implementations; Gateway does not create another session database.
 
 Core holds persistent sessions and frozen projections. Session records are operational records, not a new Session
 Artifact family. Specific material that must become evidence is collected as Source through a controlled process.
@@ -203,24 +256,26 @@ permission changes, or policy revocation require renewed admission.
 
 ### Using the gates without Gateway
 
-| Integration | How it obtains the gates | Coverage |
+| Integration | How it composes the runtimes | Coverage |
 | --- | --- | --- |
-| Core built-in background calls | Core composes a controlled executor, invokes GateRuntime by default, then sends through a provider adapter. | Integrated actual generation, Embedding, reranking, and auxiliary attempts. |
-| Application-managed calls through the SDK | The SDK coordinates the full lifecycle of input gate, execution, and output gate; the executor may use the application's own provider credentials. | Application primary-model traffic through the controlled entry point. |
+| Core built-in background calls | ContextRuntime reuses stage plans, GateRuntime checks inputs/outputs, and the built-in executor performs actual calls. | Integrated actual generation, Embedding, reranking, and auxiliary attempts. |
+| Application-managed calls through the SDK | The SDK coordinates ContextRuntime, GateRuntime, and an executor that may use the application's own provider credentials. | Application primary-model traffic through the controlled entry point, with context management limited to delegated scope. |
 | Applications retaining existing model calls | Explicitly call Core's check APIs before sending and before delivery, submitting the final input and raw output. | Checkpoints actually submitted and correctly enforced by the caller; no proof that the caller has no bypass. |
-| Rust Gateway | Use a compatible HTTP entry point; Gateway calls Core's gates and control protocol. | Verified protocols, upstreams, and execution paths through that entry point. |
+| Rust Gateway | Use a compatible HTTP entry point; GatewayRuntime coordinates both Core runtimes and actual execution. | Verified protocols, upstreams, and execution paths through that entry point. |
 
 For hosts that only use prepare_context or MCP recall, Core can check only the supplementary material it delivers.
 It cannot see the complete prompt subsequently assembled by the host, model responses, or tool behavior. Installing
 PowerContext does not automatically protect all external model calls.
 
-### Core public runtime
+### Core public runtimes and managed entry points
 
-Introduce GateRuntime with two logical boundaries, before_inference and after_inference, returning checked inputs and
-output release results respectively. These names are conceptual interfaces in this proposal; implementation will define
-the Python and HTTP contracts consistently. A managed entry point coordinates "input gate → InferenceExecutor → output
-gate," placing the complete lifecycle under the Core SDK. Manual interfaces expose the same capabilities to existing
-applications while explicitly assigning responsibility for not skipping checks to the application.
+ContextRuntime provides context preparation, frozen projections, and explicit session adoption. GateRuntime provides
+before_inference and after_inference security boundaries, returning checked inputs and output release results respectively.
+These are conceptual interfaces; implementation will define Python and HTTP contracts consistently while reusing existing
+Core composition and data services. A managed entry point coordinates "ContextRuntime preparation → adapter serialization
+→ GateRuntime input gate → InferenceExecutor → GateRuntime output gate → permitted delivery → explicit host adoption
+→ ContextRuntime history advancement." GatewayRuntime coordinates the remote execution path. Manual interfaces expose
+the same capabilities to existing applications while assigning responsibility for not skipping checks to the application.
 
 InferenceExecutor handles final serialization, transport, retries, streaming events, and usage collection. It does not
 choose sensitive content rules or context tradeoffs. Core's checks must receive the final payload formed by the adapter
@@ -243,16 +298,17 @@ within the current call; it does not guarantee persistent replay or cross-proces
 | Capability | Current workspace facts | Proposed implementation |
 | --- | --- | --- |
 | PreparedContext | An ephemeral four-field value containing schema, status, content, and content_bytes; not a session or persistent request snapshot. | Preserve the existing contract and add separate execution plans and session records. |
-| Supplementary context budget | max_bytes is a UTF-8 byte budget; integrations validate and use the content unchanged. | Core additionally calculates tokens for the complete request, tool definitions, and output reservation. |
+| Supplementary context budget | max_bytes is a UTF-8 byte budget; integrations validate and use the content unchanged. | ContextRuntime additionally calculates tokens for the complete request, tool definitions, and output reservation. |
 | Delivery representation optimization | References and UTF-8 byte budgets exist; the general token representation optimizer defined here does not. | Add independently configurable lossless representation policies; advance lossy policies only after quality thresholds are met. |
 | Background input encoding | Execution currently uses existing stage inputs, instructions, and schemas; the general shared codec defined here does not exist. | Reversible shared encoding is a new stage protocol and cannot be applied directly to arbitrary Agent history. |
 | Handoff | Goals, status, next steps, evidence, omissions, and both ephemeral and persistent forms already exist. | Add session coverage associations while preserving its lifecycle. |
 | Bootstrap receipt | Persistent delivery state and exact-version deduplication exist for specific host lifecycles. | Reuse monotonic state and precise identity principles without generalizing them into proof of delivery for all messages. |
 | Core inference | Generation, embedding, rerank, and decision configuration and actual generation stages exist. | Add shared workload identities, model capability constraints, and execution plans. |
+| Public context runtime | prepare and specialized stage inputs exist, but not the unified window, frozen-history, caching, and adoption lifecycle defined here. | ContextRuntime composes existing capabilities and enables context management within delegated scope. |
 | Public gate runtime | Existing inference ports and usage wrappers offer composition points, but no shared mandatory gates as defined here. | Add Core GateRuntime and integrate executors at actual send and first-release boundaries. |
 | Usage | Current statistics mainly record request counts and input/output tokens; the recorder permits loss. | Add a recoverable execution ledger distinguishing observations, estimates, and reconciled results. |
 | DecisionPolicy | A bounded decision-request projection sanitizer exists, and some failed judgments abstain; it is not general model DLP. | Reuse precise projection boundaries, add enforcement policies, and never treat unknown as a security pass. |
-| Gateway | The Rust Gateway and Core control protocol defined here do not exist in the current workspace. | Implement independently as an optional integration, not a prerequisite for Core gates. |
+| Gateway | The Rust Gateway and Core control protocol defined here do not exist in the current workspace. | GatewayRuntime provides optional invocation coordination independently of both Core runtimes. |
 
 Repository references:
 [PreparedContext](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/models.py),
@@ -265,8 +321,9 @@ Repository references:
 
 ## Public values, errors, and compatibility
 
-GateRuntime's before_inference and after_inference are public conceptual boundaries. Managed invocation coordinates
-preparation, final-payload checks, execution, raw-response checks, and delivery as one lifecycle. Explicit check interfaces
+ContextRuntime preparation/adoption and GateRuntime's before_inference and after_inference are public conceptual boundaries.
+Managed invocation coordinates context preparation, final-payload checks, execution, raw-response checks, delivery, and
+optional adoption as one lifecycle. Explicit check interfaces
 judge only submitted content; they do not prove that an external caller obeyed the result.
 New names, types, and HTTP paths in this RFC are contracts to implement, not currently released interfaces.
 
@@ -330,10 +387,10 @@ Handoffs, tool results, tool definitions, structured parameters, and forwarded f
 
 Processing order:
 
-1. At ingress, the executor validates identity, destination address, protocol, and size, then calls Core's input gate.
-2. Core checks access, forms context with provenance, and completes the relevant security projection before invoking any external auxiliary model.
-3. Core performs permitted redaction, representation optimization, or compaction to form a fixed input plan.
-4. Core's input gate checks the final fields and body formed by the adapter, verifies model capabilities, budget, and destination, and returns admission.
+1. At ingress, the executor validates identity, destination address, protocol, and size, then requests ContextRuntime preparation or accepts caller-provided input within delegated scope.
+2. ContextRuntime forms context with provenance under data authorization; GateRuntime completes the relevant safe projection before any external auxiliary model call.
+3. ContextRuntime plans permitted representation optimization or compaction, while GateRuntime performs sensitive transformations. Update projections, budgets, and cache boundaries to form a fixed input plan.
+4. GateRuntime checks the adapter's final fields and body, coordinating with Core's shared execution services to verify model capabilities, budget, and destination before admission.
 5. The executor verifies that the bytes and destination it will actually send match admission; any change requires a new Core check.
 6. Only then may it send to the upstream.
 
@@ -369,20 +426,38 @@ All three origins can use built-in executors without an independent Gateway depl
 ```mermaid
 sequenceDiagram
     participant A as Application
-    participant C as Core GateRuntime
-    participant E as Replaceable executor
+    participant E as GatewayRuntime or built-in / SDK managed entry point
+    participant C as Core ContextRuntime
+    participant G as Core GateRuntime
+    participant S as Core shared execution services
     participant U as Upstream gateway or inference service
-    A->>C: Submit this turn's input through SDK or Gateway
-    C->>C: Authorize, prepare context, run input gate
-    C->>E: Approved final input and execution constraints
+    A->>E: Turn input, identity, and context delegation
+    opt Persistent execution enabled
+        E->>S: Establish idempotent operation before paid preparation
+    end
+    E->>C: Prepare context or reuse stage plan
+    C->>C: Authorized selection, budgets, frozen injections, cache plans
+    C-->>E: Logical input and execution constraints
+    E->>E: Map target protocol, cache controls, and final payload
+    E->>G: Final input and concrete target
+    G-->>E: Checked input and admission
+    opt Persistent execution enabled
+        E->>S: Bind attempt and final payload; reserve budget as configured
+        S-->>E: Single-use permit bound to executor instance
+    end
     E->>E: Verify actual bytes and target; do not rewrite
     E->>U: Send model request
     U-->>E: Raw response or SSE, usage
-    E->>C: Submit unreleased response
-    C->>C: Output gate; record response and execution as configured
-    C-->>E: Checked output and release result
+    E->>G: Submit unreleased response
+    G->>G: Check raw response and delivery projection
+    G->>S: Confirm checked candidate and check association as configured
+    G-->>E: Checked output and release result
     E-->>A: Deliver after checks pass or return explicit error
-    E->>C: Actual target, usage, and release state
+    E->>S: Record target, usage, and release state through Core event API
+    opt Persistent session enabled and host adopts
+        A->>C: Exact candidate, expected branch version, selection ID
+        C-->>A: Idempotent adoption result and new version
+    end
 ```
 
 Executors may be in-process Python, an application SDK, or remote Rust Gateway; in-process calls do not need loopback HTTP.
@@ -390,14 +465,46 @@ Reporting and delivery in the diagram are different facts. With persistent budge
 are persisted before egress. With persistent continuity, corresponding responses are confirmed before release.
 Actual client receipt requires an additional acknowledgment; successful socket writes cannot prove it.
 
-Core background calls reuse the same execution chain directly through GateRuntime and the built-in executor, referencing
-prepared stage plans and skipping session synchronization and automatic Memory injection. Record the actual number of
+External auxiliary calls during preparation also pass through GateRuntime and controlled executors; the diagram omits
+their separate child attempts. If a safe projection changes final input, recheck ContextRuntime budgets and cache plans
+under the runtime responsibility rules before admission. Core background calls use ContextRuntime to reuse stage plans,
+then execute through GateRuntime and built-in executors, skipping session synchronization and automatic Memory injection. Record the actual number of
 provider calls according to executor and downstream evidence.
 
-## Core session and context management
+## ContextRuntime context lifecycle
 
-This section describes managed mode with persistent continuity enabled. A stateless gate invocation can provide security
-and representation optimization for one model call without requiring a session, frozen history, or persistent ledger.
+ContextRuntime organizes model-visible content at each managed invocation boundary. Within one request, it can use fixed
+templates, caller-provided complete history, and authorized material to plan window usage and caching. Persistent sessions,
+frozen history, and restart recovery are enabled as needed without requiring a ledger database.
+
+### Four context control points
+
+| Point | ContextRuntime behavior | Required boundary |
+| --- | --- | --- |
+| Turn preparation | Select material, deduplicate exact injections, preserve new instructions/corrections, and form a logical projection with provenance. | No unauthorized reads or promotion of historical inferences into facts. |
+| Before final send | Calibrate tokens, representation, and cache boundaries against the target window, tools, output reservation, and safe projection. | GateRuntime checks the final protocol-mapped payload; content cannot change after permission. |
+| After calls and tool turns | Associate checked candidates and tool results with provenance; the host explicitly adopts selected history. | Saving or delivery is not adoption, and model tool requests are not proof of execution. |
+| Next turn or window reconstruction | Replay adopted history exactly; reconstruct at an explicit epoch under accepted policies or use explicit Handoff. | Preserve unfinished actions, provenance, and omissions; retries do not recall again or rewrite old snapshots. |
+
+These controls apply between model calls and before sending. The inference service consumes the actual model window and
+stores KV state. ContextRuntime influences them through permitted inputs and supported cache controls without modifying
+internal model state or independently interpreting private reasoning blocks.
+
+### Host delegation and context authority
+
+Integration configuration explicitly chooses host-managed context or delegation to ContextRuntime, binding allowed
+supplementary material, history replay, representation optimization/compaction, content retention, and adoption behavior.
+Every capability remains subject to authorization, security policies, and accepted support limits. Proxying one model HTTP
+request permits management of that received payload. Authoritative cross-turn history requires stable task, session,
+branch, and request identities, correlatable message/tool events, and explicit adoption acknowledgments from the host.
+Without those capabilities, declare current-call scope rather than guessing complete history.
+
+Each session has one automatic context coordination authority. After delegation, the host follows agreed truncation and
+reconstruction boundaries rather than independently recalling, compacting, or reordering the same history. External edits
+arrive as new events, branches, or explicit reconstruction declarations. User corrections, host tool authorization, and fact
+verification remain owned by their respective entry points. Reverify delegation and permissions on later calls and recovery.
+
+The session identity, history, adoption, and recovery rules below apply to managed mode with persistent continuity enabled.
 
 ### Minimum identities
 
@@ -487,13 +594,13 @@ on every turn. If the client sends full history, network and parsing costs still
 appends do not make the complete path constant-cost. Storing history once locally also does not automatically reduce
 history tokens resent to the model on each turn.
 
-## Public contract between Core gates and executors
+## Public contract between both Core runtimes and executors
 
 The following objects and control interfaces are new designs, not field extensions to the existing PreparedContext API.
 Existing prepare retains its ephemeral context delivery contract; it does not advance sessions, create execution plans,
 or reserve budgets. Persistent plans, budgets, and session writes use new explicit control operations. Recall itself may
 still incur paid Embedding calls or diagnostic records.
-Basic GateRuntime can operate on in-process values without persisting these objects. The persistent flow below applies
+Basic ContextRuntime and GateRuntime can operate on in-process values without persisting these objects. The persistent flow below applies
 to managed execution with session continuity or persistent budgets enabled. Across processes, the same service contract
 is exposed through authenticated HTTP interfaces.
 
@@ -501,8 +608,8 @@ is exposed through authenticated HTTP interfaces.
 
 | Object | Minimum content | Authority and purpose |
 | --- | --- | --- |
-| ContextSnapshot | Tenant, Scope, session and branch version, event range, exact injections, source versions, transformation versions, known omissions, and content references | Core's recoverable logical input snapshot; does not mean a model received it. |
-| InferencePlan | operation, purpose and stage, snapshot, eligible targets, protocol, output constraints, security policy, cache_policy, budget, and expiration | Core-approved constraints; cache plans are versioned inside this object, without a separate cache Artifact or plan interface. |
+| ContextSnapshot | Tenant, Scope, session and branch version, event range, exact injections, source versions, transformation versions, known omissions, and content references | ContextRuntime's recoverable logical input snapshot; does not mean a model received it. |
+| InferencePlan | operation, purpose and stage, snapshot, eligible targets, protocol, output constraints, security policy, cache_policy, budget, and expiration | Core combines context plans, GateRuntime constraints, and shared execution policies; cache plans are versioned inside this object, without a separate cache Artifact or plan interface. |
 | AttemptPermit | attempt, concrete target, upstream configuration fingerprint, final-body digest, budget reservation, executor instance, expiration, and single-use permit identity | Binds one concrete execution before sending; the actual executor must verify it before invoking the upstream. |
 
 Embedded runtimes call the same Core services directly. Remote executors obtain plans over internal TLS and authentication;
@@ -528,6 +635,10 @@ prove that the application sent or released content according to the result.
 
 Persistent management uses the following operations. Python service interfaces and remote APIs share semantics;
 in-process calls do not need HTTP:
+
+Core managed entry points coordinate ContextRuntime for preparation/selection and GateRuntime for response checks and
+release recovery. Attempts, events, and queries reuse shared execution services. GatewayRuntime uses these operations
+without a separate context HTTP protocol or state store.
 
 | Operation | Proposed interface | Purpose |
 | --- | --- | --- |
@@ -614,6 +725,7 @@ Persistent primary-model calls distinguish these facts:
 | Host abandons candidate | Retain an auditable disposition without adding the candidate to history, reversing incurred costs, or assuming tools did not run. |
 | User receipt or tool-execution acknowledgment | Add the respective fact separately; neither adoption nor socket writes imply it. |
 
+ContextRuntime handles selection and uses Core transaction services to advance selected history atomically.
 selection comes from the authenticated host bound to the session or a restricted SDK delegation, never ordinary message
 content or arbitrary role fields. After accepting a complete checked answer, the host submits a stable selection ID, exact
 candidate reference, and expected version. Repeating the same selection returns the original result; choosing another
@@ -675,7 +787,8 @@ suitable centralized entry point.
 ### Projection redaction and stable placeholders
 
 Redaction changes the send projection, not the authoritative bodies of existing Source, Memory, or Artifacts.
-Core maintains restricted session-level placeholder mappings that remain stable within the same policy and privacy
+GateRuntime maintains session-level placeholder mappings through Core's restricted storage; ContextRuntime associates
+actual safe projections and their versions. Mappings remain stable within the same policy and privacy
 boundary to avoid meaningless prefix changes. Placeholders must not contain original values or become cross-tenant
 correlation identifiers.
 
@@ -825,10 +938,11 @@ References:
 [New API logs](https://docs.newapi.pro/en/docs/guide/feature-guide/user/log).
 These mechanisms inform integration; every supported version still requires real-path acceptance.
 
-## Rust Gateway implementation structure
+## Rust GatewayRuntime implementation structure
 
-This section implements the optional remote executor. It is neither a Core GateRuntime dependency nor a gate detection
-engine.
+GatewayRuntime coordinates invocations in the optional Rust Gateway, combining Core ContextRuntime, GateRuntime, and the
+local executor. It manages the complete gateway-side request lifecycle without becoming a dependency of either Core
+runtime or copying context decisions and gate detection engines.
 
 Suggested components are Tokio for asynchronous tasks, Axum/Hyper for ingress HTTP, Reqwest/Hyper for upstream HTTP,
 Rustls for TLS, Serde for control contracts, and Tracing/OpenTelemetry for body-free observability. Pin specific versions
@@ -838,7 +952,8 @@ dependencies on the Python package.
 | Module | Responsibility |
 | --- | --- |
 | ingress | Protocol entry points, authentication, rate limits, size limits, and request identity. |
-| core_client | Core plan, admission, and event interfaces; version negotiation and service identity. |
+| core_client | Core context plans, admission, adoption, recovery, and event interfaces; version negotiation and service identity. |
+| orchestration | Preparation, adaptation, input checks, execution, output checks, delivery, and adoption acknowledgment forwarding; reuse the original operation and coordinate cancellation/recovery. |
 | executor | Single-use permit execution, total timeouts, cancellation, concurrency, and state transitions. |
 | enforcement | Invoke Core gates and verify execution/release permits, body digests, and state order; no independent sensitive detection rules. |
 | upstream | Generic protocol adaptation and evidence collection for products such as LiteLLM. |
@@ -881,11 +996,11 @@ the summarization call itself costs money. The output gate does not start a seco
 
 ### Input optimization
 
-Core implements independently configurable lossless representation policies without changing selected evidence identities
+ContextRuntime implements independently configurable lossless representation policies without changing selected evidence identities
 or content coverage. Preserve complete semantics and call order for native Agent history first. Do not compact current
 user instructions, unfinished tool exchanges, critical identifiers, code patches, or evidence requiring exact reads.
 
-Lossy summarization is an explicit Core policy. Record original ranges, summaries, evidence references, omissions, and
+Lossy summarization is an explicit ContextRuntime policy executed within host delegation. Record original ranges, summaries, evidence references, omissions, and
 versions, and enable it only after separate task-set acceptance. Summaries must not overwrite authoritative Source or
 present conjecture as current fact. Compressor inputs and outputs both obey security and budget constraints; do not call
 a compressor anew for every message unnecessarily.
@@ -896,7 +1011,7 @@ while retaining its old identity.
 
 ### Cache stability
 
-Core stabilizes templates, tool definitions, schemas, delivered injections, and stage codecs. Dynamic request IDs,
+ContextRuntime stabilizes templates, tool definitions, schemas, delivered injections, and stage codecs. Dynamic request IDs,
 timestamps, and unnecessary ordering changes do not enter the stable prompt prefix. Append new facts at controlled
 boundaries when possible; security changes and actual user corrections take precedence. Dynamic fields here mean
 non-semantic metadata added by this system. Business timestamps, versions, and other meaningful fields in user material
@@ -921,9 +1036,10 @@ cache in model selection.
 
 ### Cache plans and Gateway execution
 
-InferencePlan.cache_policy is Core's cache execution plan. It references existing snapshots and prefix manifests rather
-than creating a separate cache Artifact, cache session database, or budget. The input gate owns content and boundaries;
-executors map protocols and actual targets; the output gate and session selection maintain history for subsequent reuse.
+ContextRuntime forms InferencePlan.cache_policy for publication within Core's execution plan. It references existing
+snapshots and prefix manifests without creating a separate cache Artifact, cache session database, or budget.
+ContextRuntime owns content, boundaries, and adopted history; GateRuntime owns safe projections and final-payload checks;
+GatewayRuntime or another executor maps protocols and actual targets and collects cache evidence.
 
 | Plan content | Contract |
 | --- | --- |
@@ -935,16 +1051,18 @@ executors map protocols and actual targets; the output gate and session selectio
 
 ```mermaid
 flowchart LR
-    Ingress["Gateway ingress"] --> Input["Core input gate<br/>Stable prefix and cache plan"]
-    Input --> Execute["Gateway execution<br/>Verify permit after parameter mapping"]
+    Ingress["GatewayRuntime ingress"] --> Context["ContextRuntime<br/>Stable prefix and cache plan"]
+    Context --> Mapping["GatewayRuntime<br/>Protocol and cache parameter mapping"]
+    Mapping --> Input["GateRuntime input gate<br/>Final-payload and target admission"]
+    Input --> Execute["GatewayRuntime execution<br/>Verify permit and exact bytes"]
     Execute <-->|"Exact request / raw response and usage"| Model["LLM inference service<br/>Actual KV Cache"]
-    Execute -->|"Unreleased response and cache evidence"| Output["Core output gate"]
-    Output --> Deliver["Gateway delivery / host selection"]
-    Deliver -.->|"Adopted history, exact representation"| Input
+    Execute -->|"Unreleased response and cache evidence"| Output["GateRuntime output gate"]
+    Output --> Deliver["GatewayRuntime delivery / host selection"]
+    Deliver -.->|"Explicit adoption, then exact replay next turn"| Context
 ```
 
-Execution follows "Core plans logical prefixes and breakpoints → adapter maps protocol and cache parameters → Core checks
-the final payload → obtain a permit bound to concrete target and bytes → Gateway sends faithfully." Cache markers, modes,
+Execution follows "ContextRuntime plans logical prefixes and breakpoints → adapter maps protocol and cache parameters →
+GateRuntime checks the final payload → obtain a permit bound to concrete target and bytes → GatewayRuntime sends faithfully." Cache markers, modes,
 and output schemas are fixed before the final digest, never added after permission. A downstream gateway's permitted cache
 transformations belong to verified provider-conversion configuration. Each path has one breakpoint decision owner.
 Disable LiteLLM/Bifrost automatic injection or lock and accept it under Core-approved rules; it cannot independently
@@ -961,14 +1079,14 @@ explicit caching, choose breakpoints after stable content to avoid repeatedly pa
 Multi-turn histories may advance breakpoints at protocol-supported boundaries. Mode changes must preserve required lookup
 boundaries rather than assuming implicit and explicit writes are interchangeable.
 
-The input gate preserves adopted prefixes and adds new project knowledge in a cited incremental region. User corrections,
+ContextRuntime preserves adopted prefixes and adds new project knowledge in a cited incremental region. User corrections,
 authorization, and security changes take precedence, establishing a new epoch and renewed checks when needed. Preserve
 business timestamps, user content, and tool-call identities. Cache reuse must not reorder tool exchanges or broaden unused
 tool permissions. Record prefix mismatches caused by template or tool changes explicitly.
 
 The output gate cannot manufacture a hit after generation or automatically summarize answers for caching. It checks the
-exact output projection; once the session module adopts it under the selection contract, the next turn replays confirmed
-content unchanged. Gateway collects raw usage and Core's ledger normalizes ordinary input and cache reads/writes without
+exact output projection; once ContextRuntime adopts it under the selection contract, the next turn replays confirmed
+content unchanged. GatewayRuntime collects raw usage and Core's ledger normalizes ordinary input and cache reads/writes without
 adding cached_tokens again when included in total input. Missing fields require coverage reporting, not inferred hits from
 matching prefixes. Response replay without a new call is always accounted for separately as response caching.
 
@@ -1220,7 +1338,7 @@ Record simulated inputs, direct hook calls, real proxy services, and complete ho
 ### Core operational records
 
 The following repositories and tables apply to modes with persistent sessions, budgets, or ledgers enabled. Their existence
-does not impose database creation on basic GateRuntime.
+does not impose database creation on basic ContextRuntime or GateRuntime.
 
 New records are separated by responsibility: sessions and events, frozen snapshots and injections, execution plans and
 permits, budget reservations, and execution and usage events. They use independent tables or repositories within the
@@ -1230,6 +1348,9 @@ Organize logical repositories around session selection, execution records, and b
 table for every object name. Before implementation, map physical tables to reusable content storage and define primary
 and unique keys, transaction boundaries, retention/deletion, and migration of existing records. Content blocks may reuse
 object-storage interfaces, but deduplication does not turn runtime history into Source or cache keys into business identity.
+ContextRuntime manages session/projection semantics, GateRuntime manages check policies and decisions, and shared execution
+services manage identities, permits, and budget evidence. Runtime boundaries neither duplicate repositories nor split
+transactions spanning those responsibilities.
 Strict persistent mode guarantees these atomic conditions in the same database transaction; complete object bodies before
 publishing readable references:
 
@@ -1265,7 +1386,7 @@ data.
 
 ### Deployment boundaries
 
-Embedded deployments compose Core and built-in executors directly, without Gateway, an independent Core Server, or
+Embedded deployments compose ContextRuntime, GateRuntime, and built-in executors through the existing Core entry point, without Gateway, an independent Core Server, or
 internal HTTP. Service deployments configure appropriate identities, TLS, least privilege, and health checks for Core,
 application SDKs, and optional Gateway. The actual execution party holds provider credentials. Prefer restricted credentials
 from existing gateways when integrating them; direct connections let built-in executors, SDKs, or Gateway read credential
@@ -1273,7 +1394,7 @@ stores. Core plans reference credential identities without returning keys. Deplo
 outbound traffic and configuration-change permissions.
 
 In persistent mode, Core owns database and object-storage recovery. Optional Gateway scales horizontally, with release
-checks for control protocol version intersections. Report availability separately for Core gates, the actual executor,
+checks for control protocol version intersections. Report availability separately for ContextRuntime, GateRuntime, the actual executor,
 upstream services, and enabled outboxes. Measure in-process and remote invocation overhead separately.
 
 ### Required overhead measurements
@@ -1303,7 +1424,7 @@ requiring mandatory protection. Disabling optimization does not disable security
 
 | Flag | Initial recommendation |
 | --- | --- |
-| context_enrichment | Enable for explicitly bound sessions. |
+| context_enrichment | Enable within explicitly bound and delegated scope; ContextRuntime owns the single automatic injection entry point. |
 | input_optimization | Start in shadow, then enable accepted lossless policies. |
 | output_generation_profile | Use explicit schemas and output limits; do not automatically summarize user answers. |
 | lossy_compaction | Off until separate task-quality thresholds are met. |
@@ -1313,18 +1434,23 @@ requiring mandatory protection. Disabling optimization does not disable security
 | input_security | enforcing; reject egress when unavailable. |
 | output_security | strict is the mandatory-protection baseline; observe routes explicitly promise no blocking. |
 
-Configuration separates Core policies, executor limits, and upstream profiles, with explicit choices for sessions and
-persistent ledgers. Core decides what is allowed. Executor resource limits may be stricter, never weaker. Upstream
+Configuration separates ContextRuntime context policies, GateRuntime security policies, executor limits, and upstream
+profiles, with explicit choices for sessions and persistent ledgers. Host delegation belongs to the integration contract;
+enrichment or caching switches do not automatically grant history rewriting, compaction, or data-read permissions.
+Core decides what is allowed. Executor resource limits may be stricter, never weaker. Upstream
 configuration cannot exceed common candidate and privacy boundaries. No configuration coupling turns off the gates
 when Gateway is disabled. Configuration changes produce versions and audit records; old plans follow compatibility or
 invalidation rules.
 
 ## Delivery phases
 
-### P0a: Independently usable basic gates and cache planning
+### P0a: Independently usable ContextRuntime and GateRuntime
 
-First deliver one real generation adapter, a fixed-profile Embedding adapter, a built-in executor, and one managed SDK
-entry point. Generation supports complete non-streaming input/output for text and ordinary function tools. Embedding
+First deliver minimal responsibilities for both runtimes through existing Core composition, one real generation adapter,
+a fixed-profile Embedding adapter, a built-in executor, and one managed SDK entry point. ContextRuntime initially handles
+caller-provided complete history, fixed templates, window budgets, and cache planning. GateRuntime handles authorization,
+safe projections, and final input/output checks without persistent history or new processes.
+Generation supports complete non-streaming input/output for text and ordinary function tools. Embedding
 follows the initial check-or-block constraint. Input enforcing, deterministic sensitive rules, and output strict apply at
 actual send and raw-response boundaries, with every internal SDK retry readmitted.
 
@@ -1338,8 +1464,9 @@ cross-process total budgets.
 
 ### P0b: Persistent continuity and strict budgets as needed
 
-After P0a is usable, independently enable operation idempotency, frozen injections, checked candidates, explicit selection,
-release recovery, and a minimal execution ledger. Begin with serial sessions and verified fixed targets. Declare persistent
+After P0a is usable, enable persistent context-management delegation, frozen injections, and session adoption for ContextRuntime, alongside
+independently enabled operation idempotency, checked candidates, explicit selection, release recovery, and a minimal
+execution ledger. Begin with serial sessions and verified fixed targets. Declare persistent
 session and budget dependencies separately; each enabled capability must pass its atomicity and abnormal-recovery checks.
 Add one LiteLLM profile and two fixed, verifiable models to test tool flows and switching, recording cold-cache costs and
 actual attempt boundaries.
@@ -1350,10 +1477,11 @@ unrecoverable bodies. Verify readback, unique identities, and budgets through re
 rather than deferring these basic recovery conditions to Gateway. Unaccepted persistent capabilities remain unavailable
 without blocking P0a's basic gates.
 
-### P1a: Gateway cache execution and visible benefits
+### P1a: GatewayRuntime coordination and cache benefits
 
-Build a minimal Rust remote executor on the same P0a Core contract, first delivering a fixed-model, non-streaming strict
-multi-turn cache demonstration. Gateway maps cache parameters, admits concrete targets, verifies permits and bytes, checks
+Build minimal Rust GatewayRuntime on the same P0a Core contract, coordinating both Core runtimes and a remote executor.
+First deliver a fixed-model, non-streaming strict multi-turn cache demonstration. GatewayRuntime coordinates context
+preparation, maps cache parameters, admits concrete targets, verifies permits and bytes, checks
 responses, and collects actual cache usage. Compare identical prefixes and upstreams against built-in and SDK paths to
 verify consistent decisions and faithful cache controls.
 
@@ -1366,7 +1494,7 @@ overheads. Claim benefits only after predefined quality and cost thresholds pass
 
 Extend Rust HTTP/SSE, backpressure, cancellation, and reliable outboxes while retaining the same Core detection rules.
 Accept one real host and native protocol before another, covering Responses, Anthropic Messages, signed/encrypted blocks,
-history truncation, tool lifecycles, reconnection, session-selection acknowledgments, and actual authorization. Integrate
+history truncation, tool lifecycles, reconnection, context-management delegation, session-selection acknowledgments, and actual authorization. Integrate
 Bifrost, New API, and remaining Core inference paths with versioned capability matrices. Complete revocation propagation,
 multi-instance takeover, catastrophic outbox loss, provider reconciliation, and high-concurrency deployment acceptance.
 Native hosts, multimodal content, and unintegrated endpoints do not inherit full compatibility from a basic cache success.
@@ -1388,6 +1516,10 @@ insufficient while preserving context delivery and mandatory security.
 | Basic gates only | Current-call checks need no session or ledger database and make no claims of persistent replay or cross-process total budgets. |
 | Executor consistency | Built-in, SDK, and Rust paths receive the same Core decision for the same checked content and policy, without early sending or release. |
 | prepare / manual check only | Explicitly report checked content scope without claiming protection for host-appended history or unreported outputs. |
+| Context-management delegation | Current-payload checks do not grant session authority; no recall, compaction, truncation, or history advancement outside delegated scope. |
+| Single coordination entry point | Hooks, hosts, and ContextRuntime do not duplicate automatic injections; external history edits trigger explicit branch or reconstruction checks. |
+| Safe projection changes input | Recheck tokens, prefixes, and breakpoints and check the final payload again; never reuse an old byte permit or claim the original prefix hit. |
+| Tool turns and insufficient window | Ordinary tool turns replay frozen injections; insufficient windows create a new epoch under accepted policies or explicitly reject and request handoff, without silently dropping unfinished actions. |
 | SDK-internal retries | Every actual final request and raw response passes the gates; format repair and error outputs cannot bypass checks. |
 | A analyzes, B edits | B receives the same goal, latest corrections, necessary tool results, and exact evidence without A's private session state. |
 | Complete client replay | History and injections do not duplicate; same-ID/different-body conflicts and unselected branches stay excluded. |
@@ -1460,26 +1592,28 @@ reads/writes, normalized ordinary/total input, cost provenance/completeness, ups
 final delivery time. For records with complete fields, calculate token cache-read ratio as total cache-read tokens divided
 by total normalized input tokens,
 reporting usage-evidence coverage separately. Do not fill missing fields with zero or average per-request percentages.
-Cost reports include primary/auxiliary calls, failures, cache writes, warm-up, and Core/Gateway overhead. Input-gate planned
-lengths, faithful Gateway execution, and actual provider hits are separate evidence, not substitutes for one another.
+Cost reports include primary/auxiliary calls, failures, cache writes, warm-up, and Core/Gateway overhead. ContextRuntime
+planned lengths, GateRuntime security decisions, faithful GatewayRuntime execution, and actual provider hits are separate
+evidence, not substitutes for one another.
 
 ## Implementation work and completion criteria
 
 | Work package | Deliverable | Completion criterion |
 | --- | --- | --- |
-| Core gate engine | Input/output checks, transformations, cache/token policies, and failure semantics. | Independently performs security and cost checks without Gateway or persistent sessions. |
+| Core ContextRuntime | Context delegation, material/history selection, window budgets, frozen projections, cache plans, and explicit adoption. | Basic planning has no persistence dependency; sessions, reconstruction, and adoption stay within delegation/acceptance scope, without repeated recall on ordinary tool turns. |
+| Core GateRuntime | Authorization, sensitive transformations, final input/output checks, release, and failure semantics. | Usable without Gateway or persistent sessions; changed input triggers context-plan rechecks and actual-byte checks cannot be skipped. |
 | Built-in and SDK execution | Provider adapters, final-request checkpoints, raw-response checkpoints, and managed calls. | Every actual attempt is checked, support limits are explicit, and strict never releases early. |
 | Core control contract | In-process/remote checks, delegation, idempotent plans/attempts, responses, release recovery, selection, and queries. | Shared semantics without mandatory loopback HTTP; lost acknowledgments recover exact results without duplicate calls or adoption. |
 | Core sessions and projections | Incremental events, frozen injections, candidates/explicit adoption, branches, manifests, retention, and Handoff associations. | Separate saving, release, adoption, and receipt; reproducible replay, concurrency, restart, and retention boundaries. |
 | Cache planning and execution | InferencePlan.cache_policy, eligible breakpoints, target affinity, parameter mapping, normalized usage, and per-turn views. | Real Gateway cache reads, faithful prefixes/controls, and complete-task costs including writes and other overhead meeting thresholds. |
-| Optional Rust execution component | HTTP/TLS, Core gate clients, permit verification, SSE, backpressure, cancellation, and outbox. | Reuses Core decisions without rule copies, has bounded resources, and never releases early. |
+| Optional Rust GatewayRuntime | Both Core runtime clients, invocation coordination, HTTP/TLS, permit verification, SSE, backpressure, cancellation, and outbox. | Reuses Core context/security decisions, bounds state/resources, does not automatically resend during cancellation/recovery, and never releases early. |
 | First upstream adapter | Direct and LiteLLM profiles, actual targets, and raw usage evidence. | Real services confirm fixed targets, attempt counts, and capability scope. |
 | Core background integration | Selected generation/Embedding stages use GateRuntime and built-in executors by default. | No Gateway dependency, recursive enrichment, or changes to existing domain and commit semantics. |
 | Execution ledger | Reservations, deduplicated events, unknown states, restart recovery, and reconciliation entry points. | No duplicate settlement, no unknown-as-zero, and explicit cross-layer attempt boundaries. |
 | Quality and cost experiments | Behavioral counterexamples, real paths, paired four-cell comparisons, and performance reports. | Enable and advertise each optimization only after its predefined thresholds are met. |
 
-Deliver Core gates and the built-in/SDK execution loop without Gateway first. Add persistent context and optional Rust
-Gateway as needed, then enable accepted cost policies individually. Every work package has its own switch and rollback.
+Deliver ContextRuntime, GateRuntime, and the built-in/SDK execution loop without Gateway first. Add persistent context and
+optional Rust GatewayRuntime as needed, then enable accepted cost policies individually. Every work package has its own switch and rollback.
 Disabling optimization does not disable required security, and implementation rollback does not modify historical evidence.
 
 ## Observability and the authoritative ledger
@@ -1503,6 +1637,9 @@ use separate permissions and retention policies; the two must not be conflated.
 Unifying the gates in Core increases the cost of provider adaptation, final-payload visibility, error-response handling,
 and consistency across execution paths. Wrapping existing high-level generators is insufficient for this RFC's coverage;
 every SDK retry and final transport boundary must be verified.
+ContextRuntime context management requires agreed host coordination authority, history-editing rules, and adoption
+protocols. Without the corresponding host contract, capabilities stay within the current call. Both Core runtimes must
+keep projections, tokens, and cache versions consistent; module names alone do not establish these guarantees.
 
 strict output protection waits for complete results and holds buffers, increasing first-content-token waits and worst-case
 memory. Service-based execution adds Core round trips. Embedded execution avoids that network overhead but still incurs
@@ -1520,7 +1657,8 @@ budgets can hurt task quality; default security language cannot replace real cou
 
 | Approach | Tradeoff and decision |
 | --- | --- |
-| Core gates + replaceable executors | Shared rules support users without Gateway; executors enforce actual send/release boundaries. Selected by this RFC. |
+| Core ContextRuntime + GateRuntime + replaceable executors | Separate context lifecycle and security admission while supporting users without Gateway; GatewayRuntime or other executors perform actual calls. Selected by this RFC. |
+| All context capabilities in GateRuntime | Fewer entry points, but context selection, adoption, and window management lack explicit authority for continuous management between calls. |
 | Gates only in Rust Gateway | Clear deployment boundary, but Core background and SDK users need extra proxies, contrary to independently usable basic capabilities. |
 | Rules implemented separately by each host or gateway | Supports local adoption, but semantics, versions, failure policies, and cost accounting diverge and consistent behavior is difficult to guarantee. |
 | All users use a Core HTTP model proxy | Centralized execution is simple, but mandatory services and content round trips do not suit embedding. This RFC retains in-process execution. |
@@ -1529,8 +1667,9 @@ budgets can hurt task quality; default security language cannot replace real cou
 | Full lossy summaries and dynamic routing in the first version | Potentially larger gains but changes fact coverage and cache state. Deferred to independent quality and cost experiments. |
 | No new shared capability | Simpler implementation, but most Core users continue lacking a consistent path for security, cost reduction, and model continuity. |
 
-One semantic authority does not require all computation to run remotely. Embedded and service-based GateRuntime run the
-same Core code. Rust owns an explicit, limited execution contract rather than implementing a second set of domain rules.
+One semantic authority does not require all computation to run remotely. Embedded and service-based ContextRuntime and
+GateRuntime run the same Core code. Rust GatewayRuntime coordinates complete invocations under an explicit execution
+contract while reusing Core's domain rules.
 
 # Prior art
 
@@ -1556,8 +1695,9 @@ and real-path acceptance.
 
 # Unresolved questions
 
-The following are explicit RFC contracts, not implementation choices: Core owns the gates; Gateway is optional; executors
-check before sending and releasing; basic capabilities have no persistence dependency; unknown is not security approval;
+The following are explicit RFC contracts, not implementation choices: Core owns ContextRuntime and GateRuntime;
+GatewayRuntime is optional; the host explicitly delegates context authority; executors check before sending and releasing;
+basic capabilities have no persistence dependency; unknown is not security approval;
 mandatory-policy failures block; projections do not overwrite authoritative material.
 
 The acceptance plan must fix these configuration items before implementation:
