@@ -424,17 +424,15 @@ def test_other_origin_does_not_broaden_migrated_entry_root_groups_or_selection(m
 
 def test_migrated_collection_leaves_public_artifact_reads(migrated) -> None:
     async def scenario() -> None:
-        async with (
-            open_builtin_contexts(BuiltinConfig(database=migrated[0])) as contexts,
-            contexts.database.transaction() as connection,
-        ):
-            assert not await _public_collection_rows(connection)
-        for read in (
-            contexts.records.get_artifact_revision(SCOPE, "memory", COLLECTION, 2),
-            contexts.records.list_artifact_revisions(SCOPE, "memory", COLLECTION, limit=10, cursor=None),
-        ):
-            with pytest.raises(BaseOperationNotSupportedError):
-                await read
+        async with open_builtin_contexts(BuiltinConfig(database=migrated[0])) as contexts:
+            async with contexts.database.transaction() as connection:
+                assert not await _public_collection_rows(connection)
+            for read in (
+                contexts.records.get_artifact_revision(SCOPE, "memory", COLLECTION, 2),
+                contexts.records.list_artifact_revisions(SCOPE, "memory", COLLECTION, limit=10, cursor=None),
+            ):
+                with pytest.raises(BaseOperationNotSupportedError):
+                    await read
 
     asyncio.run(scenario())
 

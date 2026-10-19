@@ -367,6 +367,7 @@ jobs:
           oceanbase_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id")
           test -n "$oceanbase_ip"
           export POWERCONTEXT_TEST_OCEANBASE_URL="mysql+aoceanbase://root%40test:powercontext-e2e@${oceanbase_ip}:2881/powercontext?charset=utf8mb4"
+          export POWERCONTEXT_TEST_MIGRATION_OCEANBASE_URL="$POWERCONTEXT_TEST_OCEANBASE_URL"
           uv run --locked --extra server python - <<'PY'
           import asyncio
           import os
