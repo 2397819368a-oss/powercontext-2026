@@ -267,9 +267,6 @@ def _processing_metrics(  # noqa: C901
                 "last_acknowledgement_timestamp_seconds",
                 "requested_snapshot_timestamp_seconds",
                 "oldest_observed_pending_age_seconds",
-                "oldest_pending_timestamp_seconds",
-                "oldest_pending_age_seconds",
-                "pending_age_unknown_scopes",
                 "blocked_wait",
                 "observed_pending_scopes",
             ):

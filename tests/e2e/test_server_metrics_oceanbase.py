@@ -34,12 +34,11 @@ import httpx
 import pytest
 from prometheus_client.parser import text_string_to_metric_families
 from pydantic import SecretStr
-from sqlalchemy import select
 from sqlalchemy.engine import make_url
 
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
-from powercontext.builtin.persistence.tables import ARTIFACT_PROCESSING_REQUESTS_TABLE, BUILTIN_TABLES
+from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 
 
 @pytest.fixture
@@ -144,6 +143,14 @@ def test_real_oceanbase_cli_supervisor_metrics_auth_and_shutdown(oceanbase_url, 
                         == 1
                     )
                     assert samples[("powercontext_server_telemetry_collection_failures_total", ())] == 0
+                    assert not any(
+                        name.endswith((
+                            "oldest_pending_timestamp_seconds",
+                            "oldest_pending_age_seconds",
+                            "pending_age_unknown_scopes",
+                        ))
+                        for name, _ in samples
+                    )
                     observations.append({
                         key: value
                         for key, value in samples.items()
@@ -169,47 +176,33 @@ def test_real_oceanbase_cli_supervisor_metrics_auth_and_shutdown(oceanbase_url, 
         rebound.bind(("127.0.0.1", port))
 
 
-def test_real_oceanbase_pending_age_survives_reopen_and_partial_ack(oceanbase_url):
+def test_real_oceanbase_pending_count_survives_reopen_and_partial_ack(oceanbase_url):
     async def scenario():
         config = OceanBaseConfig(url=SecretStr(oceanbase_url))
         intents = ArtifactProcessingIntentRepository()
         binding = "memory-source-window"
-        table = ARTIFACT_PROCESSING_REQUESTS_TABLE
         async with OceanBaseProfile.open(config, tables=BUILTIN_TABLES) as profile:
-            times = []
-            for _ in range(3):
+            for generation in range(1, 4):
                 async with profile.database.transaction() as connection:
                     row = await intents.request(connection, "pending-scope", binding)
-                    timestamp = (
-                        await connection.execute(
-                            select(table.c.requested_at).where(
-                                table.c.binding_name == binding,
-                                table.c.scope_id == "pending-scope",
-                                table.c.generation == row.requested_generation,
-                            )
-                        )
-                    ).scalar_one()
-                    times.append(timestamp)
-                await asyncio.sleep(0.02)
-            assert times[0] < times[1] < times[2]
+                    assert row.requested_generation == generation
             async with profile.database.transaction(consistent_snapshot=True) as connection:
                 observed = await intents.pending_observation(connection, binding)
                 assert observed.pending_count == 1
-                assert observed.unknown_count == 0
-                assert observed.oldest_requested_at == times[0]
-                assert observed.observed_at >= times[-1]
+                assert set(observed.model_dump()) == {"pending_count", "observed_at"}
+                first_observed_at = observed.observed_at
         async with OceanBaseProfile.open(config, tables=BUILTIN_TABLES) as profile:
             async with profile.database.transaction() as connection:
                 await intents.acknowledge(connection, "pending-scope", binding, 1)
             async with profile.database.transaction(consistent_snapshot=True) as connection:
                 observed = await intents.pending_observation(connection, binding)
                 assert observed.pending_count == 1
-                assert observed.oldest_requested_at == times[1]
+                assert observed.observed_at >= first_observed_at
             async with profile.database.transaction() as connection:
                 await intents.acknowledge(connection, "pending-scope", binding, 3)
             async with profile.database.transaction(consistent_snapshot=True) as connection:
                 observed = await intents.pending_observation(connection, binding)
-                assert observed.pending_count == observed.unknown_count == 0
-                assert observed.oldest_requested_at is None
+                assert observed.pending_count == 0
+                assert observed.observed_at >= first_observed_at
 
     asyncio.run(scenario())

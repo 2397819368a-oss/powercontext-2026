@@ -36,7 +36,7 @@ from powercontext.builtin.runtime.artifact_processing import (
 from powercontext.server.background_metrics import create_background_metrics_app
 from powercontext.server.factory import create_server_app
 from powercontext.server.metrics import ServerMetrics
-from tests.test_operational_metrics import _samples, _value
+from tests.test_operational_metrics import _assert_no_exact_pending_age, _samples, _value
 from tests.test_server_metrics import _settings
 
 
@@ -128,6 +128,7 @@ def test_first_collection_failure_does_not_publish_partial_processing_counts(tmp
             recovered = await client.get("/metrics")
             assert recovered.status_code == 200
             samples = _samples(recovered.text)
+            _assert_no_exact_pending_age(samples)
             assert _value(samples, "artifact_processing_unacknowledged_requests", family="memory") == 1
             assert _value(samples, "artifact_processing_requested_snapshot_timestamp_seconds", family="memory") > 0
             assert _value(samples, "telemetry_collection_timestamp_seconds") > 0
@@ -223,6 +224,7 @@ def test_failed_concurrent_scrapes_keep_previous_counts_and_freshness_until_reco
             recovered = await client.get("/metrics")
             assert recovered.status_code == 200
             samples = _samples(recovered.text)
+            _assert_no_exact_pending_age(samples)
             assert _value(samples, "artifact_processing_unacknowledged_requests", family="memory") == 2
             assert _value(samples, "telemetry_collection_timestamp_seconds") > collected_at
             assert (

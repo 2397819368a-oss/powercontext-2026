@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import case, delete, exists, func, insert, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -35,7 +35,6 @@ from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentErr
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_PROCESSING_BINDING_STATES_TABLE,
     ARTIFACT_PROCESSING_INTENTS_TABLE,
-    ARTIFACT_PROCESSING_REQUESTS_TABLE,
     ARTIFACT_PROCESSING_SEQUENCES_TABLE,
 )
 from powercontext.limits import MAX_BINDING_NAME_LENGTH, MAX_SCOPE_ID_LENGTH
@@ -56,18 +55,11 @@ class StoredArtifactProcessingIntent(BaseModel):
 
 
 class PendingInvocationObservation(BaseModel):
-    """Global binding snapshot; counts are Scopes, timestamps are naive UTC.
-
-    Unknown legacy timestamps must not be represented as zero age. The oldest
-    known timestamp remains useful, but is not the global oldest if unknown_count
-    is nonzero. Timestamp rows are retained only until their generation is handled.
-    """
+    """Global pending Scope count and the database snapshot time in naive UTC."""
 
     model_config = ConfigDict(frozen=True)
 
     pending_count: int
-    unknown_count: int
-    oldest_requested_at: datetime | None
     observed_at: datetime
 
 
@@ -152,10 +144,8 @@ class ArtifactProcessingIntentRepository:
         scope_id: str,
         binding_name: str,
         /,
-        *,
-        legacy_timestamp_unknown: bool = False,
     ) -> StoredArtifactProcessingIntent:
-        """Accept an invocation; offline legacy imports cannot invent its age."""
+        """Accept an invocation in the caller's transaction."""
 
         await self.ensure(connection, scope_id, binding_name)
         table = ARTIFACT_PROCESSING_INTENTS_TABLE
@@ -167,8 +157,6 @@ class ArtifactProcessingIntentRepository:
         current = cast(
             StoredArtifactProcessingIntent, await self.load(connection, scope_id, binding_name, for_update=True)
         )
-        if not legacy_timestamp_unknown:
-            await _record_request_time(connection, current)
         return current
 
     async def acknowledge(
@@ -204,57 +192,31 @@ class ArtifactProcessingIntentRepository:
                 consecutive_dream_attempts=min(current.consecutive_dream_attempts + 1, 4) if dream else 0,
             )
         )
-        requests = ARTIFACT_PROCESSING_REQUESTS_TABLE
-        await connection.execute(
-            delete(requests).where(
-                requests.c.scope_id == scope_id,
-                requests.c.binding_name == binding_name,
-                requests.c.generation <= generation,
-            )
-        )
         return cast(StoredArtifactProcessingIntent, await self.load(connection, scope_id, binding_name))
 
     async def pending_observation(
         self, connection: AsyncConnection, binding_name: str, /
     ) -> PendingInvocationObservation:
-        """Observe all pending Scopes, independently of discovery pages/capacity.
+        """Count all pending Scopes, independently of discovery pages/capacity.
 
         Call in a consistent-snapshot transaction from background observation,
-        never on scrape.
-        The oldest lookup uses the binding/time index. Counting pending Scopes
-        examines this binding's intents and probes the request primary key, not
-        the unbounded request history or every generation of a coalesced Scope.
+        never on scrape. The count examines this binding's existing intent rows.
         """
 
         from powercontext.builtin.persistence.supervision import database_utc_now
 
         _require_identifier("binding_name", binding_name, MAX_BINDING_NAME_LENGTH)
-        intents, requests = ARTIFACT_PROCESSING_INTENTS_TABLE, ARTIFACT_PROCESSING_REQUESTS_TABLE
-        known = exists().where(
-            requests.c.binding_name == intents.c.binding_name,
-            requests.c.scope_id == intents.c.scope_id,
-            requests.c.generation == intents.c.handled_generation + 1,
-        )
-        counts = (
-            await connection.execute(
-                select(func.count(), func.coalesce(func.sum(case((~known, 1), else_=0)), 0))
-                .select_from(intents)
-                .where(
-                    intents.c.binding_name == binding_name,
-                    intents.c.requested_generation > intents.c.handled_generation,
-                )
+        intents = ARTIFACT_PROCESSING_INTENTS_TABLE
+        pending_count = await connection.scalar(
+            select(func.count())
+            .select_from(intents)
+            .where(
+                intents.c.binding_name == binding_name,
+                intents.c.requested_generation > intents.c.handled_generation,
             )
-        ).one()
-        oldest = await connection.scalar(
-            select(requests.c.requested_at)
-            .where(requests.c.binding_name == binding_name)
-            .order_by(requests.c.requested_at)
-            .limit(1)
         )
         return PendingInvocationObservation(
-            pending_count=int(counts[0]),
-            unknown_count=int(counts[1]),
-            oldest_requested_at=oldest,
+            pending_count=int(pending_count or 0),
             observed_at=await database_utc_now(connection),
         )
 
@@ -339,24 +301,7 @@ class ArtifactProcessingIntentRepository:
             .where(table.c.scope_id == scope_id, table.c.binding_name == binding_name)
             .values(requested_generation=requested, last_auto_scan_generation=scan_generation)
         )
-        updated = cast(StoredArtifactProcessingIntent, await self.load(connection, scope_id, binding_name))
-        if requested > current.requested_generation:
-            await _record_request_time(connection, updated)
-        return updated
-
-
-async def _record_request_time(connection: AsyncConnection, intent: StoredArtifactProcessingIntent) -> None:
-    # Local import avoids the lease repository's dependency on intent counters.
-    from powercontext.builtin.persistence.supervision import database_utc_now
-
-    await connection.execute(
-        insert(ARTIFACT_PROCESSING_REQUESTS_TABLE).values(
-            binding_name=intent.binding_name,
-            scope_id=intent.scope_id,
-            generation=intent.requested_generation,
-            requested_at=await database_utc_now(connection),
-        )
-    )
+        return cast(StoredArtifactProcessingIntent, await self.load(connection, scope_id, binding_name))
 
 
 def _require_key(scope_id: str, binding_name: str) -> None:

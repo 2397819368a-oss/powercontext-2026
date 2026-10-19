@@ -61,15 +61,14 @@ from powercontext.builtin.persistence.tables import (
     ARTIFACT_PROCESSING_PENDING_TABLE as PENDING,
 )
 from powercontext.builtin.persistence.tables import (
-    ARTIFACT_PROCESSING_REQUESTS_TABLE,
-    ARTIFACTS_TABLE,
-    SOURCES_TABLE,
-)
-from powercontext.builtin.persistence.tables import (
     ARTIFACT_PROCESSING_SCHEMA_TABLE as SCHEMA,
 )
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_PROCESSING_SEQUENCES_TABLE as SEQUENCES,
+)
+from powercontext.builtin.persistence.tables import (
+    ARTIFACTS_TABLE,
+    SOURCES_TABLE,
 )
 from powercontext.builtin.persistence.tables import (
     SOURCE_CURSORS_TABLE as CURSORS,
@@ -95,7 +94,7 @@ _STATE_COLUMNS = {
     "scan_in_progress": "BOOLEAN NOT NULL DEFAULT 0",
     "scan_upper_pending_sequence": "BIGINT NULL",
 }
-_NEW_TABLES = (SCHEMA, RECEIPTS, SEQUENCES, INTENTS, TARGETS, ARTIFACT_PROCESSING_REQUESTS_TABLE)
+_NEW_TABLES = (SCHEMA, RECEIPTS, SEQUENCES, INTENTS, TARGETS)
 
 
 class ProcessingSchemaNotReadyError(PersistenceError):
@@ -478,7 +477,7 @@ async def _migrate_scope(
     if dirty and intent.dirty_generation == intent.clean_generation:
         intent = await intents.mark_dirty(connection, scope_id, binding_name)
     if accepted and intent.requested_generation == intent.handled_generation:
-        intent = await intents.request(connection, scope_id, binding_name, legacy_timestamp_unknown=True)
+        intent = await intents.request(connection, scope_id, binding_name)
     if binding_name == _TOPIC_BINDING:
         if dirty and int(snapshot["head"]) > pending_through:
             await ArtifactProcessingPendingRepository().raise_source(

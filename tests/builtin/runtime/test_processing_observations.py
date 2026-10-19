@@ -17,7 +17,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,8 +106,17 @@ def test_attempt_observations_preserve_durable_outcomes(tmp_path, outcome):  # n
     asyncio.run(scenario())
 
 
-def test_pending_age_tracks_only_observed_pending_work(tmp_path):
+def test_pending_age_tracks_only_observed_pending_work(tmp_path, monkeypatch):
+    now = 100.0
+    # Control only the supervisor's local observation clock, leaving asyncio's
+    # real scheduling clock and operation-duration measurements unchanged.
+    monkeypatch.setattr(
+        "powercontext.builtin.runtime.artifact_processing.time",
+        SimpleNamespace(monotonic=lambda: now, perf_counter=time.perf_counter, time=time.time, sleep=time.sleep),
+    )
+
     async def scenario():
+        nonlocal now
         async with SQLiteProfile.open(
             SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'pending.db'}"), tables=SHARED_TABLES
         ) as profile:
@@ -133,11 +143,11 @@ def test_pending_age_tracks_only_observed_pending_work(tmp_path):
                 await ArtifactProcessingIntentRepository().request(connection, "scope", "binding")
             await supervisor.start()
             try:
-                await asyncio.sleep(0.1)
+                now = 150.0
                 first = supervisor.family_status["memory"]
                 assert first["observed_pending_scopes"] == 1
-                assert float(first["oldest_observed_pending_age_seconds"]) > 0
-                await asyncio.sleep(0.01)
+                assert first["oldest_observed_pending_age_seconds"] == 50
+                now = 160.0
                 second = supervisor.family_status["memory"]
                 assert float(second["oldest_observed_pending_age_seconds"]) > float(
                     first["oldest_observed_pending_age_seconds"]
@@ -151,20 +161,22 @@ def test_pending_age_tracks_only_observed_pending_work(tmp_path):
                     intents = ArtifactProcessingIntentRepository()
                     await intents.acknowledge(connection, "scope", "binding", 1)
                     await intents.request(connection, "scope", "binding")
+                now = 200.0
                 supervisor.wake()
                 async with asyncio.timeout(3):
                     while (  # noqa: ASYNC110 - poll the externally visible discovery observation
-                        supervisor.family_status["memory"]["requested_snapshot_timestamp_seconds"]
-                        == second["requested_snapshot_timestamp_seconds"]
+                        supervisor.family_status["memory"]["oldest_observed_pending_age_seconds"] != 0
                     ):
                         await asyncio.sleep(0.001)
                 renewed = supervisor.family_status["memory"]
                 assert renewed["unacknowledged_requests"] == 1
-                assert renewed["pending_age_unknown_scopes"] == 0
+                assert renewed["observed_pending_scopes"] == 1
+                assert renewed["oldest_observed_pending_age_seconds"] == 0
 
             finally:
                 await supervisor.close()
             assert supervisor.family_status["memory"]["observed_pending_scopes"] == 0
+            assert supervisor.family_status["memory"]["oldest_observed_pending_age_seconds"] == 0
             assert supervisor.family_status["memory"]["supervisor_running"] is False
 
     asyncio.run(scenario())
@@ -240,8 +252,6 @@ def test_durable_pending_observation_refreshes_while_worker_capacity_is_full(tmp
 
             async with profile.database.transaction() as connection:
                 await intents.request(connection, "oldest", "binding")
-                expected = await intents.pending_observation(connection, "binding")
-            assert expected.oldest_requested_at is not None
             for _ in range(2):
                 supervisor = ArtifactProcessingSupervisor(
                     database=profile.database,
@@ -254,12 +264,14 @@ def test_durable_pending_observation_refreshes_while_worker_capacity_is_full(tmp
                     await asyncio.wait_for(started.wait(), 3)
                     before = supervisor.family_status["memory"]
                     assert before["used_workers"] == 1
-                    assert before["pending_age_unknown_scopes"] == 0
-                    assert (
-                        before["oldest_pending_timestamp_seconds"]
-                        == expected.oldest_requested_at.replace(tzinfo=UTC).timestamp()
-                    )
-                    assert float(before["oldest_pending_age_seconds"]) >= 0
+                    assert int(before["unacknowledged_requests"]) >= 1
+                    assert float(before["requested_snapshot_timestamp_seconds"]) > 0
+                    assert float(before["oldest_observed_pending_age_seconds"]) >= 0
+                    assert not {
+                        "oldest_pending_timestamp_seconds",
+                        "oldest_pending_age_seconds",
+                        "pending_age_unknown_scopes",
+                    }.intersection(before)
                     # Discovery cannot admit more work while the only worker is
                     # stalled, but the global pending snapshot must still advance.
                     async with profile.database.transaction() as connection:
@@ -270,17 +282,20 @@ def test_durable_pending_observation_refreshes_while_worker_capacity_is_full(tmp
                     assert supervisor.family_status["memory"]["last_acknowledgement_timestamp_seconds"] == 0
                 finally:
                     await supervisor.close()
-                # Recreating the supervisor must not reset durable request age.
+                # Durable backlog survives restart, but the bounded local age resets.
+                assert supervisor.family_status["memory"]["oldest_observed_pending_age_seconds"] == 0
+                assert supervisor.family_status["memory"]["observed_pending_scopes"] == 0
                 started.clear()
 
     asyncio.run(scenario())
 
 
-def test_unknown_legacy_pending_age_is_not_exported_as_zero(tmp_path):
+def test_local_pending_history_resets_after_lease_loss_and_reacquisition(tmp_path):
     async def scenario():
         async with SQLiteProfile.open(
-            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'legacy-pending.db'}"), tables=SHARED_TABLES
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'lease-reset.db'}"), tables=SHARED_TABLES
         ) as profile:
+            started = asyncio.Event()
 
             class Handle:
                 async def wait(self):
@@ -291,24 +306,55 @@ def test_unknown_legacy_pending_age_is_not_exported_as_zero(tmp_path):
 
             class Launcher:
                 async def start(self, assignment):
+                    started.set()
                     return Handle()
 
             async with profile.database.transaction() as connection:
-                await ArtifactProcessingIntentRepository().request(
-                    connection, "legacy", "binding", legacy_timestamp_unknown=True
-                )
+                await ArtifactProcessingIntentRepository().request(connection, "pending-scope", "binding")
+            binding = ArtifactProcessingBinding("binding", "memory", Launcher())
             supervisor = ArtifactProcessingSupervisor(
                 database=profile.database,
-                bindings=[ArtifactProcessingBinding("binding", "memory", Launcher())],
-                lease_mode="single-process",
+                bindings=[binding],
+                lease_mode="oceanbase",
+                oceanbase_lease_seconds=0.6,
+                oceanbase_tick_seconds=0.01,
+                pending_observation_interval_seconds=0.01,
             )
             try:
                 await supervisor.start()
-                status = supervisor.family_status["memory"]
-                assert status["unacknowledged_requests"] == 1
-                assert status["pending_age_unknown_scopes"] == 1
-                assert "oldest_pending_timestamp_seconds" not in status
-                assert "oldest_pending_age_seconds" not in status
+                await asyncio.wait_for(started.wait(), 3)
+                initial = supervisor.family_status["memory"]
+                assert initial["observed_pending_scopes"] == 1
+                assert float(initial["oldest_observed_pending_age_seconds"]) > 0
+                # A new embedded term replaces the persisted lease. The original
+                # supervisor detects the lost fence through its actual renewal loop.
+                async with ArtifactProcessingSupervisor(
+                    database=profile.database, bindings=[binding], lease_mode="single-process"
+                ):
+                    async with asyncio.timeout(3):
+                        while (  # noqa: ASYNC110 - wait for public cleanup observations
+                            supervisor.family_status["memory"]["supervisor_role"] != "standby"
+                            or supervisor.family_status["memory"]["observed_pending_scopes"] != 0
+                        ):
+                            await asyncio.sleep(0.001)
+                    standby = supervisor.family_status["memory"]
+                    assert standby["supervisor_running"] is True
+                    assert standby["observed_pending_scopes"] == 0
+                    assert standby["oldest_observed_pending_age_seconds"] == 0
+                    assert standby["unacknowledged_requests"] == 1
+                    assert standby["last_acknowledgement_timestamp_seconds"] == 0
+                    started.clear()
+                # Closing the replacement revokes its term; the same original
+                # supervisor reacquires and repopulates its local observation.
+                await asyncio.wait_for(started.wait(), 3)
+                reacquired = supervisor.family_status["memory"]
+                assert reacquired["supervisor_role"] == "leader"
+                assert reacquired["observed_pending_scopes"] == 1
+                assert reacquired["unacknowledged_requests"] == 1
+                assert reacquired["last_acknowledgement_timestamp_seconds"] == 0
+                assert float(reacquired["requested_snapshot_timestamp_seconds"]) > float(
+                    initial["requested_snapshot_timestamp_seconds"]
+                )
             finally:
                 await supervisor.close()
 

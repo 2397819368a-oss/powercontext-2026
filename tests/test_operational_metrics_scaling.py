@@ -28,7 +28,6 @@ from powercontext.builtin.persistence.processing_intents import ArtifactProcessi
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_PROCESSING_INTENTS_TABLE,
-    ARTIFACT_PROCESSING_REQUESTS_TABLE,
     SHARED_TABLES,
 )
 from powercontext.builtin.runtime import BuiltinRuntime
@@ -69,10 +68,8 @@ def test_real_backlog_collection_is_passive_and_cardinality_bounded(tmp_path):  
 
             async def durable_rows():
                 async with profile.database.transaction(consistent_snapshot=True) as connection:
-                    rows = []
-                    for table in (ARTIFACT_PROCESSING_INTENTS_TABLE, ARTIFACT_PROCESSING_REQUESTS_TABLE):
-                        rows.append(tuple((await connection.execute(select(table).order_by(table.c.scope_id))).all()))
-                    return tuple(rows)
+                    table = ARTIFACT_PROCESSING_INTENTS_TABLE
+                    return tuple((await connection.execute(select(table).order_by(table.c.scope_id))).all())
 
             try:
                 await supervisor.start()
@@ -113,6 +110,12 @@ def test_real_backlog_collection_is_passive_and_cardinality_bounded(tmp_path):  
                 assert await durable_rows() == before
                 assert supervisor.family_status["memory"]["completed"] == 0
                 assert "private-scope" not in rendered
+                for removed in (
+                    "oldest_pending_timestamp_seconds",
+                    "oldest_pending_age_seconds",
+                    "pending_age_unknown_scopes",
+                ):
+                    assert removed not in rendered
                 samples = {
                     (sample.name, tuple(sorted(sample.labels.items()))): sample.value
                     for family in text_string_to_metric_families(rendered)

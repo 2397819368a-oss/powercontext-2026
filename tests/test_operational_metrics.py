@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock
 
+import pytest
 from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
 
@@ -49,6 +50,13 @@ def _samples(metrics):
 
 def _value(samples, name, **labels):
     return samples[("powercontext_server_" + name, tuple(sorted(labels.items())))]
+
+
+def _assert_no_exact_pending_age(samples):
+    assert not any(
+        name.endswith(("oldest_pending_timestamp_seconds", "oldest_pending_age_seconds", "pending_age_unknown_scopes"))
+        for name, _ in samples
+    )
 
 
 def test_passive_dependency_snapshots_preserve_unobserved_disabled_zero_and_histograms():
@@ -163,6 +171,7 @@ def test_collection_cost_and_labels_depend_on_registered_families_not_scope_coun
     rendered = metrics.render().decode()
     assert "private-error" not in rendered
     samples = _samples(rendered)
+    _assert_no_exact_pending_age(samples)
     assert _value(samples, "artifact_processing_attempt_duration_seconds_count", family="memory", outcome="noop") == 1
     assert _value(samples, "artifact_processing_oldest_observed_pending_age_seconds", family="memory") == 50
     assert _value(samples, "artifact_processing_observed_pending_scopes", family="memory") == 1000
@@ -177,9 +186,14 @@ def test_collection_cost_and_labels_depend_on_registered_families_not_scope_coun
     assert abs(len(metrics.render().decode()) - size) < 100
 
 
-def test_healthy_combined_api_exposes_idle_stalled_and_stopped_processing(tmp_path):  # noqa: C901 - lifecycle regression
+@pytest.mark.parametrize("observation_failure", ["error", "timeout"])
+def test_healthy_combined_api_exposes_idle_stalled_and_stopped_processing(  # noqa: C901 - lifecycle regression
+    tmp_path, monkeypatch, observation_failure
+):
     # Fault injection is confined to the worker boundary. API, runtime, database,
     # supervisor, durable requests and Prometheus rendering are real components.
+    if observation_failure == "timeout":
+        monkeypatch.setattr("powercontext.builtin.runtime.artifact_processing._DISCOVERY_TIMEOUT_SECONDS", 0.2)
     app = create_server_app(settings=_settings(tmp_path / "stalled.db"))
     with TestClient(app) as client:
         runtime = app.state.application
@@ -203,6 +217,8 @@ def test_healthy_combined_api_exposes_idle_stalled_and_stopped_processing(tmp_pa
 
             async def pending_observation(self, connection, binding_name):
                 if self.fail_observation:
+                    if observation_failure == "timeout":
+                        await asyncio.Event().wait()
                     raise RuntimeError("isolated pending observation failure")  # noqa: TRY003
                 return await super().pending_observation(connection, binding_name)
 
@@ -219,7 +235,9 @@ def test_healthy_combined_api_exposes_idle_stalled_and_stopped_processing(tmp_pa
         try:
             idle = _samples(client.get("/metrics").text)
             assert _value(idle, "artifact_processing_unacknowledged_requests", family="memory") == 0
-            assert not any(name.endswith("oldest_pending_age_seconds") for name, _ in idle)
+            _assert_no_exact_pending_age(idle)
+            assert _value(idle, "artifact_processing_oldest_observed_pending_age_seconds", family="memory") == 0
+            assert _value(idle, "artifact_processing_last_acknowledgement_timestamp_seconds", family="memory") == 0
 
             async def enqueue_and_wait_for_worker():
                 async with runtime.primary_database.transaction() as connection:
@@ -240,8 +258,8 @@ def test_healthy_combined_api_exposes_idle_stalled_and_stopped_processing(tmp_pa
                 assert (
                     _value(stalled, "artifact_processing_last_acknowledgement_timestamp_seconds", family="memory") == 0
                 )
-                assert _value(stalled, "artifact_processing_pending_age_unknown_scopes", family="memory") == 0
-                assert _value(stalled, "artifact_processing_oldest_pending_timestamp_seconds", family="memory") > 0
+                _assert_no_exact_pending_age(stalled)
+                assert _value(stalled, "artifact_processing_oldest_observed_pending_age_seconds", family="memory") >= 0
 
             async def fail_observation():
                 intents.fail_observation = True
@@ -261,6 +279,9 @@ def test_healthy_combined_api_exposes_idle_stalled_and_stopped_processing(tmp_pa
             previous = client.portal.call(fail_observation)
             failed = _samples(client.get("/metrics").text)
             assert _value(failed, "artifact_processing_pending_observation_failures_total", family="memory") >= 1
+            assert _value(failed, "artifact_processing_unacknowledged_requests", family="memory") == 1
+            assert _value(failed, "artifact_processing_supervisor_running", family="memory") == 1
+            assert _value(failed, "artifact_processing_last_acknowledgement_timestamp_seconds", family="memory") == 0
             assert (
                 _value(failed, "artifact_processing_requested_snapshot_timestamp_seconds", family="memory")
                 == (previous["requested_snapshot_timestamp_seconds"])
@@ -284,8 +305,65 @@ def test_healthy_combined_api_exposes_idle_stalled_and_stopped_processing(tmp_pa
             stopped = _samples(client.get("/metrics").text)
             assert _value(stopped, "artifact_processing_supervisor_running", family="memory") == 0
             assert _value(stopped, "artifact_processing_unacknowledged_requests", family="memory") == 1
+            assert _value(stopped, "artifact_processing_last_acknowledgement_timestamp_seconds", family="memory") == 0
+            assert _value(stopped, "artifact_processing_oldest_observed_pending_age_seconds", family="memory") == 0
+            _assert_no_exact_pending_age(stopped)
             assert client.get("/health/ready").status_code == 200
             assert client.get("/v1/capabilities").status_code == 200
         finally:
             client.portal.call(supervisor.close)
             runtime.artifact_processing_supervisor = None
+
+
+def test_standby_metrics_distinguish_unobserved_backlog_from_idle_leader(tmp_path):
+    from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
+    from powercontext.builtin.persistence.tables import SHARED_TABLES
+
+    async def scenario():
+        async with SQLiteProfile.open(
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'standby.db'}"), tables=SHARED_TABLES
+        ) as profile:
+
+            class Launcher:
+                async def start(self, assignment):
+                    raise AssertionError("idle supervisors must not dispatch")  # noqa: TRY003 - dispatch regression
+
+            binding = ArtifactProcessingBinding("binding", "memory", Launcher())
+            # SQLite exercises the actual expiring-lease path, not remote-host support.
+            async with (
+                ArtifactProcessingSupervisor(
+                    database=profile.database, bindings=[binding], lease_mode="oceanbase"
+                ) as leader,
+                ArtifactProcessingSupervisor(
+                    database=profile.database, bindings=[binding], lease_mode="oceanbase"
+                ) as standby,
+            ):
+                for supervisor, role in ((leader, "leader"), (standby, "standby")):
+                    runtime = cast(
+                        BuiltinRuntime,
+                        SimpleNamespace(
+                            readiness_snapshot=lambda: RuntimeReadinessSnapshot("unobserved", None, ()),
+                            artifact_processing_supervisor=supervisor,
+                        ),
+                    )
+                    metrics = ServerMetrics(role="background")
+                    metrics.set_processing_families(supervisor.family_status)
+                    metrics.operational.replace(runtime)
+                    samples = _samples(metrics.render().decode())
+                    _assert_no_exact_pending_age(samples)
+                    assert _value(samples, "artifact_processing_supervisor_running", family="memory") == 1
+                    assert _value(samples, "artifact_processing_supervisor_role", family="memory", state=role) == 1
+                    assert _value(samples, "artifact_processing_unacknowledged_requests", family="memory") == 0
+                    assert (
+                        _value(samples, "artifact_processing_last_acknowledgement_timestamp_seconds", family="memory")
+                        == 0
+                    )
+                    assert (
+                        _value(samples, "artifact_processing_oldest_observed_pending_age_seconds", family="memory") == 0
+                    )
+                    observed_at = _value(
+                        samples, "artifact_processing_requested_snapshot_timestamp_seconds", family="memory"
+                    )
+                    assert (observed_at > 0) == (role == "leader")
+
+    asyncio.run(scenario())

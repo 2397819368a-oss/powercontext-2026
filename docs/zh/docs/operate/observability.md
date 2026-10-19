@@ -145,12 +145,9 @@ API 与后台进程同机部署时应使用不同端口。设置 `POWERCONTEXT_S
 | `ready`、`retry_wait`、`blocked_wait` | 本地就绪队列、保留的等待重试数（含阻塞项）和被阻塞 Scope 数 |
 | `unacknowledged_requests` | 最近持久 pending 快照中的待处理 Scope 数，不是请求 generation 数，也不是抓取时的实时查询 |
 | `requested_snapshot_timestamp_seconds` | 上述 pending 快照的数据库 UTC 观察时间，单位为 UNIX 秒；首次观察前为 `0` |
-| `oldest_pending_timestamp_seconds` | 最老未确认请求 generation 的数据库 UTC 创建时间，单位为 UNIX 秒；没有 pending work 或任一 pending Scope 的最老年龄未知时省略 |
-| `oldest_pending_age_seconds` | 快照时刻的精确持久最老年龄：数据库观察时间减去最老请求时间，单位为秒；被动读取不会使其增长，空闲、未观察或任一 pending 最老年龄未知时省略 |
-| `pending_age_unknown_scopes` | 最老未确认 generation 缺少持久时间戳的 pending Scope 数，用于区分旧数据年龄未知与空积压 |
-| `pending_observation_failures_total` | 后台 pending 观察失败次数，包含超时；失败保留之前的计数、最老时间戳与年龄、未知计数和快照时间戳 |
+| `pending_observation_failures_total` | 后台 pending 观察失败次数，包含超时；失败保留之前的 pending Scope 计数和快照时间戳 |
 | `observed_pending_scopes` | 保留的首次观察 pending key 数，最多 1000 |
-| `oldest_observed_pending_age_seconds` | 最早保留的 pending generation 从首次观察起的年龄；没有保留 key 时为 `0` |
+| `oldest_observed_pending_age_seconds` | 保留的 pending generation 的近似本地年龄下界，单位为秒；没有保留 key 时为 `0` |
 | `last_acknowledgement_timestamp_seconds` | 最近验证的持久确认时间；尚未确认时为 `0` |
 | `discovery_seconds`、`last_invocation_seconds` | 原有最近发现/调用耗时 gauge |
 | `completed_total`、`failed_total`、`timeouts_total` | 原有已确认、失败、超时调用计数器 |
@@ -164,24 +161,16 @@ API 与后台进程同机部署时应使用不同端口。设置 `POWERCONTEXT_S
 即使所有 Worker 槽位占满也不会暂停这项观察。失败保留最近成功的快照，并增加 `pending_observation_failures_total`；
 新的采集或抓取不能让旧快照变新。这些读取在后台执行，不在指标采集时执行。
 
-启动时创建新增的 `pc_artifact_processing_requests` 表，为每个未确认请求 generation 保存一个数据库 UTC 时间戳
-（SQLite 精度为毫秒，MySQL 精度为微秒）。启动新版本前应停止旧版本的写入进程；混合版本写入会继续产生缺少时间戳的请求。
-请求创建、确认时的清理与对应的 intent 状态转换原子提交。确认会删除截至已确认 generation 的时间戳，保留更新的请求。
-重启与 Leader 切换不会丢失持久时间戳；下一次成功观察会恢复快照。
-已有的、缺少时间戳的 pending generation 不会被赋予虚构的迁移时间作为创建日期。即使新增了带时间戳的请求，
-这些旧 generation 在得到确认前，最老年龄仍然未知。只要 `pending_age_unknown_scopes>0`，就省略整个 Family 的
-`oldest_pending_timestamp_seconds` 和 `oldest_pending_age_seconds`，不会将已知的最老请求伪装成精确结果。首次观察前，快照时间戳为零表示未观察，
-即使计数指标也为零。
+pending 快照读取已有的 processing intents，统计该 binding 的 pending Scope 数。不为每个请求 generation
+保存时间戳，也不需要新表或 schema 迁移。查询工作量随该 binding 的 intents 数增长；保留的聚合快照占用
+O(Families) 内存。首次成功观察前，快照时间戳为零表示未观察，即使计数指标也为零。
+重启或 Leader 切换后需要新的观察；不能把保留或缺失的测量值当作当前持久积压的事实。
 
-计数查询检查该 binding 的 intents，并为每个 pending Scope 通过主键探测时间戳；工作量随 binding intents 数量增长，
-不遍历所有保留的请求 generation。最老时间戳查询使用 binding/time 索引和 `LIMIT 1`。
-保留的聚合快照占用 O(Families) 内存。持久时间戳存储占用 O(未确认请求 generation 数)，通过确认清理；
-不使用不安全的硬上限或有损合并。因此，持续收到请求但停滞的 Scope 在确认前可能不断增加存储，尽管 pending 计数只计为一个 Scope。
-
-`oldest_observed_pending_age_seconds` 仍是独立的**本地下界**，从首次本地观察最多 1000 个保留的已准入 key 起计算。
-它跟踪本地观察到的 pending generation，不是持久请求创建时间。两次发现之间 pending 集合可能陈旧，而本地年龄仍在增长。
-未观察的 key 可能更老；确认、淘汰、Leader 切换或重启可能移除或重置本地观察。
-本地年龄为 `0` 不能证明持久积压为空；应结合持久计数、时间戳、未知计数与新鲜度判断。
+`oldest_observed_pending_age_seconds` 是近似的**本地下界**，从首次本地观察最多 1000 个保留的已准入 key 起计算。
+它跟踪本地观察到的 pending generation，不是请求创建时间或精确的持久积压年龄。
+两次发现之间 pending 集合可能陈旧，而本地年龄仍在增长。未观察的 key 可能更老；确认或淘汰可能移除本地观察。
+重启与 Leader 切换会重置这段本地历史。本地年龄为 `0` 不能证明持久积压为空，较大的值也不能单独说明停滞：
+处理过程可能仍在取得已验证的确认进展。应结合 pending 证据、快照新鲜度、已验证的确认进展和启动宽限期判断。
 
 Attempt outcome 为 `success`、`hold`、`noop`、`failure`、`cancelled`、`blocked`、`cursor_conflict`、
 `head_conflict`、`leadership_lost`。Discovery outcome 为 `success`、`failure`、`cancelled`、`leadership_lost`。
@@ -192,7 +181,7 @@ Attempt outcome 为 `success`、`hold`、`noop`、`failure`、`cancelled`、`blo
 
 ### Dashboard 与告警规则
 
-运维方应明确选择并记录抓取失败、快照采集年龄、探测年龄、请求快照年龄、pending age 和未确认时长的阈值。
+运维方应明确选择并记录抓取失败、快照采集年龄、探测年龄、请求快照年龄、启动宽限期和未确认时长的阈值。
 这些是部署专用的告警策略，不是内置默认值。例如可选择采集新鲜度 120 秒、探测新鲜度 600 秒、存在 pending work
 时超过 900 秒未确认；必须根据抓取频率、就绪检查流量、调度间隔和 Worker 预期耗时验证这些选择。
 不执行探测的宿主不应直接套用 600 秒探测规则。
@@ -205,17 +194,18 @@ Attempt outcome 为 `success`、`hold`、`noop`、`failure`、`cancelled`、`blo
   若本地保留工作或足够新的 `unacknowledged_requests>0` 快照证明存在 pending work，应触发停止处理告警，
   不能要求此规则满足运行中 Leader 条件。若只有陈旧的最后已知 pending 证据，应报告处理已停止但积压未知并排查；
   抓取目标失联则通过 `up` 单独处理
-- 对运行中的 Leader，停滞告警要求足够新的采集，以及 pending work 证据：当前 `observed_pending_scopes>0`、
-  `used_workers>0`，或足够新的 `unacknowledged_requests>0` 快照。再将未确认时长或 pending-age 下界与所选阈值比较。
-  Worker 槽位占满时持久 pending 观察仍会继续，但观察失败可能使数据陈旧。陈旧快照不能压制由当前本地工作证据
-  支持的停滞告警。持久计数是最后已知的后台观察；本地保留 key 与 Worker 槽位不是全量持久积压。
-  确认时间为零表示从未确认，不是从 UNIX 纪元起故障；应单独结合启动宽限期与持续 pending work 判断
-- `oldest_pending_age_seconds` 表示成功数据库观察时刻的年龄，不是抓取时刻的年龄。需要基于快照推算时，
-  仅当同一目标/Family 的 `unacknowledged_requests>0`、`pending_age_unknown_scopes=0`，且
-  `requested_snapshot_timestamp_seconds` 非零且足够新时，使用
-  `time() - powercontext_server_artifact_processing_oldest_pending_timestamp_seconds` 计算持久最老年龄，
-  同时要求采集足够新。分别处理旧数据年龄未知、未观察和陈旧快照；缺少最老时间戳不等于年龄为零。
-  选择阈值时需考虑 Prometheus 与数据库之间的时钟偏差
+- 对运行中的 Leader，疑似停滞告警要求足够新的采集，以及 pending work 证据：当前
+  `observed_pending_scopes>0`、`used_workers>0`，或同一目标/Family 的
+  `requested_snapshot_timestamp_seconds` 非零且足够新，同时 `unacknowledged_requests>0`。
+  要求在所选时间窗口内持续存在 pending work 且没有已验证的确认进展，并在重启或 Leader 切换后留出启动宽限期。
+  使用 `last_acknowledgement_timestamp_seconds` 和 `completed_total` 的变化判断已验证进展；进程退出或成功 attempt
+  的耗时不代表确认。例如，启动宽限期后持续 900 秒存在 pending 证据且没有确认，可提示疑似停滞；
+  确认仍在推进时，本地观察到的旧 key 不能说明停滞。
+  确认时间为零表示从未确认，不是从 UNIX 纪元起故障；应使用宽限期与持续观察窗口，不能用当前时间减零。
+  比较时间戳时应考虑时钟偏差，不能把缺失的观察当作零
+- Worker 槽位占满时持久 pending 观察仍会继续，但观察失败可能使数据陈旧。陈旧快照不能压制由当前本地工作证据
+  和缺少已验证进展共同支持的疑似停滞告警。持久计数是最后已知的后台观察；本地保留 key 与 Worker 槽位不是全量持久积压。
+  `oldest_observed_pending_age_seconds` 仅提供辅助上下文，不能独立触发停滞告警，也不能替代确认进展和新鲜度判断
 - 健康空闲实例不应告警。禁用自动处理是配置，Standby 是预期角色，纯 API 缺失 Supervisor 数据不是零容量故障。
   没有当前本地证据的陈旧 pending 快照应触发新鲜度诊断，不能据此编造积压结论。结合阻塞等待、准入阻塞、重试原因、错误与 Worker 利用率排查
 - 分别抓取 API 与后台目标。同一部署/Family 的 API 与后台积压快照、Leader 与 Standby 计数不能相加。

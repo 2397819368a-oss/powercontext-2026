@@ -442,8 +442,6 @@ class _FamilyState:
     last_acknowledgement_timestamp_seconds: float = 0
     requested_snapshot_timestamp_seconds: float = 0
     next_pending_observation_at: float = 0
-    pending_age_unknown_scopes: int = 0
-    oldest_pending_timestamp_seconds: float | None = None
     pending_observation_failures: int = 0
     pending_observed: dict[str, tuple[int, float]] = field(default_factory=dict)
     attempt_durations: DurationObservations = field(default_factory=DurationObservations)
@@ -558,22 +556,7 @@ class ArtifactProcessingSupervisor:
                 )
                 if state.pending_observed
                 else 0.0,
-                "pending_age_unknown_scopes": state.pending_age_unknown_scopes,
                 "pending_observation_failures": state.pending_observation_failures,
-                **(
-                    {
-                        "oldest_pending_timestamp_seconds": state.oldest_pending_timestamp_seconds,
-                        "oldest_pending_age_seconds": max(
-                            0.0, state.requested_snapshot_timestamp_seconds - state.oldest_pending_timestamp_seconds
-                        ),
-                    }
-                    if (
-                        state.unacknowledged > 0
-                        and state.oldest_pending_timestamp_seconds is not None
-                        and state.pending_age_unknown_scopes == 0
-                    )
-                    else {}
-                ),
                 "observed_pending_scopes": len(state.pending_observed),
                 "blocked_wait": sum(retry.block is not None for retry in state.retries.values()),
             }
@@ -774,12 +757,6 @@ class ArtifactProcessingSupervisor:
             self._log_failure(state, None, error, "pending_observation")
             return
         state.unacknowledged = observation.pending_count
-        state.pending_age_unknown_scopes = observation.unknown_count
-        state.oldest_pending_timestamp_seconds = (
-            observation.oldest_requested_at.replace(tzinfo=UTC).timestamp()
-            if observation.oldest_requested_at is not None
-            else None
-        )
         state.requested_snapshot_timestamp_seconds = observation.observed_at.replace(tzinfo=UTC).timestamp()
         if not state.unacknowledged:
             state.pending_observed.clear()

@@ -154,12 +154,9 @@ request, trace, content, provider error text, or database URL is a metric label.
 | `ready`, `retry_wait`, `blocked_wait` | Local ready queue, retained waiting retries (including blocked entries), and retained blocked scopes |
 | `unacknowledged_requests` | Pending Scope count from the latest durable pending snapshot, not the number of request generations or a scrape-time query |
 | `requested_snapshot_timestamp_seconds` | Database UTC time of that pending snapshot, in UNIX seconds; `0` before observation |
-| `oldest_pending_timestamp_seconds` | Database UTC creation time of the oldest unacknowledged request generation, in UNIX seconds; omitted when no pending work exists or any pending Scope has unknown oldest age |
-| `oldest_pending_age_seconds` | Exact durable oldest age at the snapshot: database observation time minus oldest request time, in seconds; does not advance on passive reads and is omitted when idle, unobserved, or any pending oldest age is unknown |
-| `pending_age_unknown_scopes` | Pending Scopes whose oldest unacknowledged generation has no durable timestamp; distinguishes unknown legacy age from an empty backlog |
-| `pending_observation_failures_total` | Failed background pending observations, including timeouts; the previous count, oldest timestamp and age, unknown count, and snapshot timestamp are retained |
+| `pending_observation_failures_total` | Failed background pending observations, including timeouts; the previous pending Scope count and snapshot timestamp are retained |
 | `observed_pending_scopes` | Number of retained first-observed pending keys, bounded to 1000 |
-| `oldest_observed_pending_age_seconds` | Age of the oldest retained first-observed pending generation; `0` if none retained |
+| `oldest_observed_pending_age_seconds` | Approximate local age lower bound for retained pending generations, in seconds; `0` if none retained |
 | `last_acknowledgement_timestamp_seconds` | Last verified durable acknowledgement; `0` before any acknowledgement |
 | `discovery_seconds`, `last_invocation_seconds` | Legacy latest discovery/invocation duration gauges |
 | `completed_total`, `failed_total`, `timeouts_total` | Legacy acknowledged, failed, and timed-out invocation counters |
@@ -174,28 +171,19 @@ and a 2-second deadline per observation. A full set of occupied worker slots doe
 Failures preserve the last successful snapshot and increment `pending_observation_failures_total`; a fresh collection
 or scrape does not make that snapshot fresh. These reads run in the background, never during metrics collection.
 
-Startup creates the additive `pc_artifact_processing_requests` table, which stores one database-UTC timestamp per
-unacknowledged request generation (millisecond precision on SQLite, microsecond precision on MySQL). Stop old-version
-writers before starting the new version: mixed-version writers can continue creating requests without timestamps. Request creation and acknowledgement pruning are atomic with the corresponding intent transition.
-Acknowledgement deletes timestamps through the acknowledged generation, preserving newer requests. Restarts and
-leadership changes preserve durable timestamps; the next successful observation restores their snapshot.
-Existing pending generations without timestamps are not assigned an invented migration-time creation date. Their
-oldest age remains unknown until those generations are acknowledged, even if newer timestamped requests arrive.
-Both `oldest_pending_timestamp_seconds` and `oldest_pending_age_seconds` are omitted for the whole Family while
-`pending_age_unknown_scopes>0`, rather than presenting the oldest known request as an exact answer. Before the first observation, the zero snapshot timestamp
-means unobserved, including when count gauges are zero.
+The pending snapshot reads the existing processing intents and counts pending Scopes for the binding. It does not
+store a timestamp per request generation or require a new table or schema migration. Query work scales with the
+binding's intents; the retained aggregate snapshot uses O(Families) memory. Before the first successful observation,
+a zero snapshot timestamp means unobserved, even when count gauges are zero. Restart and leadership changes require
+fresh observations; do not interpret retained or missing measurements as current durable backlog truth.
 
-The count query examines the binding's intents with a primary-key timestamp probe per pending Scope: work scales
-with binding intents, not all retained request generations. The oldest timestamp uses a binding/time index and
-`LIMIT 1`. The retained aggregate snapshot uses O(Families) memory. Durable timestamp storage is O(unacknowledged
-request generations), with acknowledgement pruning; it has no unsafe hard cap or lossy coalescing. A stalled Scope
-receiving many requests can therefore grow storage until acknowledgement, even though it counts as one pending Scope.
-
-`oldest_observed_pending_age_seconds` remains a separate **local lower bound**, measured from first local observation
-of up to 1000 retained admitted keys. It tracks locally observed pending generations, not durable request creation
-time. Membership may be stale between discovery passes while the local age advances. Unseen keys can be older;
-acknowledgement, eviction, leadership changes, or restart can remove or reset local observations. A local age of `0`
-does not prove an empty durable backlog. Use the durable count, timestamp, unknown count, and freshness together.
+`oldest_observed_pending_age_seconds` is an approximate **local lower bound**, measured from first local observation
+of up to 1000 retained admitted keys. It tracks locally observed pending generations, not request creation time or
+exact durable backlog age. Membership may be stale between discovery passes while the local age advances. Unseen
+keys can be older; acknowledgement or eviction can remove local observations. Restart and leadership changes reset
+this local history. A local age of `0` does not prove an empty durable backlog, and a large value alone never implies
+a stall: processing may still be making verified acknowledgement progress. Use pending evidence, snapshot freshness,
+verified acknowledgement progress, and startup grace together.
 
 Attempt outcomes are `success`, `hold`, `noop`, `failure`, `cancelled`, `blocked`, `cursor_conflict`, `head_conflict`,
 and `leadership_lost`. Discovery outcomes are `success`, `failure`, `cancelled`, and `leadership_lost`. The duration
@@ -208,7 +196,7 @@ attempt-success or produced-artifact counter. Neither histogram nor acknowledgem
 ### Dashboards and alert rules
 
 Choose and record explicit operator thresholds for scrape failure, collection age, probe age, requested-snapshot age,
-pending age, and time without acknowledgement. These are deployment-specific alert policies, not built-in defaults.
+startup grace, and time without acknowledgement. These are deployment-specific alert policies, not built-in defaults.
 For example, an operator may select 120 seconds for collection freshness, 600 seconds for probe freshness, and 900
 seconds without acknowledgement while pending work exists; validate those choices against scrape cadence, readiness
 traffic, schedules, and expected worker duration. Do not apply a 600-second probe rule to a host that never runs probes.
@@ -222,19 +210,22 @@ traffic, schedules, and expected worker duration. Do not apply a 600-second prob
   `unacknowledged_requests` snapshot establishes pending work. Do not require a running Leader for this rule. If only
   stale last-known pending evidence remains, report stopped processing with uncertain backlog and investigate;
   a missing target is handled separately through `up`
-- For a running Leader, gate stalled-processing alerts on a fresh collection and pending-work evidence: current
-  `observed_pending_scopes>0` or `used_workers>0`, or a sufficiently fresh `unacknowledged_requests>0` snapshot.
-  Then evaluate time without acknowledgement or the local pending-age lower bound against your chosen limit.
-  Durable pending observation continues when worker slots are full; observation failures can still leave stale data.
-  A stale snapshot must not suppress a stall alert supported by current retained work. The durable count is last-known
-  background observation; local retained keys and worker slots are not a complete durable backlog. A zero acknowledgement timestamp means never
-  acknowledged, not a UNIX-era outage; handle it separately with a startup grace period and sustained pending work
-- `oldest_pending_age_seconds` reports age at the successful database observation, not at scrape time. To extrapolate
-  from that snapshot, compute durable oldest age as `time() - powercontext_server_artifact_processing_oldest_pending_timestamp_seconds`
-  only with `unacknowledged_requests>0`, `pending_age_unknown_scopes=0`, and a nonzero, sufficiently fresh
-  `requested_snapshot_timestamp_seconds` from the same target/Family. Use a fresh collection too. Treat unknown legacy
-  age, unobserved snapshots, and stale snapshots separately; missing oldest timestamps are not zero age. Account for
-  clock skew between Prometheus and the database when choosing thresholds
+- For a running Leader, gate possible-stall alerts on a fresh collection and pending-work evidence: current
+  `observed_pending_scopes>0` or `used_workers>0`, or a nonzero, sufficiently fresh
+  `requested_snapshot_timestamp_seconds` with `unacknowledged_requests>0` from the same target/Family.
+  Require sustained pending work and no verified acknowledgement progress for the chosen interval, allowing a startup
+  grace period after restart or leadership change. Use `last_acknowledgement_timestamp_seconds` and changes in
+  `completed_total` to assess verified progress; process exit or successful attempt duration is not acknowledgement.
+  For example, after the startup grace period, 900 seconds of sustained pending evidence without acknowledgement
+  can indicate a possible stall; an old locally observed key while acknowledgements advance does not.
+  A zero acknowledgement timestamp means never acknowledged, not a UNIX-era outage: use the grace period and a
+  sustained observation window instead of subtracting zero from the current time. Account for clock skew when
+  comparing timestamps, and do not treat missing observations as zero
+- Durable pending observation continues when worker slots are full; observation failures can still leave stale data.
+  A stale snapshot must not suppress a possible-stall alert supported by current retained work and absent verified
+  progress. The durable count is a last-known background observation; local retained keys and worker slots are not
+  a complete durable backlog. `oldest_observed_pending_age_seconds` is only supporting context, never an independent
+  stall trigger or a substitute for acknowledgement progress and freshness
 - Keep idle healthy instances quiet. Automatic processing disabled is configuration, standby is expected, and missing
   API-only Supervisor data is not a zero-capacity outage. Stale pending snapshots without current local evidence merit a freshness diagnostic, not a
   fabricated backlog conclusion. Watch blocked waits, admission blocks, retry reasons, errors, and worker utilization
