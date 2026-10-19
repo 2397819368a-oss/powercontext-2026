@@ -1,6 +1,6 @@
 ---
 title: ContextRuntime、GateRuntime 与可选 GatewayRuntime
-description: 通过 ContextRuntime 管理模型上下文、GateRuntime 治理输入输出，以及可选 Rust GatewayRuntime 编排真实模型调用。
+description: 复用 PowerContext 上下文组织与工作连续性，在 Core 增加调用双闸，通过可选 GatewayRuntime 执行获准的模型请求。
 ---
 
 - Proposal Name: `context_gate_and_optional_gateway_runtimes`
@@ -8,1725 +8,590 @@ description: 通过 ContextRuntime 管理模型上下文、GateRuntime 治理输
 - RFC PR: [oceanbase/powercontext#2086](https://github.com/oceanbase/powercontext/pull/2086)
 - Related RFCs: [RFC 0016](0016_pydantic_ai_inference_integration.md)、[RFC 0028](0028_context_pack.md)、
   [RFC 0046](0046_observability_foundations.md)、[RFC 0048](0048_handoff_artifact.md)、
-  [RFC 1435](1435_explainable_prepared_context_receipts.md)、[RFC 1770](1770-decision-policy-governance.md)
+  [RFC 1435](1435_explainable_prepared_context_receipts.md)、[RFC 1770](1770-decision-policy-governance.md)、
+  [RFC 1783](1783-handoff-session-rollover.md)
 
 # Summary
 
-本 RFC 定义设计契约，不表示能力已经实现或发布。当前能力基线为本仓库提交 e4efb39b，
-实现与发布以源码为准；外部网关机制以对应版本和部署验收为准。
+本 RFC 是设计提案，实现基线为仓库提交 e4efb39b。接受本 RFC 不代表功能已实现、宿主已适配或缓存收益已得到验证。
 
-PowerContext 通过 ContextRuntime 管理模型上下文，通过 GateRuntime 治理输入与输出，
-通过 GatewayRuntime 将上下文计划和治理要求落实到实际模型调用。
-ContextRuntime 与 GateRuntime 属于 PowerContext Core，可嵌入应用或服务化；用户不部署 Gateway，
-也能通过 Core 内置调用链或应用 SDK 使用它们。
+**ContextRuntime 就是 PowerContext 已有的上下文组织能力参与模型调用。** 实现主体仍然是
+`ContextApplication.for_scope(scope_id).prepare(...)`、既有召回与装配策略和 `PreparedContextBuilder`。
+Bootstrap、Work、Handoff 沿用各自的入口与领域归属，不另建上下文选择器、转录服务、会话数据库或必需的运行时包装层。
 
-ContextRuntime 决定本轮模型应看到什么，以及经宿主确认后下一轮继承什么：组织历史、Memory 与 Handoff，
-管理完整请求的 token 预算、上下文变换、缓存前缀和可选持久会话。GateRuntime 使用可信授权上下文，负责安全规则、
-敏感信息处理、最终输入准入及输出释放。预算预留、执行身份和权威账本复用 Core 公共执行服务。
+**GateRuntime 补足现有上下文准备之外的调用边界。** 它消费完整模型请求中的已有准备结果，规划允许的缓存使用方式，
+检查最终外发载荷，并在交付前检查原始响应。完整请求的 token 准入在这里处理；`prepare.max_bytes` 仍然表示补充上下文的
+UTF-8 字节预算。GateRuntime 不独立召回或重新装配 Memory。
 
-可选 Rust Gateway 以 GatewayRuntime 承载网关侧调用生命周期：调用 Core 两种运行时，完成协议映射、
-目标选择、许可核验、发送、缓冲、取消、受控重试、交付和执行证据回收，并连接推理服务或现有模型网关。
-它遵守 Core 的上下文与安全决定；实际发送和交付必须等待相应准入，不能提前外发或释放。
+**可选 Rust GatewayRuntime 负责执行这个组合。** 它在需要准备上下文时调用现有 API，映射目标协议，取得双闸判定，
+发送获准字节，缓冲输出并回收执行证据。嵌入式应用和 Core 后台推理也能使用相同双闸，无需部署 Gateway。
 
-这套系统提供一个可检验的产品能力：同一个任务在切换模型、跨会话续接或后台处理时，能够交付有出处的上下文，
-阻止策略规定不得外发或交付的内容，并按完整任务核算成本。
+首期只增加**两个检查操作，新增数据库表为零**。宿主继续拥有对话历史、响应采用、工具和任务调度权。
+现有 Source、Artifact、Bootstrap receipt、Work、Handoff 和统计服务保留各自语义。
+临时请求、检查结果、缓存计划与输出缓冲放在内存中。
 
-三种运行时共同提供面向 LLM KV Cache 的执行闭环：ContextRuntime 规划稳定前缀、可复用断点和缓存策略，
-GateRuntime 检查最终载荷与响应，GatewayRuntime 或其他执行器保真发送并采集真实缓存用量；
-ContextRuntime 在宿主明确采用受检结果后推进可重放历史。实际 KV 由推理服务保存，
-缓存读取、写入费用和完整任务结果共同证明收益。
-
-| 设计项 | 决定 |
+| 设计项 | 决策 |
 | --- | --- |
-| 部署与语言 | Core 可嵌入 Python 应用或作为服务；Gateway 为可选的独立 Rust 二进制或容器。 |
-| 运行时划分 | Core 提供 ContextRuntime 与 GateRuntime；可选 Rust Gateway 提供 GatewayRuntime，复用同一 Core 契约。 |
-| 双闸归属 | GateRuntime 复用授权结果，执行安全规则、敏感变换、输入准入与输出释放，独立于 Gateway 提供。 |
-| 上下文权威 | ContextRuntime 管理会话、冻结注入、摘要、证据覆盖与请求快照；安全变换规则由 GateRuntime 决定。 |
-| GatewayRuntime 范围 | 编排上下文准备、检查、协议适配、目标与许可核验、调用、流控、交付和执行证据；领域决定复用 Core。 |
-| 双闸定义 | Core 在模型请求发送前检查输入、在输出释放前检查响应；执行器保证检查点不能被跳过。 |
-| 接入方式 | Core 内置执行器、应用 SDK 执行器、可选 Rust Gateway 共享同一双闸契约。 |
-| 持久化要求 | 基础检查可无状态运行；会话重放、跨重启预算和权威账本按需启用对应存储能力。 |
-| 调用来源 | `agent_main` 是应用或 Agent 主模型调用；`core_background` 是 Core 的生成、提取、Embedding、重排等调用。 |
-| 外部网关接入 | 内置执行器、SDK 或 Rust Gateway 均可通过已核验协议连接 LiteLLM 等；按需补充证据适配。 |
-| 模型与重试 | Core 批准模型、候选与预算；执行责任方由接入配置明确指定，禁止两层独立无限扩张。 |
-| KV Cache | ContextRuntime 规划前缀、断点及亲和约束，GateRuntime 核验最终载荷，GatewayRuntime 保真执行并回收证据；已采用历史供下一轮复用，实际 KV 在推理服务端。 |
-| 默认降本方式 | 先做稳定重放、无损表示优化和明确输出预算；有损压缩、动态模型升级和语义响应缓存独立验收。 |
-| 默认安全方式 | 强制规则先检查再释放；授权、安全策略或必要扫描无法确认时阻止外发或交付。 |
-| 验收单位 | 完整任务的质量、总费用、延迟、重试和泄漏反例；不以输入长度或缓存参数是否设置作为收益证明。 |
+| 上下文组织 | 复用现有 scoped prepare、assembly、召回策略、引用、信任包装与字节预算。 |
+| 上下文连续性 | 在已支持的生命周期边界复用宿主历史和现有 Bootstrap/Work/Handoff。 |
+| Core 新能力 | GateRuntime 负责最终输入准入、缓存规划和输出检查。 |
+| 新增 HTTP 操作 | 只有 `/v1/inference/input/check` 与 `/v1/inference/output/check`；上下文和连续性沿用已有操作。 |
+| 新增存储 | v1 零张表、零个新 Artifact 家族；基础检查无持久依赖。 |
+| Gateway 职责 | 可选 Rust 执行器；上下文和策略决策仍归 Core。 |
+| KV Cache | Core 规划可复用布局与缓存约束，Gateway 执行，推理服务持有实际 KV。 |
+| 默认优化 | 稳定已有上下文和历史、显式输出上限、经验证的供应商缓存；不自动有损压缩或缓存语义答案。 |
+| 初始安全范围 | 显式 profile 下的文本与结构化工具内容；外发前、响应释放前执行 strict 检查。 |
+| 持久保证 | 现有领域提交保留原契约；v1 不新增持久推理恢复、恰好一次发送或共享财务账本。 |
+| 验收单位 | 固定且受支持接入上的完整任务质量、总计量成本、延迟和安全反例。 |
 
 # Motivation
 
-用户在不部署独立模型网关时，仍然需要检查敏感信息、控制完整请求的 token、保持缓存前缀和验证模型输出。
-如果把双闸作为 Rust Gateway 独占能力，Core 后台提取和应用 SDK 就必须额外部署代理，或各自维护一套规则。
-这种绑定提高接入成本，也使同一条策略在不同调用路径中产生不同含义。
+PowerContext 已经解决了应交付哪些获准的历史上下文，以及怎样组织这些内容的问题。
+需要补齐的是：让准备结果可靠进入真实模型请求，在发送与释放边界落实策略，并避免无理由地改变可复用前缀。
 
-本提案解决五个具体问题：
+另建上下文子系统会重复召回、证据处理、Scope 授权和连续性语义；把每个计划、响应、轮次、尝试都持久化，
+又会在验证使用价值之前增加运维成本。本方案从已有 Coding 工作流出发：
 
-1. **能力可达性**：Core 后台任务、嵌入式应用、远端 SDK 和可选 Gateway 使用相同双闸，基础安全不要求网关或数据库。
-2. **真实执行边界**：检查最终模型输入和原始响应，而不是只检查 SDK 调用前的业务参数或已经解析成功的结果。
-3. **上下文生命周期**：为每轮材料选择、窗口预算、稳定重放和重建建立明确的 ContextRuntime 权威，并由宿主委托相应权限。
-4. **任务连续性**：有持久需求时保留准确的会话、注入、交接和执行身份，避免切模型丢失约束或重复历史。
-5. **可验证降本**：分别计量输入优化、供应商缓存、生成量和工作步骤，纳入辅助模型、失败、重试、缓存写入与预热成本。
+1. 用现有 API 准备有界项目上下文。
+2. 在宿主拥有上下文的边界内，跨普通工具轮次保留这份精确值。
+3. 对完整请求执行输入准入与缓存规划。
+4. 通过已有执行器或可选 Gateway 调用模型，交付前检查响应。
+5. 宿主需要新会话时，使用既有 Handoff。
 
-目标是交付可独立使用的 Core ContextRuntime 与 GateRuntime，以及遵守统一执行契约的可替换执行器。
-Rust Gateway 保持独立且可选，其 GatewayRuntime 提供兼容 HTTP/SSE 入口、完整调用编排和第三方网关接入。
-本 RFC 不实现通用 Agent 编排，不迁移模型私有状态，不承诺自动保护未接入的流量，也不保证任意内容零泄漏。
-它不将生成结果自动升级为 Memory，不替代 Artifact 生命周期、证据核验、宿主工具授权或供应商账单。
+三种运行时是这条流程中的职责名称，不要求增加三个产品、三套组合根或通用 Agent 调度器。
+Core 后台生成、Embedding、重排和辅助判断同样需要对应的双闸覆盖，但不必拥有 Agent 对话，
+也不应在每次调用前自动召回 Memory。
 
 # Guide-level explanation
 
-## 用户使用流程
+## 复用现有 PowerContext 完成 Coding 任务
 
-### 运行时管理多轮上下文
+用户让 Coding Agent 修复 API 客户端，项目已经注册 Scope，Memory 中已有 OpenAPI 重新生成规范：
 
-用户让 Coding Agent 修复一个客户端问题，宿主显式委托本任务的上下文编排：
+1. 在受支持的召回边界，宿主或 Gateway 使用任务查询和 Scope 调用现有 `/v1/context/prepare`。由原运行时按权限召回与装配 Memory、Experience、Topic Memory，以及显式选择并配置的 Profile、按需启用的代码证据。正常的 empty 结果仍然有效。
+2. 宿主把 `PreparedContext.content` 原样作为历史资料注入。当前指令、仓库规则、消息、工具定义与工具结果仍由宿主管理。准备结果是补充证据，不能代替系统指令。
+3. GateRuntime 检查完整目标请求，包括输出预留、安全规则和缓存资格。GatewayRuntime 只发送最终获准的表示。
+4. 输出闸在释放前检查完整文本和工具参数。之后由宿主决定采用回答或授权工具。通过输出闸不代表工具已经执行，也不代表 Memory 已经提交。
+5. 普通工具轮次保留同一份准备结果和已采用历史。新任务意图或显式上下文刷新可再次调用相同 prepare API。接近模型窗口上限时，由宿主发起既有 Handoff 或报告容量不足。
 
-1. ContextRuntime 接收本轮消息和可核验的历史边界，按授权选择项目规则、相关 Memory 和所需 Handoff。
-   它保留用户当前指令，结合目标窗口、工具定义和输出预留计算完整请求预算，固定注入位置与来源版本。
-2. GatewayRuntime 或托管 SDK 将逻辑计划映射到目标协议；GateRuntime 检查最终输入，执行器取得准入后发送。
-3. 模型请求读取文件或运行测试时，GateRuntime 检查输出中的工具参数。宿主负责授权和执行工具，
-   再提交有来源的工具结果；普通工具回合复用冻结注入，不因每次调用重新召回或改写历史。
-4. 受检回答先作为候选。宿主确认采用后，ContextRuntime 将相应输入与回答推进到所选分支，
-   下一轮重放相同内容；交付、采用和工具实际执行分别记录。
-5. 接近目标窗口上限时，ContextRuntime 按已启用策略建立新的上下文 epoch，保留当前目标、纠正、
-   未完成工具往返和必要证据，记录重建范围及遗漏。未启用合格重建策略时，明确报告窗口不足或请求显式交接。
+这是对现有 PowerContext 流程的直接增强。用户无需先把转录迁入 Core，或另建一份服务端会话才能使用双闸。
 
-新用户意图、资料版本或权限变化可以触发受控准备；同一请求的重试复用原计划。
-只委托本次载荷检查的应用仍由宿主管理历史，不因此获得跨轮自动重放或压缩。
+## 可复用上下文与 Gateway 缓存行为
 
-### 通过 Gateway 复用模型缓存
-
-用户通过 Gateway 连续修复同一项目的代码，保持所选模型与协议：
-
-1. ContextRuntime 在授权范围内准备规则、工具定义、schema 和本次允许使用的 Memory，固定其表示与版本，
-   将可复用前缀和新增内容的边界写入计划。
-2. GatewayRuntime 的适配器将 Core 批准的缓存模式、断点和 TTL 映射到目标协议，再提交 GateRuntime 最终载荷检查。
-   获得许可后，按批准的具体目标发送准确字节，保持可执行的缓存亲和约束。
-3. 推理服务复用仍可用的匹配前缀，处理新增输入并生成新回答。Gateway 取得原始响应、实际目标和缓存用量。
-4. GateRuntime 输出闸检查响应；持久模式先保存受检候选，宿主明确接受后由 ContextRuntime 采用为会话历史。
-   下一轮输入保留已采用的准确内容，只在受控位置追加新消息和工具结果。
-5. 用户查看每轮缓存读取、缓存写入、普通输入、已知费用，以及上游首字和最终交付时间。
-   缓存证据缺失时显示 unknown，不把已设置参数展示为已经命中。
-
-以下为逻辑布局；实际渲染保留协议角色、消息顺序和完整工具配对：
+在模型、协议、工具集和任务边界固定时，执行器维持以下逻辑布局：
 
 ```text
-第 1 轮：稳定规则、工具与冻结 Memory | 当前请求
-第 2 轮：同一稳定前缀 + 已采用的第 1 轮历史 | 新请求
-第 3 轮：同一稳定前缀 + 已采用的第 1、2 轮历史 | 新请求
+Turn 1: Stable rules + tools + exact PreparedContext | Current request
+Turn 2: Same prefix + accepted turn 1 history        | New message/tool results
+Turn 3: Same prefix + accepted turns 1 and 2         | New message/tool results
 ```
 
-前缀内容与可复用的缓存断点共同决定复用条件。通常仍须发送完整输入；
-只有目标协议明确支持的缓存引用才能替代对应内容。收益表现为供应商缓存读取与预填充工作减少，
-不把本地保存一次等同于网络或输入 token 自动减少。
-模型切换保留可移植上下文，新模型建立自己的缓存；固定模型多轮执行是首个缓存展示场景。
-基础模式可以使用调用方完整历史和固定模板完成缓存规划，不要求持久会话；跨重启恢复采用后文的持久契约。
+实际角色、顺序和工具调用/结果配对遵守目标协议。这个布局不允许把消息搬到更高权限的角色，也不允许重排已有历史。
 
-### 同一任务切模型
+Core 规划可复用前缀边界与缓存设置。Gateway 映射到经过验证的协议，将最终表示提交输入闸，获准后不再修改。
+输出闸把未通过的内容挡在执行器管理的重放路径之外；宿主用自己的历史机制追加已采用结果，为下一轮保留可复用前缀。
+输出检查不能为已经发送的请求制造缓存命中。
 
-用户让模型 A 排查客户端契约问题。Core 为该任务交付“修改 OpenAPI 后重新生成客户端”等项目知识，
-Agent 读代码、调用工具并得到实际结果。用户随后选择模型 B 继续修复：
+实际 KV 留在推理服务侧。稳定前缀只建立复用资格，是否命中及其费用必须看供应商的读写证据。
+除非经过验证的协议显式支持缓存引用，完整输入通常仍要发送。切换模型时保留可移植的宿主上下文或 Handoff，
+新目标自行建立 KV 状态。
 
-1. 应用通过 SDK 或可选 Gateway 提交已有历史与新指令，保持同一任务和会话身份。
-2. Core 找到已交付的注入记录，补回准确缺失的上下文，保留用户的最新纠正和工具结果。
-3. Core 根据目标模型能力准备输入，不把旧模型的私有会话 ID 或加密推理状态当成可移植文本。
-4. Core 输入闸检查实际外发内容，执行器调用目标模型，Core 输出闸检查结果后允许交付。
-5. 账本记录具体目标、输入和输出用量、缓存读写、辅助调用以及失败尝试。
+## 切换模型与继续工作
 
-用户不需要手工复制项目背景。模型 B 是否理解并正确使用这些材料，仍通过实际任务结果验证。
+宿主将获准的可移植历史与已有准备结果交给模型 B，或交付经过检查的精确 Handoff 及当前证据。
+GateRuntime 按 B 的能力 profile 和完整请求预算检查输入，拒绝不支持的模型私有状态；
+不把私有推理过程或供应商 session 标识解释为可移植文本。放不下时，由宿主显式 Handoff，而不是静默摘要或丢弃内容。
 
-### 跨会话继续
+跨会话连续性复用现有 Work/Handoff 的 prepare、检查、finalize、可选 commit、交付与 continue 语义。
+已提交的 Handoff 仍可通过现有精确读取路径使用。接收 Agent 校验当前仓库、权限和证据。
+普通模型输出不会仅因通过输出闸而成为长期 Memory。
 
-在工作边界，调用方通过已有 Handoff 流程准备并检查目标、进展、下一步、证据和已知遗漏。
-新会话接收完整 Prepared Handoff 或精确的已提交版本，并得到未被交接覆盖的近期消息。
-接手 Agent 核对当前仓库和执行环境后继续工作。普通交接不自动创建长期里程碑。
+## 无 Gateway 的 Core 后台调用
 
-### Core 后台处理
-
-Core 对 Source 窗口执行 Memory 提取或 Topic 处理时，声明可信工作负载和 stage，默认通过内置执行器与双闸调用模型。
-输入编码、模型候选、输出 schema 和提交资格由 Core 决定。模型结果通过输出闸后，仍须经过 Core 的领域校验，
-才可能成为候选、Memory 或其他 Artifact。该流程不依赖 Rust Gateway；部署需要统一模型流量入口时才选择远端执行器。
-
-### 用户能观察到的行为
-
-正常请求保持所选协议的响应形态。安全阻断返回明确原因类别和可关联请求 ID，不在错误正文回显敏感片段。
-界面或诊断接口展示实际模型、是否降级、是否发生上下文变换及已知用量；缺失值显示 unknown。
-缓存视图分别展示本地前缀是否变化、供应商实际 cache read/write、归一化普通输入、费用完整性和延迟，
-不以计划中的可复用长度替代实际命中。strict 模式分别展示上游首字与最终交付时间。
-用户当前指令、仓库规则和实时事实始终优先于历史资料。
-
-## 系统结构
-
-```mermaid
-flowchart TB
-    App["应用 / Coding Agent"] --> SDK["应用 SDK / 框架适配"]
-    App --> Gateway["可选 Rust Gateway<br/>GatewayRuntime · 调用编排"]
-    subgraph Core["PowerContext Core · 可嵌入或服务化"]
-        Materials["Memory / Handoff / 已采用历史"] --> Context["ContextRuntime<br/>上下文选择 / token 与缓存规划 / 会话推进"]
-        subgraph Gates["GateRuntime"]
-            InputGate["输入闸<br/>授权 / 安全投影 / 最终载荷准入"]
-            OutputGate["输出闸<br/>敏感检查 / 结构检查 / 释放判定"]
-        end
-        Records["公共执行服务与可选存储<br/>operation / 快照 / 响应 / 预算与账本"]
-        Context -.-> Records
-        InputGate -.-> Records
-        OutputGate -.-> Records
-    end
-    SDK --> Executor["内置 / SDK 执行器"]
-    Jobs["Core 后台与辅助调用"] --> Executor
-    Executor <-->|"准备计划 / 复用阶段输入"| Context
-    Gateway <-->|"准备计划 / 上下文控制"| Context
-    Executor <-->|"最终载荷 / 准入结果"| InputGate
-    Gateway <-->|"最终载荷 / 准入结果"| InputGate
-    Executor <-->|"直连或经现有网关"| Upstream["模型服务 / LiteLLM / Bifrost / New API<br/>KV Cache 在推理服务端"]
-    Gateway <-->|"受控执行"| Upstream
-    Executor -->|"原始响应，暂不交付"| OutputGate
-    Gateway -->|"响应检查接口"| OutputGate
-    OutputGate -.->|"受检投影与释放许可"| Gateway
-    OutputGate -.->|"受检投影与释放结果"| Executor
-    Gateway -->|"获准后交付"| App
-    Executor -->|"获准后交付"| App
-    App -.->|"明确采用 / 新工具结果"| Context
-```
-
-嵌入式路径直接调用 Core 的 Python 运行时，服务化 SDK 与 Rust Gateway 使用受认证的 Core API。
-ContextRuntime 与 GateRuntime 是 Core 内的职责边界；GatewayRuntime 是可选网关的执行编排运行时。
-这些名称不要求三个进程、三套数据库或替换现有 Core 组合入口，实际接口在实现时统一定义。
-后台任务复用已经准备的阶段输入，不再次触发主模型上下文增强。
-无论选择哪个执行器，输入发送与响应释放都必须等待同一 GateRuntime 的准入结果。
-
-### 三种运行时的职责
-
-| 运行时 | 核心问题 | 权威职责 |
-| --- | --- | --- |
-| ContextRuntime | 本轮看到什么，下一轮继承什么？ | 选择上下文、管理逻辑 token 预算与窗口、冻结注入、规划缓存前缀、按策略重建、处理采用与分支。 |
-| GateRuntime | 输入能否外发，输出能否交付？ | 核对当前授权与委托，执行安全规则、敏感变换、最终载荷准入、原始输出检查与释放判定。 |
-| GatewayRuntime | 如何完成这一次真实模型调用？ | 协调 Core 两种运行时、协议映射、合格目标提议、发送与释放约束、流控、取消、受控重试和证据上报。 |
-
-上下文的语义取舍由 ContextRuntime 决定，安全变换的规则和执行由 GateRuntime 决定。
-安全投影改变输入时，ContextRuntime 关联实际投影与版本，更新受影响的 token、前缀和断点；
-适配器完成协议映射后，GateRuntime 再检查最终载荷。内容、目标或缓存控制发生变化必须重新准入，
-不能沿用旧正文摘要或执行许可。禁止敏感外发的要求同样先于任何辅助模型调用。
-
-operation、attempt、预算预留和权威账本使用 Core 公共执行服务；托管入口协调两种运行时与这些服务，
-不为每种 Runtime 建立独立的会话、预算或计费系统。Source 与 Artifact 的领域生命周期仍由所属服务管理。
-
-### 职责分配
-
-| 责任 | Core | 可替换执行器（内置 / SDK / Rust Gateway） | 现有网关 / 推理服务 |
-| --- | --- | --- | --- |
-| 用户、Scope 和委托权限 | Server Access Plane 授权；Core 核对可信上下文、对象归属及委托 | 验证凭据，传递受限委托 | 执行已配置的供应商身份 |
-| 会话、分支、历史覆盖 | ContextRuntime 维护权威状态 | 传递事件身份，不猜测历史 | 不作为跨供应商会话权威 |
-| Memory、Handoff 和证据 | ContextRuntime 选择精确版本；领域服务校验与持久化 | 交付精确投影 | 接收最终模型输入 |
-| 压缩、脱敏、可逆编码 | ContextRuntime 规划表示与覆盖；GateRuntime 执行敏感变换并检查策略 | 保真发送已批准的正文，不自行改写 | 只允许已声明的变换 |
-| 模型与能力策略 | 批准目标或封闭候选集合 | 按计划选择或委托执行 | 执行固定目标或受控路由 |
-| 重试与总预算 | 策略、原子预留和结算 | 执行准入，报告不确定状态 | 内部尝试需声明与提供证据 |
-| 双闸 | 规则、检测、变换、安全与释放判定 | 在最终发送与首次释放处调用双闸并服从结果 | 可增加防护，不能替代本系统保证 |
-| KV Cache | ContextRuntime 规划前缀、断点、模式与亲和约束、管理已采用历史；GateRuntime 检查最终载荷 | 许可前完成参数映射，保真发送并采集真实读写用量 | 实际持有和复用缓存，返回可核验用量 |
-| 账本 | 权威追加、恢复与对账 | 采集并可靠上报执行证据 | 返回原始 usage 或对账材料 |
-
-### GatewayRuntime 的编排与状态边界
-
-GatewayRuntime 拥有完整的网关侧调用编排，处理请求状态、期限、并发、连接池、SSE、有限缓冲、取消、
-受控重试、恢复释放及证据上报。它主动请求上下文计划和安全判定，并执行 Core 返回的约束。
-其本地状态包括活动请求、仍有效的策略与计划缓存、受限缓存执行元数据、短期执行凭据及无正文事件 outbox。
-Memory 选择、Handoff 总结、历史覆盖、压缩和敏感规则继续调用 Core 权威实现；Gateway 不建立另一套会话数据库。
-
-Core 持有持久会话与冻结投影。会话记录是运行记录，不新增 Session Artifact 家族；需要成为证据的具体材料，
-通过受控采集成为 Source。Source、Memory、Handoff 与会话记录分别拥有明确的保留、读取和删除策略。
-
-Gateway 可以缓存仍有效的计划内容，但缓存不是授权依据。计划失效、权限变化或策略撤销时，必须重新准入。
-
-### 不部署 Gateway 的使用方式
-
-| 接入方式 | 如何组合运行时 | 覆盖范围 |
-| --- | --- | --- |
-| Core 内置后台调用 | ContextRuntime 复用阶段计划，GateRuntime 检查输入输出，内置执行器完成实际调用。 | 已接入的实际生成、Embedding、重排和辅助尝试。 |
-| 应用使用 SDK 托管调用 | SDK 协调 ContextRuntime、GateRuntime 与执行器；执行器可以使用应用自己的供应商凭据。 | 经受控调用入口的应用主模型流量，上下文管理限于委托范围。 |
-| 应用保留已有模型调用 | 在发送前和交付前显式调用 Core 检查 API，传入最终输入与原始输出。 | 调用方实际提交并正确执行的检查点；不能证明其没有旁路。 |
-| 使用 Rust Gateway | 通过兼容 HTTP 入口接入，由 GatewayRuntime 编排两种 Core 运行时与实际执行。 | 经该入口且通过验收的协议、上游与执行路径。 |
-
-只使用 prepare_context 或 MCP 召回的宿主，Core 只能检查自己交付的补充材料，
-无法看到宿主之后拼装的完整 prompt、模型响应或工具行为。安装 PowerContext 不等于自动保护所有外部模型调用。
-
-### Core 公共运行时与托管入口
-
-ContextRuntime 提供上下文准备、冻结投影及显式会话采用能力；GateRuntime 提供 before_inference 和
-after_inference 两个安全边界，分别返回受检输入与输出放行结果。名称是本方案的概念接口，
-实际 Python 与 HTTP 契约在实现时统一定义，并复用现有 Core 组合入口和资料服务。
-托管入口组织“ContextRuntime 准备 → 适配器序列化 → GateRuntime 输入闸 → InferenceExecutor →
-GateRuntime 输出闸 → 获准交付 → 宿主明确采用 → ContextRuntime 推进历史”；GatewayRuntime 实现远端执行路径的编排。
-手动接口则向已有应用暴露相同能力，明确由应用承担不跳过检查的责任。
-
-InferenceExecutor 负责最终序列化、传输、重试、流式事件和用量采集，不决定敏感规则与上下文取舍。
-Core 的检查必须拿到适配器形成的最终载荷和模型原始响应。现有 StructuredGenerator 的类型化输入或已验证输出
-可以作为业务组合点，但仅在其外层加 wrapper，无法覆盖 SDK 后续拼入的指令、内部重试和原始失败输出。
-每个支持的 provider adapter 必须在实际发送前和首次交付前接入双闸。
-执行器的准备或序列化步骤不得发出模型请求：Core 先形成逻辑投影，适配器形成最终载荷，
-Core 再检查并批准该载荷，执行器最后发送。不能把“先检查业务参数，再让 SDK 自行补充正文”当成最终检查。
-
-基础检查与无损表示优化可以无状态运行，不要求持久会话、Rust、HTTP 服务或账本数据库。
-选择跨会话连续性、跨重启预算或权威计费记录时，再启用相应 Core 状态仓储与确认步骤；
-无状态模式只承诺本次调用范围内的检查和已知用量，不承诺持久重放或跨进程总额度。
+Memory 提取阶段继续使用现有 Source 窗口、指令、输出 schema 和 Artifact 提交服务。
+在实际推理边界执行输入和输出检查，然后完成原有领域校验。Embedding 与重排保留现有 ports。
+任何阶段都不为满足运行时命名而强行调用 `context.prepare`；辅助策略调用也不递归触发上下文增强或更多辅助 Judge。
 
 # Reference-level explanation
 
-## 当前能力与需要新增的部分
+## 现有实现与具体复用点
 
-| 能力 | 当前工作区事实 | 本方案的落点 |
+| 职责 | 当前实现 | 本 RFC 的决策 |
 | --- | --- | --- |
-| PreparedContext | 临时四字段值，含 schema、status、content、content_bytes；不是会话或持久请求快照。 | 保持现有契约，新增独立的执行计划与会话记录。 |
-| 补充上下文预算 | max_bytes 是 UTF-8 字节预算，接入端校验后原样使用。 | ContextRuntime 另行计算完整请求 token、工具定义及输出预留。 |
-| 交付表示优化 | 当前有引用与 UTF-8 字节预算控制，尚无本 RFC 的通用 token 表示优化器。 | 新增独立可配置的无损表示策略；有损策略按质量门槛推进。 |
-| 后台输入编码 | 当前按既有阶段输入、指令和 schema 执行，尚无本 RFC 的通用共享 codec。 | 可逆共享编码属于新增阶段协议，不能直接用于任意 Agent 历史。 |
-| Handoff | 已有目标、状态、下一步、证据和遗漏，以及临时与持久两种形态。 | 新增会话覆盖关联，保留其生命周期。 |
-| Bootstrap receipt | 已有特定宿主生命周期的持久交付状态与精确版本去重。 | 借鉴状态单调和精确身份；不泛化成所有消息的交付证明。 |
-| Core inference | 已有 generation、embedding、rerank、decision 配置，以及实际生成 stage。 | 新增统一工作负载身份、模型能力约束与执行计划。 |
-| 上下文公共运行时 | 已有 prepare 与专用阶段输入；尚无本方案统一的窗口、冻结历史、缓存及采用生命周期。 | ContextRuntime 组合既有能力，提供按委托范围启用的上下文管理。 |
-| 双闸公共运行时 | 现有 inference ports 和 usage wrappers 提供组合位置，但尚无本方案的统一强制双闸。 | 新增 Core GateRuntime，并在实际发送与首次释放边界接入执行器。 |
-| Usage | 当前统计主要记录请求数、输入与输出 token；记录器允许丢失。 | 新增可恢复的执行账本，区分观测、估算和对账结果。 |
-| DecisionPolicy | 已有有界决策请求投影 sanitizer，部分判断失败 abstain；不提供通用模型 DLP。 | 复用精确投影边界，新增强制执行策略，不将 unknown 视为安全通过。 |
-| Gateway | 当前工作区没有本方案定义的 Rust Gateway 与 Core 控制协议。 | GatewayRuntime 作为可选调用编排实现，不作为 Core 两种运行时的前置依赖。 |
-
-仓库依据：
-[PreparedContext](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/models.py)、
-[上下文交付约定](../docs/workflows/prepare-context-text.md)、
-[决策请求投影](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/decision_projection.py)、
-[现有 inference ports](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/inference/protocols.py)、
-[实际 provider 调用适配](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/inference/pydantic_ai.py)、
-[用量记录器](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/_model_usage.py)、
-[DecisionPolicy 设计](1770-decision-policy-governance.md)。
-
-接口与存储约定另参见基线的
-[scoped application](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/application.py)、
-[Server 统一授权入口](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/server/app.py)、
-[共享表定义](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/persistence/tables.py)及
-[事务边界](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/persistence/database.py)。
-
-## 公共值、错误与兼容性
-
-ContextRuntime 的准备与采用、GateRuntime 的 before_inference 和 after_inference 是公共概念边界。
-托管调用入口将上下文准备、最终载荷检查、执行、原始响应检查、交付和按需采用组织为一个生命周期；
-显式检查接口只对提交的内容产生判定，不证明外部调用方遵守判定。
-本 RFC 中的新名称、类型和 HTTP 路径是待实现契约，不是当前已发布接口。
-
-| 值 | 必须表达的内容 |
-| --- | --- |
-| GateInput | 已绑定的可信调用身份、工作负载与 stage、目标能力、原始业务输入、最终协议载荷和策略选择。 |
-| CheckedInput | allow/block/withhold、实际允许的载荷或不可变引用、内容摘要、策略和变换版本、覆盖范围及本次调用约束。 |
-| GateOutput | 对应输入或 attempt 的身份、原始响应或安全单元、原始 usage、解析与流式完成状态。 |
-| CheckedOutput | 放行判定、允许交付的内容或引用、摘要、策略版本、已知遗漏和明确释放范围。 |
-
-主体、委托、租户与受信 stage 来自调用边界，不能由普通请求体自行声明权限。
-无状态值只在本次调用有效；持久模式另外使用 ContextSnapshot、InferencePlan 和 AttemptPermit。
-本地不可变值与远端签名许可表达同一绑定，不要求嵌入式应用使用签名 token、loopback HTTP 或持久仓储。
-
-错误保留稳定类别，至少区分 unauthorized、policy_blocked、policy_unavailable、unsupported_payload、
-target_incompatible、budget_exhausted、conflict、send_uncertain 和 response_incomplete。
-拒绝不是模型成功回答，unknown 不自动变成 allow；取消继续向上传播。
-HTTP 层将类别映射到认证、权限、冲突、大小、格式、限流或服务不可用状态，不在正文回显命中秘密。
-流开始后不能回写先前的 HTTP 状态；使用该协议的错误或中断事件，并明确内容是否已释放。
-
-已有用户未启用新策略时保持原调用行为。Core 内置路径可以统一经过 GateRuntime 组合点，
-但 disabled 不做拦截，也不能被展示为已经获得强制保护；新部署显式选择安全 profile 后才启用 enforcing。
-安全、优化、缓存和持久能力分别配置，不隐式增加外部模型调用、日志正文或响应持久化。
-已有自定义 generator、embedder 和 SDK 继续保持接口；只有经过已验收执行适配的调用才获得相应覆盖声明。
-
-当前 PreparedContext 保持临时四字段交付语义，不承载执行状态，也不被当作完整 prompt。
-已有 Source、Artifact、Memory、Handoff、Bootstrap receipt 和 DecisionPolicy 的身份与生命周期保持各自权威。
-实施新增 HTTP 契约时更新 openapi/powercontext.yaml，再生成客户端并执行 contract-test；本 RFC 本身不修改运行时代码。
-
-### 与现有 RFC 的交互
-
-[RFC 1783](1783-handoff-session-rollover.md) 将既有 PowerContext 定义为不托管完整转录、不管理 provider 窗口的交接参与者。
-本 RFC 的持久推理会话是选择加入的独立子系统，扩展受管执行的范围；它不把既有 Source/Memory/Handoff 自动变成转录库，
-不默认导入全部宿主历史，也不使普通 prepare 或 Handoff 用户承担会话存储和窗口管理。
-只有显式启用持久会话的调用采用本 RFC 的快照与重放契约；其他路径保留既有行为。
-
-Handoff 继续显式 prepare、检查、finalize 和可选 commit。PreparedContext Receipt RFC 1435 是准备结果解释的设计先例，
-并非本基线已经实现的公共 receipt；现有 Bootstrap receipt 也不能升级成模型实际收到内容的证明。
-新输入安全拒绝的语义与 Memory write-gate 的 privacy refusal 分开：后者可能是不发外部判断并返回 unknown，
-然后让领域写入继续，不能拿来作为模型外发安全已经通过。
-
-只检查调用方提交载荷的基础路径不因此获得任何项目资料读取权。需要注入或恢复 Source、Memory 或 Handoff 时，
-仍逐项执行对应 Scope、Artifact 与证据授权；会话读写权限显式绑定租户、主体与共享范围，
-不能由 Scope ID、模型名、外部 session_id 或共享管理员凭据隐式授予。
-
-## 双闸与两条调用链
-
-### 输入闸
-
-输入闸覆盖任何即将发送给模型的载荷，包括用户消息、历史、Memory 注入、Handoff、工具结果、
-工具定义、结构化参数，以及被转发的文件或多模态引用。
-
-处理顺序：
-
-1. 执行器在接入处验证身份、目标地址、协议与大小，按委托范围请求 ContextRuntime 准备或接受调用方输入。
-2. ContextRuntime 经资料授权形成有出处的上下文；GateRuntime 在任何外部辅助模型调用之前完成相应安全投影。
-3. ContextRuntime 规划被允许的表示优化或压缩，GateRuntime 执行敏感变换；更新投影、预算及缓存边界后形成固定输入计划。
-4. GateRuntime 输入闸检查适配器形成的最终字段与正文，结合 Core 公共执行服务确认模型能力、预算和目的地，返回准入结果。
-5. 执行器核对实际发送字节、目标与准入结果一致；有变化则重新请求 Core 检查。
-6. 通过后才允许发送给上游。
-
-只检查客户端原始消息不够：新注入的 Memory 或工具材料也可能包含敏感内容。
-Core 的最终检查必须覆盖变换与序列化后的实际载荷；执行器保真发送。
-下游还会变换请求时，见“第三方网关适配”节的责任范围。
-
-### 输出闸
-
-输出闸位于模型结果返回应用或 Core 之前，覆盖文本、工具参数、结构化输出、错误内容和可见引用。
-Core GateRuntime 负责敏感检查、输出投影、安全释放判定和记录要求，
-执行器负责解析、缓冲与按判定释放；Core 领域流水线另行验证业务 schema、证据与提交资格。
-
-主模型输出默认保持已验证的协议语义。禁止为了缩短响应，截断工具 JSON、重写代码补丁或修改带签名的推理块。
-需要转换的结果必须由 Core 的目标协议或明确的兼容规则处理。
-
-### 调用来源与双闸组合
-
-| 来源 | 输入闸 | 输出闸 | 上下文增强 |
-| --- | --- | --- | --- |
-| agent_main | 用户历史、注入、工具和目标安全检查 | 用户可见结果与工具参数检查 | Core 按任务与会话准备 |
-| core_background | Source 投影、阶段编码、输出预算与目的地检查 | 候选输出安全及协议检查 | 使用 Core 已准备的阶段输入 |
-| auxiliary | 分类、压缩、Judge 等辅助请求同样受检 | 辅助结果受检并由 Core 校验 | 禁止再次触发自动增强或递归压缩 |
-
-auxiliary 是受信任的执行用途，不是客户端能够通过任意 header 获得的权限。
-客户端接入验证和上游协议解析是额外检查点，不代替两道闸。
-三种来源都可选择内置执行器，不要求部署独立 Gateway。
-三种来源都显式绑定已注册 Scope；后台 stage 或服务身份不豁免资料授权和 Scope 隔离。
-
-## 一次主模型调用的执行过程
-
-```mermaid
-sequenceDiagram
-    participant A as 应用
-    participant E as GatewayRuntime 或内置 / SDK 托管入口
-    participant C as Core ContextRuntime
-    participant G as Core GateRuntime
-    participant S as Core 公共执行服务
-    participant U as 上游网关或推理服务
-    A->>E: 本轮输入、身份与上下文委托
-    opt 启用持久执行
-        E->>S: 在收费准备前幂等建立 operation
-    end
-    E->>C: 准备上下文或复用已有阶段计划
-    C->>C: 经授权选择、预算、冻结注入与缓存规划
-    C-->>E: 逻辑输入与执行约束
-    E->>E: 映射目标协议、缓存控制与最终载荷
-    E->>G: 最终输入与具体目标
-    G-->>E: 受检输入与准入结果
-    opt 启用持久执行
-        E->>S: 绑定 attempt 与最终载荷，按配置预留预算
-        S-->>E: 执行实例绑定的单次许可
-    end
-    E->>E: 核对实际字节及目标，不自行改写
-    E->>U: 发送模型请求
-    U-->>E: 原始响应或 SSE、usage
-    E->>G: 提交未释放响应
-    G->>G: 检查原始响应与交付投影
-    G->>S: 按配置确认受检候选与检查关联
-    G-->>E: 受检输出与释放结果
-    E-->>A: 检查通过后交付或明确错误
-    E->>S: 经 Core 事件接口记录目标、用量与释放状态
-    opt 启用持久会话且宿主采用
-        A->>C: 准确候选、期望分支版本与选择 ID
-        C-->>A: 幂等采用结果与新版本
-    end
-```
-
-执行器可以是进程内 Python、应用 SDK 或远端 Rust Gateway；进程内调用不需要 loopback HTTP。
-图中的“上报”与“交付”是两种事实。启用持久预算时，执行许可和预留在外发前持久记录；
-启用持久连续性时，在释放前确认相应响应。客户端是否真正收到仍需额外回执，不能由写 socket 成功推断。
-
-上下文准备中的外部辅助调用也经 GateRuntime 与受控执行器；图中未展开其独立子尝试。
-最终输入若被安全投影改变，按运行时职责节重新核对 ContextRuntime 的预算与缓存计划后再准入。
-Core 后台通过 ContextRuntime 复用阶段计划，再经 GateRuntime 与内置执行器执行，
-跳过会话同步与自动 Memory 注入。请求实际经过多少次供应商调用，按执行器与下游证据记录。
-
-## ContextRuntime 的上下文生命周期
-
-ContextRuntime 在每次受管调用边界组织模型可见内容。它可以在本次请求内使用固定模板、调用方完整历史和
-已授权材料完成窗口与缓存规划；持久会话、冻结历史和跨重启恢复按需启用，不强制创建账本数据库。
-
-### 四个上下文控制点
-
-| 时点 | ContextRuntime 的行为 | 必须保留的边界 |
-| --- | --- | --- |
-| 本轮准备 | 选择材料、去重准确注入、保留新指令与纠正，生成带来源的逻辑投影。 | 不越权读取资料，不把历史推测升级为事实。 |
-| 最终发送前 | 结合目标窗口、工具、输出预留及安全投影，校准 token、表示和缓存边界。 | 目标协议映射后由 GateRuntime 检查最终载荷，许可后内容不再变化。 |
-| 调用与工具回合后 | 关联受检候选与有来源的工具结果；由宿主明确采用所选历史。 | 保存或交付不代表采用，模型工具请求不代表工具已经执行。 |
-| 下一轮或窗口重建 | 精确重放已采用历史；按合格策略在明确 epoch 重建投影或使用显式 Handoff。 | 保留未完成动作、来源与遗漏；重试不重新召回，不改写旧快照。 |
-
-这是模型调用之间及发送前的上下文控制。实际模型窗口消费与 KV 存储由推理服务执行；
-ContextRuntime 通过获准输入和支持的缓存控制影响它们，不修改模型内部状态，也不自行解释私有推理块。
-
-### 宿主委托与上下文管理权
-
-接入配置明确选择宿主管理上下文或委托 ContextRuntime 管理，并绑定允许的补充材料、历史重放、
-表示优化与压缩、内容保留及采用方式。每项能力仍受授权、安全策略和已验收支持范围约束。
-仅代理一次模型 HTTP 请求，可以管理收到的本次载荷；跨轮权威历史需要宿主提供稳定的任务、会话、分支、
-请求身份、可对应的消息与工具事件，以及明确的采用回执。能力不足时声明本次调用范围，不猜测完整历史。
-
-同一会话只有一个自动上下文编排权威。委托 ContextRuntime 后，宿主遵守约定的截断与重建边界，
-不再独立自动召回、压缩或重排同一历史；外部编辑必须以新事件、分支或重建声明提交。
-用户纠正、宿主工具授权和事实核验仍由相应入口负责。委托与权限在后续调用及恢复时重新验证。
-
-以下会话身份、历史、采用与恢复规则适用于启用了持久连续性的托管模式。
-
-### 最小身份
-
-Core 使用可信调用方绑定、Scope、任务、会话、分支、本轮请求和 attempt 关联操作；部署租户关系来自可信接入映射。
-Scope 是业务分区，认证与权限由既有 Access Plane 及受信接入边界提供；同一项目内不同任务和分支不能共享隐式历史。
-
-客户端提供的模型名、role、Scope header 和会话 ID 只是输入。Core 必须依据已认证身份验证绑定；
-Gateway 服务身份不能使用一个共享管理员 token 代表所有最终用户。
-
-### 原始观察与实际模型输入
-
-Core 分别保存以下内容：
-
-| 记录 | 用途 |
-| --- | --- |
-| 允许采集的原始事件 | 表达实际接收到的用户消息、助手消息和工具结果，保留顺序与来源。 |
-| 注入记录 | 记录精确正文或可恢复引用、插入位置、来源版本和实际交付状态。 |
-| 模型输入投影 | 表达一次实际外发所用的脱敏、编码、压缩和协议表示。 |
-| 变换记录 | 关联输入与投影、策略和 codec 版本、已知遗漏及变换范围。 |
-| 回答候选与会话选择 | 区分已保存的受检回答、已采用的分支历史和实际交付回执；保存本身不推进所选历史。 |
-
-未获准持久化的敏感正文不进入原始事件存储。只有脱敏内容被允许保存时，它是明确标记的新采集观察，
-不能伪称保留了未经修改的原文。Gateway 日志和事件 outbox 默认均不存正文。
-
-模型原始结果与实际交付给用户的结果也要区分。用户纠正是新事件，模型计划执行的动作不能成为“已经执行”的事实。
-客户端重放的工具结果保留 client_reported 来源；只有受信宿主或执行器提供了有效执行凭据，
-才能标记为 host_attested 等更强证据。Gateway 观测到某段消息只证明其接收，不证明对应命令实际运行。
-
-### 稳定注入与精确去重
-
-Core 记录每段上下文的原文、位置与准确来源，后续重放不重新改写已经交付的历史。
-客户端再次发送完整历史时，以稳定事件身份和内容一致性核对重叠前缀，只追加新事件；
-不能把每轮请求的整个历史再次采集一遍。
-
-同一会话的自动上下文交付指定唯一入口：宿主 Hook 或 Core 托管入口（SDK / Gateway）。由托管入口接管时，
-宿主不再独立自动召回同一批材料；显式 Memory/Handoff 工具仍可使用。
-需要共存时只认可 Core 可验证的精确交付记录，不能将已有 bootstrap 去重泛化为全部历史已覆盖。
-Source 采集同样指定来源所有者，或让 Hook 与托管入口使用可关联的同一原始事件身份，
-避免同一用户提示成为两份独立提取输入；不以文本相似度合并不同观察。
-
-客户端历史不包含 Core 注入时，由 Core 根据已确认的边界重新插入。若客户端回传了注入，以权威记录核对，
-不信任客户端自行声明“这段已注入”或“这条已覆盖”。首次接入、历史截断、编辑旧消息和重新生成回答均需要明确分支或重建边界。
-
-首个实现要求稳定会话及请求 ID，并只支持同会话串行推进。不能可靠匹配的历史返回显式错误或进入明确的无连续性模式，
-不做相似度拼接。同请求 ID、不同正文或策略要求冲突时返回冲突。
-
-Scope、可信调用方绑定、会话/分支或后台 namespace 与调用方请求 ID 组成幂等边界；
-Core 在任何收费准备之前原子建立唯一 operation。
-重复 prepare 核对同一原始输入与调用方约束，返回原 operation 的准备状态、计划或已有结果引用，
-不重新触发召回、Embedding 或压缩。准备未完成时返回可查询的进行中状态；
-故障后的受控恢复仍使用原 operation、已冻结子调用身份及剩余预算，不另起一组收费工作。
-管理员策略升级通过重新核权与计划版本表达，不伪装成调用方修改了原请求。
-
-### Handoff 与覆盖范围
-
-Handoff 保持已有 prepare、检查、finalize 和可选 commit 的语义。
-会话服务另外记录其覆盖的确切事件集合；只有确认是无缺口的连续前缀时，才允许用一个截止位置表示覆盖。
-Source journal 的位置不等于整个对话已经被处理，也不等于模型实际看过它。
-
-新会话的上下文由“完整交接值或精确版本 + 未覆盖尾部 + 任务相关 Memory + 当前指令”组成。
-Handoff hint 只用于定位，不能替代完整交接、证据读取和当前事实核对。
-持有交接不自动获得全部证据权限；每项 Source 仍在原始来源 Scope 中独立授权。
-
-### 并发、重启与增量成本
-
-Core 用期望会话版本推进状态；并发冲突显式分支或重试控制操作，不能将两个回答混入同一条已选历史。
-事件追加和请求 ID 采用唯一约束；冻结注入、计划与可恢复的内容引用先持久化，才承诺重启后可续接。
-持久响应是候选，只有明确的会话选择操作才把该请求的输入事件与准确受检回答加入所选分支并推进版本。
-上一个请求尚待选择时，新请求须先显式采用、放弃候选或建立分支；不能仅凭响应已落库推进历史。
-
-服务端按索引读取增量事件，不在每轮重写整段历史，不自动全库检索或摘要。客户端发送完整历史时，
-网络与解析成本仍随历史长度增长；即使服务端只追加增量，也不能宣称完整路径为常数成本。
-每轮重新发送给模型的历史 token 也不因本地只保存一次而自动减少。
-
-## Core 两种运行时与执行器的公共契约
-
-以下对象和控制接口均为新增设计，不是现有 PreparedContext API 的字段扩展。
-现有 prepare 保持临时上下文交付契约，不承担会话推进、执行计划或预算预留。
-持久计划、预算和会话写入通过新的显式控制操作完成；召回本身仍可能调用收费的 Embedding 或记录诊断。
-基础 ContextRuntime 与 GateRuntime 使用进程内值即可运行，不强制保存这些对象。下面的持久流程适用于启用了
-会话连续性或持久预算的托管执行；跨进程时将同一服务契约暴露为受认证 HTTP 接口。
-
-### 三种主要对象
-
-| 对象 | 最小内容 | 权威与用途 |
-| --- | --- | --- |
-| ContextSnapshot | 租户、Scope、会话与分支版本、事件范围、精确注入、来源版本、变换版本、已知遗漏和内容引用 | ContextRuntime 的可恢复逻辑输入快照；不代表模型已经接收。 |
-| InferencePlan | operation、用途与 stage、快照、合格目标、协议、输出约束、安全策略、cache_policy、预算及有效期 | Core 汇合上下文计划、GateRuntime 约束与公共执行策略的契约；缓存计划随该对象版本化，不新增独立缓存制品或计划接口。 |
-| AttemptPermit | attempt、具体目标、上游配置指纹、最终正文摘要、预算预留、执行实例、失效时间和单次许可身份 | 在发送前绑定一次具体执行；实际执行器验证后才能调用。 |
-
-嵌入式运行时直接调用相同 Core 服务；远端执行器通过内部 TLS 与认证取得计划，
-跨进程携带的执行许可使用可验证签名或等价的防篡改服务契约。进程内无需引入签名 token 或网络协调。
-密钥、供应商凭据和敏感占位符映射不写入普通计划日志。摘要用于核对内容，不代替租户、Scope 或业务对象身份。
-
-正文摘要针对 Core 最终返回的精确 UTF-8 字节；认证 header、连接信息等允许由适配器补充，
-其允许字段由计划单独声明。正文缓存标记、codec 指令和输出 schema 必须在摘要形成之前确定。
-首版返回精确正文，后续可以使用经过授权的不可变内容引用，不能通过引用读取时追随“最新内容”。
-执行器对已许可输入只核验一致性、放行或阻断，不在许可后做脱敏、加缓存标记或改写正文。
-需要这些变换时，返回 Core 生成新的最终字节和许可。摘要只覆盖发给第一跳上游的正文；
-后续供应商协议转换按“第三方网关适配”节核验，不能声称其字节仍与第一跳相同。
-
-### 统一的 Scope 与调用身份
-
-所有新增 Core 控制请求显式携带一个 `scope_id`，复用现有 Scope 注册、选择与绑定机制。
-Scope 是不透明的业务分区，不编码租户、用户、仓库路径或会话层级，也不因请求携带该 ID 自动授予权限。
-未知 Scope 返回现有 `scope_not_found` 语义，不在推理请求中自动注册。
-本方案不新增独立租户目录、登录体系或 Gateway 会话权限库；部署中的租户关系通过既有可信身份与 Scope 绑定表达。
-
-资源地址分别为 `(scope_id, session_id, branch_id)`、`(scope_id, operation_id)`、
-`(scope_id, attempt_id)` 和带 Scope 的准确投影引用。所有读取、更新、幂等查找、预算预留、内容读取、
-恢复及清理都先绑定 Scope，再定位对象。即使 ID 全局唯一，也不允许仅凭 ID 全库查询后再补验 Scope。
-当前 Scope 授权通过后，其他 Scope 的 ID 按本 Scope 中不存在处理，不确认其实际归属或存在性。
-
-同一 Scope 内的会话默认只允许其可信调用方绑定及受限委托访问；`scope.read` 或知道会话 ID 不自动取得他人会话。
-首版不提供会话共享或跨 Scope 迁移；需要跨任务交付时使用已有经授权的 Handoff 流程。
-`caller_binding_id` 表示稳定的原始调用方与集成归属，不直接使用 RBAC Binding ID、短期 token 或执行实例 ID；
-凭据轮换不改变幂等身份，受限委托另行核验当前有效性。
-原始 Principal 与委托来自认证边界，Core 只保存可核验的调用方绑定引用；普通 JSON、模型 role 或兼容入口 header
-不能自报 Principal、tenant、管理员身份或 `core_background` 权限。
-模型兼容入口从受验证的接入配置和 Scope binding 解析上下文身份，供应商消息正文保持其协议形态。
-
-Parent 和 context_references 不自动授予资料读取权。引用其他 Scope 的 Source、Artifact 或 Memory 时，
-保留原始 Scope 与准确版本，逐项核权；冻结快照不能绕过撤权。准备、恢复和释放时执行相应的当前授权检查。
-请求、预算及会话状态保存在本次 operation 的所属 Scope，不能因为读取了关联 Scope 的资料而跨 Scope 推进历史或扣款。
-
-### 服务接口与远端控制 API
-
-接口按业务能力组织，延续现有 `/v1/context/prepare`、`/v1/memory/entries/get` 和 `/v1/work/...` 的操作式风格。
-新增控制操作统一使用 POST、JSON 中的 `scope_id` 和 snake_case operationId；Runtime 名称不成为另一套 URL 命名空间。
-现有 `/v1/context/prepare` 保持原有临时、只读补充上下文契约；下列新接口不将它升级为完整推理或会话写入口。
-
-上下文准备与基础检查共享以下入口；准备结果明确声明本次调用或持久状态范围：
-
-| 建议接口 | operationId | 输入与结果 |
-| --- | --- | --- |
-| `POST /v1/inference/prepare` | `prepare_inference` | `scope_id`、`request_id`、执行 profile、用途与输入；按获准 profile 返回本次逻辑计划，或先建立持久 operation 再返回准备状态、不可变计划及已有结果引用。会话模式另带会话、分支及期望版本。 |
-| `POST /v1/inference/input/check` | `check_inference_input` | `scope_id`、本次调用身份与 GateInput；返回 CheckedInput，不建立持久 operation 或签发持久执行许可。 |
-| `POST /v1/inference/output/check` | `check_inference_output` | `scope_id`、对应受检输入与 GateOutput；返回 CheckedOutput，不自动保存或采用会话历史。 |
-
-无状态 prepare 同样由 ContextRuntime 规划窗口、冻结本次注入与缓存断点，供 GatewayRuntime 完成参数映射后调用 input/check，
-再执行和调用 output/check；无需会话或账本表。持久模式复用相同准备语义，再通过以下 attempt 协议兑现恢复与预算承诺。
-状态范围由已授权的服务端执行 profile 约束；调用方不能通过关闭持久选项绕过路由要求的保留、准入或总预算。
-
-持久会话显式创建，Core 分配不透明 ID；不将宿主的外部会话字符串直接当作服务端会话身份：
-
-| 建议接口 | operationId | 输入与结果 |
-| --- | --- | --- |
-| `POST /v1/context/sessions/create` | `create_context_session` | `scope_id`、`request_id`、获准的上下文 profile；幂等返回会话、初始分支与版本。 |
-| `POST /v1/context/sessions/get` | `get_context_session` | `scope_id`、`session_id`、`branch_id`；按当前权限返回有界元数据、分支版本及准确引用，不返回许可或无检查的历史正文。 |
-| `POST /v1/context/branches/fork` | `fork_context_branch` | `scope_id`、`session_id`、`from_branch_id`、`from_version`、`request_id`；从可恢复的准确历史版本建立新分支，不修改原分支。 |
-
-持久执行复用统一 operation 与 attempt 协议：
-
-| 建议接口 | operationId | 输入与结果 |
-| --- | --- | --- |
-| `POST /v1/inference/attempts/begin` | `begin_inference_attempt` | `scope_id`、`operation_id`、准确计划及 `request_id`；核对归属与版本，绑定目标和执行实例，按配置预留预算并返回原 attempt 或单次许可。 |
-| `POST /v1/inference/responses/submit` | `submit_inference_response` | `scope_id`、`attempt_id`、`request_id`、原始响应与完成状态；检查并按权限保存准确候选，确认后返回释放许可，不自动采用历史。 |
-| `POST /v1/inference/releases/prepare` | `prepare_inference_release` | `scope_id`、`attempt_id`、`candidate_id`、`request_id`；为同一已保存候选重新核权及检查，按恢复规则签发实例绑定的释放许可，不新增模型尝试。 |
-| `POST /v1/inference/selections/commit` | `commit_inference_selection` | `scope_id`、会话与分支、`operation_id`、准确候选、期望版本、`request_id` 和采用或放弃动作；幂等处理，采用才推进所选历史。 |
-| `POST /v1/inference/events/append` | `append_inference_events` | `scope_id`、`attempt_id`、`request_id` 及带稳定 `event_id` 的有界批次；核验执行实例和事件权限后幂等追加执行证据。 |
-| `POST /v1/inference/operations/get` | `get_inference_operation` | `scope_id`、`operation_id`；返回有界计划与结果引用、状态、费用及证据完整性，查询不签发许可。 |
-
-ContextRuntime 处理准备、会话和 selection；GateRuntime 处理最终检查与恢复释放；公共执行服务管理 attempt、
-事件和预算。GatewayRuntime 使用这些相同操作，不维护独立控制协议或双份状态。
-初始会话只串行推进；开放分支能力前单独验收 fork、版本冲突与历史基线匹配。
-采用其他分支的候选仅允许在同会话的显式 fork 上进行，核对 fork 基线与原 operation 输入完全匹配并重新核权，
-选择记录属于新分支，不覆盖原分支的采用事实，也不自动重放工具副作用。
-
-### DTO、错误与接入契约
-
-- **作用域**：每个控制 DTO 只声明一个必填 `scope_id`，复用既有校验与长度限制，并拒绝未声明字段；不得同时从正文、header 和 URL 取互相覆盖的值。
-  子对象必须属于相同 Scope；会话、分支、operation、计划、attempt 和候选之间还要核对完整父子关系。
-- **幂等与版本**：持久变更统一使用稳定 `request_id`，分别作为创建、准备、开始、提交、恢复或选择的幂等请求键；
-  同键异正文返回冲突。`expected_branch_version` 表达 CAS，不能用 HTTP trace/request ID 代替幂等键。
-  事件另外保留 `event_id`，同一事件拆成不同批次重传也不重复应用。
-  无状态请求中的 request_id 只提供本次关联，不承诺跨重启去重；重试已准备调用时复用仍有效的准确计划。
-- **结果**：使用按操作定义的类型化请求与结果；持久资源引用包含 Scope 与准确身份/版本。
-  查询默认返回元数据与引用，恢复正文必须经过当前 GateRuntime 释放检查，不提供绕过检查的正文下载入口。
-  prepare 结果的 `persistence` 区分 `none` 与 `durable`；无状态模式返回完整短期计划值，不能返回需要查库的悬空引用。
-  远端本次计划仍绑定 Scope、调用方、内容和有效期，在最终准入验证，不能信任调用方重写的策略字段。
-  原始供应商协议仅由模型兼容入口返回，不套入 Core 控制结果或任意通用 JSON 字典。
-- **错误**：复用 ErrorResponse 的 `error.code/message/details` 与 `X-PowerContext-Request-ID`。
-  区分 401、403、404、409、422、预算/限流的 429 和依赖不可用的 503；details 不泄露其他 Scope 或敏感正文。
-  成功执行检查可以返回 200 和 block 判定；执行失败不能伪装成模型成功回答。
-- **有界读取**：会话与 operation 查询不隐式展开全部历史、事件或子尝试；返回准确引用和完整性声明。
-  后续新增列表操作时沿用 `limit/cursor`，cursor 绑定 Scope、调用方、过滤条件、排序与快照边界，授权过滤先于分页。
-- **能力声明**：基础双闸、持久执行、持久会话、fork 和严格预算分别在 capabilities 中声明支持范围；
-  不支持的能力在接受写入或收费工作前拒绝。HTTP、SDK 与实际接入的宿主逐项声明，不自动扩大 MCP 工具集合。
-
-嵌入式入口沿用 `application.context.for_scope(scope_id)`，会话方法在该分组中扩展；
-拟新增 `application.inference.for_scope(scope_id)` 组织检查和托管执行。作用域由应用分组绑定，
-领域方法不再接受可覆盖该绑定的第二份 Scope，也不增加公开 principal、role 或 permission 参数。
-远端 Client 沿用平铺的类型化方法，例如 `prepare_inference(PrepareInferenceRequest(scope_id=..., ...))`；
-Server adapter 完成 DTO 与 scoped application 的转换，Python 与 HTTP 共享行为。
-
-所有新操作进入现有 OpenAPI 真源与生成链，声明 `x-powercontext-scope-mode: current`，
-并由 `x-powercontext-access` 指定既有 Server PEP 的检查，而不是在 Gateway 或领域 Runtime 中建立另一个 PDP：
-
-| 操作类别 | Access Plane 基线 | 额外领域约束 |
-| --- | --- | --- |
-| 基础检查与元数据读取 | 所属 Scope 的 `scope.read` | 会话/operation 的调用方绑定、精确引用及当前保留权限；检查成本仍受获准 profile 和额度约束。 |
-| 会话创建、fork、推理准备与选择 | 所属 Scope 的 `scope.contribute` | 宿主委托、会话归属、分支版本与允许的上下文能力；无状态准备同样遵守准入权限。 |
-| attempt、响应、恢复与执行事件 | 所属 Scope 的 `scope.contribute` | 受限执行实例委托、原始调用方绑定、单次许可、fencing 及操作专属状态迁移。 |
-| 注入或恢复外部资料 | 按既有规则检查每个 Scope / Artifact / 证据 | 不因拥有会话、Handoff 或 Gateway 服务凭据而扩大读权限。 |
-
-认证、角色与关系授权由 Server Access Plane 负责。Core 接收可信授权上下文并核对对象归属、委托和状态不变量；
-GateRuntime 使用当前授权结果完成外发与释放判定，不复制角色库或信任普通业务字段声明权限。
-首版复用现有 Scope 动作和会话归属约束，不新增 session 角色体系；未来共享需求统一扩展 Access Plane。
-嵌入式应用负责配置自己的可信调用边界，不能把一次 `for_scope(...)` 调用当作已经完成认证。
-
-例如一次持久主模型准备请求只传业务身份与输入，不携带自报租户或管理员权限：
-
-```json
-{
-  "scope_id": "scp_project_a",
-  "request_id": "turn-17",
-  "session_id": "ctxs_example",
-  "branch_id": "ctxb_example",
-  "expected_branch_version": 6,
-  "execution_profile": "managed-session",
-  "purpose": "agent_main",
-  "target_profile": "coding-default",
-  "input": {"messages": [{"role": "user", "content": "继续修复客户端"}]}
-}
-```
-
-以上为待实现的 DTO 示例。返回的 operation、计划、候选与查询均保持相同 Scope；
-将其中的 attempt 或 candidate 换成另一 Scope 的 ID 必须失败，不能只检查父请求的 Scope。
-
-对应的持久准备结果只返回准备状态与准确引用，执行许可留给 begin 操作：
-
-```json
-{
-  "scope_id": "scp_project_a",
-  "operation_id": "iop_example",
-  "persistence": "durable",
-  "status": "ready",
-  "plan_ref": {"scope_id": "scp_project_a", "plan_id": "ipl_example", "version": 1},
-  "branch_ref": {
-    "scope_id": "scp_project_a",
-    "session_id": "ctxs_example",
-    "branch_id": "ctxb_example",
-    "version": 6
-  }
-}
-```
-
-### 计划准备与尝试准入
-
-持久模式准备计划必须先建立 operation，才能触发收费的 Embedding、分类或压缩子调用。辅助调用共享父任务关联与总预算，
-使用独立的受限执行用途，不再次进入主模型计划准备。对主模型流量不默认引入模型 Judge。
-Core 不跨外部模型调用持有会话写锁或数据库事务：先取得有版本的输入，在锁外准备，再核对版本后发布。
-执行调度为主调用、Core 后台和辅助执行分别设置并发额度与保留容量，避免主请求占满入口后等待辅助调用而相互阻塞。
-
-持久执行模式的开始尝试属于强一致写操作。同一许可不得被多个执行实例重新消费。
-跨实例执行时 Core 设置所有权与 fencing 标识；实例失联后的发送状态不确定时，
-不把租约到期当作“确定未调用”，也不自动重新发许可。
-网络无法提供供应商侧的 exactly-once 推理保证；有明确供应商幂等契约时才使用对应机制。
-开始尝试另带稳定的开始请求 ID；同一 operation 内重复 ID 与相同约束返回原 attempt 及其状态，
-不再预留预算或创建执行。重取许可不代表可重新发送；已开始发送或状态不确定的 attempt 仍遵守单次消费与恢复规则。
-
-### 最终计划的绑定
-
-计划至少绑定：
-
-- 主体、Scope、调用用途、任务、operation 和上下文快照。
-- 源协议与 render profile、目标模型或封闭候选、数据目的地和已核验的上游配置。
-- 输入正文、工具 schema、输出 schema、输出 token 与其他收费资源上限。
-- 安全与变换策略版本、缓存参数、codec 版本、允许的请求变换。
-- 超时、总 attempt 限制、费用预留、用量可见性要求以及失效时间。
-
-更换供应商、模型家族、隐私边界或改变有损表示时，Core 形成明确的新计划版本，再准入下一次尝试。
-同一目标上的网络重试复用相同逻辑快照和相同最终正文，不重新召回。
-
-### 协议版本与兼容性
-
-Core 与各执行器的控制协议声明 schema 和能力版本；远端执行时使用共同契约生成或验证 Python 与 Rust 类型。
-实现时以现有 OpenAPI 真源管理新增 Core HTTP 契约，执行生成和 contract-test；不得手改生成的 Python 文件。
-Gateway 面向模型的兼容协议单独声明支持端点、字段与流式事件。
-
-升级前验证版本交集；未知强制字段、未知 codec 或无法执行的安全要求在接受写入和发送之前拒绝。
-滚动升级期间保留旧计划的解析或明确使其失效，不能按新策略默默重新解释旧记录。
-
-### 响应提交与释放
-
-strict 路径由实际执行器收齐响应，并在交付前调用 Core 输出闸；内置执行器直接调用，远端执行器使用受控响应接口。
-Core 完成敏感检查、必要输出投影、当前授权与策略核验，按配置保存获准保留的交付内容和变换关联，
-返回绑定准确字节、执行实例和有效期的释放结果。执行器核对返回字节与许可一致，许可后不自行修改。
-需要脱敏的结果由 Core 重建合法协议响应，不能只删除 JSON 中的任意字符串。
-
-响应提交使用稳定提交 ID 和摘要，重复提交找回同一受检候选；修改已提交内容返回冲突。
-blocked 内容按保留权限只记录必要的无敏感判定，不强制保存原始秘密。
-要求持久连续性的路由，必须在首次内容释放前取得 Core 的持久确认；用户实际接收状态仍单独上报。
-未启用持久连续性的基础双闸调用不强制写响应数据库，仍须完成同样的安全检查；它不承诺重启后恢复该次内容。
-
-observe 或 bounded 模式可按声明的安全单元提交，但只有已确认记录可以用于重启续接；
-未获确认的尾部明确标为不完整。若策略不允许保存可恢复的响应投影，则进入无持久连续性模式，
-或拒绝要求精确重放的路由。不能用无正文事件或下一轮客户端回传替代已经承诺的服务端持久记录。
-
-### 会话采用与响应恢复
-
-持久主模型调用明确区分以下事实：
-
-| 事实 | 对历史的影响 |
-| --- | --- |
-| 受检候选已保存 | 准确交付投影可恢复；不改变当前分支版本。 |
-| 释放已开始或完成 | 记录执行器写出进度；不证明宿主接受或用户收到。 |
-| 宿主采用回答 | 原子核对期望会话版本，将对应输入事件与该回答纳入所选历史，仅推进一次。 |
-| 宿主放弃候选 | 保留可审计处置，不把候选加入历史；不撤销已发生费用或推断工具未执行。 |
-| 用户接收或工具执行回执 | 单独补充对应事实，不由采用回答或 socket 写入推断。 |
-
-ContextRuntime 处理 selection，调用 Core 事务服务原子推进所选历史。
-selection 来自绑定该会话的已认证宿主或 SDK 受限委托，不能由普通消息内容或任意角色字段声明。
-宿主接受完整受检回答后提交稳定选择 ID、准确候选引用及期望版本；相同选择重试返回原结果，
-改选另一回答必须建立明确分支，不能修改已经采用的历史。后台领域提交沿用各 Artifact Service，
-不通过主模型 selection 替代 Memory/Handoff 的校验或提交。
-
-例如 Core 保存了包含工具调用的受检回答，Gateway 在交付前崩溃：调用方使用原请求 ID 重复 prepare，
-找回同一 operation 与候选；新的执行实例通过 release 操作重新核权，恢复相同准确投影，
-不重新调用模型，也不把旧候选当作已采用回答。只有保留投影足以满足当前检查要求时才可恢复；
-否则明确报告阻断或不可恢复。策略变化需要新投影时分配新的投影身份，不改写旧候选。
-旧执行实例必须被有效隔离，或其释放许可已失效，才能向替代实例发出恢复许可；无法确认时报告交付不确定。
-
-采用操作已经提交但确认丢失时，重复 selection 返回原会话版本。工具已执行或执行状态未知时，
-恢复不自动重放其副作用；缺少宿主去重或执行证据时，返回状态和引用，等待宿主显式处置。
-只有已采用的历史供后续自动重放及缓存前缀使用；未选择或已放弃的候选不能为了提高命中而混入历史。
-没有会话采用回执的兼容入口仍可使用基础双闸及固定前缀缓存，但不宣称具备本节的持久会话恢复保证。
-
-## 安全与敏感信息策略
-
-### 强制策略与辅助判断
-
-强制安全策略和 advisory 判断独立配置。动作包括 allow、block、redact、withhold；
-每项规则声明输入或输出方向、数据类型、适用主体、目的地、版本以及检查失败时的行为。
-shadow 只比较结果，不阻断或改变内容，不能被称为已经启用强制保护。
-redact 由 Core 在许可绑定前执行；Rust 对许可正文只检查或阻断，不自行更改已绑定内容。
-
-Core GateRuntime 实现规则语义、确定性敏感扫描、语义判断与策略版本管理。
-执行器只提供未被提前释放的内容，并核验许可、字节与释放顺序，不维护第二套敏感检测规则。
-首版采用封闭的声明式规则集合和固定扫描器能力，规则在 Core 运行，不向远端执行器下发任意脚本。
-Core 检测测试规定 JSON 字符串、数字、Unicode、转义和重复字段的处理方式；
-跨语言契约测试核对内容保真、摘要、许可和释放顺序。
-
-当前 KnownSecretDecisionRequestSanitizer 可处理有界决策请求中的已知秘密与指定凭据前缀，
-不会自行读取 Source/Memory，也不是任意 PII 或密码检测器。该专用投影与 advisory DecisionPolicy 不构成通用 DLP，
-不能把决策层的 fail-open 结果直接移作双闸安全通过。相关现状见 [RuntimeConfig](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/config.py)、
-[DecisionModel](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/decision_model.py)。
-
-### 先建立安全投影，再调用外部辅助模型
-
-秘密检查首先在可信边界内完成。原始 Source、工具输出或用户输入若含不可外发内容，
-不得先交给外部分类、压缩或安全模型，再决定是否脱敏。
-
-复杂判断只能使用本地模型，或策略已经允许外发的投影。辅助模型的输出同样不可信，
-必须校验结构和引用；其失败不能解除强制安全规则。
-所有后台 inference 目的地均须纳入执行配置；只有实际将对应路径纳入执行链，才能宣称覆盖。
-嵌入式 SDK 的保证依赖调用方与执行器正确接入，本身不构成独立于应用进程的网络隔离。
-需要在部署层阻止任意旁路时，选择统一执行入口并用网络策略约束出站；可选 Gateway 适合承担这种集中接入。
-
-### 投影脱敏与稳定占位符
-
-脱敏发生在发送投影上，不能修改已有 Source、Memory 或 Artifact 的权威正文。
-GateRuntime 通过 Core 受限存储维护会话级占位符映射，ContextRuntime 关联实际安全投影与版本；
-同一策略和隐私边界内保持稳定，以减少无意义的前缀变化。
-占位符不能携带原始值，也不能成为跨租户关联标识。
-
-原值回填属于新的敏感信息释放动作，必须独立核权和检查。供应商响应、工具参数和面向用户结果默认不自动回填秘密。
-不对可执行代码、工具参数、路径、标识符或已签名内容进行泛化的正则替换。
-会改变程序行为或协议身份的脱敏，必须使用专门且已经验证的变换；无法安全变换时阻断该路径。
-
-### 检查覆盖与旁路
-
-| 数据载体 | 必须处理的边界 |
-| --- | --- |
-| JSON 内容 | 按协议解析，检查所有允许携带内容的字段；未知字段不能通过字符串白名单自动放行。 |
-| 工具参数和工具结果 | 检查完整结构，保留调用与结果的配对；工具执行权限仍由宿主控制。 |
-| 错误与观测 | 脱敏错误正文、headers、trace 和诊断，不回显 provider 凭据、正文或内部授权信息。 |
-| 文件、图片、音频与链接 | 声明可扫描能力、资源访问身份和允许目的地；只检查 URL 文本不等于检查远程内容。 |
-| 托管文件与 opaque block | 能验证其边界才允许通过；否则排除相应严格路由。 |
-| 缓存结果 | 使用当前权限和输出策略复检；缓存不能绕过已撤销的安全规则。 |
-
-客户端不能指定任意上游 base URL。目的地来自受控配置；执行器不跟随未经批准的重定向，
-只转发允许的 header，不能将用户认证 header 或内部服务凭据原样传给模型服务。
-压缩包、编码或多模态内容超出扫描能力时，报告覆盖限制或拒绝严格路径，不宣称通用内容零泄漏。
-
-### 策略更新
-
-冻结历史不等于永远允许重放。权限撤回、敏感规则升级或目的地变化时，
-Core 失效受影响的计划与投影，在下一次准入重新核验，必要时建立新的上下文 epoch。
-已过期的策略快照不能为了可用性继续授权。
-
-服务化部署的撤销传播有明确生效水位和监测；未达到要求的执行器停止敏感路由。
-嵌入式运行时使用当前有效策略，在执行和释放边界重新核验。
-已发送给供应商的内容无法撤回，进行中的请求只能尽力取消。安全更新造成的缓存损失单独记录，不为了缓存复用延迟生效。
-输入执行许可不能授权未来响应释放。strict 在首次释放前重新核对当前输出策略与撤销水位；
-bounded 在声明的安全单元边界核验并停止后续不合格内容，已释放部分无法追回。
-
-## 流式响应与输出安全
-
-### 三种释放方式
-
-| 模式 | 行为 | 能提供的保证 |
-| --- | --- | --- |
-| strict | 缓冲完整答复，必要时包括完整工具参数，完成强制检查后再交付 | 在已声明检测能力内先检查再释放；首个内容 token 延迟到检查完成。 |
-| bounded | 对可在有限窗口内判定的规则保留跨片段状态，检查安全单元后释放 | 只保证该规则的明确边界；不保证需要整段语义才能判断的内容。 |
-| observe | 直接转发并记录检测结果 | 不提供响应泄漏阻断保证。 |
-
-首版强制输出保护使用 strict，优先支持有界 JSON 响应。允许观察模式的 SSE 路由必须明确标识，
-不能把观察模式的延迟与严格阻断模式混为同一种产品能力。
-检测与释放判定在 Core，缓冲由实际执行器持有。内置 Python、SDK 和 Rust Gateway
-在 strict / bounded 下按各自声明执行检查与释放顺序；observe 明确不提供先检后放保证。
-远端 strict 可以一次提交完整响应；未来的 bounded 接口将事件与规则匹配状态归 Core，
-执行器只处理协议边界和等待释放，不在 Rust 复制匹配规则。
-官方 Bifrost Enterprise Guardrails 也区分了阻断规则的整段缓冲和监测直通；本方案不依赖其商业功能。
-[官方流式安全说明](https://docs.getbifrost.ai/enterprise/guardrails)
-
-### 流式执行规则
-
-- 按 SSE 事件和协议内容块解析，不能将 TCP chunk 当作完整语义单元；处理跨 chunk 的 Unicode、JSON 和敏感片段。
-- 工具参数收齐并由 Core 验证后才释放，模型执行器自身不执行业务工具；strict 下不提前释放可被宿主执行的参数片段。
-- reasoning、签名及 opaque block 不任意改写。无法扫描且策略要求检查时，拒绝该组合；明确可省略的块按兼容规则整体处理并记录。
-- 已向客户端释放内容后禁止静默 fallback 拼接另一模型的回答。返回协议允许的中断或终止，让宿主显式恢复。
-- 完整缓冲受输出大小、token、时长和并发内存限制；超限停止继续释放并尝试取消，不切回直通模式。
-- 默认不将完整响应落本地磁盘；确需缓冲落盘时使用受限、加密、短期存储并明确清理策略。
-
-供应商已经生成的输出通常已经计费。输出被安全阻断、客户端断开或取消请求，都不能据此认定费用为零。
-结束事件或费用信息晚于 HTTP header 时，用 Core 查询接口或异步收据补齐，不能把开始时的 header 当最终结算。
-
-## 第三方网关适配
-
-### 接入形态
-
-支持三种路径，均使用同一 Core 双闸：
-
-1. Core 或应用 SDK → 内置执行器 → 模型。
-2. Core 或应用 SDK → 内置执行器 → LiteLLM 等现有网关 → 模型。
-3. 客户端 → 可选 Rust Gateway（调用 Core 双闸）→ 现有网关或模型。
-
-用户已有 LiteLLM 时，可以通过 Core SDK 接入，不必为使用双闸再部署 Rust Gateway。
-已有网关复用供应商接入、密钥管理和已选择的治理能力；直连使用相同上游资格与用量契约。
-
-第一阶段保留一种已支持的模型协议，不建立覆盖所有供应商的通用消息中间格式。
-Core 生成对应 render profile；执行器的机械适配限于已声明的路径、认证与传输封装，
-正文转换在 Core 许可前完成，或由已核验的上游网关完成供应商协议转换。
-需要业务语义的历史转写、压缩和跨模型投影留在 Core。
-
-把现有网关放在 PowerContext Gateway 前面，只能覆盖其选择转发到这里的流量，
-而且它此前可能已经记录或外发原文；该模式不作为首个强制外发保护拓扑。
-插件调用 Core 可以作为后续接入形式，但必须证明所有需要保护的最终尝试都经过同样检查点。
-
-### UpstreamProfile
-
-每个上游接入由受控配置声明：
-
-| 字段 | 含义 |
-| --- | --- |
-| protocol / endpoint_family | 原生协议、路径、认证方式、请求及响应能力。 |
-| routing_mode | fixed 或 delegated。 |
-| eligible_targets | 可被实际选择的模型、供应商与数据目的地。 |
-| configuration_fingerprint | 已核验的路由、映射、参数覆盖和插件配置标识。 |
-| allowed_request_transforms | 允许下游修改哪些字段，是否会改变正文、缓存边界或目标。 |
-| retry_owner / retry_policy | 重试所有者、类型、次数和超时约束。 |
-| attempt_visibility | full、counts 或 opaque。 |
-| usage_provenance / completeness | 原始用量来源、字段含义与完整性。 |
-| response_cache_mode | 是否重放响应，是否产生额外 Embedding 调用。 |
-| prompt_cache_capabilities | 按模型声明隐式或显式模式、断点及查找限制、最低长度、TTL、路由键作用和实际读写用量字段。 |
-| streaming_mode / guardrail_owner | 流式释放模式及额外安全规则的责任方。 |
-
-这些字段是部署声明和验收结果，不接受客户端自报。
-
-### 固定执行与委托执行
-
-fixed 模式由 Core 明确批准具体模型，执行器持有有限尝试预算并执行；上游按已经核验的配置工作。
-能够关闭的模型 fallback 和自动重试应关闭，无法关闭的行为必须计入约束并确认可见性。
-
-delegated 模式将路由或重试委托给现有网关。Core 只批准一个封闭且能力、隐私和预算都合格的目标集合。
-执行器不再独立启动另一轮不受共同约束的 fallback。若不能证明内部费用上限，不能提供严格货币硬上限承诺。
-
-严格安全路由还需要证明下游不会在检查后注入未审查的正文或改投未批准目的地。
-配置指纹只是控制证据，不能单独证明线上最终请求；必须用部署锁定、变更通知和实际请求验证支持。
-无法约束的下游仅按声明的较弱范围接入，不纳入完整安全或严格预算承诺。
-
-### 首批适配对象
-
-| 产品 | 可复用点 | 必须核验的边界 |
-| --- | --- | --- |
-| LiteLLM | 兼容接口、供应商转换、模型组、响应头与用量记录。 | body.model 可能是别名；重试计数不等于每次失败都有完整费用；需关联 call 与部署标识。 |
-| Bifrost | 兼容入口、供应商接入、prompt cache 控制与尝试观测。 | 每个 fallback 可能有自己的重试预算；多 key 某些失败在 max_retries 为零时仍可能换 key 尝试。 |
-| New API | 兼容接口、Channel 管理、模型映射及计费观测。 | 参数覆盖和跨 Channel 重试可能改变最终请求；管理员日志与公开响应的证据完整性不同。 |
-
-依据：
-[LiteLLM 响应头](https://docs.litellm.ai/docs/proxy/response_headers)、
-[LiteLLM 可靠性](https://docs.litellm.ai/docs/proxy/reliability)、
-[Bifrost 重试](https://docs.getbifrost.ai/features/retries-and-fallbacks)、
-[Bifrost 观测](https://docs.getbifrost.ai/features/observability/default)、
-[New API Channel](https://docs.newapi.pro/en/docs/guide/feature-guide/admin/channel)、
-[New API 日志](https://docs.newapi.pro/en/docs/guide/feature-guide/user/log)。
-这些机制只作为接入依据，每个支持版本仍须通过真实链路验收。
-
-## Rust GatewayRuntime 实现结构
-
-GatewayRuntime 是可选 Rust Gateway 的调用编排运行时，协调 Core ContextRuntime、GateRuntime 和本地执行器。
-它管理网关侧整个请求生命周期，不成为 Core 两种运行时的依赖，也不复制上下文决策或双闸检测引擎。
-
-建议使用 Tokio 承载异步任务，Axum/Hyper 承载入口 HTTP，Reqwest/Hyper 承载上游 HTTP，
-Rustls 提供 TLS，Serde 管理控制契约，Tracing/OpenTelemetry 管理无正文观测。
-具体版本在实现时锁定，并按安全与兼容要求选取；Python 包不因新增 Gateway 强制引入 Rust 构建依赖。
-
-| 模块 | 职责 |
-| --- | --- |
-| ingress | 协议入口、认证、限流、尺寸限制和请求身份。 |
-| core_client | Core 上下文计划、准入、采用、恢复与事件接口；版本协商与服务身份。 |
-| orchestration | 准备、适配、输入检查、执行、输出检查、交付及采用回执转交；复用原 operation，协调取消与恢复。 |
-| executor | 单次许可执行、总超时、取消、并发和状态迁移。 |
-| enforcement | 调用 Core 双闸，核验执行与释放许可、正文摘要和状态顺序，不实现独立敏感规则。 |
-| upstream | 通用协议适配及 LiteLLM 等产品的证据采集。 |
-| stream | SSE 解析、背压、传输片段状态、严格缓冲与中断；敏感检测状态归 Core。 |
-| evidence | 不含正文的事件 outbox、重放、确认和健康状态。 |
-
-Gateway 将缓存计划落实到具体目标和传输参数，不自行重新选择 Memory、改写已采用历史或决定缓存断点。
-存在多个合格目标时，按 Core 批准的亲和策略提出具体目标，并在取得绑定该目标的准入结果后发送；
-持久模式使用 attempt 许可，基础模式保留本次调用的受检输入绑定，不因此引入预算数据库。
-故障切换须重新准入并记录可能的冷缓存成本，不为了命中跨越权限、隐私或模型能力边界。
-
-适配器接口只表达 prepare_transport、send、parse_event、extract_usage 和 cancel 等传输职责，
-不接收“重新召回 Memory”或“决定丢弃哪段历史”的回调。
-取消只表示已发出取消请求；只有收到可靠确认才记录为已取消，仍须处理未知用量。
-
-显式配置重定向、HTTP 客户端内部 retry、代理环境、连接和请求超时，禁止依赖库默认值推断尝试次数。
-Reqwest 当前文档分别提供 redirect 和 retry 策略；具体行为随所选版本验证。
-[Reqwest ClientBuilder](https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html)
-
-Gateway 水平扩展不依赖本地会话亲和性；Core 的会话版本、执行许可和唯一键负责一致性。
-本地 outbox 仅保存无正文执行证据，设置容量和恢复时间上限；排队超限时停止接纳需要可靠计量的新调用。
-
-## 降本设计
-
-### 四条独立计量的路径
-
-| 路径 | 输入闸及 Core 的动作 | 输出闸及后续动作 | 收益如何确认 |
-| --- | --- | --- | --- |
-| 少输入 | 精确去重、无损共享编码、按预算交付材料，必要时采用已验收的有损摘要。 | 形成明确的后续输入投影，保留引用和缺口。 | 目标 tokenizer 的完整请求输入，连同质量与缓存损失一起比较。 |
-| 复用 prompt/KV cache | 冻结前缀、稳定工具与模板、稳定目的地，配置支持的缓存标记。 | 读取真实 cache read/write usage。 | 供应商实际用量及价格规则，不以本地 digest 命中代替。 |
-| 少生成 | 在生成前选择适合阶段的输出 schema、输出预算和模型参数。 | 校验是否完整，记录截断与重试。 | 实际输出及 reasoning 用量、任务是否仍完成。 |
-| 少走步骤 | Core 交付经过核对的事实、证据与下一步，减少重复检索或重做已验证工作。 | 从 Task Outcome 或真实执行中核对效果。 | 完整任务的模型与工具步骤、重试、质量、总费用。 |
-
-输出完成后再摘要不会减少已经生成的 token；它只可能减少传输或后续输入，
-且摘要调用自身产生费用。输出闸默认不启动第二个模型重写用户答案。
-
-### 输入优化
-
-ContextRuntime 在不改变所选证据身份和内容覆盖的前提下实现可独立配置的无损表示策略。针对 Agent 原生历史，先保留完整语义与调用顺序，
-不压缩当前用户指令、未完成的工具往返、关键标识符、代码补丁和必须精确读取的证据。
-
-有损摘要是 ContextRuntime 在宿主委托范围内执行的显式策略，必须记录原范围、摘要、证据引用、遗漏和版本，
-并以独立任务集验收后启用。摘要不能覆盖权威 Source，也不能将推测写成当前事实。
-压缩器输入和输出都经过安全与预算约束；无需为每条消息重新调用压缩器。
-
-当上下文接近窗口上限时，在一个明确边界建立新上下文 epoch，保留当前指令和未完成动作，
-按已批准策略重建历史投影。不能一边保持旧快照身份，一边悄悄替换其内容。
-
-### 缓存稳定性
-
-ContextRuntime 固定 template、工具定义、schema、已交付注入和阶段 codec；动态 request ID、时间戳和不必要排序变化
-不进入稳定 prompt 前缀。新增事实尽量追加到受控边界，安全变更与真实用户纠正优先。
-这里的动态字段指本系统额外添加的非语义元数据；用户材料中的业务时间、版本或其他有意义字段仍保留。
-
-模型、供应商、部署、账户、工具、表示与隐私策略变化都可能影响缓存兼容性。
-缓存路由键使用不泄露身份的稳定值，并绑定 Scope、调用方隐私及许可范围；不能因为文本相同就跨权限复用响应。
-本地缓存键或上下文 digest 仅用于关联与去重，不能证明供应商实际持有相同 KV。
-供应商实际缓存隔离以目标服务契约为准；要求独立隐私边界时，由 profile 约束账户或部署并验收，
-不能把本地 Scope 分组宣称为供应商 KV 的物理隔离。
-
-官方 OpenAI 文档要求可复用的渲染前缀匹配，并区分不同模型的缓存控制和计费；
-Anthropic 文档说明 tools、system、messages 的缓存层级；Gemini 区分隐式和显式缓存。
-参数、最低长度、TTL 和价格均通过目标能力配置获取，不在通用 Core 逻辑中硬编码统一规则。
-[OpenAI Prompt Caching](https://developers.openai.com/api/docs/guides/prompt-caching)、
-[Anthropic Prompt Caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)、
-[Gemini Context Caching](https://ai.google.dev/gemini-api/docs/caching)
-
-Core 或任何执行器在调用之前都不保证命中，也不迁移不同模型的 KV。
-对同一任务频繁跨模型切换的策略，必须把失去原模型缓存和建立新模型缓存的费用计入模型选择。
-
-### 缓存计划与 Gateway 执行
-
-InferencePlan.cache_policy 由 ContextRuntime 形成，随 Core 执行计划发布；它引用已有快照与前缀 manifest，
-不建立独立缓存制品、缓存会话库或第二套预算。ContextRuntime 负责内容、边界与已采用历史，
-GateRuntime 负责安全投影及最终载荷检查，GatewayRuntime 或其他执行器负责协议映射、实际目标和缓存证据。
-
-| 计划内容 | 契约 |
-| --- | --- |
-| 稳定前缀 | 记录模板、工具与 schema、准确注入和已采用历史的版本、顺序、表示及边界；与本轮新增尾部区分。 |
-| 可复用断点 | 指向目标协议支持的内容块或消息结束位置；本地相同文本或摘要不足以证明存在可用断点。 |
-| 模式与保留 | 根据目标 profile 选择关闭、隐式或显式模式及允许的 TTL；记录最低长度、断点数量与查找范围等资格条件。 |
-| 目标与分组 | 绑定模型、部署与账户约束、上游配置、隐私边界和必要的稳定分组键；具体目标在 attempt 许可中确定。 |
-| 证据要求 | 指定实际目标、cache read/write、普通输入、费用及时间的来源和字段语义；缺失项保留 unknown。 |
+| Scope 上下文入口 | `ContextApplication` / `ScopedContextApplication.prepare` | 这就是 ContextRuntime 入口，不把它降成另一套选择器的底层数据源。 |
+| 召回与装配 | `_prepare_build`、所选家族、现有 recall effort 策略 | 沿用现有策略、候选资格、有界扩展和授权。 |
+| 最终补充文本 | `PreparedContextBuilder`、prepared text/code 渲染 | 沿用选择、引用、信任包装、遗漏和 UTF-8 截断。 |
+| 公共值 | `PreparedContext(schema, status, content, content_bytes)` | 保持默认四字段与直接注入契约。 |
+| Bootstrap 与去重 | 现有 bootstrap 准备和交付 receipt | 保持已支持生命周期，以及完整注入的 Atomic Memory 精确版本去重。 |
+| 任务连续性 | 现有 Work 门面、Handoff Artifact 生命周期 | 复用已有 Source/Artifact 操作、精确版本与显式提交。 |
+| 模型执行 | inference ports、provider adapters、usage wrappers | 在经过验证的最终发送/原始响应边界接入双闸。 |
+| 观测 | 现有模型用量、召回统计、决策观察 | 按现有用途复用，不升级成可恢复推理账本。 |
+| 新增工作 | 闸口策略、完整请求准入、缓存规划、执行器落实 | 只补现有上下文链路尚不具备的行为。 |
+
+实现基线可参照现有
+[上下文 application](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/application.py)、
+[上下文模型](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/models.py)、
+[Builder](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/prepared_context.py)、
+[inference ports](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/inference/protocols.py)、
+[provider adapter](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/inference/pydantic_ai.py)与
+[共享表定义](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/persistence/tables.py)。
+
+## 运行时归属与组合
 
 ```mermaid
 flowchart LR
-    Ingress["GatewayRuntime 接入"] --> Context["ContextRuntime<br/>稳定前缀与缓存计划"]
-    Context --> Mapping["GatewayRuntime<br/>协议与缓存参数映射"]
-    Mapping --> Input["GateRuntime 输入闸<br/>最终载荷与目标准入"]
-    Input --> Execute["GatewayRuntime 执行<br/>核验许可与准确字节"]
-    Execute <-->|"准确请求 / 原始响应及用量"| Model["LLM 推理服务<br/>实际 KV Cache"]
-    Execute -->|"未释放响应与缓存证据"| Output["GateRuntime 输出闸"]
-    Output --> Deliver["GatewayRuntime 交付 / 宿主选择"]
-    Deliver -.->|"明确采用后，下一轮精确重放"| Context
+    H[Host: history, tools, adoption] --> E[Embedded executor or optional Rust GatewayRuntime]
+    E --> C[Existing scoped context preparation: ContextRuntime]
+    C --> P[Existing PreparedContext]
+    P --> E
+    E --> G[Core GateRuntime: cache plan, input/output checks]
+    G --> E
+    E --> U[Model service or verified downstream gateway]
+    C --> A[Existing Scope, Source, Artifact, Bootstrap, Work, Handoff]
 ```
 
-执行顺序固定为“ContextRuntime 规划逻辑前缀与断点 → 适配器映射协议与缓存参数 → GateRuntime 检查最终载荷 →
-取得绑定具体目标与字节的许可 → GatewayRuntime 保真发送”。缓存标记、模式与输出 schema 都在最终摘要之前确定，
-不能在拿到许可后再加字段。下游网关负责供应商转换时，将其允许的缓存转换纳入已核验配置。
-每条链路只有一个断点决策所有者；LiteLLM/Bifrost 的自动注入须关闭，或按 Core 批准的规则锁定并验收，
-不能与 Core 分别改写缓存边界。
-[LiteLLM 缓存标记注入](https://docs.litellm.ai/docs/tutorials/prompt_caching)、
-[Bifrost Auto Prompt Caching](https://docs.getbifrost.ai/features/prompt-caching)
-
-Gateway 在可控范围内保持模型、部署和账户亲和；供应商内部机器调度以其实际协议为准，
-HTTP 连接复用、会话 ID 或本地前缀 digest 不代表固定到了持有 KV 的机器。
-分组键不使用每轮变化的完整请求摘要，也不包含敏感正文。其作用由模型 profile 决定：
-OpenAI 当前文档区分旧模型的缓存路由辅助与 GPT-5.6 及以后模型的分组核算；不能把同一个 key 参数当作通用命中开关。
-支持显式缓存的目标，在稳定内容边界选择断点，避免将只使用一次的动态尾部反复写入收费缓存。
-多轮历史可在协议允许的边界增量推进断点；模式切换须保留所需查找边界，不能假定隐式与显式写入可以互相复用。
-
-ContextRuntime 优先保持已经采用的前缀，新增项目知识放入有出处的增量区域；用户纠正、权限或安全变化优先，
-必要时建立新 epoch 并重新核验。历史中的业务时间、用户原文与工具调用身份仍完整保留，
-不为了命中重排工具往返或扩大未使用的工具权限。模板或工具变化导致的前缀失配显式记录。
-
-输出闸不在生成后为本轮制造 KV 命中，也不为缓存收益自动总结答案。
-它检查准确输出投影；ContextRuntime 按 selection 契约采用后，下一轮原样重放已确认内容。
-GatewayRuntime 采集原始 usage，Core 账本归一化普通输入、缓存读取与写入，避免把已包含在总输入中的 cached_tokens 再相加。
-缓存字段缺失时报告覆盖率，不凭相同前缀推定命中；无新调用的响应重放始终单独记作响应缓存。
-
-缓存诊断展示本地可核验的前缀、工具、目标或策略变化，以及供应商实际命中与费用；
-未获供应商证据时，过期、驱逐或内部调度仅为未知原因，不能由 Gateway 自行断言。
-这些关联数据属于受权执行查询与账本，不将前缀内容、分组键、会话或请求身份加入 operational metric labels。
-预填充收益、上游首字、strict 等待、最终交付和完整任务费用分别记录；包含缓存写入与预热后再计算净收益。
-
-### Core 后台调用的缓存
-
-后台任务使用稳定的 stage 指令、输出 schema 和 codec，把模板与可复用材料放在稳定位置，
-新增 Source 批次位于可变部分；不为缓存稳定而改变实际证据身份或遗漏新证据。
-重试在同一冻结窗口上执行，不能重复全量读取所有 Memory 或 Source。
-
-Embedding、重排、提取、冲突处理、分类与压缩分别记录模型和用量。
-Embedding 模型、维度及 profile 是存储部署契约，不能按某次便宜的路由任意更换，导致既有向量混用。
-同样，只有经过独立验收的生成 schema 或 codec 才能改变后台结果表示。
-
-### Embedding 输入变换与索引兼容
-
-首版 Embedding 双闸只检查或阻断，保持实际送入模型的文本、顺序和既有 query/document 语义。
-请求 JSON 的保真序列化可以变化，但不得在相同 profile 下静默脱敏、压缩、改写文本或使用会话级占位符替代。
-无法安全外发时拒绝该 Embedding 路径，不能把未经索引兼容验收的发送投影当作原输入的向量。
-
-以后允许 Embedding 预处理时，其版本、输入类型与 document/query 兼容规则必须纳入 profile 身份与指纹。
-索引分别保留原始内容身份和实际 Embedding 输入摘要；原有合法的非对称 query/document 处理保持显式声明。
-凡实际输入语义发生变化，使用新 profile 与重建或明确迁移流程；新查询不能与旧表示索引静默混用。
-旧 profile 只可在原处理链仍获授权时继续使用，否则明确停用向量路径或按已声明能力降级。
-仅影响生成请求的缓存、日志或安全配置变化不自动要求向量重建。
-不以生成模型的 KV Cache 能力推断 Embedding 服务有相同的缓存语义。
-
-### 响应缓存
-
-首版关闭语义响应缓存。完全相同的请求重放也必须绑定授权、上下文版本、工具状态、模型和当前安全策略。
-模型响应含工具动作、依赖实时外部状态或任务执行状态未知时，不默认复用答案。
-
-以后启用响应缓存时，必须独立记录 response_cache_hit、缓存来源模型与原生成时间；
-不能把“未调用模型而重放响应”计作本次 KV cache hit。
-产生语义缓存检索 Embedding 的调用同样计费并经过双闸。
-[LiteLLM 响应缓存](https://docs.litellm.ai/docs/proxy/caching)、
-[Bifrost 响应缓存](https://docs.getbifrost.ai/features/semantic-caching)
-
-### 模型选择
-
-模型目录和价格配置放在 Core；Gateway 只持有执行所需的上游配置与受限凭据。
-主模型首版尊重调用方明确选择，在能力与授权合格时执行；Core 后台按 stage 静态映射到已验收模型。
-Embedding profile 固定，schema、codec、工具和隐私条件构成候选资格，不因价格较低而跳过。
-
-动态选择或升级属于后续独立策略。比较时计入缓存冷启动、辅助 Judge、失败重试和输出增长，
-不只按每百万 token 的标价排序。规则 shadow 不发模型调用；模型 Judge shadow 实际计费并需要明确预算。
-
-### Core 后台输出与可逆 codec
-
-后台提取往往需要返回结构化事实和证据关联，可以在生成前减少重复字段，
-让输出引用 Core 已分配的短标识，再由 Core 精确恢复为领域对象。
-该方式只适用于声明并验收过的 stage：映射表、输入窗口、schema 与 codec 版本全部绑定计划，
-未知标识、越界引用、缺字段或恢复失败均不能进入提交路径。
-
-输出闸检查传输内容；Core 解码后还须检查恢复出的完整对象和敏感信息，再执行领域验证。
-不能只检查短标识就认定最终展开内容安全。首版不改变现有提取输出契约，
-该能力在 P2 中按真实输出用量、无损恢复、领域正确性和结构化重试费用独立验收。
-它不适用于任意用户答案、代码补丁或供应商签名块。
-
-## 执行账本与预算
-
-本节的权威账本、跨调用额度、原子预留和恢复针对启用了持久预算或账本的模式。
-基础无状态双闸只执行本次调用约束并返回已知用量、来源与缺失声明，不要求预算数据库或可靠事件队列。
-
-### 三层执行身份
-
-```text
-任务
-  └─ operation：一次逻辑工作，包括其辅助调用
-       ├─ executor attempt：内置、SDK 或 Rust 执行器发起的一次受控上游执行
-       │    └─ upstream child attempt：上游内部实际调用，仅有证据时建立
-       └─ auxiliary operation / attempt：提取、分类、压缩等子调用
-```
-
-一次 HTTP 不等于一次供应商调用。attempt_visibility 为 counts 时，只能记录报告次数，
-不能伪造每个内部尝试的用量明细；opaque 时连内部次数都可能未知。
-父 operation 汇总子执行，不能把子执行费用在父子两层重复相加。
-
-客户端 SDK、Core 使用的模型 SDK、Python / Rust HTTP 客户端和现有网关都可能重试。
-首版明确一个执行重试所有者，并验证其余层的行为。需要关联的 SDK 请求使用可信 operation 绑定；
-重用客户端幂等 ID 不会自动获得一次新的收费尝试。
-
-### 账本字段
-
-| 分组 | 字段 |
-| --- | --- |
-| 关联 | 租户、主体、Scope、任务、会话、operation、父子关系、plan、attempt、外部 request/call/trace ID。 |
-| 目标 | 请求别名、声明目标、观测目标、供应商、部署、账户边界、上游配置与对应证据来源。 |
-| 输入 | 快照、正文摘要、变换与策略版本、输出上限、缓存策略、开始与发送状态。 |
-| 用量 | 原始 usage、归一化输入、cache read、cache write、输出、reasoning、其他收费资源、unknown 字段。 |
-| 费用 | 币种、价格版本、供应商报告值、本地估算、网关加价、缓存存储费、对账差异。 |
-| 结果 | 成功、失败、中断、阻断、取消请求、发送或交付不确定、释放字节和完成时间。 |
-| 完整性 | 尝试可见性、用量来源、是否估计、是否已核账、缺少哪些证据。 |
-
-供应商响应、第三方网关响应头、管理员日志、本地 tokenizer 与供应商账单是不同证据来源。
-请求别名不能直接升级为观测到的实际模型，第三方费用报告也不能直接升级为供应商最终账单。
-流式中断、未知失败费用、安全阻断和辅助调用均保留记录。
-
-Core 账本是本系统执行事实与预算状态的权威；费用在对账完成前保持 provisional。
-现有可丢失 usage telemetry 继续承担观测用途，不能作为这份账本的实现替代。
-金钱使用固定精度十进制或最小货币单位，保留币种，避免浮点累计误差。
-
-### 成本口径
-
-在供应商语义明确、输入类别已经归一化为互斥项时：
-
-```text
-C_attempt =
-    uncached_input × uncached_price
-  + cache_read × cache_read_price
-  + cache_write × cache_write_price
-  + output × output_price
-  + separately_billed_resources
-
-C_task =
-    Σ 全部唯一计费尝试的费用（含主调用、辅助、失败与重试）
-  + 显式缓存存储及接入附加费用
-  + 本系统处理成本
-```
-
-价格单位按目录定义换算。部分 API 的 cached_tokens 是 input_tokens 的子集，部分 cache write 在独立字段报告，
-不得把原始输入总数和缓存数量直接相加。不能解释的字段保持原样和 unknown。
-reasoning 若已经包含在 output 中，不再重复收费；多模态、服务端工具和批量等资源按实际供应商规则处理。
-
-完整任务比较包含未完成任务的沉没费用，另外报告每个成功任务成本与成功率，避免通过丢弃困难任务制造省钱结果。
-缺失费用给出覆盖率和已知下界，不将 unknown 当作零。
-
-### 预留、结算与不确定状态
-
-外发之前，Core 根据输入、最大输出、缓存最坏收费、受控内部尝试和其他收费资源原子预留预算。
-辅助调用与主调用竞争同一总预算，并受各自阶段子预算限制，避免辅助处理耗尽主任务额度。
-
-收到完整可信用量后结算；超时、连接中断或发送状态未知时保留相应预留，等待对账或受控处置。
-取消请求、租约到期和缺少 usage 均不自动退款。不能用一次新的 operation 绕过同一任务总预算。
-
-严格路由要求上游尝试数、收费资源和最大输入输出有可执行约束；无法约束的服务端工具或内部路由不能纳入该承诺。
-系统保证不会批准突破已知预算约束的新调用，供应商已接收的调用和最终商业账单仍需对账。
-对 opaque 上游仅提供明确标识的估算或软额度，不能宣传完整逐 attempt 硬上限。
-
-### 收益示例
-
-以下是假设费用单位，用于说明比较口径，不对应任何供应商报价：
-
-| 方案 | 主调用 | 压缩等辅助 | 额外重试 | 合计 |
-| --- | ---: | ---: | ---: | ---: |
-| 稳定历史基线 | 0.80 | 0.00 | 0.00 | 0.80 |
-| 每轮摘要、同时破坏原缓存 | 0.65 | 0.20 | 0.05 | 0.90 |
-| 冻结注入、阶段性无损优化 | 0.62 | 0.03 | 0.00 | 0.65 |
-
-输入变短的方案可能更贵。只有在任务质量满足验收、实际费用完整且覆盖相同时，才报告降本比例。
-
-## 失败、恢复与幂等
-
-### 行为矩阵
-
-| 情况 | 行为 |
-| --- | --- |
-| 身份、Scope 或目的地无法授权 | 拒绝外发；不使用共享管理员身份兜底。 |
-| 可选召回失败 | 只有 Core 明确批准的降级路由才使用无新增召回的原请求；仍须通过全部强制安全与预算检查。 |
-| 压缩、编码或 token 优化失败 | Core 回到原投影并重新准入；不得跳过安全检查或突破窗口。 |
-| 安全策略缺失、过期或强制扫描不可用 | 阻止外发或释放；不把 unknown 当成 allow。 |
-| Core GateRuntime 必要检查失败 | 阻止外发或释放；不改走未受检的 delegate。 |
-| 远端 Core 服务不可用 | 远端执行器停止新的发送与响应释放；已发送请求有界等待或取消，状态待恢复；嵌入式路径没有这次网络依赖。 |
-| 计划过期或权限被撤回 | 重新准入；不能仅凭缓存计划继续发送或交付。 |
-| 同请求 ID、正文不同 | 返回冲突，不推进会话、不重复计费调用。 |
-| 请求确定未发送 | 可在总预算和同快照内申请受控重试。 |
-| 供应商可能已经接收 | 标记 send_uncertain；没有已验证幂等契约时不自动再次发送。 |
-| 原始输出被安全阻断 | 不交付正文，保留无敏感内容判定与已发生费用。 |
-| 内容已经释放后断流 | 明确中断，不拼接 fallback；下一步由宿主显式恢复。 |
-| 工具已执行或执行状态未知 | 不通过模型重试自动再次执行工具。 |
-| 响应记录未持久确认 | 需要持久连续性的路由不开始释放；其他模式明确记录连续性不可确认。 |
-| 候选已保存、释放或采用确认丢失 | 用原请求与选择身份找回状态；恢复释放重新核权，不重做模型调用，不推断候选已采用或工具已执行。 |
-| 用量上报暂时失败 | 启用可靠账本时使用无正文 outbox 重放；基础模式返回本次已知用量与缺失声明，不回滚已发生调用。 |
-| Source 或 Memory 写入失败 | 与模型完成状态分开报告，按对应身份重试，不声称记忆已经写入。 |
-
-不存在一个全局 fail_open 开关。可选优化、身份、安全、预算和持久连续性分别定义失败语义。
-Core 检查失败或远端服务不可用时，直接绕过检查调用模型会跳过准入，因此不作为降级方式。
-
-### 状态事实
-
-执行至少区分 prepared、reserved、send_started、upstream_completed、output_checked、release_started、
-gateway_release_completed 和 failed/blocked/uncertain。不同事实用不同事件表达，不以一个 success 覆盖全部过程。
-候选持久化、分支选择 adopted/abandoned 与宿主接收单独记录；它们不是传输状态的同一个终态。
-
-执行器完成写出不证明宿主消费或模型采用；模型返回不证明任务完成；Source 写入不证明 Memory 提取完成。
-宿主回执、Task Outcome 和供应商对账分别补充各自事实，不互相代替。
-
-### outbox 与恢复
-
-启用持久预算时，Core 在外发前持久化 attempt 和预留；执行器对后续事件使用稳定事件 ID。
-内置执行器调用同一仓储服务，远端执行器优先写 Core、失败时写有界无正文 outbox。
-Core 的唯一约束保证重复事件不重复结算。远端 outbox 磁盘或进程完全丢失时，
-Core 仍保留未结执行，不会把它当成未发生；缺失结果通过关联 ID 对账。
-
-完整正文不进入这个 outbox。持久连续性使用 Core 的专门响应提交路径，不依赖无正文事件重建内容。
-需要高可用时，为 outbox 配置明确的持久卷或共享事件通道；容量不足时背压或拒绝新增调用，不能默默丢弃审计证据。
-
-## 跨模型与协议支持范围
-
-| 内容 | 支持策略 |
-| --- | --- |
-| 普通文本与可见助手回答 | 按原顺序和角色投影；记录来源模型，当前用户指令优先。 |
-| 完整配对的普通函数调用与结果 | 在目标协议支持时转换；保留调用 ID 的对应关系。 |
-| 未完成的工具往返 | 保留边界，优先在原兼容协议完成，不任意丢弃或合并。 |
-| 原生会话 ID / previous_response_id | 仅在原供应商兼容范围使用；跨模型需要 Core 拥有可恢复历史。 |
-| 加密 reasoning / 签名 thinking | 不当作通用上下文，不自行解密或改写；只能使用明确支持的保留、完整省略或拒绝规则。 |
-| 托管文件、后台任务与缓存句柄 | 单独检查所有权、目标服务和生命周期；不默认跨供应商可读。 |
-| 代码库、工作目录和工具权限 | 由宿主管理，Gateway 不能通过传递 messages 迁移执行环境。 |
-| Embedding | 固定已配置 profile、维度和归一化，不随主模型切换。 |
-
-完整上下文超过候选窗口时，Core 选择合格模型或执行已经验收的重建策略。
-没有合格路径则明确拒绝，不静默删掉最新约束、证据或工具结果。
-
-协议支持以端点、字段、事件和实际宿主流程为单位发布。
-支持 Chat Completions 不等于已支持 Codex 的 Responses 流程；支持 Messages 端点也不等于已支持 Claude Code 的全部行为。
-模拟输入、直接 hook 调用、真实代理服务与完整宿主分别记录覆盖。
-
-## 存储、部署与性能
-
-### Core 运行记录
-
-基础 ContextRuntime 与 GateRuntime 可以无状态运行，不需要新增数据库或表。
-持久能力按依赖组合：持久执行使用 payload、operation、attempt 和执行事件四类表；
-会话连续性再增加会话、分支和上下文事件三类表；严格预算另启用预算账户表。
-这些表属于现有 Core 数据库与迁移体系，不按 Runtime、Scope 或 Gateway 各建一套数据库或动态分表。
-
-### 现有存储复用与新增表
-
-本基线使用 SQLAlchemy 共享表定义、AsyncDatabase 事务和规范化二进制 payload。
-现有 `pc_scopes` 是 Scope 目录，Source/Artifact 表是证据与制品权威；
-`pc_context_bootstrap_receipts` 只保存特定宿主交付回执，`pc_decision_observations` 保存有界判断记录，
-`pc_model_usage_daily` 是允许缺失的日聚合，均不能直接承担会话正文、单次执行许可或可恢复费用账本。
-复用连接、codec、身份列、迁移、备份和统计投影能力，保留这些已有表的领域含义。
-
-以下为持久模式的表设计。列出查询及一致性所需字段，具体长度、DDL 与后端兼容约束在实现前冻结：
-
-| 建议表 | 主键与主要字段 | 责任及约束 |
+| 归属 | 负责内容 | 接入约束 |
 | --- | --- | --- |
-| `pc_context_sessions` | PK `(scope_id, session_id)`；调用方绑定、创建请求键、上下文 profile 与委托版本、保留策略、创建时间 | 会话元数据；外键关联已注册 Scope，创建请求在 Scope 与调用方内幂等。 |
-| `pc_context_branches` | PK `(scope_id, session_id, branch_id)`；`version`、准确 head manifest、epoch、fork 来源分支与版本 | 所选历史的 CAS 头；同 Scope 会话外键，fork 不改写原分支或复制全部历史。 |
-| `pc_context_events` | PK `(scope_id, session_id, event_id)`；单调序号、来源分支、事件类型、准确输入/注入/工具结果引用、selection 请求键与候选关联 | 追加的上下文事实；序号在会话内唯一，选择键在分支与调用方内唯一，候选通过执行记录与 payload 引用定位。 |
-| `pc_context_payloads` | PK `(scope_id, payload_id)`；类型、所属对象引用、schema/表示版本、摘要、binary payload、可恢复状态与保留边界 | 不可变内容块、manifest、快照、计划版本及受检候选共用类型化存储；敏感映射使用受限类型，不建立每种值各一张表。 |
-| `pc_inference_operations` | PK `(scope_id, operation_id)`；调用方绑定、非空幂等 namespace 与请求键、输入摘要、用途、父 operation、可选会话/分支、计划与快照引用、准备状态 | 一次逻辑工作的权威身份；先落唯一键，再进行收费准备，历史计划保留准确版本引用。 |
-| `pc_inference_attempts` | PK `(scope_id, attempt_id)`；operation、开始请求键、准确计划、目标、执行实例与 fencing、发送事实、受检候选引用、释放代次、可选预算预留和结算版本 | 一次受控执行；开始请求在 operation 内唯一，不将发送、保存、释放和采用合并为单一成功状态。 |
-| `pc_inference_events` | PK `(scope_id, attempt_id, event_id)`；事件序号、生产者、类型、证据版本、无正文 payload、创建时间 | 发送、取消、释放及用量证据追加；重复事件核对内容，修正追加新证据，不覆盖原记录或重复计费。 |
-| `pc_inference_budget_accounts` | PK `(scope_id, budget_id)`；任务或调用方绑定、币种、额度、已预留、已结算与版本 | 仅严格预算启用；同 Scope 的多 attempt 原子竞争，金额使用固定精度或最小货币单位，保留未知费用。 |
+| ContextRuntime | 现有已授权检索与最终有界装配，以及现有 bootstrap 和连续性组合 | 不增加第二套召回引擎、contributor registry、转录库或通用会话模型。 |
+| GateRuntime | 调用策略、完整请求限制、缓存约束、输入准入和输出释放判定 | 消费准备结果，不重复选择、不把引用文本解析成权限、不改写权威记录。 |
+| 执行器 / GatewayRuntime | 目标协议渲染、获准发送/重试、缓冲、取消和证据采集 | 忠实落实 Core 判定，协议代码不另定上下文和安全策略。 |
+| 宿主 | 对话事实、响应采用、工具、调度、显式刷新与 rollover | 声明实际接入覆盖，保留已有交付与持久化契约。 |
+| 现有领域服务 | Source 接收、Artifact 版本、Memory 治理、Work/Handoff 提交 | 闸口结果不能替代领域校验或授予写权限。 |
 
-受检候选在 attempt 和类型化 payload 中有准确身份；采用时上下文事件引用该候选，
-不复制为另一份答案或写入 Memory Review Candidate 表。发送/用量事件与上下文语义事件分别拥有权威，
-通过准确引用关联，不相互推断工具执行、用户接收或采用事实。
-未启用会话的后台工作不创建虚假 session；其 operation 使用可信工作负载 namespace，仍保留 Scope 与执行归属。
+现有 runtime 继续作为组合根。`ContextRuntime` 是能力名称，v1 不要求新增一个只转发到 `application.context` 的类。
+有内聚职责的新闸口行为可以成为独立组件，与当前 context 和 inference 服务一起组装。
+嵌入式调用使用已有 scoped application，远端使用现有生成客户端；使用 Core 策略无需绕行 loopback HTTP。
 
-初版 payload 保存在同一关系数据库，复用现有 binary codec；本基线没有可直接替代该设计的统一对象仓储。
-结构化元数据使用规范化 codec；最终传输正文保留准确字节并以恢复摘要核验，不能以重新序列化的近似正文代替。
-大正文分块，manifest 引用不可变共享前缀和增量尾部。后续外置正文存储时，再定义授权读取、完整写入后发布、
-故障恢复、备份与垃圾回收协议，不能仅增加一个对象 URL 就宣称可恢复。
-Source/Artifact 引用始终保留原始 Scope 与准确版本；payload 的内容摘要不替代业务身份或读取凭证。
+## 通过现有能力控制上下文
 
-### Scope 约束、索引与原子提交
+### 准备与精确复用
 
-所有新增表以 `scope_id` 开始主键与常用索引；同 Scope 运行记录之间的外键携带 Scope 和完整父对象身份。
-无会话的 operation 等根记录仍外键关联 `pc_scopes`；可选 session 与 branch 只允许同时缺省，存在时核对同一会话分支。
-例如 attempt 通过 `(scope_id, operation_id)` 关联 operation，分支通过 `(scope_id, session_id)` 关联会话，
-候选与计划的 payload 引用也必须匹配 Scope、类型和所属对象。显式的跨 Scope 证据引用走已有资料授权，
-不能当作运行记录外键允许任意跨分区连接。身份列复用 `identity_string` 的精确比较语义。
+保留既有请求契约，适用时使用 `assembly`、`include_code` 和 `bootstrap_receipt_id`：
 
-operation 幂等唯一键使用 `(scope_id, caller_binding_id, request_namespace, request_id)`，各项非空。
-namespace 由 Core 依据会话/分支或可信后台工作负载形成；不依赖可空 session 列的 UNIQUE 行为，
-也不让客户端借 namespace 冒充其他用途。begin、response、release 和 selection 另在其准确父对象内去重。
-租户部署通过可信调用方绑定与 Scope 关系区分身份，不新增可由请求任填的 `tenant_id` 分区。
-
-按 `(scope_id, session_id, sequence)` 读取增量上下文，按 `(scope_id, attempt_id, sequence)` 读取执行证据；
-operation 使用 Scope、调用方和创建时间索引，保留清理使用 Scope 与到期时间索引。
-需要调用方隔离时在 SQL 查询和分页之前施加过滤，不拉出全 Scope 正文后再过滤。
-每轮只追加新增内容与引用；manifest 使用共享前缀和有界检查点，不把历史正文或完整引用列表逐轮复制。
-实现验收需验证查询计划、最大正文和事件批次限制、长会话读写放大、索引尺寸与保留清理成本。
-
-跨仓储事务由 Core service 持有同一个 `AsyncDatabase.transaction()` 和 AsyncConnection，
-各 repository 不独立提交，也不跨外部模型调用持锁：
-
-| 操作 | 必须一起成立的记录 |
-| --- | --- |
-| 创建或 fork 会话 | Scope/调用方内的幂等键、会话或新分支、准确基线与初始 head；重试返回原 ID。 |
-| 建立 operation | 请求幂等唯一键、主体和会话绑定、原始输入约束与准备状态；成功后才发起收费子调用。 |
-| 开始 attempt | 开始请求唯一键、合格目标、执行所有权与 fencing、attempt、预算账户版本与预留及总额校验。 |
-| 保存候选 | 稳定提交身份、准确且完整的 payload、摘要、检查策略及 attempt 关联；不改变所选分支。 |
-| 采用回答 | selection 幂等键、准确输入与候选关联、选择事件、新 manifest 与分支 CAS；冲突全部回滚。 |
-| 用量结算 | 唯一 attempt 的证据版本、追加事件、预留变更、账户与费用更新；重复或乱序事件不重复收费。 |
-
-例如分支推进的更新条件必须包含完整分区与期望版本，且与选择事件写入属于同一事务：
-
-```sql
-UPDATE pc_context_branches
-SET version = version + 1, head_payload_id = :new_head
-WHERE scope_id = :scope_id AND session_id = :session_id
-  AND branch_id = :branch_id AND version = :expected_branch_version;
+```json
+{
+  "scope_id": "project:powercontext",
+  "query": "Fix the generated API client and follow repository regeneration rules",
+  "max_bytes": 8000,
+  "include_code": false
+}
 ```
 
-只有影响一行才算采用成功。账户更新也核对 Scope 与版本；跨数据库方案须先给出等价协议才能获得相同承诺。
-派生检查点恢复时核对原正文摘要、事件身份、内容顺序和旧渲染版本，不用当前知识重新解释历史。
-内容去重限制在同一授权及保留边界，不能因为 hash 相同在不同 Scope 或私有会话间共享读取。
+默认召回路径可包括 Memory、Experience、Topic Memory；Profile 需要现有选择与配置，代码按需启用。
+Skills 不会被 prepare 隐式装配。现有召回和 rerank 策略保留自己的成本与失败语义。
 
-### 迁移、保留与统计兼容
+宿主或 Gateway 在明确的任务上下文 epoch 中保留精确准备值。epoch 是本地生命周期边界，不是新的服务端会话资源。
+不为每个工具结果或重试重新召回。刷新使用原 prepare 操作，固定新的注入位置，保持已采用历史准确。
+不能只因某段文本类似早先的 Memory 就在全局删除它。
 
-实现使用既有共享 metadata、数据库 profile、迁移版本与备份恢复清单，验证 SQLite、MySQL 和 OceanBase
-的身份列、复合键、索引、约束及并发行为；不能用 `create_all` 代替既有结构升级或只验收一种后端就宣称全部支持。
-新增表按能力组接入，现有 Source、Artifact、Handoff、bootstrap receipt 和日统计不回填成推理会话或费用证据。
-老数据缺失执行证据时明确标为未覆盖，不补造历史 attempt、采用状态或缓存命中。
+现有 `bootstrap_receipt_id` 只排除受支持且已完整注入的 Atomic Memory 版本，不能据此声称已去重
+Topic Memory、代码、任意历史或 Handoff。文本相同，或缺少 Scope、revision 的 Artifact 标识，都不足以证明历史覆盖。
 
-会话正文、投影、敏感映射和计费证据分别配置保留期。按 Scope 有界清理，未结算尝试保留必要证据；
-正文到期后可保留获准的身份 tombstone，查询和恢复明确报告不可恢复，不静默重新召回或使账本引用悬空。
-Scope 的保留清理或未来删除流程同样受未结算证据约束，不用无条件级联删除丢弃预算与费用记录。
-关闭优化不删除证据；回滚旧版本前停止新能力准入，不能丢弃未结预算。会话删除不代表供应商 KV 同步删除。
+### 两种预算与不同归属
 
-`pc_model_usage_daily` 可接收新账本的派生统计，但同一次受管执行只选择一个统计写入者，
-不能让旧 usage wrapper 与账本投影重复累计。日聚合继续用于展示；准入、结算与恢复只读权威执行记录。
-派生统计可按检查点重建，重建不修改原 attempt、证据或费用结算。
+`prepare.max_bytes` 约束补充上下文的 UTF-8 文本。GateRuntime 检查整个目标请求：指令、准备结果、历史、
+工具/schema 开销与输出预留，并与经过验证的目标限制比较。字节数不是 token 数。
+估算方法和不确定性余量必须显式；未知目标窗口不能满足要求硬限制的准入检查。
 
-### 部署边界
+请求过大时，v1 暂不发送并返回对应限制。宿主可以通过相同 prepare API 使用更小的 `max_bytes`，或显式准备 Handoff。
+GateRuntime 不静默截断信任包装、另选一组 Memory、拆断工具交换或修改历史。
+重新准备会产生实际检索成本，并建立新的前缀 epoch。
 
-嵌入式部署在既有 Core 组合入口接入 ContextRuntime、GateRuntime 与内置执行器，不要求 Gateway、独立 Core Server 或内部 HTTP。
-服务化部署为 Core、应用 SDK 与可选 Gateway 配置相应身份、TLS、最小权限和健康检查。
-供应商凭据由实际执行方持有：接现有网关时优先使用其受限凭据，直连时由内置执行器、SDK 或 Gateway 读取凭据存储。
-Core 计划只引用凭据身份，不返回密钥。需要部署层强制边界时另行配置出站与变更权限约束。
+### 刷新、权限与来源
 
-启用持久模式时 Core 负责数据库及已配置正文存储的恢复；可选 Gateway 可水平扩展，发布时验证控制协议版本交集。
-可用性分别报告 ContextRuntime、GateRuntime、实际执行器、上游服务和启用的 outbox；进程内与远端调用开销分别测量。
+每次 prepare、发送准入和释放都检查当前授权。字节复用不是授权缓存，冻结值不能在访问已撤销后继续授予资料使用权。
 
-### 必须测量的开销
+默认四字段 PreparedContext 不含可信的机器可读来源列表。若接入承诺自动跨轮次重新授权引用资料，
+必须在可信运行时边界保留实际来源 Scope/revision，或使用其他经过验证的宿主来源机制，不能从引用文本还原权限。
+首次缓存展示采用无 context references 的单 Scope，以及宿主有权使用的历史边界。
+在来源与重新授权链路得到验证前，不支持自动跨 Scope 冻结重放 profile。
 
-| 维度 | 观测内容 |
-| --- | --- |
-| 延迟 | Core 往返、授权与召回、优化、许可写入、扫描、上游首字、完整生成、strict 释放等待。 |
-| 内存 | 请求正文、并发完整响应缓冲、解析对象、连接队列、outbox 索引。 |
-| CPU | JSON/SSE 解析、扫描、摘要、token 估算、序列化与重复复制。 |
-| 存储 | 每新增消息与 attempt 的写放大、快照 manifest、内容块复用、保留与清理。 |
-| Core 负载 | 外部辅助模型次数、跨 Scope 查询、数据库锁等待、预算竞争与计划缓存效果。 |
+缺少所需授权或来源时，暂停受保护的复用，通过已授权路径刷新，或由宿主建立获准的新边界。
+安全变化可能降低缓存复用，不能为了亲和性延迟执行。已发送给供应商的内容不会因本地计划失效而被收回。
 
-例如，一千个请求各保留一 MiB 响应，仅原始缓冲就约一 GiB，还不包含解析和连接开销。
-部署必须用响应上限和并发准入控制最坏内存，不能仅靠异步 Rust 避免资源耗尽。
-strict 的首个内容 token 等待完整生成和检查完成，须单独报告；不承诺与直通流相同的首字延迟。
+[RFC 1435](1435_explainable_prepared_context_receipts.md) 提议在原 prepare 响应中按需返回临时诊断信息。
+它尚未在基线实现，不是 v1 前置依赖，也不是授权 token 或注入证明。普通自动召回保持现有四字段结果。
 
-用小中大历史、长输出、工具密集、跨 chunk、缓存冷暖、Core 故障和高并发组合做压测。
-验收前固定目标负载和 SLO，报告实际分位数与资源占用；不在未测试前宣称 Rust 带来具体性能倍数。
+### Rollover 与领域连续性
 
-## 功能开关与配置
+在宿主显式 rollover 边界使用既有 Handoff，与 [RFC 1783](1783-handoff-session-rollover.md) 保持一致。
+Core 不接管完整转录，也不实现通用的 provider 窗口管理器。GateRuntime 提供调用准入，宿主决定何时及怎样开启新会话。
+Handoff 证据与遗漏保留原语义，精确已提交引用仍带 Scope。Work 继续是 Source/Artifact 上的门面，不新增持久 Work 聚合。
 
-安全执行、上下文增强、输入优化、输出控制、供应商缓存和响应缓存分别配置，不能共用一个 active 开关。
-对任何需要强制保护的生产路由，安全 enforcement 始终开启；优化 off 不等于关闭安全。
+## 最小接口与 Scope 隔离
 
-| 开关 | 首版建议 |
-| --- | --- |
-| context_enrichment | 在明确绑定且已委托的范围启用，由 ContextRuntime 管理唯一自动注入入口。 |
-| input_optimization | 先 shadow，再启用已验收的无损策略。 |
-| output_generation_profile | 使用明确 schema 与输出上限，不自动总结用户答案。 |
-| lossy_compaction | 关闭；通过独立任务质量门槛后启用。 |
-| prompt_cache_policy | 按目标能力启用，记录真实读写和写入费用。 |
-| response_cache | 关闭。 |
-| dynamic_model_routing | 主模型关闭自动改选；后台按 stage 静态配置。 |
-| input_security | enforcing；不可用时拒绝外发。 |
-| output_security | strict 为强制保护基线；observe 路由明确不承诺阻断。 |
+### 现有操作仍是主要入口
 
-配置分 ContextRuntime 上下文策略、GateRuntime 安全策略、执行器限制与上游 profile，另显式选择是否启用会话与持久账本。
-宿主委托声明属于接入契约；context_enrichment 或缓存开关不自动授予历史重写、压缩或资料读取权限。
-Core 决定允许什么；执行器的资源限制可以更严格，不能放宽 Core 约束。
-上游配置不允许突破共同候选与隐私边界，不存在“关闭 Gateway 就关闭双闸”的配置联动。
-配置变更产生版本和审计记录，旧计划按兼容或失效规则处理。
-
-## 分期交付
-
-### P0a：可独立狗粮的 ContextRuntime 与 GateRuntime
-
-先在现有 Core 组合入口交付两种运行时的最小职责边界、一个真实生成适配和固定 profile 的 Embedding 适配、
-一个内置执行器与一个托管 SDK 入口。ContextRuntime 先处理调用方完整历史、固定模板、窗口预算与缓存规划；
-GateRuntime 处理授权、安全投影和最终输入输出检查，不要求持久历史或新进程。
-生成仅支持文本与普通函数工具的非流式完整输入输出；Embedding 遵守只检查或阻断的首版约束。
-输入 enforcing、确定性敏感规则与输出 strict 在实际发送和原始响应边界生效，SDK 每次内部重试重新准入。
-
-选择一个实际兼容端点，让 Core 一个真实生成阶段及应用 SDK 使用同一规则。
-缓存规划先覆盖固定指令、工具/schema 与调用方明确提交的稳定材料，按目标能力配置断点并读取原始用量。
-已验收的无损策略独立启用；不以有损压缩、全量会话库、可靠账本或 Rust 完成作为该步交付条件。
-验收包含实际敏感标记阻断、完整工具往返、同前缀多次生成与真实缓存读写证据。
-无状态模式只提供本次约束和已知用量，不宣称重启恢复或跨进程总预算。
-
-### P0b：按需交付持久连续性与严格预算
-
-在 P0a 可用后，为 ContextRuntime 启用持久上下文管理委托、冻结注入与会话采用，
-并独立启用 operation 幂等、受检候选、显式 selection、恢复释放和最小执行账本。
-交付幂等会话创建与有界查询，按执行四表、会话三表和可选预算账户接入仓储；fork 按独立能力验收后开放。
-先支持同会话串行及已核验固定目标；持久会话和持久预算分别声明依赖，启用哪项就验收其原子条件与异常恢复。
-补充一个 LiteLLM profile，使用固定且可核验的两个模型验证工具流与切换，记录缓存冷启动和实际尝试边界。
-
-交付前必须覆盖：准备确认丢失、预留后发送状态未知、候选保存后交付前崩溃、采用成功但确认丢失、
-乱序或重复用量、策略升级后恢复与不可恢复正文。用真实进程重启和支持的数据库验证回读、唯一身份和预算，
-不能将这些基础恢复条件全部留到 Gateway 阶段。未完成验收的持久能力保持不可用，不影响 P0a 基础双闸。
-
-### P1a：GatewayRuntime 编排与缓存收益
-
-以 P0a 的同一 Core 契约实现最小 Rust GatewayRuntime，编排两种 Core 运行时与远端执行器，
-先交付固定模型、非流式 strict 的多轮缓存展示。
-GatewayRuntime 完成上下文准备协调、缓存参数映射、具体目标准入、许可和字节核验、响应检查及真实 cache usage 采集，
-与内置及 SDK 路径比较相同前缀和上游，验证策略判定一致及缓存控制保真。
-
-该展示可使用调用方完整历史和固定前缀，不等待所有持久子系统或真实 Coding Agent 兼容完成；
-使用服务端冻结历史、selection 或可靠账本时，须先通过相应 P0b 验收。
-交付逐轮缓存视图和含写入、预热、Core/Gateway 开销的任务成本报告，达到预先冻结的质量与费用门槛才宣称收益。
-
-### P1b：真实 Coding Agent、多网关与分布式恢复
-
-扩展 Rust HTTP/SSE、背压、取消与可靠 outbox，保留同一 Core 检测规则。
-优先验收一个真实宿主及原生协议，再扩展另一个，覆盖 Responses、Anthropic Messages、签名与加密块、
-历史截断、工具生命周期、重连、上下文管理委托、会话选择回执和真实授权。
-显式开放 fork 时验收旧版本基线、跨分支选择及工具副作用隔离，不把未验收分支协议默认为已支持。
-实现 Bifrost、New API 与其余 Core inference 路径，按版本发布能力矩阵；
-补齐撤销传播、多实例接管、outbox 灾难丢失、供应商对账与高并发部署验收。
-原生宿主、多模态或未接入端点不因基础缓存路径成功而自动获得完整兼容声明。
-
-### P2：经过质量验证的进一步优化
-
-对有损上下文重建、Core 后台输出 codec、语义响应缓存、动态模型选择和 Judge 升级分别建立实验。
-先 shadow，再在固定策略与任务集上验证，逐项启用并可独立回滚。
-token 或费用收益不足时关闭对应优化，保留会话交付与强制安全能力。
-
-## 验收方案
-
-### 行为与安全
-
-| 场景 | 必须观察到的结果 |
-| --- | --- |
-| 不部署 Gateway | Core 后台和托管 SDK 均能执行输入与输出检查，无 Rust、无 loopback HTTP 依赖。 |
-| 只启用基础双闸 | 不需要会话或账本数据库即可完成本次检查，但不宣称持久重放与跨进程总预算。 |
-| 执行器一致性 | 内置、SDK、Rust 对同一受检内容与策略得到同一 Core 判定，均不提前发送或释放。 |
-| 仅使用 prepare / 手动 check | 能明确报告受检内容范围，不将宿主自行追加的历史或未上报输出宣称已保护。 |
-| 跨 Scope 对象与私有会话 | 两个 Scope 的同名请求键不冲突；借用另一 Scope 的 session/plan/attempt/candidate ID 不能读取、释放、采用或扣款；同 Scope 的其他调用方也不能越过会话归属。 |
-| 授权与引用撤回 | 真实 Server 启用 Access Plane，以不同身份验证权限和撤销；关联 Scope 的资料逐项核验，冻结快照不绕过撤权，不以共享 token 下切换 Scope 证明权限隔离。 |
-| API 与表隔离一致 | 所有新 DTO、生成契约、scoped application、SQL 条件、复合键及外键保持同一 Scope；后台 operation 不因可空 session 绕过幂等唯一约束。 |
-| 上下文管理委托 | 本次载荷检查不自动取得会话管理权；委托范围外不召回、压缩、截断或推进历史。 |
-| 无状态缓存准备 | 相同 prepare 入口可返回仅本次有效的上下文与缓存计划，Gateway 经双闸执行，无新增表，也不宣称持久幂等或恢复。 |
-| 唯一编排入口 | Hook、宿主与 ContextRuntime 不重复自动注入；外部历史编辑触发明确分支或重建核验。 |
-| 安全投影改变输入 | 重新核对 token、前缀和断点，最终载荷重新检查；不复用旧字节许可或伪报原前缀命中。 |
-| 工具回合与窗口不足 | 普通工具回合重放冻结注入；窗口不足按已验收策略新建 epoch，或明确拒绝并请求交接，未完成动作不被静默丢弃。 |
-| SDK 内部重试 | 每次真实最终请求及原始响应都经过双闸，格式修复和错误输出不绕过检查。 |
-| A 分析、B 修改 | B 收到相同目标、最新纠正、所需工具结果与精确证据；不依赖 A 私有会话状态。 |
-| 客户端完整重放 | 历史与注入不重复增长，同 ID 异正文冲突，不混入未选分支。 |
-| 重启续接 | 从 Core 恢复同一冻结输入与允许保留的交付内容，不靠 Gateway 进程内状态。 |
-| 候选保存后交付前崩溃 | 原请求找回相同 operation 和候选；重新核权后恢复释放，无新计费尝试或隐式采用。 |
-| 采用成功但确认丢失 | 重复选择返回原分支版本；不重复追加输入、回答或触发工具。 |
-| Embedding 策略变化 | 首版实际文本不变；未验收的改写被拒绝，未来表示变化通过新 profile 与迁移处理。 |
-| 敏感 Memory 注入 | 只在 Core 注入的测试秘密也会在最终外发前阻断。 |
-| JSON 与跨 SSE 块 | 字符串、数字、转义、Unicode、跨块敏感标记按声明规则检测；strict 未先释放。 |
-| 外部辅助模型 | 原始不可外发内容不会先发给分类或压缩服务；辅助请求不递归增强。 |
-| 输出阻断 | 被阻断文本、工具参数与敏感错误不交付，但保留已发生费用。 |
-| 运行中撤权 | 长响应在释放前重新核验，剩余内容不能由旧许可继续授权。 |
-| 工具执行状态未知 | 不通过重试模型请求再次触发已执行或状态不明的工具。 |
-| Core 中断或 outbox 满 | 按失败矩阵停止准入，无静默旁路或假成功。 |
-| 不可恢复内容 | 明确报告连续性限制，不用新召回替代旧快照冒充重放。 |
-| 下游隐式重试 | 观测尝试与真实日志核对；不完整部分保留 unknown，严格路由不假设零额外调用。 |
-
-本地模拟保护解析与状态回归；P0a 真实验收经过 Core、实际内置或 SDK 执行器和直连模型供应商。
-P0b 单独验收持久能力及 LiteLLM，P1a 验证 Gateway 缓存闭环，P1b 验证分布式与真实宿主。
-每条路径分别记录覆盖，某条路径成功不替代另一执行器或完整宿主的验收。
-
-### 成本与质量
-
-在同一任务集、模型配置、工具、预算、评价标准和安全策略下做四格配对。
-四组固定相同的已授权事实、Memory 与证据选择、安全投影，只改变表示策略和缓存布局；
-增加知识交付、减少检索步骤的效果用独立实验验证，不混入缓存收益归因：
-
-| 组别 | 表示优化 | 稳定重放与缓存策略 |
+| 需求 | 复用的 HTTP 操作 | 作用 |
 | --- | --- | --- |
-| A | 关闭 | 供应商默认行为基线。 |
-| B | 开启固定无损策略 | 供应商默认行为。 |
-| C | 关闭 | 开启稳定注入与目标缓存策略。 |
-| D | 开启同一固定策略 | 开启稳定注入与目标缓存策略。 |
+| 任务相关补充上下文 | `/v1/context/prepare` | 现有临时 PreparedContext，不执行推理。 |
+| 生命周期上下文 | `/v1/context/bootstrap` | 现有 curated bootstrap 包。 |
+| Bootstrap 交付 | `/v1/context/bootstrap/receipts` | 现有无正文、终态交付 receipt。 |
+| 当前工作边界 | `/v1/work/handoffs/prepare-current`、`/v1/work/handoffs/acknowledge` | 现有 Work/Handoff 连续性。 |
+| 显式 Handoff 生命周期 | `/v1/handoff/prepare`、`/v1/handoff/finalize`、`/v1/handoff/commit`、`/v1/handoff/continue` | 现有领域准备、校验、提交和读取路径。 |
+| 工作意图与结果 | `/v1/work/contracts/create`、`/v1/work/outcomes/record` | 在明确适用时使用现有 Source 观察。 |
 
-“默认”不等于供应商缓存真的关闭；必须记录基线实际 cache usage。
-使用独立会话、缓存键或允许的隔离方式控制实验串扰，随机化次序，并分别报告冷启动和预热后的结果。
-独立会话或缓存键不必然隔离供应商隐式缓存；无法证明隔离时，记录共享前缀串扰并限制因果结论。
-预热调用、缓存创建和存储费用计入完整任务或预先声明的摊销窗口，同时报告冷态、稳态和含预热摊销的成本。
-同时核对安全脱敏对业务正确性的影响。
+以上路径均已存在。DTO、授权、可选持久化与失败语义仍由原操作负责。
+v1 流程不需要新增 `/inference/prepare`、session create/get、branch/fork、adoption、event append、attempt、
+release 或恢复查询 API。
 
-报告任务成功率、具体回归、全部主辅调用、失败费用、未知费用覆盖率、实际缓存读写、
-输入输出、工具步骤、端到端延迟、Core/Gateway 资源和每成功任务成本。
-非劣质量标准、关键任务零回归项及性能 SLO 在实验前冻结，不能看到结果后再选择有利口径。
+### 两个新增检查操作
 
-缓存字段缺失或费用无法核对时，仍可证明本地表示变化或请求减少，
-但不能将它们发布成供应商缓存命中或完整净收益结论。
-
-### Gateway 缓存展示与验收
-
-固定同一任务、事实材料、工具、安全策略、模型与实际部署，对比“Gateway 按供应商默认策略转发”与
-“同一 Gateway 执行 Core 缓存计划”。两组保持响应缓存关闭，每轮都验证真实上游生成，
-以精确前缀与合格断点的复用为变量；沿用上述冷暖隔离、预热计费和质量判定规则。
-至少在一个真实受支持目标观察到供应商报告的缓存读取，才能验收该路径的 KV 复用能力。
-
-| 场景 | 必须取得的证据 |
-| --- | --- |
-| 同前缀连续多轮 | 最终字段与断点符合 profile；后续调用有真实 cache read；新增请求得到各自的上游执行记录。 |
-| 新增历史或 Memory | 原稳定区域不被无故改写，新增内容进入允许边界；供应商用量显示实际复用范围。 |
-| 工具、策略或模型变化 | 计划按规则失效、更新或选择新目标，记录前缀变化与冷启动，不为缓存保留过期权限或错误事实。 |
-| 下游缓存自动注入 | 真实出站请求与批准规则一致，无双重断点决策；配置漂移使对应资格失效。 |
-| 未采用的候选，包括交付不确定的情况 | 候选不进入自动历史与缓存前缀；按 selection/release 恢复，不增加未获许可的模型尝试；用户接收未知不覆盖已确认的宿主选择。 |
-| 缓存字段缺失或未命中 | 分别报告 unknown 与已观测零值；本地前缀一致不被升级为供应商命中事实。 |
-
-逐轮查询至少展示：请求与计划关联、模型和已知实际部署、前缀版本是否变化、cache read/write、
-归一化普通与总输入、费用来源及完整性、上游首字、strict 等待与最终交付时间。
-token 缓存读取占比在字段完整的记录上按“合计缓存读取 / 合计归一化总输入”计算，分别报告有用量证据的覆盖率，
-不把缺失字段补零或取逐请求百分比的简单平均。成本报告包含主辅调用、失败、写缓存、预热及 Core/Gateway 开销。
-ContextRuntime 的规划长度、GateRuntime 的安全判定、GatewayRuntime 的执行保真与供应商实际命中各自作为证据，不互相替代。
-
-## 实现任务与完成条件
-
-| 工作包 | 交付物 | 完成条件 |
+| 提议的 POST 路径 | operationId | Scoped 领域行为 |
 | --- | --- | --- |
-| Core ContextRuntime | 上下文委托、材料与历史选择、窗口预算、冻结投影、缓存规划及显式采用。 | 基础规划无持久依赖；会话、重建与采用在委托和验收范围内运行，普通工具回合不重复召回。 |
-| Core GateRuntime | 授权、敏感变换、最终输入输出检查、释放与失败语义。 | 脱离 Gateway 和持久会话仍可使用；输入变化重新核对上下文计划，实际字节检查不被跳过。 |
-| 内置与 SDK 执行 | provider adapter、最终请求检查点、原始响应检查点和托管调用。 | 每次实际尝试均受检；支持边界明确，strict 不提前释放。 |
-| Core 控制契约 | 统一 Scope DTO、operationId、错误与能力声明，scoped application、Access Plane 元数据及托管执行协议。 | HTTP 与 Python 同一语义，跨 Scope ID 和调用方替换失败；确认丢失不重复调用或采用，不强制 loopback HTTP。 |
-| 关系存储与迁移 | Scope 复合键的执行四表、可选会话三表与预算账户；共享 codec、事务、迁移及备份清单。 | 各后端独立验收归属、幂等、CAS、恢复、保留与增量成本；旧表语义保持，统计不重复累计。 |
-| Core 会话与投影 | 增量事件、冻结注入、候选与显式采用、分支、manifest、保留策略和 Handoff 关联。 | 保存、释放、采用与接收分开；重放、并发、重启和不允许保留内容的边界可复现。 |
-| 缓存规划与执行 | InferencePlan.cache_policy、合格断点、目标亲和、参数映射、用量归一化与逐轮视图。 | 真实 Gateway 链路观察到缓存读取，前缀与控制保真，含写入等开销的任务成本达到门槛。 |
-| 可选 Rust GatewayRuntime | 两种 Core 运行时客户端、调用编排、HTTP/TLS、许可核验、SSE、背压、取消和 outbox。 | 上下文及安全决定复用 Core，状态与资源有界，取消恢复不自动重复外发，无提前释放。 |
-| 首个上游适配 | 直连与 LiteLLM profile、实际目标和原始 usage 证据。 | 固定目标、尝试数和能力范围在真实服务确认。 |
-| Core 后台接入 | 选定 generation/Embedding 阶段默认经 GateRuntime 与内置执行器。 | 不依赖 Gateway、不递归增强、不改变原有领域与提交语义。 |
-| 执行账本 | 预留、去重事件、未知状态、重启恢复和对账入口。 | 不重复结算、不将未知当零、跨层尝试边界明确。 |
-| 质量与成本实验 | 行为反例、真实链路、四格配对和性能报告。 | 达到预先确定门槛后，才启用与宣传对应优化。 |
+| `/v1/inference/input/check` | `check_inference_input` | 检查完整输入；必要时返回缓存渲染计划，或对最终目标绑定载荷准入/阻断。 |
+| `/v1/inference/output/check` | `check_inference_output` | 在释放前检查对应的完整原始响应。 |
 
-交付顺序先建立无 Gateway 的 ContextRuntime、GateRuntime 及内置/SDK 执行闭环，
-再按需接入持久上下文和可选 Rust GatewayRuntime，
-逐项打开经过验收的降本策略。
-每个工作包保留独立开关和回滚方式；关闭优化不会关闭必要安全，回滚实现不会修改历史证据。
+这些是待实现契约，不是当前端点。仅调用检查不会请求供应商、召回上下文、追加 Source 或提交 Artifact。
+嵌入式 GateRuntime 以既有 `for_scope(scope_id)` 约定绑定 Scope，提供相同两个领域操作。
+协议 DTO 翻译到这些操作，不围绕上下文准备另建一套服务门面。
 
-## 观测与权威账本的边界
+生成客户端保持现有的扁平操作风格：`prepare_context` 仍是上下文入口，只为闸口新增
+`check_inference_input` 和 `check_inference_output`。Scoped 领域请求不重复携带已绑定 Scope，远端 DTO 包含 `scope_id`。
+同一操作不另起别名，也不维护语义不同的 SDK 专用 DTO。
 
-执行账本不是 operational logging。日志、metrics 和 sampled traces 保持 best-effort，
-不能替代持久许可、响应确认或费用对账，也不能因日志失败改变业务结果或抑制取消。
-实现遵循 [Observability 开发规范](../development/observability.md)。
+HTTP DTO 必须带 `scope_id`，Server 复用 `x-powercontext-scope-mode: current`、`x-powercontext-access`、
+可信授权上下文和已注册 Scope 校验。检查要求当前 `scope.read`；策略 profile 选择与实际付费执行还必须满足部署的
+可信配置和执行权限。能读 Scope 不等于能任选凭据或产生模型费用。嵌入式 `for_scope` 绑定分区，不执行认证。
 
-新增字段复用所属边界的 operation、unit、outcome 和 error vocabulary，通过 log_safely 输出，
-纳入结构化字段 allowlist，并同步中英文运维契约。请求、trace、会话、operation 和 attempt 等高基数身份不作为 metric labels。
-SDK 或嵌入式 Runtime 不配置全局 logging；Server 或宿主拥有 handlers、format 与 exporter 生命周期。
+Scope ID 是不透明值，遵守现有精确身份比较。租户、Principal、角色、委托与可信后台 stage 来自认证边界，
+请求字段不能制造它们。Gateway 逐个认证调用者并转交已验证委托。
+共享管理员凭据加客户端任意 `scope_id` 不构成租户隔离。context references 仍按实际引用 Scope 和精确 Artifact 读取授权。
+模型原生请求体不能定义 PowerContext 权限。
 
-日志与 trace 默认不包含 prompt、query、Source/Memory 正文、模型响应、向量、凭据和敏感路径。
-错误值和 traceback 在输出前按实际边界审查，不依赖 allowlist 自动脱敏。
-费用账本可以保存受控身份和无正文执行证据，正文快照采用独立权限与保留策略，二者不可混用。
+### 公共值与最终载荷绑定
+
+| 值 | 必须表达的信息 |
+| --- | --- |
+| GateInput | 已绑定 Scope 的调用者上下文、调用关联、可信来源/stage、获准目标/profile、完整渲染载荷、声明的布局边界与输出限制。 |
+| CheckedInput | `allow`、`block` 或 `withhold`，稳定原因类别、最终载荷摘要与目标绑定、策略/profile 版本、有效期和已执行限制，以及可选缓存渲染要求。 |
+| GateOutput | 对应输入绑定、原始响应与工具参数、实际目标、完成/错误状态，以及可取得的原始 usage。 |
+| CheckedOutput | 释放判定、内容摘要、策略版本、允许的释放范围，以及无正文原因/覆盖元数据。 |
+
+远端检查绑定必须可认证、大小和有效期有界，并关联可信调用者、Scope、具体目标、协议/profile、最终正文摘要、
+影响内容的请求头、输出上限和策略版本。使用带完整性保护的不透明 envelope 或等价的可信传输绑定；
+本地执行器可使用不可变值。这类 envelope 无需数据库行、不含原始 prompt，也不授予新资料访问权或持久的单次使用保证。
+敏感内容摘要属于受限元数据，不能成为公开日志或指标标签。
+
+执行器发送前立即校验绑定并检查当前必需策略。正文、目标、请求头、模型、工具、输出上限或缓存设置变化都需要重新准入。
+输出检查关联同一次调用，但 check-only API 不能证明不可信调用方实际发送了所声称的字节，或收到了所声称的供应商响应。
+强执行保证只适用于经过验证的托管执行器。
+
+未知枚举/schema 版本和不支持的协议在发送前拒绝。策略阻断用结构化检查结果表达；认证、权限、格式、大小和可用性失败
+沿用现有 HTTP 约定，错误不回显命中秘密。`withhold` 表示在前置条件满足前不得发送/释放，不能解释为成功或付费重试授权。
+
+实现这两个操作时，必须修改 `openapi/powercontext.yaml`，运行 `make api-generate` 生成客户端并通过 `make contract-test`。
+本 RFC 不修改生成契约。现有 PreparedContext 消费者继续校验原结果，不新增必填字段。
+
+## 调用与缓存规划顺序
+
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant E as Executor / GatewayRuntime
+    participant C as Existing ContextRuntime
+    participant G as Core GateRuntime
+    participant U as Upstream
+    H->>E: Task, authorized history, target
+    opt Context preparation boundary
+        E->>C: Existing prepare request
+        C-->>E: Existing PreparedContext
+    end
+    E->>G: input/check: assembled target payload
+    opt Native cache fields need rendering
+        G-->>E: withhold + bounded cache render plan
+        E->>G: input/check: final rendered payload + plan binding
+    end
+    G-->>E: allow + final payload binding
+    E->>U: Send admitted bytes
+    U-->>E: Raw response, actual usage
+    E->>G: output/check: response + input binding
+    G-->>E: Release decision
+    E-->>H: Checked result or explicit block
+    H->>H: Accept history / authorize tools
+```
+
+Core 缓存规划器是 GateRuntime 中新增的内聚职责，消费既有准备值和声明的请求布局。
+它从受控 `UpstreamProfile` 中选择允许的可复用边界、缓存模式、TTL 类别和目标亲和性约束，不执行第二次上下文检索。
+第一次输入检查即可规划。
+
+适配器需要改变原生缓存字段时，首次返回 `withhold` 和有界渲染计划，绑定原语义载荷、目标、布局与策略。
+Gateway 只渲染允许的协议字段，保留精确准备内容和历史，将最终正文提交给相同 input/check 操作。
+Core 校验计划绑定、语义内容未变、当前策略、token 限制和最终表示，只有这次最终检查才可返回发送准入。
+v1 最多允许一次这样的重渲染；无法收敛就阻断，不开启无界规划循环。
+不需要显式缓存控制的 profile，可以直接对第一次已是最终形态的载荷准入。
+
+这是单次调用中的规划/渲染交互，不是持久推理会话。只有上游契约允许时，缓存 hint 才可视作建议。
+执行器或下游不能落实必需的亲和性约束时，该 profile 不合格，不能静默忽略约束。
+
+输入检查包括指令、全部支持的内容字段、工具 schema/参数/结果和最终原生缓存控制。
+只在协议适配前签署逻辑计划不够。准入后，执行器不得再向稳定 prompt 添加时间戳、请求 ID、trace 文本、
+安全文案或新的序列化变化。
+
+首次执行路径固定模型。显式切模型需要重新按目标准入。自动升级、fallback 树和动态路由需先验证完整质量/成本影响。
+重试只有一个明确所有者。SDK/下游隐藏重试或目标重映射必须被关闭、做到有界且可见，
+或从逐次尝试检查与完整费用的保证中排除。
+
+## 双闸、安全与流式输出
+
+### 输入与输出策略
+
+输入闸检查授权上下文、允许的目的地、支持的载体、强制敏感规则、完整请求限制和缓存/profile 兼容性。
+v1 对语义输入只允许原样通过或阻断。缓存控制字段属于经验证的协议适配，不能据此脱敏或改写用户内容。
+通用脱敏、稳定秘密占位符、可逆映射、有损压缩和自动解密不属于 v1；它们需要单独的语义、质量检查，必要时还需受限状态。
+
+输出闸检查原始文本、完整工具参数、可能暴露的 provider 错误、完成状态与当前释放策略。
+Core 阶段之后仍执行自己的 schema、证据、资格和提交校验。
+通过输出策略不代表回答真实、工具可以执行或 Artifact 有效。
+
+强制规则在可信边界内执行。可选外部 Judge 只能看到已经获准外发的投影；
+把原始秘密发给外部安全或压缩模型本身就是被禁止的泄露。Judge 失败或 `unknown` 不能覆盖强制阻断。
+现有 DecisionPolicy sanitizer/abstention 只复用于原有用途，不构成通用外发安全证明。
+
+| 载体 | v1 规则 |
+| --- | --- |
+| 文本与协议 JSON | 解析并检查所有支持的内容字段；enforcing 路径拒绝未知载体。 |
+| 工具调用与结果 | 检查完整结构、保留配对；宿主工具授权独立执行。 |
+| 不透明块、文件、图像、音频、远程链接 | 首个 strict profile 不支持，除非另有经过验证的扫描边界；检查 URL 不等于检查其内容。 |
+| 请求头、错误、诊断 | 受控白名单；不向 provider 转发调用者凭据，不在错误中回显正文。 |
+| 已准备证据 | 保留信任包装与精确引用，历史文本不提升为指令。 |
+
+目的地与凭据来自可信配置，拒绝未获准重定向和客户端任意 base URL。
+SDK 接入不能隔离进程自身的网络权限；需要防旁路的部署，采用托管执行和强制网络边界。
+
+### 释放模式与取消
+
+| 模式 | 行为 | 可用范围 |
+| --- | --- | --- |
+| `strict` | 缓冲完整响应，检查后再释放获准内容。 | 首个支持的 enforcing 模式。 |
+| `observe` | 观察检查结果并允许交付，不能声称阻止响应泄露。 | 显式诊断模式。 |
+| `bounded` | 按安全单元释放，跨片段维护规则状态。 | 后续能力，不是 v1 保证。 |
+
+Strict 缓冲配置响应字节、时间和并发上限。超限或 JSON/工具参数不完整时，暂停释放，并尽力取消上游。
+不把原始响应溢写到新数据库表。进程丢失时临时缓冲随之丢失。
+协议可以在批准前发送连接/心跳元数据，但必须不含模型内容或敏感值。
+
+Strict 经 SSE 交付时，可在完整检查后再按协议组帧，不保留实时内容 token 延迟。
+分别报告上游首 token、首次内容释放和最终交付时间。流式请求头发送后，使用协议支持的错误/中断事件，
+不能声称可以改写之前的 HTTP 状态。取消穿透策略与执行器边界，不被归一化成 allow。
+
+发送前和首次 strict 释放前检查策略有效期与撤销。已在上游执行的工作只能尽力取消。
+计划失效不能抹掉已经发送的资料或已经释放的内容。
+
+## 后台推理与优化限制
+
+GateRuntime 接入实际支持的生成、Embedding、重排和辅助调用边界。
+只包装高层 structured generator 可能看不到 SDK 重试、原始错误和最终序列化，覆盖声明必须来自真实适配边界证据。
+未支持的自定义 provider 保留明确覆盖限制。
+
+| 调用来源 | 上下文来源 | 双闸行为 |
+| --- | --- | --- |
+| `agent_main` | 现有宿主历史与已准备上下文 | 完整目标请求准入与响应释放。 |
+| `core_background` | 现有阶段拥有的 Source 投影、prompt 和 schema | 阶段专用准入与原始结果检查，之后执行原领域校验。 |
+| 策略辅助调用 | 已获准的有界投影 | 固定有界调用，不递归增强或产生 Judge 链。 |
+
+Embedding v1 检查或阻断原样输入，不能静默脱敏/摘要文档后继续写入现有索引 profile。
+后续任何语义变换都必须先定义查询与文档兼容的 profile、版本身份和重建/迁移策略。
+Rerank 检查保留候选身份和分数/结果映射。后台缓存复用保持阶段 prompt/schema 的精确版本，其实际成本计入任务评估。
+
+通用响应缓存默认关闭。供应商前缀/KV 复用与复用旧答案是两种能力。
+未来精确或语义响应缓存需要独立定义权限、时效、工具副作用、失效和质量契约。
+现有 prepare 内的查询向量复用保留原优化，不扩展成无关的跨会话缓存。
+
+## GatewayRuntime 与下游接入
+
+可选 Rust 进程负责 HTTP/SSE、可信 Scope/委托转换、经过验证的协议适配、有界缓冲、取消、重试执行和证据归一化。
+上下文装配与闸口策略仍归 Core。Gateway 使用薄客户端访问现有上下文/连续性操作和两个新检查操作，
+不新增上下文选择器、Source repository 或权威对话库。
+
+| 组件 | 职责 |
+| --- | --- |
+| Ingress adapter | 认证调用者、绑定 Scope、验证支持的协议和大小。 |
+| 现有 Core client | 仅在声明的生命周期边界调用 prepare/bootstrap/Handoff。 |
+| Gate client | 提交完整输入/输出，落实绑定与当前策略。 |
+| Protocol adapter | 保持语义内容、渲染获准缓存字段、解析原始 usage/错误/完成证据。 |
+| Transport | 向配置目标发送获准字节、执行归属明确的重试、取消和安全缓冲。 |
+| Evidence adapter | 归一化实际目标、用量完整性、缓存计数与延迟，不记录正文。 |
+
+`UpstreamProfile` 固定协议及适配器版本、模型/窗口限制、支持载体、缓存能力、凭据/账号边界、
+允许目的地、重试归属与证据可见性。请求字段只能选择调用者有权使用的 profile。
+Scope 分区不会物理划分供应商缓存；缓存隐私与账号隔离需要独立验证上游配置。
+
+Gateway 可直连 provider，也可接入 LiteLLM 等第三方网关。这些只是接入候选，不能凭协议相似就声称已支持。
+验收前固定版本与配置，验证最终字节、目标身份、缓存字段保留、隐藏重试、fallback、错误、流式和用量证据。
+不透明的委托路由不能满足具体目标保证，必须关闭对应保证或拒绝 strict 路径。
+名义上的 OpenAI 兼容路径、通过的本地 mock，都不等于真实接入已成立。
+
+## 持久化：复用现有领域，不新增表
+
+### 存储决策
+
+**v1 新增零张表、零个 Artifact 家族，不增加推理迁移。** 不要求新建通用 payload store、event store、转录数据库、
+持久缓存或执行账本。现有可选领域写入继续使用原仓储与事务。
+
+| 信息 | 现有归属/位置 | 复用边界 |
+| --- | --- | --- |
+| 已注册 Scope 与 context references | 现有 Scope 目录与配置 | 保留精确 Scope 身份和当前授权。 |
+| 显式且获准的观察 | `pc_sources` 与现有 Source journal | 记录真实领域观察，不把每次请求/响应都追加成运行日志。 |
+| Memory、Experience、Profile、Topic Memory、Handoff | `pc_artifacts`、heads、lineage 和当前服务 | 保留不可变版本、治理、引用与精确读取。 |
+| Work contract/outcome/handoff 连续性 | 现有 Source/Artifact 上的 Work 门面 | 不建 Work 聚合、任务表或平行连续性状态。 |
+| Bootstrap 交付 | `pc_context_bootstrap_receipts` | 专用的无正文生命周期 receipt，不是任意模型交付或响应采用证明。 |
+| 模型与召回统计 | `pc_model_usage_daily`、`pc_recall_token_daily`、`pc_recall_effort_daily` | 保持聚合语义，记录仍可能缺失。 |
+| 决策观察 | `pc_decision_observations` | 现有有界判断诊断，不扩成通用逐次尝试记账。 |
+| PreparedContext、缓存渲染计划、检查值、输出缓冲 | 单次调用内存、宿主当前上下文 | 派生或临时值，不默认持久化。 |
+
+Artifact review candidates、processing leases/intents 和 Topic Memory work budgets 都有特定领域语义。
+不能仅因已有表，就将它们改作通用 LLM 响应候选、推理尝试或财务预算账本。
+也不能通过往 Source/Artifact 塞大块不透明 JSON/BLOB，把无关子系统藏在现有表后面。
+
+### 派生状态、重启与并发
+
+执行器可以在已验证复用边界内，用有界本地缓存保留已准备值。键包括 Scope、调用者/委托边界、宿主任务/上下文 epoch、
+准备结果摘要、策略版本和目标表示。缓存可丢弃，设置字节、条目和 TTL 上限；
+命中后仍需当前授权与最终输入检查，单独的请求 ID 或查询文本不够。无需新增共享 Redis 或 SQL 依赖。
+首次狗粮直接在宿主保留值即可，不必再实现一套缓存。
+
+宿主按已有契约串行化对话采用。独立调用不形成服务端分支或分布式选择前沿。
+重启后，宿主历史可恢复明确保留的值，或调用者重新准备。已提交 Handoff 仍是现有恢复路径。
+Core 无法恢复未持久化的模型响应，也无法证明中断的执行器是否已经交付。
+
+准备沿用现有有界检索与 Builder。闸口工作量随声明的请求/响应大小增长，
+不要求每轮扫描或改写整个 Source/Artifact 集合，也不复制整份转录。
+需要测量长历史序列化、hash、扫描、token 估算、缓冲和并发；稳定前缀本身不能证明本地 CPU 或网络成本下降。
+
+### 后续新增存储的条件
+
+持久响应恢复、跨实例执行、单次发送许可和共享硬费用预算不属于 v1。
+后续提案先说明尚未满足的用户可见保证，对照现有仓储与事务，再论证最少权威状态。
+必须定义身份、Scope/Principal 隔离、CAS/幂等、不确定提交/发送、支持的读取恢复路径、保留/删除、成本及迁移/回滚。
+
+本 RFC 不预先批准 session、branch、context-event、payload、operation、attempt、event-ledger 或 budget-account 表。
+功能可选并不足以证明有必要新增表。复用服从领域含义和失败语义；只有临时组合或现有领域操作确实不足，才论证新增存储。
+
+## 失败、用量与保证边界
+
+| 情况 | v1 必须采取的行为 |
+| --- | --- |
+| 准备返回 empty | 任务策略允许时继续，不伪造上下文或强制写入。 |
+| 授权或强制闸口不可用 | 暂停发送/释放，不把 unknown 变成 allow。 |
+| 缓存渲染改变语义或不收敛 | 阻断路径，不二次召回或静默 fallback。 |
+| 准入后目标/载荷/策略变化 | 发送前重新准入。 |
+| 可确定尚未发送的传输失败 | 只在明确所有者和上限内重试，并保持准入有效。 |
+| 可能已到达上游 | 返回发送不确定，不自动付费重发或声称退还费用。 |
+| 原始响应不完整或输出检查失败 | 不释放内容，保留无正文失败证据。 |
+| 输出通过，交付前执行器崩溃 | 不保证持久结果恢复，由宿主处理自己尚未解决的调用。 |
+| 宿主采用，后续领域提交失败 | 领域写入按原契约失败或待处理，闸口成功不能代表已提交。 |
+| Usage 或统计不可得 | 标记 unknown/incomplete，不声称完整费用或零收费。 |
+
+调用关联 ID 不等于幂等保证，检查 envelope 不等于 outbox 或消费账本。
+重复检查与重复供应商请求、Source/Artifact 写入是不同操作。现有领域幂等与事务恢复保留原含义。
+
+v1 可限制单请求目标窗口和输出上限，不能用允许丢失的日聚合统计实现跨进程全局预算或重启安全的预留。
+宿主可以使用自己的预算策略，但必须单独说明其保证。
+已知用量、估算、未知用量与供应商对账结果保持区分。
+
+## 评估与交付
+
+### 可独立狗粮的最小切片
+
+P0 复用一个已有 Coding Agent 上下文准备路径，采用无 context references 的单 Scope、固定文本/工具协议与模型，
+接入输入/输出闸和 strict 响应缓冲。嵌入式执行器先建立 Core 路径，可选 Rust Gateway 通过 HTTP 展示同一行为。
+不增加数据库和新会话初始化。多轮事实以既有宿主历史为准，rollover 使用显式 Handoff。
+
+首个接入通过后，P1 再加入固定版本的真实下游网关和第二个受支持模型。
+测量协议保真、实际缓存证据、目标/重试可见性、Scope/委托检查和宿主采用。
+新增协议或内容载体各自验收。完整持久推理存储和全局预算需要单独论证，不是展示价值的前置条件。
+
+### 必需的行为验收
+
+- 覆盖现有 prepare 的默认/显式 assembly、empty、字节限制、代码 opt-in、已配置 references 和引用访问拒绝；确认准备策略及结果形状沿用原契约。
+- 展示普通工具轮次保留原准备值、引用、历史与工具配对。刷新使用原 API 和显式前缀边界；切模型不迁移私有 KV。
+- 拒绝跨 Scope/调用者复用绑定、伪造后台来源、目标变化、策略过期、准入后正文/请求头变化与不支持的载体。
+- 在真实上游证明被阻断输入没有发出，包括 profile 覆盖的 SDK 重试；证明 strict 阻断的文本/工具参数在批准前没有到达宿主。
+- 覆盖跨片段敏感字符串、不完整/非法工具 JSON、上游错误、缓冲上限、取消、发送不确定、输出检查失败和进程丢失，报告约定的恢复限制。
+- 确认已有 Source/Artifact/Handoff 写入保留精确身份、校验、事务和读取；普通检查不创建领域记录或增加持久依赖。
+- Bootstrap 去重不超出现有范围；缺少可信来源时，不声称通用交付、历史覆盖或跨 Scope 冻结重放。
+- Embedding 闸口不改变索引语义输入；后台/辅助路径不递归召回上下文或启动 Judge。
+
+### 缓存与完整任务实验
+
+使用相同仓库任务、起始状态、模型/profile、工具 schema、输出上限和上下文选择。
+对比 A：普通现有流程；B：稳定上下文复用加供应商现有默认缓存；C：同样稳定上下文加 Core 规划/Gateway 执行的
+显式缓存控制（目标支持时）。由此区分减少重复准备、供应商缓存和缓存规划的增量价值。
+供应商没有经过验证的关闭开关时，不能声称基线完全关闭了缓存。
+
+分别测冷/热和多轮，再逐一改变 Memory 刷新、工具 schema、安全策略、模型、账号/亲和性边界或排序。
+记录真实读写证据与任务结果变化。缺失 usage 仍为 unknown，不能根据摘要未变或设置了参数推断命中。
+
+| 指标 | 必须纳入的口径 |
+| --- | --- |
+| 质量 | Coding 任务完成、最终 diff/测试正确性、约束遗漏、证据保真、工具失败。 |
+| 准备 | 现有召回、查询 Embedding/rerank/判断、调用频率、延迟与已知费用。 |
+| 输入 | 供应商实际普通输入、缓存读、缓存写，以及各供应商计数重叠规则。 |
+| 输出与步骤 | 可观察的输出/reasoning 用量、重试、失败尝试、辅助调用和总步数。 |
+| 费用 | 所有已知类别、缓存写/预热、费率身份、估算与缺失范围；不重复计算已包含在总量中的缓存 token。 |
+| 延迟 | 准备、检查、本地渲染、上游首 token、首次内容释放、最终交付、P95/P99。 |
+| 资源 | 完整请求字节、扫描/hash/token CPU、有界缓冲、内存与并发。 |
+
+Gateway 展示每轮实际目标、准备/复用决策、本地前缀变化、缓存证据、费用完整性，以及上游和释放延迟。
+无正文对比元数据用于诊断，不能替代持久账本，也不证明供应商物理缓存隔离。
+只有任务质量可比且计量完整到足以支持结论，才接受降本声明。
+
+### 检查与观测
+
+实现验收包括现有 context/domain 测试、有意义的新双闸与执行器行为测试、生成 HTTP 契约检查，
+以及真实受支持上游/宿主探针。Mock 只能证明本地处理。
+新增运行字段前阅读既有[可观测性开发指南](../development/observability.md)，
+复用已注册的 operation/unit/outcome、绑定身份、字段白名单和 `log_safely`。
+Prompt、响应、Source 正文、凭据、敏感路径以及高基数执行身份不能进入指标标签。
+运行日志和 trace 同样排除正文与凭据，扫描证据使用有界原因类别。
+运行统计可能不完整，不能通过修改看板措辞升级其保证。
 
 # Drawbacks
 
-将双闸统一到 Core，会增加 provider 适配、最终载荷可见性、错误响应处理和多种执行路径的一致性维护成本。
-只包装现有高层 generator 不足以达到本 RFC 的覆盖，必须验证每次 SDK 重试和最终传输边界。
-ContextRuntime 承接上下文管理后，需要与宿主明确编排权、历史编辑及采用协议；没有相应宿主契约时，
-能力限制在本次调用。两种 Core 运行时的协作还需维持投影、token 和缓存版本一致，不能只按名称拆模块。
+Strict 检查增加扫描、序列化、token 估算、缓冲和可能的 Core 网络往返，输出保护推迟首次内容释放。
+稳定准备值在新鲜度与前缀连续性之间存在取舍，因此必须明确刷新与授权边界。
+上下文和协议检查仍需深入真实 SDK/传输边界，运行时命名本身不能建立覆盖。
 
-strict 输出保护等待完整结果并持有缓冲，增加首个内容 token 的等待和最坏内存。
-服务化执行增加 Core 往返；嵌入式执行虽没有该网络开销，仍承担扫描、序列化、token 估算与辅助模型成本。
-持久连续性和严格预算另外引入并发、恢复、存储与对账工作，不能让它们成为基础双闸的隐式依赖。
-
-SDK 不能独立于宿主进程阻止恶意或错误的旁路。需要统一不可绕过的网络边界时，仍要选择集中执行入口和部署级出站限制。
-未知下游重试、模型映射和参数覆盖降低可观测性，无法提供所有供应商或所有格式的等价安全及硬成本承诺。
-检测覆盖有边界，脱敏、压缩与较低输出预算都可能损害任务质量；默认安全措辞不能替代实际反例和质量验收。
+零新增存储也限制了保证：v1 不提供完整响应持久恢复、服务端对话历史或全局财务预留。
+需要这些能力的用户另行论证持久化设计。嵌入式接入无法阻止任意网络旁路；第三方不透明重试和用量会降低可测范围。
+安全检测、较小上下文和输出限制仍需质量及误阻断评估。
 
 # Rationale and alternatives
 
-| 方案 | 权衡与选择 |
+| 方案 | 决策与权衡 |
 | --- | --- |
-| Core ContextRuntime + GateRuntime + 可替换执行器 | 分离上下文生命周期与安全准入，支持无 Gateway 用户；GatewayRuntime 或其他执行器落实真实调用，是本 RFC 的选择。 |
-| 所有上下文能力归 GateRuntime | 入口较少，但上下文选择、采用和窗口管理缺少明确权威，难以表达模型调用之间的持续管理。 |
-| 双闸仅在 Rust Gateway | 部署边界清晰，但 Core 后台和 SDK 用户必须额外代理，违背基础能力可独立使用的目标。 |
-| 每个宿主或网关自建规则 | 接入可以局部推进，但语义、版本、失败策略和费用口径容易分叉，难以保证一致行为。 |
-| 所有用户通过 Core HTTP 模型代理 | 容易集中执行，但强制网络服务与内容往返，不适合嵌入式；本 RFC 保留进程内执行。 |
-| 只提供手动 check API | 对已有应用灵活，但不能证明没有改写、旁路或提前释放，作为明确受限的接入等级保留。 |
-| 在 StructuredGenerator 外统一 wrapper | 可复用业务组合点，但看不到完整指令、SDK 内部尝试、原始输出和错误；不能单独提供完整双闸。 |
-| 首版全量有损摘要与动态路由 | 潜在收益高，也会改变事实覆盖和缓存状态；留给独立质量与费用实验。 |
-| 不新增共享能力 | 保持实现简单，但多数 Core 用户继续缺乏一致的安全、降本和模型连续性路径。 |
-
-单一语义权威不要求所有计算都远端执行。嵌入式与服务化的 ContextRuntime、GateRuntime 运行同一 Core 代码，
-Rust GatewayRuntime 负责完整调用编排和明确的执行契约，领域规则复用 Core。
+| 复用上下文准备 + Core 双闸 + 可替换执行器 | 本方案；围绕当前 PowerContext 能力补齐调用行为。 |
+| 独立 ContextRuntime，新增会话、分支与选择器 | 重复权威，并在首个有效任务之前增加接口和存储；不纳入 v1。 |
+| 上下文/安全全部放 Gateway | 后台和嵌入式用户必须部署 Gateway 或重复规则；共享领域行为留在 Core。 |
+| 新增一体式推理准备 API | 重复 prepare 语义并增加结果兼容复杂度；复用原 API，在本地组合。 |
+| 全部请求/响应持久化到 Source 或 Artifact | 破坏证据/治理含义并增加正文保留；只为真实领域工作使用原领域。 |
+| 立即新建通用 JSON 执行表 | 表少不代表领域契约合理，先证明持久保证确有必要。 |
+| 只提供手动 check API | 有受限接入价值，但发送/释放保证需要经过验证的托管执行。 |
+| 自动摘要、脱敏、路由与答案缓存 | 改变语义和恢复需求，留待独立质量/安全证据。 |
 
 # Prior art
 
-PowerContext 已有 Scoped PreparedContext、Source/Artifact 证据、Handoff、Bootstrap receipt、
-DecisionModel/DecisionPolicy、推理 ports 和 usage wrappers。它们提供组合位置与部分专用能力，
-尚不能证明所有模型调用都经过最终输入和原始输出检查。
-Memory write-gate 的 decision projection sanitizer 属于有界决策请求投影，不是通用模型 DLP 或完整双闸。
+主要基础是 PowerContext 当前 scoped PreparedContext、Source/Artifact 证据、Bootstrap receipts、
+Work/Handoff、inference ports、usage wrappers 和 DecisionPolicy，相关 RFC 见文首。
+复用由现有领域边界决定；可选准备诊断不产生新存储或授权机制。
 
-相关 RFC：
-
-- [RFC 0016：推理接入](0016_pydantic_ai_inference_integration.md)。
-- [RFC 0028：Context Pack](0028_context_pack.md)。
-- [RFC 0046：可观测性](0046_observability_foundations.md)。
-- [RFC 0048：Handoff](0048_handoff_artifact.md)。
-- [RFC 1435：PreparedContext Receipt](1435_explainable_prepared_context_receipts.md)。
-- [RFC 1770：DecisionPolicy 治理](1770-decision-policy-governance.md)。
-
-LiteLLM、Bifrost、New API 提供模型接入、路由、重试和观测的不同组合，本 RFC 在第三方网关适配节逐项引用官方机制。
-供应商 prompt caching 可复用稳定前缀，但不迁移不同模型的 KV，也不替代上下文记录、响应缓存或完整任务成本核算。
-外部资料只作为设计依据，接入支持以固定版本、配置和真实链路验收为准。
+供应商前缀缓存和下游网关提供协议/证据适配的动机，但接入支持及费用收益都需要固定部署和真实测量。
+本 RFC 不声称所有供应商等价、KV 可移植，或支持所有提供类似协议的产品。
 
 # Unresolved questions
 
-ContextRuntime 与 GateRuntime 归 Core、GatewayRuntime 可选、上下文管理权由宿主明确委托、
-执行器先检后发及先检后放、基础能力无持久依赖、unknown 不作安全通过、
-强制策略失败阻断、权威资料不被投影覆盖，均为本 RFC 的明确契约，不留给实现方自行选择。
+实现验收前固定首个 host/provider/SDK 版本、支持字段、必需规则、误阻断样例、token 估算余量、
+缓冲/并发限制、策略撤销时延与工作负载 SLO。这些属于可测量配置。
+复用上下文、两个新检查操作、零新增表、宿主历史权威、强制失败阻断和最终载荷准入已经是本提案的明确决策。
 
-实现前需要在验收计划中固定的配置项包括：
-
-- 首个 provider/SDK 与 LiteLLM 的具体版本、原生字段和可观测性范围。
-- 初始敏感规则集合、支持内容类型、误阻断样本和策略晋升标准。
-- 目标负载、输入输出上限、strict 缓冲与超时、P95/P99 SLO。
-- 持久部署的具体保留期、对账来源，以及完整账本不可用时的准入配置。
-
-这些配置项必须先冻结再执行实验，不改变本 RFC 的归属、失败和覆盖语义。
-新 Artifact 家族、通用 Agent 调度、完整宿主工具授权和跨供应商私有执行环境迁移不在本 RFC 范围内。
+自动跨 Scope 冻结重放需要先验证来源与重新授权契约，才能成为受支持 profile。
+任何新增元数据先评估是否可在现有 prepare 路径扩展，并与 RFC 1435 诊断保持区分。
+不能通过解释把诊断 receipt 提升为权限。
 
 # Future possibilities
 
-在基础双闸和可选执行器验收之后，可以按独立门槛扩展：
-
-- 原生 Responses、Anthropic Messages、更多 Coding Agent 和多模态适配。
-- 有明确安全单元和规则状态的 bounded streaming，保持与 strict/observe 区分。
-- 已验证的有损 compaction、后台输出 codec、动态模型选择和辅助 Judge。
-- 受限场景的精确或语义响应缓存，以及更完整的供应商费用对账。
-- 基于 Task Outcome 的质量评测、策略晋升和回滚，避免只优化输入长度。
-
-这些扩展不作为基础 Core 双闸可独立使用的前提，也不因接受本 RFC 自动获得生产启用资格。
+最小切片证明质量、成本与安全价值后，再独立评估更多协议、多模态扫描、bounded streaming、无损表示、
+经验证的有损压缩、脱敏、响应缓存和动态路由，每项都说明语义和存储成本。
+持久调用恢复或严格全局预算需要带具体复用分析的最小状态提案；
+接受本 RFC 不等于预先批准一组新表或平行上下文服务。
