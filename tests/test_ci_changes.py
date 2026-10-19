@@ -36,7 +36,7 @@ RULES = tomllib.loads((ROOT / ".github/ci-paths.toml").read_text(encoding="utf-8
         (["docs/en/rfcs/0001_design.md", "README_CN.md"], {"website"}),
         (["website/src/app/page.tsx"], {"website"}),
         (["AGENTS.md", "CONTRIBUTING.md"], set()),
-        (["integrations/pi/plugins/powercontext/index.ts"], {"tests", "pi"}),
+        (["integrations/pi/plugins/powercontext/index.ts"], {"tests", "pi", "zcode"}),
         (["integrations/kimi-code/plugins/powercontext/skills/context/SKILL.md"], {"tests", "kimi"}),
         (["evaluation/coding/work_continuity/run.py"], {"evaluation"}),
         (["evaluation/zcode_guidance/pin.py"], {"evaluation", "zcode"}),
@@ -127,6 +127,29 @@ def run_selector(repository: Path, event: str, base: str = "", head: str = "") -
     return json.loads(output.read_text(encoding="utf-8").removeprefix("suites="))
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("evaluation/memory/locomo/dataset.py", {"tests", "evaluation"}),
+        ("evaluation/memory/locomo_plus/metrics.py", {"tests", "evaluation"}),
+        ("evaluation/memory/write_gate/runner.py", {"tests", "evaluation"}),
+        ("integrations/pi/plugins/powercontext/package.json", {"tests", "pi", "zcode"}),
+        ("tests/e2e/test_cross_host_work_continuity.py", {"tests", "zcode"}),
+        ("tests/e2e/cross_host_work_continuity/pi.py", {"tests", "zcode"}),
+        ("tests/e2e/cross_host_work_continuity/fixtures/task.py", {"tests", "zcode"}),
+    ],
+)
+def test_legacy_evaluation_and_cross_host_changes_select_behavioral_suites(
+    repository: Path, path: str, expected: set[str]
+) -> None:
+    base = git(repository, "rev-parse", "HEAD")
+    head = commit(repository, path)
+
+    selected = run_selector(repository, "pull_request", base, head)
+
+    assert {suite for suite, enabled in selected.items() if enabled} == expected
+
+
 def test_diff_covers_all_pr_commits_and_excludes_base_branch_changes(repository: Path) -> None:
     git(repository, "checkout", "-b", "feature")
     commit(repository, "integrations/pi/plugin.ts")
@@ -137,7 +160,7 @@ def test_diff_covers_all_pr_commits_and_excludes_base_branch_changes(repository:
 
     selected = run_selector(repository, "pull_request", base, head)
 
-    assert {suite for suite, enabled in selected.items() if enabled} == {"tests", "pi", "website"}
+    assert {suite for suite, enabled in selected.items() if enabled} == {"tests", "pi", "website", "zcode"}
 
 
 def test_moves_and_deletions_keep_the_original_suite(repository: Path) -> None:
@@ -150,7 +173,7 @@ def test_moves_and_deletions_keep_the_original_suite(repository: Path) -> None:
 
     selected = run_selector(repository, "pull_request", base, head)
 
-    assert {suite for suite, enabled in selected.items() if enabled} == {"tests", "pi", "website", "native"}
+    assert {suite for suite, enabled in selected.items() if enabled} == {"tests", "pi", "website", "native", "zcode"}
 
 
 def test_large_diff_includes_code_after_hundreds_of_docs(repository: Path) -> None:
