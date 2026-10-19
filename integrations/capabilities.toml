@@ -66,6 +66,24 @@ capabilities = ["memory_write"]
 id = "capture_content_source"
 capabilities = ["source_capture"]
 [[toolsets.tools]]
+id = "pc_source_capabilities"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "pc_source_add"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "pc_source_status"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "pc_source_target_set_enabled"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "pc_source_instances"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "pc_source_instance_set_enabled"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
 id = "create_work_contract"
 capabilities = ["work_contract"]
 [[toolsets.tools]]

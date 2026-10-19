@@ -88,6 +88,9 @@ def create_cli(commands: Iterable[typer.Typer] | None = None) -> typer.Typer:
         )
 
     registered_names = register_commands(cli)
+    from powercontext.source_management.cli import register_commands as register_source_commands
+
+    registered_names.update(register_source_commands(cli))
 
     if commands is None:
         installed_commands: list[typer.Typer] = []

@@ -101,6 +101,12 @@ Empty retrieval is a valid result. On failure identify the operation and safe re
 claim saved/restored context, or repeatedly retry. Continue ordinary work when the requested operation is unavailable.
 """
 _MCP_OPERATION_IDS = frozenset({
+    "pc_source_capabilities",
+    "pc_source_add",
+    "pc_source_status",
+    "pc_source_target_set_enabled",
+    "pc_source_instances",
+    "pc_source_instance_set_enabled",
     CREATE_DREAM_RUN.operation_id,
     GET_DREAM_RUN.operation_id,
     LIST_DREAM_RUNS.operation_id,
@@ -136,6 +142,9 @@ _MCP_OPERATION_IDS = frozenset({
     PUBLISH_ARTIFACT.operation_id,
 })
 _MCP_READ_ONLY_OPERATION_IDS = frozenset({
+    "pc_source_capabilities",
+    "pc_source_status",
+    "pc_source_instances",
     GET_DREAM_RUN.operation_id,
     LIST_DREAM_RUNS.operation_id,
     CONTINUE_HANDOFF.operation_id,

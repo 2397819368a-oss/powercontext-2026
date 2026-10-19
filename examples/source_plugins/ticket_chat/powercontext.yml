@@ -1,0 +1,13 @@
+id: ticket-chat-local
+plugin: .
+scope_ids: [SCOPE_ID]
+config:
+  namespace: example-company
+  file: events.json
+  batch_size: 100
+  interval_seconds: 5
+targets:
+  - scope_id: SCOPE_ID
+    capability: ticket-chat.dataset
+    capability_version: "1"
+    input: {}

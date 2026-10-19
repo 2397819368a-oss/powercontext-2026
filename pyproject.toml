@@ -21,6 +21,7 @@ readme = "README.md"
 keywords = ['python']
 requires-python = ">=3.11,<4.0"
 dependencies = [
+    "jsonschema>=4.23,<5",
     "pydantic>=2.10,<3",
     "rfc8785>=0.1.4,<1",
     "typing-extensions>=4.12,<5",
@@ -40,7 +41,6 @@ classifiers = [
 builtin = [
     "aiosqlite>=0.22,<1",
     "apscheduler>=3.11,<4",
-    "jsonschema>=4.23,<5",
     "packaging>=24,<27",
     "pydantic-ai-slim[anthropic,openai]>=2.27.1,<3",
     "pydantic-settings>=2.7,<3",
@@ -87,6 +87,9 @@ cli = [
     "pyyaml>=6,<7",
     "typer>=0.16,<1",
 ]
+source-images = [
+    "pillow>=11,<13",
+]
 
 [project.scripts]
 powercontext = "powercontext.cli.app:main"
@@ -118,6 +121,7 @@ notebooks = [
     "playwright>=1.55,<2",
 ]
 dev = [
+    "powercontext[source-images]",
     "datamodel-code-generator==0.64.0",
     "powercontext[cli,server]",
     "powercontext-langchain",

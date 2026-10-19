@@ -48,6 +48,7 @@ from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
     ARTIFACTS_TABLE,
     MEMORY_ENTRY_VERSIONS_TABLE,
+    SOURCE_DEFINITION_MANIFESTS_TABLE,
     SOURCE_JOURNAL_HEADS_TABLE,
     SOURCES_TABLE,
 )
@@ -81,7 +82,7 @@ from powercontext.builtin.sources import (
 )
 from powercontext.builtin.tags import ArtifactTagSet, TagFilter, TagQuery, TagQueryPage, TagTarget
 from powercontext.errors import RevisionConflictError
-from powercontext.sources import SourceMaterialization, SourceRef
+from powercontext.sources import SourceMaterialization, SourceObservation, SourceRef
 
 Clock = Callable[[], datetime]
 IdFactory = Callable[[str], str]
@@ -220,7 +221,6 @@ class RelationalRecordService:
         return _source_record(scope_id, stored)
 
     async def get_source(self, scope_id: str, source_type: str, source_id: str, /) -> SourceRecord:
-        self._require_content_source(source_type)
         ref = SourceRef(source_type=source_type, source_id=source_id)
         async with self._database.transaction() as connection:
             return _source_record(scope_id, await self._get_source(connection, scope_id, ref))
@@ -239,7 +239,7 @@ class RelationalRecordService:
             "version": 1,
             "endpoint": "list_sources",
             "scope_id": scope_id,
-            "source_types": [CONTENT_SOURCE_NAME],
+            "source_types": "content-and-observations",
             "authorization": "scope_read",
             "caller": caller,
             "limit": limit,
@@ -261,13 +261,18 @@ class RelationalRecordService:
             selected: list[SourceRecord] = []
             page_bytes = 0
             has_more = False
+            observation_types = (
+                (await connection.execute(select(SOURCE_DEFINITION_MANIFESTS_TABLE.c.definition_name).distinct()))
+                .scalars()
+                .all()
+            )
             source_stream = self._sources.iter_list(
                 connection,
                 scope_id,
                 after=after,
                 through=through,
                 limit=limit + 1,
-                source_type=CONTENT_SOURCE_NAME,
+                source_types=(CONTENT_SOURCE_NAME, *observation_types),
             )
             async with aclosing(source_stream):
                 async for stored in source_stream:
@@ -348,6 +353,12 @@ class RelationalRecordService:
             except RepositoryNotFoundError:
                 raise BaseValueNotFoundError("artifact", (scope_id, family, artifact_id)) from None
             return _artifact_record(scope_id, artifact)
+
+    @property
+    def database(self) -> AsyncDatabase:
+        """The runtime-owned store shared by Server management services."""
+
+        return self._database
 
     async def get_artifact_revision(
         self,
@@ -696,16 +707,21 @@ def _source_record(
     scope_id: str,
     stored: StoredSource,
 ) -> SourceRecord:
-    if not isinstance(stored.value, ContentSource):
+    if not isinstance(stored.value, (ContentSource, SourceObservation)):
         raise BaseValueNotFoundError("source", (scope_id, stored.ref))
+    content = (
+        _source_content(stored.value)
+        if isinstance(stored.value, ContentSource)
+        else cast(JsonValue, stored.value.model_dump(mode="json"))
+    )
     return SourceRecord(
         scope_id=scope_id,
-        source_type=cast(Any, stored.ref.source_type),
+        source_type=stored.ref.source_type,
         source_id=stored.ref.source_id,
-        content=_source_content(stored.value),
+        content=content,
         position=stored.journal_position,
-        content_digest=_content_digest(_source_content(stored.value)),
-        handoff_receipt=stored.value.handoff_receipt,
+        content_digest=_content_digest(content),
+        handoff_receipt=isinstance(stored.value, ContentSource) and stored.value.handoff_receipt,
     )
 
 

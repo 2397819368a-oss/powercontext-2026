@@ -545,7 +545,6 @@ from powercontext.http import (
     SourceObservationReceipt,
     SourcePage,
     SourceRecord,
-    SourceType,
     SubmitSourceObservationRequest,
     TopicMemoryArtifact,
     UnpublishRemoteSkillRequest,
@@ -1352,6 +1351,10 @@ def create_app(
     _add_route(app, GET_LIVENESS, get_liveness)
     _add_route(app, GET_READINESS, get_readiness)
     _add_route(app, GET_CAPABILITIES, get_capabilities)
+    from powercontext.source_management.gateway import mount_source_routes
+
+    mount_source_routes(app)
+
     _add_route(app, LIST_SCOPES, list_scopes)
     _add_route(app, CREATE_SCOPE, create_scope)
     _add_route(app, GET_DEFAULT_SCOPE, get_default_scope)
@@ -2335,8 +2338,8 @@ async def flush_profile(
 
 async def get_source(
     scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
-    source_type: Annotated[Literal["content"], Path()],
-    source_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r"^[\x21-\x7E]+$")],
+    source_type: Annotated[str, Path(min_length=1, max_length=128, pattern=r".*\S.*")],
+    source_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
     http_request: Request,
     application: Annotated[ServerApplication, Depends(_require_application)],
 ) -> SourceRecord:
@@ -2666,7 +2669,7 @@ async def get_artifact_revision(
 def _source_record_response(value: RuntimeSourceRecord) -> SourceRecord:
     return SourceRecord(
         scope_id=value.scope_id,
-        source_type=SourceType(value.source_type),
+        source_type=value.source_type,
         source_id=value.source_id,
         content=value.content,
         position=value.position,
