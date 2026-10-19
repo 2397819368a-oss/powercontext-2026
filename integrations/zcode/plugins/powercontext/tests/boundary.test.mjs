@@ -163,6 +163,9 @@ test('pause publication survives process interruption and legacy partial pauses 
       }
       assert.equal(flushes, 0, 'No request may precede complete pause publication')
       await new Promise(resolve => setTimeout(resolve, 5100))
+      // The wait leaves the interrupted claim's slot, but how long the cases took decides where it ends in the next
+      // one; a flush refuses a claim in a slot's last second.
+      await leaseWindow()
       const first = cases.shift()
       assert.equal((await flushBoundary(first.input, settings, first.keys, async () => ({ scopeId: 'scope-crash' }),
         AbortSignal.timeout(800), first.data)).state, 'cursor_reached')

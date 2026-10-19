@@ -63,6 +63,7 @@ EvidenceChild = tuple[EvidenceReference, str | None]
 EvidenceAuthorizer = Callable[[EvidenceReference], Awaitable[None]]
 AuthorizationContext = Callable[[], AbstractAsyncContextManager[None]]
 ScopedEvidenceAuthorizer = Callable[[str, EvidenceReference], Awaitable[None]]
+ScopedEvidenceBatchAuthorizer = Callable[[str, tuple[EvidenceReference, ...], AsyncConnection], Awaitable[None]]
 RootIdentityResolver = Callable[[SourceRef, Source], str | None]
 
 

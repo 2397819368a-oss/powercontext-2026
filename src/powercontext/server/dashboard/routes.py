@@ -21,13 +21,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 from pydantic import ValidationError
 
 from powercontext.server.dashboard.api import DashboardAPI, ReadError, segment
-from powercontext.server.dashboard.content import RECORDS, load_content
+from powercontext.server.dashboard.content import RECORDS, load_content, load_profile, load_record
 from powercontext.server.dashboard.markdown import handoff_markdown
 from powercontext.server.dashboard.navigation import (
     collection_return,
@@ -35,10 +35,11 @@ from powercontext.server.dashboard.navigation import (
     positive_revision,
     request_reading_return,
 )
+from powercontext.server.dashboard.page import load_builtin_page
 from powercontext.server.dashboard.pagination import PAGE_SIZE
 from powercontext.server.dashboard.preferences import CATALOGS, presentation, remember_language
-from powercontext.server.dashboard.presenters import source_view
-from powercontext.server.dashboard.review import load_review, submit_review
+from powercontext.server.dashboard.presenters import set_scope, source_view
+from powercontext.server.dashboard.review import load_review, load_review_inspection, submit_review
 from powercontext.server.dashboard.session import login_response, same_origin
 
 ROOT = Path(__file__).parent
@@ -97,6 +98,7 @@ def links(request: Request, ctx: dict[str, Any]):
                     "artifact",
                     "revision",
                     "compare",
+                    "history",
                     "rollback_error",
                     "prompt_key",
                     "prompt_revision",
@@ -134,6 +136,7 @@ def links(request: Request, ctx: dict[str, Any]):
                     "review_status",
                     "candidate_id",
                     "candidate_kind",
+                    "evidence",
                     "artifact_cursor",
                 }
             })
@@ -184,10 +187,14 @@ def _drop_foreign_revision_cursors(query: dict[str, Any], params: dict[str, Any]
     """
 
     for cursor, identity in _REVISION_CURSOR_IDENTITY.items():
-        if cursor in params or identity not in params:
+        if identity not in params:
             continue
         if params[identity] is None or params[identity] != current.get(identity):
-            query.pop(cursor, None)
+            if cursor not in params:
+                query.pop(cursor, None)
+            for key in ("compare", "rollback_error"):
+                if key not in params:
+                    query.pop(key, None)
 
 
 def reading_link_context(
@@ -214,8 +221,6 @@ def reading_link_context(
 
 def initial_context(request: Request, page: str) -> dict[str, Any]:
     method_kind = request.query_params.get("kind", "experience")
-    if method_kind == "all":
-        method_kind = "experience"
     ctx: dict[str, Any] = {
         **presentation(request),
         "page": page,
@@ -245,17 +250,15 @@ def initial_context(request: Request, page: str) -> dict[str, Any]:
             "profile": None,
         },
         "scopes": [],
+        "scopes_cursor": None,
         "scope_descriptor": None,
         "record_only": False,
-        "default_scope": None,
-        "children": [],
         "parent_scope": None,
         "errors": {},
         "page_error": None,
         "status": 200,
         "stats": None,
         "selected_note": None,
-        "requested_entry": request.query_params.get("entry"),
         "requested_note": request.query_params.get("artifact") if page == "notes" else None,
         "notes_pager": None,
         "notes_page_size": PAGE_SIZE,
@@ -284,62 +287,84 @@ def initial_context(request: Request, page: str) -> dict[str, Any]:
     return ctx
 
 
-async def scope_context(api: DashboardAPI, ctx: dict[str, Any]) -> None:
-    try:
-        ctx["scopes"] = (await api.read("/v1/scopes"))["items"]
-        for item in ctx["scopes"]:
-            item["display_title"] = item["title"]
-    except ReadError as error:
-        ctx["errors"]["scopes"] = error
+async def default_scope(api: DashboardAPI, ctx: dict[str, Any]) -> dict[str, Any] | None:
     if ctx["scope"] is None:
         try:
             descriptor = await api.read("/v1/scopes/default")
-            ctx["default_scope"] = descriptor["scope_id"]
-            ctx["scope"] = descriptor["scope_id"]
         except ReadError as error:
             if error.status != 404:
                 ctx["errors"]["default_scope"] = error
+        else:
+            ctx["scope"] = descriptor["scope_id"]
+            return descriptor
+    return None
+
+
+async def scope_context(api: DashboardAPI, ctx: dict[str, Any], descriptor: dict[str, Any] | None = None) -> None:
     if not ctx["scope"]:
         return
     try:
-        descriptor = await api.read(f"/v1/scopes/{segment(ctx['scope'])}")
+        if descriptor is None:
+            descriptor = await api.read(f"/v1/scopes/{segment(ctx['scope'])}")
+        else:
+            await api.authorize_scope(ctx["scope"], "dashboard_scope")
     except ReadError as error:
         record_page = (
             ctx["page"] in RECORDS
             or ctx["page"] == "handoff-download"
-            or (ctx["page"] == "notes" and (ctx["requested_note"] or ctx["requested_entry"]))
+            or (ctx["page"] == "notes" and ctx["requested_note"])
         )
         if record_page and error.status in {403, 404}:
             ctx["record_only"] = True
             return
         raise
-    ctx["scope_descriptor"] = descriptor
-    ctx["data"].update(title=descriptor["title"], summary=descriptor["summary"])
-    if not any(item["scope_id"] == ctx["scope"] for item in ctx["scopes"]):
-        ctx["scopes"].append({**descriptor, "display_title": descriptor["title"]})
-    describe_scope_relations(ctx, descriptor)
+    set_scope(ctx, descriptor)
 
 
-def describe_scope_relations(ctx: dict[str, Any], descriptor: dict[str, Any]) -> None:
-    by_id = {item["scope_id"]: item for item in ctx["scopes"]}
-    for item in ctx["scopes"]:
-        names = [item["title"]]
-        ancestor = item.get("parent_scope_id")
-        visited = {item["scope_id"]}
-        while ancestor in by_id and ancestor not in visited:
-            visited.add(ancestor)
-            names.insert(0, by_id[ancestor]["title"])
-            ancestor = by_id[ancestor].get("parent_scope_id")
-        item["display_title"] = item["title"] + (" (" + " / ".join(names[:-1]) + ")" if len(names) > 1 else "")
-    ctx["children"] = [item for item in ctx["scopes"] if item.get("parent_scope_id") == ctx["scope"]]
-    ctx["parent_scope"] = next(
-        (item for item in ctx["scopes"] if item["scope_id"] == descriptor.get("parent_scope_id")), None
-    )
+@router.get("/scope-options")
+async def scope_options(
+    request: Request,
+    query: str = Query(default="", max_length=256),
+    cursor: str | None = Query(default=None, min_length=1, max_length=4096),
+    current: str | None = Query(default=None, max_length=256),
+) -> JSONResponse:
+    """Page the public Scope discovery surface using the browser's dashboard credentials."""
 
-
-def require_source(exists: bool) -> None:
-    if not exists:
-        raise ReadError(404, "not_found")
+    params = {"limit": "25"}
+    if query:
+        params.update(query=query, query_field="title")
+    if cursor is not None:
+        params["cursor"] = cursor
+    api = DashboardAPI(request)
+    try:
+        result = await api.read("/v1/scopes?" + urlencode(params))
+        items = result["items"]
+        navigation = {}
+        if api.builtin is not None:
+            identities = tuple(item["scope_id"] for item in items) + (() if current is None else (current,))
+            navigation = await api.builtin.scopes.navigation(identities)
+        for item in items:
+            item["display_title"] = navigation.get(item["scope_id"], {}).get("display_title", item["title"])
+        selected = navigation.get(current)
+        parent = None if selected is None else navigation.get(selected["parent_scope_id"])
+        return JSONResponse(
+            {
+                "items": [
+                    {key: item[key] for key in ("scope_id", "title", "display_title", "parent_scope_id")}
+                    for item in items
+                ],
+                "next_cursor": result["next_cursor"],
+                "current": selected,
+                "parent": parent,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    except ReadError as error:
+        return JSONResponse(
+            {"error": {"code": error.code}}, status_code=error.status, headers={"Cache-Control": "no-store"}
+        )
+    finally:
+        await api.client.aclose()
 
 
 def validate_selection(page: str, ctx: dict[str, Any]) -> None:
@@ -356,7 +381,6 @@ def validate_selection(page: str, ctx: dict[str, Any]) -> None:
 
 @router.get("")
 @router.get("/")
-@router.get("/guide")
 async def index(request: Request) -> RedirectResponse:
     return RedirectResponse("/dashboard/home" + ("?" + str(request.query_params) if request.query_params else ""))
 
@@ -368,14 +392,18 @@ async def evidence(request: Request, source_id: str) -> HTMLResponse:
     api = DashboardAPI(request)
     ctx.update(source_id=source_id, origin=ctx["page"], source_type=request.query_params.get("source_type", ""))
     try:
-        await scope_context(api, ctx)
-        await load_content(api, request, ctx)
-        require_source(
-            any(
-                item["source_id"] == source_id and item["source_type"] == ctx["source_type"]
-                for item in ctx["related_sources"]
-            )
-        )
+        descriptor = await default_scope(api, ctx)
+        await scope_context(api, ctx, descriptor)
+        if ctx["page"] == "profile":
+            await load_profile(api, request, ctx, include_history=False)
+        else:
+            await load_record(api, request, ctx, include_history=False)
+        if not any(
+            item["source_id"] == source_id and item["source_type"] == ctx["source_type"]
+            for item in ctx["related_sources"]
+        ):
+            # Association failures use the same HTML boundary as failed content reads.
+            raise ReadError(404, "not_found")  # noqa: TRY301
         value = await api.read(
             f"/v1/scopes/{segment(ctx['scope'])}/sources/{segment(ctx['source_type'])}/{segment(source_id)}"
         )
@@ -491,6 +519,42 @@ def _rollback_return(scope: str, family: str, artifact_id: str, revision: int, e
     return f"/dashboard/{page}?{urlencode({key: value for key, value in params.items() if value is not None})}"
 
 
+@router.get("/entry/scopes")
+async def entry_scopes(request: Request) -> HTMLResponse:
+    ctx = initial_context(request, "entry")
+    api = DashboardAPI(request)
+    try:
+        await load_entry_scopes(api, request, ctx)
+    except ReadError as error:
+        ctx.update(page_error=error, status=error.status)
+    finally:
+        await api.client.aclose()
+    return render(request, ctx, "components/entry-scopes.html", "components/entry-scopes.html")
+
+
+async def load_entry_scopes(api, request, ctx):
+    params = {"limit": "25"}
+    if request.query_params.get("cursor"):
+        params["cursor"] = request.query_params["cursor"]
+    result = await api.read("/v1/scopes?" + urlencode(params))
+    ctx.update(scopes=result["items"], scopes_cursor=result["next_cursor"])
+
+
+@router.get("/review/inspect")
+async def review_inspection(request: Request) -> HTMLResponse:
+    ctx = initial_context(request, "review")
+    api = DashboardAPI(request)
+    try:
+        await load_review_inspection(api, request, ctx)
+    except ReadError as error:
+        if error.status == 401:
+            return login_response(request=request)
+        ctx.update(page_error=error, status=error.status)
+    finally:
+        await api.client.aclose()
+    return render(request, ctx, "components/review-inspection.html", "components/review-inspection.html")
+
+
 @router.post("/review/decision")
 async def review_decision(request: Request) -> Response:
     ctx = initial_context(request, "review")
@@ -516,13 +580,20 @@ async def screen(request: Request, page: str) -> HTMLResponse:
     api = DashboardAPI(request)
     try:
         validate_selection(page, ctx)
-        await scope_context(api, ctx)
-        if ctx["scope"] and page == "review":
-            await load_review(api, request, ctx)
-        elif ctx["scope"] and page != "entry":
-            await load_content(api, request, ctx)
-        if ctx["errors"] and not ctx["scope_descriptor"] and not ctx["record_only"]:
-            raise next(iter(ctx["errors"].values()))
+        if page == "entry":
+            await load_entry_scopes(api, request, ctx)
+        elif not await load_builtin_page(api, request, ctx):
+            descriptor = await default_scope(api, ctx)
+            if ctx["scope"]:
+                await scope_context(api, ctx, descriptor)
+            if ctx["scope"] and page == "review":
+                await load_review(api, request, ctx)
+            elif ctx["scope"] and page != "entry":
+                await load_content(api, request, ctx)
+            if ctx["errors"] and not ctx["scope_descriptor"] and not ctx["record_only"]:
+                raise next(iter(ctx["errors"].values()))
+        if page != "entry" and not ctx["scope_descriptor"] and not ctx["record_only"]:
+            await load_entry_scopes(api, request, ctx)
     except ReadError as error:
         if error.status == 401:
             return login_response(request=request)

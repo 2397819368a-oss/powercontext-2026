@@ -75,6 +75,7 @@ from powercontext.builtin.persistence.topic_memory_index import (
     TopicMemoryIndex,
     topic_memory_embedding_profile_fingerprint,
 )
+from powercontext.builtin.records import InvalidBaseAccessRequestError
 from powercontext.sources import SourceMaterialization, SourceRef
 from tests.builtin.persistence.contract import SOURCE_ADAPTERS, NoteSource
 
@@ -279,8 +280,8 @@ def test_topic_search_deployment_weights_change_results_and_request_fusion_repla
         recall_channel_weights=RecallChannelWeights(fts=1.0, vector=3.0),
     )
 
-    async def get_topic(_connection: AsyncConnection, _scope_id: str, ref: ArtifactRef) -> TopicMemory:
-        return topics[ref.artifact_id]
+    async def get_topics(_connection: AsyncConnection, _scope_id: str, refs) -> tuple[TopicMemory, ...]:
+        return tuple(topics[ref.artifact_id] for ref in refs)
 
     for repository in (
         default_repository,
@@ -288,7 +289,7 @@ def test_topic_search_deployment_weights_change_results_and_request_fusion_repla
         fts_weighted_repository,
         vector_weighted_repository,
     ):
-        monkeypatch.setattr(repository.artifacts, "get", get_topic)
+        monkeypatch.setattr(repository.artifacts, "get_many", get_topics)
 
     async def scenario() -> None:
         async with (
@@ -374,7 +375,7 @@ def test_public_topic_missing_selected_exact_revision_is_a_contract_failure(monk
             async def missing(connection, scope, ref):
                 raise RepositoryNotFoundError("artifact", ref)
 
-            monkeypatch.setattr(repository.artifacts, "get", missing)
+            monkeypatch.setattr(repository.artifacts, "get_many", missing)
             legacy = await repository.search(connection, "scope-a", "needle", limit=10)
             assert len(legacy.hits) == 1
             with pytest.raises(ArtifactSearchContractError):
@@ -648,7 +649,8 @@ def test_current_browse_uses_stable_exclusive_keyset_order() -> None:
     asyncio.run(scenario())
 
 
-def test_standard_artifact_list_adapts_topic_memory_metadata_and_cursor() -> None:
+@pytest.mark.parametrize("limit", [1, 100])
+def test_standard_artifact_list_adapts_topic_memory_metadata_and_cursor(limit: int) -> None:
     async def scenario() -> None:
         index = _fts_index()
         sources = SourceRepository(SOURCE_ADAPTERS)
@@ -687,13 +689,14 @@ def test_standard_artifact_list_adapts_topic_memory_metadata_and_cursor() -> Non
                     _draft(older, sources=(source.ref,)),
                     prepare_topic_memory_projection(older),
                 )
-                await repository.publish_create(
-                    connection,
-                    "scope-a",
-                    "topic-newer",
-                    _draft(newer, sources=(source.ref,)),
-                    prepare_topic_memory_projection(newer),
-                )
+                for number in range(limit):
+                    await repository.publish_create(
+                        connection,
+                        "scope-a",
+                        "topic-newer" if number == 0 else f"topic-newer-{number:03d}",
+                        _draft(newer, sources=(source.ref,)),
+                        prepare_topic_memory_projection(newer),
+                    )
                 await connection.execute(
                     update(TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE)
                     .where(
@@ -706,19 +709,24 @@ def test_standard_artifact_list_adapts_topic_memory_metadata_and_cursor() -> Non
                     update(TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE)
                     .where(
                         TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE.c.scope_id == "scope-a",
-                        TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE.c.artifact_id == "topic-newer",
+                        TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE.c.artifact_id != "topic-older",
                     )
                     .values(published_at=datetime(2026, 9, 6, 3, 4, 5, tzinfo=UTC))
                 )
 
-            first_page = await records.query_artifacts("scope-a", TopicMemory.family, limit=1, cursor=None)
+            first_page = await records.query_artifacts("scope-a", TopicMemory.family, limit=limit, cursor=None)
             second_page = await records.query_artifacts(
                 "scope-a",
                 TopicMemory.family,
-                limit=1,
+                limit=limit,
                 cursor=first_page.next_cursor,
             )
 
+            with pytest.raises(InvalidBaseAccessRequestError):
+                await records.query_artifacts("scope-a", TopicMemory.family, limit=101, cursor=None)
+
+        assert len(first_page.items) == limit
+        assert len({item.artifact_id for item in first_page.items}) == limit
         assert first_page.next_cursor is not None
         assert first_page.items[0].artifact_id == "topic-newer"
         assert first_page.items[0].title == "Newer recovery"

@@ -363,22 +363,21 @@ class ReviewService:
         )
         return _reviewed_candidate(candidate)
 
-    async def candidate_identities(self, *, status, family, candidate_kind, cursor, limit):
-        from sqlalchemy import select
-
-        from powercontext.builtin.persistence.tables import CANDIDATE_HEADS_TABLE as heads
-
-        statement = select(heads.c.candidate_id).where(heads.c.scope_id == self._scope_id)
-        if status is not None:
-            statement = statement.where(heads.c.status == status.value)
-        if family is not None:
-            statement = statement.where(heads.c.family == family)
-        if candidate_kind is not None:
-            statement = statement.where(heads.c.candidate_kind == candidate_kind)
-        if cursor is not None:
-            statement = statement.where(heads.c.candidate_id > cursor)
-        async with self._connection() as connection:
-            return tuple(await connection.scalars(statement.order_by(heads.c.candidate_id).limit(limit + 1)))
+    async def candidate_page(self, request, *, metadata_only=False, connection=None):
+        async with self._database.connection(
+            connection if connection is not None else self._bound_connection
+        ) as connection:
+            items, cursor = await self._candidates.page(
+                connection,
+                self._scope_id,
+                status=request.status,
+                family=request.family,
+                candidate_kind=request.candidate_kind,
+                cursor=request.cursor,
+                limit=request.limit,
+                metadata_only=metadata_only,
+            )
+        return tuple(_reviewed_candidate(item) if isinstance(item, Candidate) else item for item in items), cursor
 
     async def history(self, candidate_id):
         from sqlalchemy import select
@@ -406,10 +405,29 @@ class ReviewService:
                 for row in rows
             )
 
-    async def get_candidate(self, candidate_id: str, /, *, current: bool = False) -> ReviewedCandidate:
-        async with self._connection() as connection:
+    async def get_candidate(self, candidate_id: str, /, *, current: bool = False, connection=None) -> ReviewedCandidate:
+        async with self._database.connection(
+            connection if connection is not None else self._bound_connection
+        ) as connection:
             candidate = await self._candidates.get(connection, self._scope_id, candidate_id, current=current)
         return _reviewed_candidate(candidate)
+
+    async def history_summary(self, candidate_id, *, connection=None):
+        from sqlalchemy import select
+
+        from powercontext.builtin.persistence.tables import CANDIDATE_VERSIONS_TABLE as versions
+
+        async with self._database.connection(
+            connection if connection is not None else self._bound_connection
+        ) as connection:
+            rows = (
+                await connection.execute(
+                    select(versions.c.version, versions.c.reason)
+                    .where(versions.c.scope_id == self._scope_id, versions.c.candidate_id == candidate_id)
+                    .order_by(versions.c.version)
+                )
+            ).mappings()
+            return tuple({**row, "status": "pending", "decision_reason": None} for row in rows)
 
     async def inspect_evidence(self, candidate_id: str, expected_version: int) -> CandidateEvidenceView:
         async with self._connection() as connection:
