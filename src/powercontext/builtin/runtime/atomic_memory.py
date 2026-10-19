@@ -29,7 +29,7 @@ from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncConnection
 from typing_extensions import override
 
-from powercontext.artifacts import ArtifactRef, ArtifactSearchContractError, ArtifactSearchMatch
+from powercontext.artifacts import ArtifactLineage, ArtifactRef, ArtifactSearchContractError, ArtifactSearchMatch
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.errors import (
     AtomicMemoryConflictError,
@@ -153,6 +153,7 @@ class AtomicMemorySearchHit:
     hit: AtomicMemoryIndexHit
     matched_by: tuple[str, ...]
     score_upper_bound: float | None = None
+    lineage: ArtifactLineage | None = None
 
     @property
     def text(self) -> str:
@@ -504,7 +505,7 @@ class ScopedAtomicMemory:
         if plan is not None:
             weights = {name: plan.fusion.weights.get(name, 1.0) for name in weights}
         candidates: list[AtomicMemorySearchHit] = []
-        for hit in hits:
+        for hit, artifact in zip(hits, validated, strict=True):
             matched_by = tuple(
                 channel
                 for channel, refs in (("text", fts), ("vector", vectors))
@@ -514,6 +515,7 @@ class ScopedAtomicMemory:
                 AtomicMemorySearchHit(
                     hit,
                     matched_by,
+                    lineage=artifact.lineage,
                     score_upper_bound=(
                         sum(weights[channel] for channel in matched_by) / (ATOMIC_MEMORY_RRF_CONSTANT + 1)
                         if plan is None
@@ -571,28 +573,53 @@ class ScopedAtomicMemory:
             "profile_fingerprint",
             "projection_format",
         )
-        projected = {
-            row["artifact_id"]: row
-            for row in (
+        heads_table = ARTIFACT_HEADS_TABLE
+        revisions = ARTIFACTS_TABLE
+        selected = (
+            (
                 await connection.execute(
-                    select(*(table.c[name] for name in columns)).where(
-                        table.c.scope_id == self.scope_id, table.c.artifact_id.in_(ids)
+                    select(
+                        *(table.c[name].label("projection_" + name) for name in columns),
+                        *(column.label("head_" + column.name) for column in heads_table.c),
+                        *revisions.c,
+                    )
+                    .select_from(
+                        heads_table.outerjoin(
+                            table,
+                            and_(
+                                heads_table.c.scope_id == table.c.scope_id,
+                                heads_table.c.artifact_id == table.c.artifact_id,
+                            ),
+                        ).outerjoin(
+                            revisions,
+                            and_(
+                                heads_table.c.scope_id == revisions.c.scope_id,
+                                heads_table.c.family == revisions.c.family,
+                                heads_table.c.artifact_id == revisions.c.artifact_id,
+                                heads_table.c.revision == revisions.c.revision,
+                            ),
+                        )
+                    )
+                    .where(
+                        heads_table.c.scope_id == self.scope_id,
+                        heads_table.c.family == "atomic-memory",
+                        heads_table.c.artifact_id.in_(ids),
                     )
                 )
-            ).mappings()
+            )
+            .mappings()
+            .all()
+        )
+        projected = {
+            row["projection_artifact_id"]: {name: row["projection_" + name] for name in columns}
+            for row in selected
+            if row["projection_artifact_id"] is not None
         }
         heads = {
-            row["artifact_id"]: row
-            for row in (
-                await connection.execute(
-                    select(ARTIFACT_HEADS_TABLE).where(
-                        ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id,
-                        ARTIFACT_HEADS_TABLE.c.family == "atomic-memory",
-                        ARTIFACT_HEADS_TABLE.c.artifact_id.in_(ids),
-                    )
-                )
-            ).mappings()
+            row["head_artifact_id"]: {column.name: row["head_" + column.name] for column in heads_table.c}
+            for row in selected
         }
+        exact = {row["head_artifact_id"]: row for row in selected}
         for hit in hits:
             identity = hit.artifact_ref.artifact_id
             projection, head = projected.get(identity), heads.get(identity)
@@ -609,8 +636,11 @@ class ScopedAtomicMemory:
                 or head["governance_generation"] != hit.state_version
             ):
                 raise AtomicMemoryIndexError("stale-projection", "Atomic Memory projection identity is inconsistent")
-        artifacts = await application.artifacts.get_many(
-            connection, self.scope_id, tuple(hit.artifact_ref for hit in hits)
+        for hit in hits:
+            if exact[hit.artifact_ref.artifact_id]["content"] is None:
+                raise RepositoryNotFoundError("artifact", (self.scope_id, hit.artifact_ref))
+        artifacts = await application.artifacts.decode_many(
+            connection, self.scope_id, tuple(exact[hit.artifact_ref.artifact_id] for hit in hits)
         )
         for hit, artifact in zip(hits, artifacts, strict=True):
             if not isinstance(artifact, AtomicMemory):

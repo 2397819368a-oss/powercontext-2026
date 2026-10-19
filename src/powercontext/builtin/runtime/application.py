@@ -33,7 +33,7 @@ from uuid import uuid4
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactLineage, ArtifactRef, StableHandle
+from powercontext.artifacts import ArtifactAddress, ArtifactLineage, ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchOutcome,
@@ -1137,6 +1137,15 @@ class ScopedContextApplication:
                 experience_candidates=experience_candidates,
                 profile_candidates=profile_candidates,
                 code_candidates=code,
+            )
+            build = replace(
+                build,
+                lineages=tuple(
+                    (ArtifactAddress(scope_id=group.scope_id, artifact=hit.hit.artifact_ref), hit.lineage)
+                    for group in memory_candidates
+                    for hit in group.hits
+                    if hit.lineage is not None
+                ),
             )
             if recall_effort is not None:
                 recall_effort = replace(

@@ -450,7 +450,7 @@ class TopicMemoryRepository:
             for row in rows
         )
 
-    async def search(
+    async def search(  # noqa: C901
         self,
         connection: AsyncConnection,
         scope_id: str,
@@ -463,10 +463,13 @@ class TopicMemoryRepository:
         embedding_profile: EmbeddingProfile | None = None,
         admission: AdmissionFloor | None = None,
         artifact_request: TopicArtifactSearchRequest | None = None,
+        consistent_snapshot: bool = False,
     ) -> TopicMemorySearchResult:
         """Search current complete projections and fuse two or four logical channels.
 
         ``admission=None`` applies the historical fusion-time thresholds bit for bit.
+        ``consistent_snapshot`` requires the caller to own a pinned read transaction.
+        SQLite can then reuse the initial retrieval-shape validation.
         """
 
         if not 1 <= limit <= MAX_TOPIC_MEMORY_SEARCH_LIMIT:
@@ -509,7 +512,10 @@ class TopicMemoryRepository:
             admission=admission,
         )
         channels = await self.index.search(connection, scope_id, request)
-        await self._check_retrieval_shape(connection)
+        # Only an owned SQLite snapshot pins shape across both reads. Ordinary
+        # legacy SELECT transactions must detect a concurrent reconfiguration.
+        if not (consistent_snapshot and connection.dialect.name == "sqlite"):
+            await self._check_retrieval_shape(connection)
         outcome = _fuse_topic_memory_rankings(
             query,
             channels,

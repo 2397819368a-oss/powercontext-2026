@@ -1072,6 +1072,7 @@ class RelationalContexts:
                 query_vector=query_vector,
                 embedding_profile=embedding_profile,
                 admission=admission,
+                consistent_snapshot=True,
                 **({} if artifact_request is None else {"artifact_request": artifact_request}),
             )
 

@@ -147,90 +147,51 @@ _INSERT_CHUNK_FTS_SQL = text(
          :title, :summary, :chunk_text, :searchable_text)
     """
 )
-_SEARCH_TOPIC_FTS_SQL = """
-    WITH scored AS (
-        SELECT artifact_id, revision, title, summary,
-               bm25(pc_topic_memory_topic_fts) AS score, ({coverage}) AS coverage
-        FROM pc_topic_memory_topic_fts
-        WHERE pc_topic_memory_topic_fts MATCH :query AND scope_id = :scope_id
-    )
-    SELECT artifact_id, revision, title, summary, score AS raw_score
-    FROM scored
-    WHERE coverage >= :required_matches
-    ORDER BY score, artifact_id, revision DESC
-    LIMIT :candidate_limit
-    """
-_COUNT_TOPIC_FTS_SQL = """
-    SELECT count(*)
+# Materialize scores once: FTS5 ranking functions must run against the FTS
+# cursor, before windowing, counts, and bounded result selection share them.
+_SEARCH_FTS_SQL = """
+WITH topic_scored AS MATERIALIZED (
+    SELECT artifact_id, revision, title, summary,
+           bm25(pc_topic_memory_topic_fts) AS raw_score, ({coverage}) AS coverage
     FROM pc_topic_memory_topic_fts
     WHERE pc_topic_memory_topic_fts MATCH :query AND scope_id = :scope_id
-    """
-_COUNT_TOPIC_FTS_ELIGIBLE_SQL = """
-    WITH scored AS (
-        SELECT ({coverage}) AS coverage
-        FROM pc_topic_memory_topic_fts
-        WHERE pc_topic_memory_topic_fts MATCH :query AND scope_id = :scope_id
-    )
-    SELECT count(*)
-    FROM scored
+), chunk_scored AS MATERIALIZED (
+    SELECT artifact_id, revision, title, summary, chunk_ordinal, start_offset, chunk_text,
+           bm25(pc_topic_memory_chunk_fts) AS raw_score, ({coverage}) AS coverage
+    FROM pc_topic_memory_chunk_fts
+    WHERE pc_topic_memory_chunk_fts MATCH :query AND scope_id = :scope_id
+), chunk_ranked AS MATERIALIZED (
+    SELECT *, row_number() OVER (
+        PARTITION BY artifact_id, revision ORDER BY coverage DESC, raw_score, chunk_ordinal
+    ) AS topic_rank
+    FROM chunk_scored
+), topic_selected AS (
+    SELECT * FROM topic_scored
     WHERE coverage >= :required_matches
-    """
-_SEARCH_CHUNK_FTS_SQL = """
-    WITH scored AS (
-        SELECT artifact_id, revision, title, summary, chunk_ordinal, start_offset, chunk_text,
-               bm25(pc_topic_memory_chunk_fts) AS score, ({coverage}) AS coverage
-        FROM pc_topic_memory_chunk_fts
-        WHERE pc_topic_memory_chunk_fts MATCH :query AND scope_id = :scope_id
-    ), ranked AS (
-        SELECT scored.*,
-               row_number() OVER (
-                   PARTITION BY artifact_id, revision
-                    ORDER BY coverage DESC, score, chunk_ordinal
-               ) AS topic_rank
-        FROM scored
-    )
-    SELECT artifact_id, revision, title, summary, chunk_ordinal, start_offset, chunk_text, score AS raw_score
-    FROM ranked
-    WHERE topic_rank = 1 AND coverage >= :required_matches
-    ORDER BY score, artifact_id, revision DESC, chunk_ordinal
+    ORDER BY raw_score, artifact_id, revision DESC
     LIMIT :candidate_limit
-    """
-_COUNT_CHUNK_FTS_SQL = """
-    WITH scored AS (
-        SELECT artifact_id, revision, title, summary, chunk_ordinal, start_offset, chunk_text,
-               bm25(pc_topic_memory_chunk_fts) AS score, ({coverage}) AS coverage
-        FROM pc_topic_memory_chunk_fts
-        WHERE pc_topic_memory_chunk_fts MATCH :query AND scope_id = :scope_id
-    ), ranked AS (
-        SELECT scored.*,
-               row_number() OVER (
-                   PARTITION BY artifact_id, revision
-                    ORDER BY coverage DESC, score, chunk_ordinal
-               ) AS topic_rank
-        FROM scored
-    )
-    SELECT count(*)
-    FROM ranked
-    WHERE topic_rank = 1
-    """
-_COUNT_CHUNK_FTS_ELIGIBLE_SQL = """
-    WITH scored AS (
-        SELECT artifact_id, revision, chunk_ordinal,
-               bm25(pc_topic_memory_chunk_fts) AS score, ({coverage}) AS coverage
-        FROM pc_topic_memory_chunk_fts
-        WHERE pc_topic_memory_chunk_fts MATCH :query AND scope_id = :scope_id
-    ), ranked AS (
-        SELECT scored.*,
-               row_number() OVER (
-                   PARTITION BY artifact_id, revision
-                    ORDER BY coverage DESC, score, chunk_ordinal
-               ) AS topic_rank
-        FROM scored
-    )
-    SELECT count(*)
-    FROM ranked
+), chunk_selected AS (
+    SELECT * FROM chunk_ranked
     WHERE topic_rank = 1 AND coverage >= :required_matches
-    """
+    ORDER BY raw_score, artifact_id, revision DESC, chunk_ordinal
+    LIMIT :candidate_limit
+)
+SELECT 0 AS stream, NULL AS artifact_id, NULL AS revision, NULL AS title, NULL AS summary,
+       NULL AS chunk_ordinal, NULL AS start_offset, NULL AS chunk_text, NULL AS raw_score,
+       (SELECT count(*) FROM topic_scored) AS topic_retrieved,
+       (SELECT count(*) FROM topic_scored WHERE coverage >= :required_matches) AS topic_eligible,
+       (SELECT count(*) FROM chunk_ranked WHERE topic_rank = 1) AS detail_retrieved,
+       (SELECT count(*) FROM chunk_ranked WHERE topic_rank = 1 AND coverage >= :required_matches) AS detail_eligible
+UNION ALL
+SELECT 1, artifact_id, revision, title, summary, NULL, NULL, NULL, raw_score,
+       NULL, NULL, NULL, NULL
+FROM topic_selected
+UNION ALL
+SELECT 2, artifact_id, revision, title, summary, chunk_ordinal, start_offset, chunk_text, raw_score,
+       NULL, NULL, NULL, NULL
+FROM chunk_selected
+ORDER BY stream, raw_score, artifact_id, revision DESC, chunk_ordinal
+"""
 
 _DELETE_TOPIC_VECTOR_SQL = text("DELETE FROM pc_topic_memory_topic_vec WHERE rowid = :vector_id")
 _DELETE_CHUNK_VECTOR_SQL = text("DELETE FROM pc_topic_memory_chunk_vec WHERE rowid = :vector_id")
@@ -410,29 +371,15 @@ class SQLiteTopicMemoryFTSIndex:
             "required_matches": required_matches,
             **{f"coverage_term_{position}": f" {term} " for position, term in enumerate(query_terms)},
         }
-        topic_retrieved = await connection.scalar(text(_COUNT_TOPIC_FTS_SQL), parameters)
-        topic_eligible = await connection.scalar(
-            text(_COUNT_TOPIC_FTS_ELIGIBLE_SQL.format(coverage=coverage)),
-            parameters,
-        )
-        topic_rows = (
-            await connection.execute(text(_SEARCH_TOPIC_FTS_SQL.format(coverage=coverage)), parameters)
-        ).mappings()
-        detail_retrieved = await connection.scalar(text(_COUNT_CHUNK_FTS_SQL.format(coverage=coverage)), parameters)
-        detail_eligible = await connection.scalar(
-            text(_COUNT_CHUNK_FTS_ELIGIBLE_SQL.format(coverage=coverage)),
-            parameters,
-        )
-        chunk_rows = (
-            await connection.execute(text(_SEARCH_CHUNK_FTS_SQL.format(coverage=coverage)), parameters)
-        ).mappings()
+        rows = (await connection.execute(text(_SEARCH_FTS_SQL.format(coverage=coverage)), parameters)).mappings().all()
+        counts = rows[0]
         return TopicMemorySearchChannels(
-            topic_fts=tuple(_channel_hit(row, "topic_fts") for row in topic_rows),
-            detail_fts=tuple(_channel_hit(row, "detail_fts") for row in chunk_rows),
-            topic_fts_retrieved=int(topic_retrieved or 0),
-            detail_fts_retrieved=int(detail_retrieved or 0),
-            topic_fts_eligible=int(topic_eligible or 0),
-            detail_fts_eligible=int(detail_eligible or 0),
+            topic_fts=tuple(_channel_hit(row, "topic_fts") for row in rows if row["stream"] == 1),
+            detail_fts=tuple(_channel_hit(row, "detail_fts") for row in rows if row["stream"] == 2),
+            topic_fts_retrieved=int(counts["topic_retrieved"]),
+            detail_fts_retrieved=int(counts["detail_retrieved"]),
+            topic_fts_eligible=int(counts["topic_eligible"]),
+            detail_fts_eligible=int(counts["detail_eligible"]),
         )
 
     async def vector_complete(
