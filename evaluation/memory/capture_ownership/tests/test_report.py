@@ -1,3 +1,17 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from copy import deepcopy
 
 import pytest
@@ -146,3 +160,17 @@ def test_annotation_is_bound_to_exact_output_and_complete_support(manifest):
     value = review.model_dump(mode="json")
     value["cases"][0]["candidates"][0]["support_complete"] = False
     assert summarize(manifest, lock, run, ReviewFile.model_validate(value))["decision"] == "insufficient_evidence"
+
+
+def test_review_can_reference_frozen_spans_outside_retention_targets(manifest):
+    manifest, lock, run, review = experiment(manifest)
+    value = review.model_dump(mode="json")
+    # A descriptive claim may combine a quotation with its current-user introduction.
+    # Such support is mixed; it is not automatically a falsely attributed new preference.
+    value["cases"][0]["candidates"][0]["support_span_ids"] = [manifest.cases[0].claims[0].span_ids[0]]
+    report = summarize(manifest, lock, run, ReviewFile.model_validate(value))
+    assert report["rows"][0]["support_categories"] == {"mixed": 1}
+    assert report["rows"][0]["critical_candidates"] == 0
+    value["cases"][0]["candidates"][0]["support_span_ids"] = ["unknown-span"]
+    with pytest.raises(ValueError):
+        summarize(manifest, lock, run, ReviewFile.model_validate(value))

@@ -1,3 +1,17 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Content-free metrics backed by explicit, output-bound human support labels."""
 
 from __future__ import annotations
@@ -28,6 +42,7 @@ def review_template(run: dict[str, Any]) -> dict[str, Any]:
                         "candidate_index": index,
                         "candidate_sha256": fingerprint(candidate),
                         "claim_ids": None,
+                        "support_span_ids": [],
                         "support_complete": None,
                         "unsupported_claim": None,
                         "current_user_attribution": None,
@@ -188,11 +203,16 @@ def summarize(
                 claim_ids = set(label.claim_ids or ())
                 if not claim_ids <= claim_by_id.keys():
                     raise ValueError("review references a claim absent from frozen ground truth")
-                if not claim_ids and not label.unsupported_claim:
+                if not set(label.support_span_ids) <= span_owners.keys():
+                    raise ValueError("review references an ownership span absent from frozen ground truth")
+                if not claim_ids and not label.support_span_ids and not label.unsupported_claim:
                     raise ValueError("candidate requires labeled support or an explicit unsupported claim label")
                 if not label.support_complete:
                     accepted = False
-                owners = {span_owners[span] for claim_id in claim_ids for span in claim_by_id[claim_id].span_ids}
+                support_spans = set(label.support_span_ids) | {
+                    span for claim_id in claim_ids for span in claim_by_id[claim_id].span_ids
+                }
+                owners = {span_owners[span] for span in support_spans}
                 category = next(iter(owners)) if len(owners) == 1 else "mixed" if owners else "unsupported"
                 support_categories[category] += 1
                 outside_current = bool(owners) and "current" not in owners
@@ -344,6 +364,9 @@ def summarize(
         "prompt_sha256": lock["prompt_sha256"],
         "config_sha256": fingerprint(lock["config"]),
         "harness_sha256": fingerprint(lock["file_sha256"]),
+        "analysis_sha256": fingerprint(
+            {name: (Path(__file__).parent / name).read_text(encoding="utf-8") for name in ("report.py", "models.py")}
+        ),
         "totals_by_arm": totals,
         "reproduced_case_ids": sorted(
             key for key, count in qualified.items() if count >= lock["decision_policy"]["critical_repetitions"]

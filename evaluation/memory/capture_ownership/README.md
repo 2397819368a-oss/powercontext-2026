@@ -6,8 +6,8 @@ user turn. Production capture, Source registration, extraction prompts, APIs, an
 
 ## Install and validate
 
-Run from the repository root, on Python 3.11+. SQLite needs no external database. Linux and Windows are supported
-by the Python harness; a synthetic replay does not establish native WorkBuddy host acceptance on either platform.
+Run from the repository root, on Python 3.11+. SQLite needs no external database. Full replay is validated on Linux;
+fixture/parser/report tests are also validated on Windows. Synthetic replay does not establish native WorkBuddy acceptance.
 
 ```bash
 uv sync --project evaluation --extra capture-ownership --locked
@@ -68,7 +68,7 @@ input tokens and 1.5 CNY per million output tokens for the short-input tier, fro
 using another account/date. These are configurable estimates; the provider's invoice is authoritative.
 
 The example reserves at most 0.8 CNY for the complete run, caps each response at 1024 tokens, uses one request per
-extraction with provider SDK retries disabled, and runs each arm twice. A conservative input reservation uses UTF-8
+extraction with provider SDK retries disabled, runs each arm twice, and spaces requests eight seconds apart. A conservative input reservation uses UTF-8
 bytes plus an 8192-token schema/framing allowance. Failed calls retain their reservation because they may be billed.
 No calls are made for candidate-arm unknown/empty turns. The actual provider token counts are saved when available;
 failed/timeout usage is unknown, never reported as zero. The character estimate used for input limits is separately
@@ -124,6 +124,9 @@ Source references, Scope IDs, reviewer identities, prompt text, candidate text, 
 Copy `review-template.json` to `review.json`. For **each output-bound candidate**, a reviewer fills:
 
 - `claim_ids`: frozen claims supporting every part of the candidate; use an empty list for wholly unsupported output.
+- `support_span_ids`: additional frozen spans for descriptive claims outside the retention targets, for example a
+  current-user introduction explaining that a quoted preference is an example. All claimed and explicit spans determine
+  support origin together; quoting a preference does not by itself assert that preference as a new user fact.
 - `support_complete`: all candidate claims were checked against the frozen spans.
 - `unsupported_claim`: any assertion lacks support, including invented attributions or conditions.
 - `current_user_attribution`: a non-current claim is represented as a new user fact/preference/constraint/decision.
@@ -131,6 +134,8 @@ Copy `review-template.json` to `review.json`. For **each output-bound candidate*
 
 Set a truthful `reviewer` and `complete=true` on each row, including empty/skipped output after checking required facts.
 Review hashes bind the annotation to the exact run and candidate. Labels cannot be transferred after regenerating output.
+The aggregate records the frozen generation harness hash and a separate hash of the analysis implementation, so saved
+outputs can be audited with an identified scorer without regenerating model responses or changing frozen ground truth.
 An LLM judge may assist review but must not be the sole evidence for a critical finding: cross-check its exact candidate
 against the frozen supporting span IDs, ownership categories and literal canaries. Record independent human review
 when performed; agent-assisted annotation must not be described as independent human validation.

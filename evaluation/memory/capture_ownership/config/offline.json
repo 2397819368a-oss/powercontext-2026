@@ -3,7 +3,10 @@
   "profile": "coding",
   "model": null,
   "base_url": null,
-  "model_settings": {"temperature": 0, "max_tokens": 1024},
+  "model_settings": {
+    "temperature": 0,
+    "max_tokens": 1024
+  },
   "repetitions": 2,
   "timeout_seconds": 60,
   "max_requests": 1,
