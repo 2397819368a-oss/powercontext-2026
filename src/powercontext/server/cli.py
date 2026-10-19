@@ -36,7 +36,12 @@ from powercontext.builtin.persistence.processing_migration import (
     plan_processing_migration,
     verify_processing_migration,
 )
-from powercontext.builtin.persistence.seekdb import SeekDBConfig, SeekDBInspectionError, SeekDBProfile
+from powercontext.builtin.persistence.seekdb import (
+    LegacySeekDBDatabaseError,
+    SeekDBConfig,
+    SeekDBInspectionError,
+    SeekDBProfile,
+)
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
 from powercontext.builtin.runtime.atomic_memory_rebuild import rebuild_atomic_memory_projection
@@ -127,7 +132,7 @@ def processing_migrate(
             if action == "apply":
                 raise
             raise typer.BadParameter(_missing_read_only_database(error)) from error
-        except SeekDBInspectionError as error:
+        except (SeekDBInspectionError, LegacySeekDBDatabaseError) as error:
             raise typer.BadParameter(str(error)) from error
     if not ready:
         raise typer.Exit(code=1)
@@ -258,7 +263,7 @@ def atomic_memory_migrate(
             if action == "apply":
                 raise
             raise typer.BadParameter(_missing_read_only_database(error)) from error
-        except SeekDBInspectionError as error:
+        except (SeekDBInspectionError, LegacySeekDBDatabaseError) as error:
             raise typer.BadParameter(str(error)) from error
         except OperationalError as error:
             sqlite_code = getattr(error.orig, "sqlite_errorcode", None)
@@ -287,11 +292,14 @@ def atomic_memory_rebuild_projection(
     if not maintenance_confirmed:
         raise typer.BadParameter("projection rebuild requires --maintenance-confirmed after stopping every writer")  # noqa: TRY003
     with server_settings_context(env_file=env_file) as settings:
-        ready = asyncio.run(
-            _atomic_memory_maintenance(
-                settings, "rebuild-projection", maintenance_confirmed=maintenance_confirmed, batch_size=batch_size
+        try:
+            ready = asyncio.run(
+                _atomic_memory_maintenance(
+                    settings, "rebuild-projection", maintenance_confirmed=maintenance_confirmed, batch_size=batch_size
+                )
             )
-        )
+        except LegacySeekDBDatabaseError as error:
+            raise typer.BadParameter(str(error)) from error
     if not ready:
         raise typer.Exit(code=1)
 

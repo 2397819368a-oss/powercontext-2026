@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -141,7 +141,7 @@ class MaintenanceConnections:
                 config.model_copy(update={"echo": False}), instance.connection_options()
             )
             try:
-                await seekdb_profile._require_explicit_legacy_database(config, instance.connection_options())
+                await _require_explicit_database(config, instance.connection_options())
                 if writable:
                     await ensure_database(
                         engine,
@@ -231,6 +231,18 @@ class MaintenanceConnections:
                         return await connection.run_sync(execute)
         finally:
             await _dispose_engine(engine)
+
+
+async def _require_explicit_database(config: SeekDBConfig, options: Mapping[str, object]) -> None:
+    """Turn the expected legacy-database refusal into the maintenance error contract.
+
+    An uncaught exception would replace the documented blocked JSON payload with a
+    traceback, so the operator-facing guidance is preserved inside a MigrationError.
+    """
+    try:
+        await seekdb_profile._require_explicit_legacy_database(config, options)
+    except seekdb_profile.LegacySeekDBDatabaseError as error:
+        raise MigrationError("explicit_database_required", str(error)) from error
 
 
 def _directory_inode(path: Path) -> tuple[int, int]:

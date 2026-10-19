@@ -243,10 +243,14 @@ async def _finish_task(task: asyncio.Task[_T]) -> _T:
 
 
 async def _require_explicit_legacy_database(config: SeekDBConfig, options: Mapping[str, object]) -> None:
-    """Never hide old PowerContext tables behind the changed implicit default."""
+    """Never hide old PowerContext tables behind the changed implicit default.
+
+    This probe is diagnostic: it never echoes SQL, because the caller may own the
+    process's machine-readable output and the echo handler writes to stdout.
+    """
     if "database" in config.model_fields_set:
         return
-    legacy = _create_engine(config, options, database="test")
+    legacy = _create_engine(config.model_copy(update={"echo": False}), options, database="test")
     try:
         try:
             async with legacy.connect() as connection:

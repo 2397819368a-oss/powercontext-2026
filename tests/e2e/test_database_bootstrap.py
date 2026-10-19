@@ -24,7 +24,10 @@ resource cleanup is registered, and cleanup failures never replace test failures
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -168,6 +171,62 @@ def test_seekdb_legacy_choice_preserves_old_data_and_separates_new_database(shor
             await assert_record(profile, "test")
 
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not _SEEKDB, reason="set POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB=1")
+def test_seekdb_legacy_migration_cli_preserves_json_with_sql_echo(short_tmp_path: Path) -> None:
+    pytest.importorskip("pylibseekdb")
+    path = short_tmp_path / "seekdb"
+    old = SeekDBConfig(path=path, database="test")
+
+    async def seed() -> None:
+        async with SeekDBProfile.open(old, tables=(_RECORDS,)) as profile:
+            await insert_record(profile)
+
+    asyncio.run(seed())
+    environment = short_tmp_path / "deployment.env"
+    environment.write_text(
+        "POWERCONTEXT_SERVER_DATABASE_KIND=seekdb\n"
+        f"POWERCONTEXT_SERVER_DATABASE_PATH={path}\n"
+        "POWERCONTEXT_SERVER_DATABASE_ECHO=true\n",
+        encoding="utf-8",
+    )
+    for action in ("status", "plan", "verify", "apply"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from powercontext.cli.app import main; main()",
+                "server",
+                "db-migrate",
+                action,
+                "--env-file",
+                str(environment),
+            ],
+            cwd=short_tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        assert result.returncode == 1, (action, result.stdout, result.stderr)
+        payload = json.loads(result.stdout)
+        assert payload["state"] == "blocked"
+        assert payload["error"] == "explicit_database_required"
+        assert "POWERCONTEXT_SERVER_DATABASE_DATABASE=test" in payload["message"]
+        assert "database='powercontext'" in payload["message"]
+        assert "Traceback" not in result.stderr
+
+    async def verify_preserved() -> None:
+        async with SeekDBProfile.open_existing(old, tables=(_RECORDS,)) as profile:
+            await assert_record(profile, "test")
+            async with profile.database.transaction() as connection:
+                result = await connection.exec_driver_sql(
+                    "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s", ("powercontext",)
+                )
+                assert result.first() is None
+
+    asyncio.run(verify_preserved())
 
 
 @pytest.mark.skipif(not _SEEKDB, reason="set POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB=1")

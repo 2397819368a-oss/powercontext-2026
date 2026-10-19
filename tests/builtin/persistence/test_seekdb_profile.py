@@ -15,8 +15,9 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AbstractAsyncContextManager
-from types import TracebackType
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace, TracebackType
 from typing import cast
 
 import pytest
@@ -289,3 +290,33 @@ def test_profile_closes_instance_if_open_is_cancelled_repeatedly(tmp_path, monke
         assert events == [f"aopen:{(tmp_path / 'seekdb').resolve()}", "instance.close"]
 
     asyncio.run(scenario())
+
+
+def test_legacy_database_probe_never_echoes_sql(monkeypatch) -> None:
+    """The probe writes to stdout for nobody: maintenance owns machine-readable output."""
+    seen: list[SeekDBConfig] = []
+
+    class _Connection:
+        async def exec_driver_sql(self, _statement):
+            return _EmptyResult()
+
+    @asynccontextmanager
+    async def connect():
+        yield _Connection()
+
+    def create_engine(config, _options, *, database=None):
+        seen.append(config)
+        return SimpleNamespace(connect=connect)
+
+    async def dispose(_engine) -> None:
+        return None
+
+    monkeypatch.setattr(seekdb_profile_module, "_create_engine", create_engine)
+    monkeypatch.setattr(seekdb_profile_module, "dispose_engine", dispose)
+
+    asyncio.run(
+        seekdb_profile_module._require_explicit_legacy_database(SeekDBConfig(path=Path("/nonexistent"), echo=True), {})
+    )
+
+    assert len(seen) == 1
+    assert seen[0].echo is False

@@ -25,6 +25,7 @@ from click import unstyle
 from typer.testing import CliRunner
 
 from powercontext.builtin.persistence.bootstrap import MissingDatabaseError
+from powercontext.builtin.persistence.seekdb import LegacySeekDBDatabaseError
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.cli.app import create_cli
@@ -327,3 +328,36 @@ def test_inspection_preserves_uninitialized_seekdb_target(tmp_path, monkeypatch,
     assert {
         item.relative_to(tmp_path): item.read_bytes() if item.is_file() else None for item in tmp_path.rglob("*")
     } == original
+
+
+@pytest.mark.parametrize(
+    ("command", "action"),
+    [
+        ("atomic-memory-migrate", "plan"),
+        ("atomic-memory-migrate", "verify"),
+        ("atomic-memory-migrate", "apply"),
+        ("atomic-memory-rebuild-projection", None),
+    ],
+)
+def test_legacy_seekdb_requires_an_explicit_database_choice(tmp_path, monkeypatch, maintenance_cli, command, action):
+    class _LegacyRefusal:
+        @classmethod
+        def open(cls, config, *, tables):
+            raise LegacySeekDBDatabaseError(config.path)
+
+        @classmethod
+        def open_existing(cls, config, *, tables):
+            raise LegacySeekDBDatabaseError(config.path)
+
+    monkeypatch.setattr(server_cli, "SeekDBProfile", _LegacyRefusal)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_KIND", "seekdb")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_PATH", str(tmp_path / "seekdb"))
+
+    arguments = ["server", command, "--maintenance-confirmed"]
+    if action is not None:
+        arguments.extend(["--action", action])
+    result = CliRunner().invoke(maintenance_cli, arguments)
+
+    assert result.exit_code == 2, result.output
+    assert "POWERCONTEXT_SERVER_DATABASE_DATABASE" in unstyle(result.output)
+    assert "Traceback" not in result.output

@@ -84,7 +84,9 @@ OceanBase maintenance must be able to read the tenant ID, cluster ID, and tenant
 identity return `target_identity_unavailable`; a proxy hostname is not used as a substitute database identity.
 
 seekdb inspection does not start an engine for a missing path or empty directory. A nonempty directory without a
-recognized engine layout returns `unsupported_target`. Opening a valid existing engine may write native logs and other
+recognized engine layout returns `unsupported_target`. An unconfigured database name whose old `test` database still
+holds PowerContext tables returns `explicit_database_required` instead of selecting either database implicitly; select
+the name explicitly and rerun the command. Opening a valid existing engine may write native logs and other
 engine housekeeping files; read-only migration commands do not perform business DDL or initialize tables.
 
 `--evidence-dir PATH` selects persistent storage outside the target database for maintenance progress and recovery

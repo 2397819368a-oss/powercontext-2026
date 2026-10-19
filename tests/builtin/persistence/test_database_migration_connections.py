@@ -408,3 +408,22 @@ def test_real_oceanbase_single_host_coordinator_excludes_other_maintenance_and_s
         return target
 
     assert adapter.run(reacquire, writable=True) == identity
+
+
+def test_seekdb_legacy_database_refusal_is_a_maintenance_error(tmp_path: Path, monkeypatch) -> None:
+    path, _assert_locked = _fake_seekdb(tmp_path, monkeypatch)
+
+    async def refuse(_config, _options) -> None:
+        from powercontext.builtin.persistence.seekdb import LegacySeekDBDatabaseError
+
+        raise LegacySeekDBDatabaseError(path)
+
+    monkeypatch.setattr(connections.seekdb_profile, "_require_explicit_legacy_database", refuse)
+
+    def unexpected(connection: Connection | None, _identity: BackendIdentity, verify: Callable[[], None]):
+        pytest.fail("An expected legacy refusal must not run the maintenance operation")
+
+    with pytest.raises(MigrationError) as error:
+        MaintenanceConnections(SeekDBConfig(path=path)).run(unexpected, writable=True)
+    assert error.value.code == "explicit_database_required"
+    assert "POWERCONTEXT_SERVER_DATABASE_DATABASE" in str(error.value)
