@@ -1478,7 +1478,7 @@ def _run_spawned_worker(
                 },
             )
         except BaseException as error:
-            error_code = processing_error_code(type(error))
+            error_code = processing_error_code(type(error), _safe_error_attribute(error, "error_code", ""))
             block = error.block if isinstance(error, ArtifactProcessingBlockedError) else None
             level = logging.ERROR
             outcome = "failure"

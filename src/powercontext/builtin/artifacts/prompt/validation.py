@@ -51,11 +51,14 @@ from powercontext.builtin.artifacts.memory import (
 )
 from powercontext.builtin.artifacts.profile.models import normalize_profile_markdown
 from powercontext.builtin.artifacts.profile.service import ProfileGenerationInput, ProfileGenerationOutput
+from powercontext.builtin.artifacts.topic_memory.admission import TopicMemoryContentAdmission
 from powercontext.builtin.artifacts.topic_memory.generation import (
+    TopicMemoryEvidence,
     TopicMemoryEvolveInput,
     TopicMemoryEvolveOutput,
     TopicMemoryGlobalInput,
     TopicMemoryGlobalOutput,
+    TopicMemoryHistoricalSlot,
     TopicMemoryPlannerInput,
     TopicMemoryPlannerOutput,
     TopicMemoryProbeInput,
@@ -68,6 +71,7 @@ from powercontext.builtin.artifacts.topic_memory.generation import (
     TopicMemoryTemporaryInput,
     TopicMemoryTemporaryOutput,
 )
+from powercontext.builtin.artifacts.topic_memory.models import TopicMemoryContent
 from powercontext.sources import SourceRef
 
 
@@ -206,6 +210,7 @@ def _topic_memory_global(value: TopicMemoryGlobalInput, output: TopicMemoryGloba
         if proposal.proposal_id is not None:
             _require(proposal.proposal_id not in proposal_ids)
             proposal_ids.add(proposal.proposal_id)
+    _admit_topic_proposals(value.evidence, output.proposals, value.historical)
 
 
 def _topic_memory_planner(value: TopicMemoryPlannerInput, output: TopicMemoryPlannerOutput) -> None:
@@ -250,6 +255,12 @@ def _topic_memory_evolve(value: TopicMemoryEvolveInput, output: TopicMemoryEvolv
             if value.historical is None
             else proposal.candidate_id == value.historical.candidate_id
         )
+        _admit_topic_proposals(
+            value.evidence,
+            (proposal,),
+            () if value.historical is None else (value.historical,),
+            value.temporary,
+        )
 
 
 def _topic_memory_temporary(value: TopicMemoryTemporaryInput, output: TopicMemoryTemporaryOutput) -> None:
@@ -261,6 +272,7 @@ def _topic_memory_temporary(value: TopicMemoryTemporaryInput, output: TopicMemor
         if proposal.proposal_id is not None:
             _require(proposal.proposal_id not in proposal_ids)
             proposal_ids.add(proposal.proposal_id)
+    _admit_topic_proposals(value.evidence, output.proposals)
 
 
 def _topic_memory_reduce(value: TopicMemoryReductionInput, output: TopicMemoryReductionOutput) -> None:
@@ -274,6 +286,7 @@ def _topic_memory_reduce(value: TopicMemoryReductionInput, output: TopicMemoryRe
     _require(set(result.evidence_ids) == {evidence_id for item in items for evidence_id in item.evidence_ids})
     if isinstance(result, TopicMemoryProposal):
         _require(result.candidate_id is None and result.proposal_id is None)
+        _admit_topic_proposals((), (result,), intermediate=value.temporary)
 
 
 def _topic_memory_reconcile(value: TopicMemoryReconcileInput, output: TopicMemoryReconcileOutput) -> None:
@@ -301,3 +314,31 @@ def _topic_memory_reconcile(value: TopicMemoryReconcileInput, output: TopicMemor
             )
     for item in outputs:
         _require(set(item.evidence_ids) <= input_evidence)
+    _admit_topic_proposals((), outputs, value.historical, inputs)
+
+
+def _admit_topic_proposals(
+    evidence: Iterable[TopicMemoryEvidence],
+    proposals: Iterable[TopicMemoryProposal],
+    historical: Iterable[TopicMemoryHistoricalSlot] = (),
+    intermediate: Iterable[TopicMemoryProposal] = (),
+) -> None:
+    """Apply runtime content admission to custom demonstrations without changing their JSON."""
+    fragments: dict[str, list[str]] = {}
+    for item in intermediate:
+        text = f"{item.content.title}\n{item.content.summary}\n{item.content.detail}"
+        for evidence_id in item.evidence_ids:
+            fragments.setdefault(evidence_id, []).append(text)
+    material = {key: "\n".join(parts) for key, parts in fragments.items()}
+    material.update((item.evidence_id, item.content) for item in evidence)
+    proposals = tuple(proposals)
+    admission = TopicMemoryContentAdmission(
+        material,
+        {
+            item.candidate_id: TopicMemoryContent(title=item.title, summary=item.summary, detail=item.detail)
+            for item in historical
+        },
+        internal_ids=(item.proposal_id for item in proposals if item.proposal_id is not None),
+    )
+    for proposal in proposals:
+        _require(admission.rejection(proposal.content, proposal.evidence_ids, proposal.candidate_id) is None)

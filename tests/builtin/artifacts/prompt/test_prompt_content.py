@@ -227,3 +227,45 @@ def test_all_registered_auto_selections_preserve_existing_guidance() -> None:
         assert absent.compiled_instructions == definition.default_instructions
         assert explicit.compiled_instructions == definition.default_instructions
         assert absent.compiled_digest == explicit.compiled_digest
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "topic_memory.global",
+        "topic_memory.evolve",
+        "topic_memory.temporary",
+        "topic_memory.reconcile",
+        "topic_memory.reduce",
+    ],
+)
+def test_topic_demonstrations_cannot_teach_placeholder_publication(key):
+    proposal = {
+        "content": {
+            "title": "T-19",
+            "summary": "S-19 coordinated without merging historical identities.",
+            "detail": "D-19 coordinated detail preserving distinct historical identity.",
+        },
+        "evidence_ids": ["e1"],
+    }
+    evidence = {"evidence_id": "e1", "source_type": "content", "content": "Check the dashboard."}
+    if key == "topic_memory.global":
+        value, output = {"evidence": [evidence], "probes": []}, {"proposals": [proposal]}
+    elif key == "topic_memory.evolve":
+        value, output = {"work_id": "work-0001", "evidence": [evidence]}, {"proposal": proposal}
+    elif key == "topic_memory.temporary":
+        value, output = {"work_id": "work-0001", "evidence": [evidence]}, {"proposals": [proposal]}
+    elif key == "topic_memory.reconcile":
+        proposal["proposal_id"] = "proposal-0001"
+        value, output = {"component_id": "component-0001", "proposals": [proposal]}, {"proposals": [proposal]}
+    else:
+        value = {"temporary": [proposal], "max_result_tokens": 128}
+        output = {"covered_indices": [0], "temporary": proposal}
+    content = _with_demonstration({"input": value, "expected_output": output})
+    definition = PromptRegistry(builtin_prompt_definitions()).get(key)
+    with pytest.raises(PromptError) as caught:
+        definition.validate(content)
+    assert caught.value.code == "prompt_definition_incompatible"
+    with pytest.raises(PromptError) as caught:
+        definition.resolve("scope-a", Prompt(artifact_id=key, revision=1, content=content))
+    assert caught.value.during_inference

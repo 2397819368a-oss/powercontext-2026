@@ -396,6 +396,27 @@ The server holds the target ArtifactRef for an UpdateWorkItem and generates the 
 The server also determines the operation type, Revision, lineage, and publication state. NOOP stores neither an entity
 nor a reason; logs may record only the code-known `no_change` and processing context.
 
+## Generated content admission
+
+Final proposals pass conservative content admission before secondary retrieval and again after reconciliation, before
+projection preparation. Recognizable numbered placeholder bodies and identity-coordination-only boilerplate reject
+the whole Window. The checks use cited canonical evidence, selected exact history and server-issued IDs; identifiers
+alone, short text, stopwords, and lexical dissimilarity are not rejection criteria. Literal template discussions need
+an explanatory title and matching support. This is not a general grounding verifier or a proof of semantic quality.
+
+`invalid_topic_placeholder` and `invalid_topic_coordination_content` are recorded recoverable generation rejections.
+They preserve heads, projections and the Source cursor; subsequent attempts consume the same durable allowance.
+Exhaustion follows the existing terminal-frontier policy. A rejection cannot be filtered into a successful NOOP or
+partially publish a Window. Ordinary empty results keep normal NOOP semantics. No additional model calls are required.
+Admission inspects only the current bounded proposals, Window evidence and selected history; it performs no Scope scan.
+Evidence normalization is shared within a validation batch. Topic content and persistence schemas are unchanged.
+
+All seven built-in stage prompts include concrete-content guidance, evidence boundaries and stage-specific empty
+output rules. Their built-in versions are `v2`; custom invariants retain the same content requirements, and custom
+examples use the runtime admission policy. Auto compilation and other Artifact families remain unchanged. All token
+budgets account for the actual selected instructions and schemas. Direct generic writes and stored historical revisions
+retain their existing contracts; automatic historical repair is outside this processing operation.
+
 ## Detail chunks and deployment-enabled retrieval channels
 
 Public TopicMemoryContent stores only `title`, `summary`, and `detail`. A Detail chunk is a rebuildable internal

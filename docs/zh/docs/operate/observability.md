@@ -110,3 +110,11 @@ Identity 和 error 字段为新增字段；console 行现在包含 identity。
 
 使用环境文件部署时，将 Tracing 与 OpenTelemetry 变量写入传给 Server 的显式文件。
 优先级规则见[环境配置](../get-started/configure-server-environment.md)。
+
+## Topic 生成拒绝码
+
+Topic 处理可通过 `invalid_topic_placeholder` 标识可识别的编号占位正文，
+或通过 `invalid_topic_coordination_content` 标识纯身份协调正文。
+这些不含内容的诊断码表示可恢复的生成拒绝，不表示成功 NOOP。
+重试消耗现有 Window 持久化预算；耗尽后保留待处理前沿。诊断码由现有 Worker 事件及关联字段承载。
+不得将 Source 文本、生成正文或服务商响应写入运维日志。

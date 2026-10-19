@@ -48,6 +48,7 @@ from powercontext.builtin.artifacts.topic_memory import (
     chunk_topic_memory_detail,
     prepare_topic_memory_projection,
 )
+from powercontext.builtin.artifacts.topic_memory.admission import TopicMemoryContentAdmission
 from powercontext.builtin.artifacts.topic_memory.generation import (
     MAX_TOPIC_MEMORY_STAGE_ITEMS,
     TOPIC_MEMORY_PROBE_INSTRUCTIONS,
@@ -1164,7 +1165,15 @@ class TopicMemoryProcessor:
     ) -> tuple[TopicMemoryProposal, ...]:
         if len(proposals) > MAX_TOPIC_MEMORY_STAGE_ITEMS:
             raise TopicMemoryGenerationError("proposal_limit")
+        if not proposals:
+            return ()
         allowed = {item.evidence_id for item in evidence}
+        selected = {item.candidate_id for item in proposals}
+        admission = TopicMemoryContentAdmission(
+            {item.evidence_id: item.content for item in evidence},
+            {key: value.topic.content for key, value in candidates.items() if key in selected},
+            internal_ids=(*candidates, *(item.proposal_id for item in proposals if item.proposal_id is not None)),
+        )
         targets: set[str] = set()
         proposal_ids: set[str] = set()
         for proposal in proposals:
@@ -1178,6 +1187,9 @@ class TopicMemoryProcessor:
                 if proposal.proposal_id in proposal_ids:
                     raise TopicMemoryGenerationError("invalid_proposal")
                 proposal_ids.add(proposal.proposal_id)
+            rejection = admission.rejection(proposal.content, proposal.evidence_ids, proposal.candidate_id)
+            if rejection is not None:
+                raise TopicMemoryGenerationError(rejection)
         return proposals
 
     def _validate_reconciliation(

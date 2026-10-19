@@ -54,6 +54,8 @@ def test_operational_filter_uses_bound_request_id_without_overwriting_an_explici
         ("model_unavailable", "dependency"),
         # Docs: inference failures retain their timeout, configuration, or dependency classification.
         ("invalid_model_output", "dependency"),
+        ("invalid_topic_placeholder", "dependency"),
+        ("invalid_topic_coordination_content", "dependency"),
     ],
 )
 def test_inference_failure_codes_keep_their_documented_category(code, category) -> None:
