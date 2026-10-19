@@ -72,3 +72,76 @@ def test_remote_database_without_override_reuses_local_persisted_secret(
     assert key_path.read_bytes() == generated_secret
     if os.name != "nt":
         assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+
+
+def test_transient_short_key_write_completes_the_key(tmp_path, monkeypatch, generated_secret) -> None:
+    database_path = tmp_path / "powercontext.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database_path}")
+    key_path = tmp_path / ".powercontext.db.cursor-key"
+    real_write = os.write
+
+    # POSIX allows write() to accept fewer bytes than requested. Accept five
+    # bytes once, then accept the rest, the way a resumed write would.
+    seen_short_write = {"done": False}
+
+    def limited_write(descriptor: int, data: bytes) -> int:
+        if seen_short_write["done"]:
+            return real_write(descriptor, bytes(data))
+        seen_short_write["done"] = True
+        return real_write(descriptor, bytes(data)[:5])
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", limited_write)
+        secret = resolve_cursor_secret(config, None)
+
+    assert secret == generated_secret
+    assert key_path.read_bytes() == generated_secret
+    assert resolve_cursor_secret(config, None) == generated_secret
+
+
+def test_failed_key_write_leaves_no_unreadable_key_behind(tmp_path, monkeypatch, generated_secret) -> None:
+    database_path = tmp_path / "powercontext.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database_path}")
+    key_path = tmp_path / ".powercontext.db.cursor-key"
+    real_write = os.write
+    retries = {"count": 0}
+
+    def stalled_write(descriptor: int, data: bytes) -> int:
+        retries["count"] += 1
+        if retries["count"] > 64:
+            raise AssertionError("a stalled write was retried instead of rejected")  # noqa: TRY003
+        real_write(descriptor, bytes(data)[:3])
+        return 0
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", stalled_write)
+        with pytest.raises(OSError):
+            resolve_cursor_secret(config, None)
+
+    # A part-written key fails every later start with ValueError, so a failed
+    # attempt must not publish one.
+    assert not key_path.exists()
+    assert resolve_cursor_secret(config, None) == generated_secret
+
+
+def test_key_write_without_progress_fails_instead_of_retrying(tmp_path, monkeypatch, generated_secret) -> None:
+    database_path = tmp_path / "powercontext.db"
+    config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database_path}")
+    real_write = os.write
+    calls = {"count": 0}
+
+    # Accept nothing on the first attempt. Treating a zero-byte write as
+    # progress would loop forever, and a later write that does succeed must not
+    # hide that the first one stalled.
+    def stalled_write(descriptor: int, data: bytes) -> int:
+        calls["count"] += 1
+        if calls["count"] > 64:
+            raise AssertionError("a zero-byte write was retried instead of rejected")  # noqa: TRY003
+        if calls["count"] == 1:
+            return 0
+        return real_write(descriptor, bytes(data))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", stalled_write)
+        with pytest.raises(OSError):
+            resolve_cursor_secret(config, None)

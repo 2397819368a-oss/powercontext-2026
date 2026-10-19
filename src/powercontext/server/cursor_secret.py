@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import secrets
 from pathlib import Path
@@ -58,13 +59,29 @@ def _load_or_create(path: Path) -> bytes:
         descriptor = os.open(path, flags, 0o600)
     except FileExistsError:
         return _read(path)
+    completed = False
     try:
-        written = os.write(descriptor, generated)
-        if written != len(generated):
-            raise OSError(f"failed to write complete cursor signing key: {path}")  # noqa: TRY003
+        _write_key(descriptor, generated, path)
+        completed = True
     finally:
         os.close(descriptor)
+        if not completed:
+            # _read() rejects a short key, so publishing one turns a single
+            # failed write into a data location that never starts again.
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
     return generated
+
+
+def _write_key(descriptor: int, secret: bytes, path: Path) -> None:
+    """Write every byte: os.write may accept fewer bytes than requested."""
+
+    remaining = memoryview(secret)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError(f"failed to write complete cursor signing key: {path}")  # noqa: TRY003
+        remaining = remaining[written:]
 
 
 def _read(path: Path) -> bytes:
