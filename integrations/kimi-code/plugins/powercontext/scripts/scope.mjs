@@ -29,10 +29,10 @@ try {
   if (args.positionals.length !== 1 || !['resolve', 'bind', 'unbind'].includes(action) ||
       (action === 'bind' ? !isScopeId(target) : target !== undefined)) throw new Failure('invalid_arguments')
   const input = { cwd: args.values.cwd }
-  const key = workspaceKey(input.cwd)
   const settings = loadSettings()
   const signal = AbortSignal.timeout(4000)
   if (action !== 'resolve') {
+    const key = workspaceKey(input.cwd)
     binding = { action, status: 'unknown' }
     let response
     try {

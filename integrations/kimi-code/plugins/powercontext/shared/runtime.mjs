@@ -106,8 +106,8 @@ export function isScopeId(value) {
 
 export function workspaceKey(cwd) {
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) throw new Failure('workspace_required')
-  let directory = resolve(cwd)
-  try { directory = realpathSync.native(directory) } catch { /* Retain lexical identity when the path cannot be resolved. */ }
+  let directory
+  try { directory = realpathSync.native(cwd) } catch { directory = resolve(cwd) }
   return { integration: 'kimi-code', kind: 'workspace',
     external_id: createHash('sha256').update(directory).digest('hex') }
 }

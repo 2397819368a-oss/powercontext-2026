@@ -542,7 +542,9 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
             assert scope_action("unbind", other_workspace)["binding"]["status"] == "cleared"
             assert scope_action("resolve", other_workspace)["scope_id"] == gateway.scope_id
             assert scope_action("resolve", workspace)["scope_id"] == gateway.scope_id
-            alias = tmp_path / "workspace alias"
+            alias_parent = tmp_path / "alias parent"
+            alias_parent.mkdir()
+            alias = alias_parent / "workspace alias"
             subprocess.run(
                 [
                     node,
@@ -578,6 +580,22 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
             assert scope_action("bind", alias, gateway.scope_id)["scope_id"] == gateway.scope_id
             assert scope_action("resolve", other_workspace)["scope_id"] == gateway.scope_id
             assert scope_action("unbind", alias)["binding"]["status"] == "cleared"
+            lexical = alias_parent / "other workspace"
+            lexical.mkdir()
+            scope_action("bind", lexical, gateway.scope_id)
+            scope_action("bind", other_workspace, other_scope_id)
+            compound = alias / ".." / "other workspace"
+            expected = gateway.scope_id if os.name == "nt" else other_scope_id
+            untouched = other_workspace if os.name == "nt" else lexical
+            untouched_scope = other_scope_id if os.name == "nt" else gateway.scope_id
+            assert scope_action("resolve", compound)["scope_id"] == expected
+            observed = run_kimi_diagnostics(cwd=compound)
+            assert observed["scope"].checks is not None
+            assert observed["scope"].checks["scope_id"] == expected
+            assert scope_action("bind", compound, other_scope_id)["scope_id"] == other_scope_id
+            assert scope_action("resolve", untouched)["scope_id"] == untouched_scope
+            assert scope_action("unbind", compound)["binding"]["status"] == "cleared"
+            assert scope_action("resolve", untouched)["scope_id"] == untouched_scope
         (tmp_path / "evidence.json").write_text(
             json.dumps(
                 {

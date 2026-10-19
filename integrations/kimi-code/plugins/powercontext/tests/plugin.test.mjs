@@ -81,7 +81,8 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
     return { exit_code: result.code ?? 0, ...JSON.parse(result.stdout) }
   }
   async function scope(action, scopeId, cwd = workspace) {
-    const args = [join(installed, 'scripts/scope.mjs'), action, '--cwd', cwd]
+    const args = [join(installed, 'scripts/scope.mjs'), action]
+    if (cwd !== null) args.push('--cwd', cwd)
     if (scopeId !== undefined) args.push('--scope-id', scopeId)
     const result = await promisify(execFile)(process.execPath, args,
       { env: { ...process.env, KIMI_CODE_HOME: home }, windowsHide: true }).catch(error => error)
@@ -119,6 +120,23 @@ test('explicit Scope supplies context and captures without an absolute workspace
     assert.equal(f.captures.at(-1).scope_id, 'scope-test')
   }
   assert.equal(f.captures.length, 3)
+})
+
+test('Scope script resolves explicit Scope without a workspace but binding operations still require one', async t => {
+  const explicit = await fixture(t)
+  for (const cwd of [null, 'relative/workspace']) {
+    const result = await explicit.scope('resolve', undefined, cwd)
+    assert.equal(result.status, 'resolved')
+    assert.equal(result.scope_id, 'scope-test')
+  }
+  assert.equal((await explicit.scope('bind', 'scope-target', null)).code, 'workspace_required')
+  assert.equal((await explicit.scope('unbind', undefined, 'relative/workspace')).code, 'workspace_required')
+  assert.ok(explicit.requests.every(item => item.path === '/v1/scope-bindings/resolve'))
+  const workspace = await fixture(t, {}, { scope_id: null })
+  for (const cwd of [null, 'relative/workspace']) {
+    assert.equal((await workspace.scope('resolve', undefined, cwd)).code, 'workspace_required')
+  }
+  assert.deepEqual(workspace.requests, [])
 })
 
 test('disabled capture still supplies context', async t => {
@@ -382,7 +400,9 @@ test('workspace bindings route Hooks and doctor while explicit Scope still overr
     assert.equal((await f.status('session-test', cwd)).scope_id, scopeId)
     assert.equal((await f.doctor(cwd)).checks.scope.checks.scope_id, scopeId)
   }
-  const alias = join(f.workspace, '..', 'workspace-alias')
+  const aliasParent = join(f.workspace, '..', 'alias-parent')
+  await mkdir(aliasParent)
+  const alias = join(aliasParent, 'workspace-alias')
   await symlink(f.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir')
   const variants = [alias, ...(process.platform === 'win32' ? [f.workspace.toLowerCase(), f.workspace.toUpperCase()] : [])]
   for (const cwd of variants) {
@@ -392,6 +412,23 @@ test('workspace bindings route Hooks and doctor while explicit Scope still overr
     assert.equal(f.captures.at(-1).scope_id, 'scope-first')
     assert.equal((await f.doctor(cwd)).checks.scope.checks.scope_id, 'scope-first')
   }
+  const lexical = join(aliasParent, 'workspace')
+  await mkdir(lexical)
+  await f.scope('bind', 'scope-parent', lexical)
+  const compound = alias + '/../workspace'
+  const expected = process.platform === 'win32' ? 'scope-parent' : 'scope-first'
+  const untouched = process.platform === 'win32' ? f.workspace : lexical
+  const untouchedScope = process.platform === 'win32' ? 'scope-first' : 'scope-parent'
+  assert.equal((await f.scope('resolve', undefined, compound)).scope_id, expected)
+  assert.equal((await f.doctor(compound)).checks.scope.checks.scope_id, expected)
+  const hook = await f.invoke({ cwd: compound, hook_event_name: 'UserPromptSubmit', prompt })
+  assert.match(hook.output.message, new RegExp(expected))
+  assert.equal(f.captures.at(-1).scope_id, expected)
+  assert.equal((await f.scope('bind', 'scope-compound', compound)).scope_id, 'scope-compound')
+  assert.equal((await f.scope('resolve', undefined, untouched)).scope_id, untouchedScope)
+  assert.equal((await f.scope('unbind', undefined, compound)).binding.status, 'cleared')
+  assert.equal((await f.scope('resolve', undefined, compound)).scope_id, 'scope-default')
+  assert.equal((await f.scope('resolve', undefined, untouched)).scope_id, untouchedScope)
   assert.equal((await f.scope('bind', 'scope-alias', alias)).binding.status, 'saved')
   assert.equal((await f.scope('resolve')).scope_id, 'scope-alias')
   assert.equal((await f.scope('unbind', undefined, alias)).binding.status, 'cleared')
