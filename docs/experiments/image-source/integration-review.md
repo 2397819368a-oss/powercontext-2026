@@ -5,7 +5,7 @@ description: 草稿 PR 的实现范围、Atomic Memory 适配、真实验收证�
 
 # 图片功能整合审查与验收结论
 
-本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master 75481152ddd97f2de34607ede8297069334eb20e。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
+本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master fe50f89406153121883d278c7fe89ea272cd894b。草稿用于讨论图片 Source 和 Codex 采集实现，完整真实验收与最终复审尚未完成，不作为合并就绪结论。
 
 ## 当前实现
 
@@ -19,7 +19,7 @@ description: 草稿 PR 的实现范围、Atomic Memory 适配、真实验收证�
 
 Rebase 解决了 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access 与 OpenAPI 冲突。已有 HTTP 路径与 schema 保持原样，七个图片操作及类型重新生成 Python/JS 契约。
 
-当前契约保留主干新增的召回通道权重和 score 约束。Desktop 的操作摘要及类型由合并后的 OpenAPI 重新生成；原有图片接口和此前的 Memory 并发审计、MiniCPM 适配修复均保留。
+当前契约包含召回通道权重、score 约束、启动上下文、Working Note 和统一 Candidate。图片采集与 Codex 启动上下文共用正常会话入口，原图和不可读解析仍不能进入生成流程，Working Note 的资格限制保持生效。Dashboard 保留审核页、Scope 读取和历史版本，并支持 Memory 精确图片证据链接。Desktop 的操作摘要及类型由合并后的 OpenAPI 生成；Memory 延迟审计使用主干实现，MiniCPM 适配保留。
 
 - 补齐 Interrupt Hook 集成清单。
 - 按授权时间恢复停机期间的新会话，保留已经登记的读取游标。
@@ -35,6 +35,8 @@ Rebase 解决了 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access �
 
 | 验证 | 实际结果 |
 | --- | --- |
+| 当前主干集成本地检查 | 图片/API/Access 集合首轮 539 通过、12 跳过；主干兼容集合首轮 311 通过。回执写入及审计注入修复后，失败项与宿主链路集中复核 52 项全部通过；详细命令与首次失败见实施记录 |
+| 当前 Desktop / DSH | Desktop lint、32 项 UI 测试和 build 通过；DSH build、427 项单元测试（1 跳过）及 9 项 E2E 通过 |
 | 受影响图片、Codex、契约、Dashboard、处理流程测试 | 292 项通过；与其他集合有重叠，不相加宣称独立总数 |
 | provider 与配置向导 | 51 项通过 |
 | watcher、生命周期与诊断回归 | 29 项通过；停止超时使用受控子进程行为模型 |

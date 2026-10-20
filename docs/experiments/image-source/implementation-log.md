@@ -5,6 +5,26 @@ description: 按阶段记录目标、实际变更、验证证据、限制和后�
 
 # 图片 Source 实验功能实施过程记录
 
+## 2026-10-20：PR #1956 主干集成
+
+本轮目标是将现有 PR rebase 到 `fe50f8940`，解决冲突、验证图片与主干接入行为，并以精确 lease 更新同一 Draft PR。原实验 worktree 有未提交文档，保留在原处；本轮使用独立 worktree `D:/code/git-project/powermem/pr-1956-rebase` 和分支 `codex/rebase-pr-1956-20261020`，远端起点为 `21df99c841b154975e838fff6618a91c8c191350`。不操作已有服务、私有数据库或模型配置。
+
+已完成 11 个提交的重放。保留主干启动上下文及回执、Working Note 资格限制、Atomic Artifact 搜索、Dream 契约和 Dashboard 审核/历史/Scope 读取；将图片采集、可读解析证据及原图链接接入对应流程。Python/JS/Desktop 契约从合并后的 OpenAPI 生成，DSH 使用官方构建重建。保留主干较新的 ZCode Skill pin 和已合入的 Memory 延迟审计实现；锁文件补齐 images extra 继承的 `jieba`。
+
+首轮图片 Dashboard 与契约检查通过；Codex 启动上下文测试遇到 Windows 临时路径长度限制，后续使用隔离 worktree 内较短的 pytest 临时目录运行。短路径下定位到主干回执写入在 `os.replace` 时仍持有临时文件句柄；直接执行主干文件复现 WinError 32。Codex 和 Claude Code 的相同实现改为先完成 fsync 并关闭句柄，再原子替换，锁、回执内容及权限保持生效。故障输出测试仅容忍关闭故意破坏的 Windows pipe 时再次 flush 产生的清理错误，保留回执删除和重试断言。增加同时开启图片采集与启动上下文的回归，验证上下文注入和首次查询回执继续有效。
+
+Memory 并发审计回归接入主干实际使用的 `_decision_snapshot`，仍在读快照后插入真实独立提交，并检查创建/替换、回读、审计及过期 ETag 拒绝。原注入点已不再进入原生授权流程，未删除 `interleaved` 断言。
+
+本机 Windows / Python 3.14 验证结果（集合有重叠，不相加）：
+
+- 图片、Codex、API 契约、Access 和 Dashboard 联合集合执行 `uv run --no-sync python -m pytest -n 2 -q --basetemp .powercontext/t1`，首轮 539 通过、12 跳过、11 失败。失败包括上述回执问题、两条失效的审计注入，以及一条并行负载下的超时上界断言。
+- Working Note、Topic Memory、启动上下文、Dream 审核、Dashboard、向导、guidance 与 ZCode 联合集合使用同一命令及独立 `t2` 目录，311 通过、2 失败；两条失败为实际宿主 Hook 子进程的回执写入。
+- 修复后集中复核 Codex/Claude Code 启动上下文、实际子进程 Hook 链路、并发审计与超时上界，使用两 worker 和独立 `t8` 目录，52 项全部通过。超时用例的预算与断言未修改。
+- Desktop `pnpm --dir desktop lint`、`test`、`build` 通过，32 项 UI 测试通过；DSH 官方 build、427 项单元测试（1 跳过）及 9 项 E2E 通过。
+- API/JS/Desktop 与 Dify 契约生成检查、集成能力文档、ZCode pin、根和 harness 锁文件检查通过。Ruff、格式检查、Linux 目标 `ty check` 通过。完整 `prek run -a` 的非类型检查通过；Windows 全库 ty 仍报告未修改的 POSIX 原生索引相关诊断，不宣称全平台类型检查通过。
+
+上述模型均为受控 provider；实际子进程 Hook 链路不等于真实 Codex/Claude Code 客户端或私有模型验收。保持 Draft，真实 Atomic Memory/新桌面召回、配对恢复及最终完整复审继续按原验收清单推进。本次推送只使用远端原 head 的精确 lease，新 head 的 GitHub CI 独立核查。
+
 本记录用于继续开发和检查实验进度。每次 AI Coding 在开始时登记目标，在完成或中断前补齐实际结果。功能范围与阶段验收以 [建设指南](README.md) 为准；这里保留执行历史，不替代当前数据和操作契约。
 
 ## 当前工作状态

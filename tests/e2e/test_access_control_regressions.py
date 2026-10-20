@@ -67,7 +67,7 @@ def test_atomic_foundational_write_survives_a_commit_during_authorization(tmp_pa
                     json={"family": "atomic-memory", "content": {"kind": "fact", "text": "Before revision"}},
                 )
                 assert original.status_code == 201, original.text
-            snapshot = RelationalAccessRepository.decision_snapshot
+            snapshot = RelationalAccessRepository._decision_snapshot
             interleaved = False
 
             async def commit_after_snapshot(repository, *args, **kwargs):
@@ -94,7 +94,7 @@ def test_atomic_foundational_write_survives_a_commit_during_authorization(tmp_pa
                     )
                 return state
 
-            monkeypatch.setattr(RelationalAccessRepository, "decision_snapshot", commit_after_snapshot)
+            monkeypatch.setattr(RelationalAccessRepository, "_decision_snapshot", commit_after_snapshot)
             content = {"kind": "fact", "text": "Accepted revision"}
             if original is None:
                 result = await client.post(collection, json={"family": "atomic-memory", "content": content})

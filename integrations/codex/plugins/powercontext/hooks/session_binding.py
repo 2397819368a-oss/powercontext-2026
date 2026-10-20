@@ -92,7 +92,7 @@ class _HttpStatusError(RuntimeError):
         super().__init__(f"PowerContext returned HTTP {status}")
 
 
-def main(settings: CodexPluginSettings | None = None) -> int:
+def main(settings: CodexPluginSettings | None = None) -> int:  # noqa: C901 - Keep the session startup lifecycle together.
     try:
         payload = cast(dict[str, Any], json.load(sys.stdin))
         session_id = payload.get("session_id")

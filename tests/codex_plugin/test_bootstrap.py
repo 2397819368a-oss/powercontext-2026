@@ -109,13 +109,19 @@ def test_session_start_without_lifecycle_still_persists_session_binding(
     assert output.getvalue() == ""
 
 
+@pytest.mark.parametrize("capture_images", [False, True])
 def test_session_start_marks_delivery_before_injecting_and_first_query_sends_receipt(
     session_binding_module: ModuleType,
     recall_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capture_images: bool,
 ) -> None:
     requests: list[tuple[str, dict[str, object]]] = []
+    watcher_started = Event()
+    watcher = ModuleType("image_desktop_watch")
+    monkeypatch.setattr(watcher, "launch_watch", watcher_started.set, raising=False)
+    monkeypatch.setitem(sys.modules, "image_desktop_watch", watcher)
 
     def post(path, payload, **_kwargs):
         requests.append((path, payload))
@@ -140,9 +146,10 @@ def test_session_start_marks_delivery_before_injecting_and_first_query_sends_rec
     )
     output = io.StringIO()
     monkeypatch.setattr(sys, "stdout", output)
-    settings = session_binding_module.CodexPluginSettings(bootstrap_context=True)
+    settings = session_binding_module.CodexPluginSettings(bootstrap_context=True, capture_images=capture_images)
 
     assert session_binding_module.main(settings) == 0
+    assert watcher_started.is_set() is capture_images
     assert json.loads(output.getvalue()) == {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

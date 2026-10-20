@@ -816,7 +816,6 @@ from powercontext.server.atomic_memory import record_response as atomic_record_r
 from powercontext.server.authentication import AuthenticationProvider
 from powercontext.server.authz import (
     AccessAction,
-    AccessAuditContext,
     AccessAuditEvent,
     AccessBinding,
     AccessBindingNotFoundError,
