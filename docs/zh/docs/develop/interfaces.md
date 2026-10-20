@@ -275,6 +275,11 @@ Scalar reference 仍可公开访问，但其中描述的 operation 继续遵守�
 面向 Agent 的 Source 采集、Memory 维护、工作连续性、scope Handoff Report 查询和 Candidate Review 精选子集。六个
 Candidate Review operation 通过 HTTP 和 MCP 使用相同的 validation、`expected_version` 并发校验和 approval transaction。Experience/Skill generation、
 exact read、external Registry operation 和低阶 proposal operation 仍只通过 HTTP 提供。
+
+MCP 使用无状态 Streamable HTTP，不签发 MCP 会话 ID。启用认证时，每个请求均使用自身经过验证的身份和当前
+组成员关系。Scope、Memory 和 Handoff 仍持久化在 Runtime 中。升级后请重新连接 MCP 客户端；不提供跨请求的
+SSE 流恢复。
+
 所有检查通过时 readiness 为 HTTP 200 的 `ready`；只有已配置的推理检查失败时为 HTTP 200 的 `degraded`；
 Runtime 或数据库失败时为 HTTP 503 的 `not_ready`。依赖检查使用 `ready`、`unavailable`、`timeout` 或
 `misconfigured`；有意不绑定 Runtime 时，`runtime` 检查使用 `not_ready`。
