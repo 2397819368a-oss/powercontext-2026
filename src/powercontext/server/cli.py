@@ -70,6 +70,7 @@ from powercontext.server.worker_tracing import WorkerTracing
 
 if TYPE_CHECKING:
     from powercontext.builtin.persistence.migrations.atomic_memory_references import CandidateDecision
+    from powercontext.builtin.persistence.migrations.atomic_memory_v1 import OwnerDecision
 
 HELP_OPTION_NAMES = ("-h", "--help")
 
@@ -216,22 +217,36 @@ def atomic_memory_migrate(
         Path | None,
         typer.Option(help="JSON decisions replacing Candidate evidence that cited only whole Memory collections."),
     ] = None,
+    owner_decisions: Annotated[
+        Path | None,
+        typer.Option(help="JSON attestations establishing Owners for ownerless legacy Memory entries."),
+    ] = None,
 ) -> None:
     """Archive Memory v1, convert its history and references to Atomic Memory, and remove it from public tables."""
 
     from powercontext.builtin.persistence.migrations.atomic_memory_references import load_decisions
+    from powercontext.builtin.persistence.migrations.atomic_memory_v1 import load_owner_decisions
 
     if action == "apply" and not maintenance_confirmed:
         raise typer.BadParameter("apply requires --maintenance-confirmed after stopping every old writer")  # noqa: TRY003
     try:
         loaded = {} if decisions is None else load_decisions(json.loads(decisions.read_text(encoding="utf-8")))
+        loaded_owners = (
+            {}
+            if owner_decisions is None
+            else load_owner_decisions(json.loads(owner_decisions.read_text(encoding="utf-8")))
+        )
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise typer.BadParameter(f"invalid decision file: {error}") from error  # noqa: TRY003
     with server_settings_context(env_file=env_file) as settings:
         try:
             ready = asyncio.run(
                 _atomic_memory_maintenance(
-                    settings, action, maintenance_confirmed=maintenance_confirmed, decisions=loaded
+                    settings,
+                    action,
+                    maintenance_confirmed=maintenance_confirmed,
+                    decisions=loaded,
+                    owner_decisions=loaded_owners,
                 )
             )
         except OperationalError as error:
@@ -277,6 +292,7 @@ async def _atomic_memory_maintenance(
     maintenance_confirmed: bool,
     batch_size: int = 100,
     decisions: dict[tuple[str, str, int], CandidateDecision] | None = None,
+    owner_decisions: dict[tuple[str, str, str], OwnerDecision] | None = None,
 ) -> bool:
     from powercontext.builtin.artifacts.memory import EmbeddingProfile
 
@@ -332,6 +348,8 @@ async def _atomic_memory_maintenance(
                     maintenance_confirmed=maintenance_confirmed,
                     embedding_model=embedding_model,
                     decisions=decisions,
+                    owner_decisions=owner_decisions,
+                    require_owners=settings.access.mode == "enforced",
                 )
         else:
             from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
@@ -341,9 +359,20 @@ async def _atomic_memory_maintenance(
 
             async with profile.database.transaction() as connection:
                 report = (
-                    await plan_atomic_memory_migration(connection, index=index, decisions=decisions)
+                    await plan_atomic_memory_migration(
+                        connection,
+                        index=index,
+                        decisions=decisions,
+                        owner_decisions=owner_decisions,
+                        require_owners=settings.access.mode == "enforced",
+                    )
                     if action == "plan"
-                    else await verify_atomic_memory_migration(connection, index=index)
+                    else await verify_atomic_memory_migration(
+                        connection,
+                        index=index,
+                        owner_decisions=owner_decisions,
+                        require_owners=settings.access.mode == "enforced",
+                    )
                 )
         typer.echo(report.model_dump_json())
         return report.ready if action != "plan" else not report.errors

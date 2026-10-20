@@ -94,8 +94,11 @@ from powercontext.builtin.persistence.migrations.atomic_memory_references import
     remove_legacy_collections,
     residual_issues,
 )
+from powercontext.server.authz import ArtifactOwnerRelation, PrincipalRef, ResourceRef
+from powercontext.server.authz.repository import RelationalAccessRepository
 
 MIGRATION_ID = "powercontext.memory.v1-to-atomic-memory.v1"
+OWNER_DECISIONS_FORMAT = "powercontext.atomic-memory-owner-decisions.v1"
 _FAMILY = "atomic-memory"
 _PROJECTION_FORMAT = "powercontext.atomic-memory.current.v1"
 _ENTRY_HASH_DOMAIN = b"powercontext:entry-content:v1\0"
@@ -108,6 +111,50 @@ class AtomicMemoryMigrationReport(BaseModel):
     counts: dict[str, int] = Field(default_factory=dict)
     errors: tuple[str, ...] = ()
     processing_snapshot_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class OwnerDecision:
+    """An operator-attested Owner for one ownerless legacy entry."""
+
+    scope_id: str
+    memory_id: str
+    entry_id: str
+    owner: PrincipalRef
+    idempotency_key: str
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.scope_id, self.memory_id, self.entry_id)
+
+
+def load_owner_decisions(payload: Mapping[str, Any]) -> dict[tuple[str, str, str], OwnerDecision]:
+    """Validate exact owner recovery attestations without inferring identity."""
+
+    if payload.get("format") != OWNER_DECISIONS_FORMAT or not isinstance(payload.get("decisions"), list):
+        raise ValueError(f"owner decision file must use format {OWNER_DECISIONS_FORMAT}")  # noqa: TRY003
+    result: dict[tuple[str, str, str], OwnerDecision] = {}
+    for item in payload["decisions"]:
+        fields = {"scope_id", "memory_id", "entry_id", "action", "owner", "idempotency_key"}
+        if not isinstance(item, dict) or set(item) != fields or item.get("action") != "establish":
+            raise ValueError("owner decisions support only the establish action")  # noqa: TRY003
+        owner = item.get("owner")
+        if not isinstance(owner, dict) or not {"type", "id"} <= set(owner) <= {"type", "id", "description"}:
+            raise ValueError("owner must contain type, id and optional description")  # noqa: TRY003
+        for name, maximum in (("scope_id", 256), ("memory_id", 128), ("entry_id", 128), ("idempotency_key", 255)):
+            if not isinstance(item[name], str) or not item[name].strip() or len(item[name]) > maximum:
+                raise ValueError(f"owner decision has invalid {name}")  # noqa: TRY003
+        decision = OwnerDecision(
+            scope_id=item["scope_id"],
+            memory_id=item["memory_id"],
+            entry_id=item["entry_id"],
+            owner=PrincipalRef(type=owner["type"], id=owner["id"], description=owner.get("description")),
+            idempotency_key=item["idempotency_key"],
+        )
+        if decision.key in result:
+            raise ValueError(f"invalid or duplicate owner decision for {decision.key}")  # noqa: TRY003
+        result[decision.key] = decision
+    return result
 
 
 class _FrozenValue(BaseModel):
@@ -836,6 +883,79 @@ async def _validate_mapped_owner(connection: AsyncConnection, entry: _Entry) -> 
     )
 
 
+async def _owner_decision_status(
+    connection: AsyncConnection,
+    inventory: _Inventory,
+    decisions: Mapping[tuple[str, str, str], OwnerDecision],
+    *,
+    require_owners: bool,
+) -> tuple[dict[str, int], tuple[str, ...]]:
+    entries = {(entry.scope_id, entry.memory_id, entry.entry_id): entry for entry in inventory.entries}
+    errors: list[str] = []
+    pending = completed = 0
+    if inventory.errors:
+        return {
+            "owner_decisions": len(decisions),
+            "pending_owner_repairs": 0,
+            "completed_owner_repairs": 0,
+        }, ()
+    for key, decision in decisions.items():
+        entry = entries.get(key)
+        if entry is None:
+            errors.append(f"owner decision targets unknown legacy entry {'/'.join(key)}")
+            continue
+        if entry.owners:
+            errors.append(f"{'/'.join(key)}: entry already has a formal Owner; remove the owner decision")
+            continue
+        mapped = await _rows(
+            connection,
+            "pc_access_owners",
+            _OWNER_COLUMNS,
+            "WHERE owner_kind = 'artifact' AND object_key_hash = :key",
+            key=_digest(_resource_key(entry.scope_id, _FAMILY, entry.artifact_id)),
+        )
+        if not mapped:
+            pending += 1
+        elif len(mapped) == 1 and (mapped[0]["owner_type"], mapped[0]["owner_id"], mapped[0]["idempotency_key"]) == (
+            decision.owner.type,
+            decision.owner.id,
+            decision.idempotency_key,
+        ):
+            completed += 1
+        else:
+            errors.append(f"{'/'.join(key)}: mapped Owner conflicts with the owner decision")
+    for key, entry in entries.items():
+        if require_owners and not entry.owners and key not in decisions:
+            mapped = await _rows(
+                connection,
+                "pc_access_owners",
+                _OWNER_COLUMNS,
+                "WHERE owner_kind = 'artifact' AND object_key_hash = :key",
+                key=_digest(_resource_key(entry.scope_id, _FAMILY, entry.artifact_id)),
+            )
+            if len(mapped) != 1 or not mapped[0]["owner_type"] or not mapped[0]["owner_id"]:
+                errors.append(f"{'/'.join(key)}: enforced access requires an explicit owner decision")
+    return {
+        "owner_decisions": len(decisions),
+        "pending_owner_repairs": pending,
+        "completed_owner_repairs": completed,
+    }, tuple(errors)
+
+
+async def _establish_owner_decision(
+    database: AsyncDatabase, connection: AsyncConnection, entry: _Entry, decision: OwnerDecision
+) -> None:
+    await RelationalAccessRepository(database, connection=connection).establish_artifact_owner(
+        ArtifactOwnerRelation(
+            resource=ResourceRef.artifact(entry.scope_id, family=_FAMILY, artifact_id=entry.artifact_id),
+            owner=decision.owner,
+            established_at=datetime.now(UTC),
+            policy_revision="pending",
+            idempotency_key=decision.idempotency_key,
+        )
+    )
+
+
 async def _validate_legacy_bindings(
     connection: AsyncConnection, key: tuple[str, str], bindings: tuple[dict[str, Any], ...], entry_ids: set[str]
 ) -> None:
@@ -870,6 +990,8 @@ async def plan_atomic_memory_migration(
     *,
     index: AtomicMemoryIndex | None = None,
     decisions: Mapping[tuple[str, str, int], CandidateDecision] | None = None,
+    owner_decisions: Mapping[tuple[str, str, str], OwnerDecision] | None = None,
+    require_owners: bool = False,
 ) -> AtomicMemoryMigrationReport:
     """Scan every legacy container, entry version and legacy reference without changing data."""
 
@@ -878,6 +1000,9 @@ async def plan_atomic_memory_migration(
     except AtomicMemoryMigrationError as error:
         return AtomicMemoryMigrationReport(action="plan", errors=error.errors)
     inventory = await _inventory(connection)
+    owner_counts, owner_errors = await _owner_decision_status(
+        connection, inventory, owner_decisions or {}, require_owners=require_owners
+    )
     tables = await _tables(connection)
     pending = 0
     for entry in inventory.entries:
@@ -897,14 +1022,19 @@ async def plan_atomic_memory_migration(
             dict(inventory.collections), dict(decisions or {}), connection=connection
         )
     verification = await verify_atomic_memory_migration(connection, index=index) if pending == 0 else None
-    errors = (inventory.errors + schema_errors if verification is None else verification.errors) + reference_errors
+    errors = (
+        (inventory.errors + schema_errors if verification is None else verification.errors)
+        + reference_errors
+        + owner_errors
+    )
     return AtomicMemoryMigrationReport(
         action="plan",
-        ready=verification is not None and verification.ready and not reference_errors,
+        ready=verification is not None and verification.ready and not reference_errors and not owner_errors,
         counts={
             **inventory.counts,
             **({} if verification is None else verification.counts),
             **{f"reference_{name}": value for name, value in reference_counts.items()},
+            **owner_counts,
             "pending_entries": pending,
         },
         errors=tuple(dict.fromkeys(errors)),
@@ -1205,6 +1335,8 @@ async def apply_atomic_memory_migration(  # noqa: C901 - One ordered offline mai
     maintenance_confirmed: bool,
     embedding_model: Any = None,
     decisions: Mapping[tuple[str, str, int], CandidateDecision] | None = None,
+    owner_decisions: Mapping[tuple[str, str, str], OwnerDecision] | None = None,
+    require_owners: bool = False,
 ) -> AtomicMemoryMigrationReport:
     """Archive, import, convert references, then remove legacy collections and citation columns from public tables."""
 
@@ -1215,16 +1347,19 @@ async def apply_atomic_memory_migration(  # noqa: C901 - One ordered offline mai
         await ensure_supported_atomic_memory_schema(connection)
     async with database.transaction() as connection:
         inventory = await _inventory(connection)
+        owner_counts, owner_errors = await _owner_decision_status(
+            connection, inventory, owner_decisions or {}, require_owners=require_owners
+        )
         reference_errors: tuple[str, ...] = ()
         if not inventory.errors:
             _counts, reference_errors = await convert_references(
                 dict(inventory.collections), dict(decisions or {}), connection=connection
             )
-    if inventory.errors or reference_errors:
+    if inventory.errors or reference_errors or owner_errors:
         return AtomicMemoryMigrationReport(
             action="apply",
-            errors=inventory.errors + reference_errors,
-            counts=inventory.counts,
+            errors=inventory.errors + reference_errors + owner_errors,
+            counts={**inventory.counts, **owner_counts},
             processing_snapshot_hash=inventory.processing_snapshot_hash,
         )
     async with database.transaction() as connection:
@@ -1272,6 +1407,9 @@ async def apply_atomic_memory_migration(  # noqa: C901 - One ordered offline mai
             ):
                 raise AtomicMemoryMigrationError(("legacy collection head changed during maintenance",))
             imported_entry = await _import_entry(connection, entry)
+            owner_decision = (owner_decisions or {}).get((entry.scope_id, entry.memory_id, entry.entry_id))
+            if owner_decision is not None:
+                await _establish_owner_decision(database, connection, entry, owner_decision)
             migrated_grant_receipts += await _migrate_grant_receipts(connection, entry)
             if not imported_entry:
                 continue
@@ -1343,6 +1481,10 @@ async def apply_atomic_memory_migration(  # noqa: C901 - One ordered offline mai
             "counts": {
                 **report.counts,
                 **{f"reference_{name}": value for name, value in reference_counts.items()},
+                **owner_counts,
+                "pending_owner_repairs": 0,
+                "completed_owner_repairs": owner_counts["completed_owner_repairs"]
+                + owner_counts["pending_owner_repairs"],
                 "archived_collections": archived,
                 "removed_collections": removed,
                 "imported_entries": imported,
@@ -1358,10 +1500,25 @@ async def verify_atomic_memory_migration(
     *,
     index: AtomicMemoryIndex | None = None,
     thorough: bool = True,
+    owner_decisions: Mapping[tuple[str, str, str], OwnerDecision] | None = None,
+    require_owners: bool = False,
 ) -> AtomicMemoryMigrationReport:
     """Prove import, reference conversion and removal plus current consistency; never reset a post-upgrade head."""
 
-    return await _verify_atomic_memory_migration(connection, index=index, check_projection=True, thorough=thorough)
+    report = await _verify_atomic_memory_migration(connection, index=index, check_projection=True, thorough=thorough)
+    if not owner_decisions and not require_owners:
+        return report
+    inventory = await _inventory(connection)
+    owner_counts, owner_errors = await _owner_decision_status(
+        connection, inventory, owner_decisions or {}, require_owners=require_owners
+    )
+    return report.model_copy(
+        update={
+            "ready": report.ready and not owner_errors,
+            "counts": {**report.counts, **owner_counts},
+            "errors": tuple(dict.fromkeys(report.errors + owner_errors)),
+        }
+    )
 
 
 async def verify_atomic_memory_migration_authority(connection: AsyncConnection) -> AtomicMemoryMigrationReport:
@@ -1534,10 +1691,13 @@ async def _verify_atomic_memory_migration(  # noqa: C901 - One frozen import ver
 
 __all__ = [
     "MIGRATION_ID",
+    "OWNER_DECISIONS_FORMAT",
     "AtomicMemoryMigrationError",
     "AtomicMemoryMigrationReport",
+    "OwnerDecision",
     "apply_atomic_memory_migration",
     "assert_atomic_memory_migration_ready",
+    "load_owner_decisions",
     "plan_atomic_memory_migration",
     "verify_atomic_memory_migration",
     "verify_atomic_memory_migration_authority",

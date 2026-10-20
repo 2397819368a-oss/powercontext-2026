@@ -63,6 +63,35 @@ entry 迁移后同样没有 Owner。同一 entry 有多个 Owner 或 Owner 不�
 共享按精确 entry 资源转换，保留原 binding_id、主体、角色、有效期、撤销信息、授权来源和幂等字段。
 不带 entry selector 的旧 Memory 授权不是当前支持的共享格式，会明确阻断。
 
+启用强制鉴权时，每个没有 Owner 的旧 entry 都必须通过 `--owner-decisions` 提供操作者的明确证明。
+迁移不会从集合 Owner、授权关系或执行维护命令的调用者猜测身份。每条决策精确指定一个
+`(scope_id, memory_id, entry_id)`，以及迁移后 Atomic Memory 的用户或服务 Owner：
+
+```json
+{
+  "format": "powercontext.atomic-memory-owner-decisions.v1",
+  "decisions": [
+    {
+      "scope_id": "team-a",
+      "memory_id": "legacy-memory",
+      "entry_id": "entry-1",
+      "action": "establish",
+      "owner": {"type": "user", "id": "alice"},
+      "idempotency_key": "recover-owner:team-a:legacy-memory:entry-1"
+    }
+  ]
+}
+```
+
+```shell
+powercontext server atomic-memory-migrate --action plan --env-file .env --owner-decisions owners.json
+powercontext server atomic-memory-migrate --action apply --env-file .env --maintenance-confirmed --owner-decisions owners.json
+powercontext server atomic-memory-migrate --action verify --env-file .env --owner-decisions owners.json
+```
+
+未知 entry、重复决策、已有正式旧 Owner 的 entry，以及与已映射 Owner 冲突的决策都会被拒绝。
+中断后可重复使用同一文件：已建立的 Owner 必须同时匹配 principal 与幂等键。应将决策文件与维护审计记录一同保存。
+
 创建授权的幂等回执包含资源身份，迁移时会核对原请求摘要，并将其转换为新身份对应的摘要。
 原请求使用相同幂等键重试时仍返回同一条授权；更换主体、角色、有效期、理由或资源会继续报冲突。
 撤销和替换授权的回执不含资源身份，保持原值。回执缺失、关联不符或摘要无法核实时会阻断迁移。
