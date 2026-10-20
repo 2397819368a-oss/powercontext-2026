@@ -26,9 +26,10 @@ from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryCont
 from powercontext.builtin.artifacts.memory.prompts import MemoryExtractionProfile
 from powercontext.builtin.inference import InvalidInferenceOutputError, StructuredGenerator, TokenEstimator
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
-from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, SourceObservation, SourceRef, TextEvidence
+from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, Source, SourceObservation, SourceRef, TextEvidence
 
 _JSON = TypeAdapter(JsonValue)
+_TEXT_EVIDENCE_KEY = TEXT_EVIDENCE_PROJECTION_KEY.model_dump(mode="json")
 
 if TYPE_CHECKING:
     from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
@@ -129,6 +130,49 @@ class AtomicMemoryGenerationPipeline:
         return output.candidates
 
 
+def _duplicates_body(value: JsonValue, body: JsonValue) -> bool:
+    """Whether a metadata value is exactly the evidential body text."""
+
+    return isinstance(body, str) and value == body
+
+
+def _is_text_evidence_projection(projection: JsonValue) -> bool:
+    return isinstance(projection, dict) and projection.get("key") == _TEXT_EVIDENCE_KEY
+
+
+def _compact_source_metadata(value: Source, *, body: JsonValue, body_from_text_projection: bool) -> JsonValue:
+    """Keep provenance without re-sending a body that ``content`` already carries.
+
+    Only carriers whose value equals the body are dropped; every other field, including
+    ``payload.metadata`` and unrelated projections, is kept.
+    """
+
+    dumped = value.model_dump(mode="json", by_alias=True)
+    body_text = body.get("content") if isinstance(body, dict) else None
+
+    if _duplicates_body(dumped.get("content"), body_text):
+        dumped.pop("content", None)
+    if _duplicates_body(dumped.get("wire_content"), body_text):
+        dumped.pop("wire_content", None)
+        dumped.pop("wire_content_present", None)
+
+    if isinstance(value, SourceObservation):
+        payload = dumped.get("payload")
+        if body_from_text_projection:
+            if isinstance(payload, dict) and _duplicates_body(payload.get("content"), body_text):
+                dumped["payload"] = {key: item for key, item in payload.items() if key != "content"}
+            projections = dumped.get("projections")
+            if isinstance(projections, list):
+                remaining = [item for item in projections if not _is_text_evidence_projection(item)]
+                if remaining:
+                    dumped["projections"] = remaining
+                else:
+                    dumped.pop("projections", None)
+        elif payload == body:
+            dumped.pop("payload", None)
+    return _JSON.validate_python(dumped)
+
+
 async def project_atomic_memory_evidence(
     stored: StoredSource,
     sources: SourceRepository,
@@ -139,23 +183,26 @@ async def project_atomic_memory_evidence(
     """Expose source-provided dates in content/metadata without synthesizing time."""
 
     value = stored.value
+    body_from_text_projection = False
     if isinstance(value, SourceObservation):
         content = value.payload
         for projection in value.projections:
             if projection.key == TEXT_EVIDENCE_PROJECTION_KEY:
                 content = TextEvidence.model_validate(projection.value).model_dump(mode="json")
+                body_from_text_projection = True
                 break
     else:
         materialized = await sources.read_value(value)
         content = (
             materialized.model_dump(mode="json", by_alias=True) if isinstance(materialized, BaseModel) else materialized
         )
+    body = _JSON.validate_python(content)
     return AtomicMemoryEvidence(
         evidence_id=evidence_id,
         source_ref=stored.ref,
         journal_position=stored.journal_position,
-        content=_JSON.validate_python(content),
-        source_metadata=_JSON.validate_python(value.model_dump(mode="json", by_alias=True)),
+        content=body,
+        source_metadata=_compact_source_metadata(value, body=body, body_from_text_projection=body_from_text_projection),
         via_artifact=via_artifact,
     )
 
