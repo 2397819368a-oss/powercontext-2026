@@ -19,6 +19,7 @@ import type {
   DesktopState,
   AtomicMemoryDetail,
   ArtifactReference,
+  AtomicMemoryRecord,
   MemorySearchHit,
   WriteOutcome,
 } from "../generated/ipc";
@@ -35,7 +36,16 @@ type Props = {
 };
 export const textBytes = (value: string) =>
   new TextEncoder().encode(value).length;
-export function NoteForm({ state, language, onState, onDirty }: Props) {
+type NoteFormProps = Props & {
+  onReadSaved: (artifact: ArtifactReference) => void;
+};
+export function NoteForm({
+  state,
+  language,
+  onState,
+  onDirty,
+  onReadSaved,
+}: NoteFormProps) {
   const t = memoryMessages[language];
   const active = state?.active;
   const profile = state?.profiles.find((p) => p.id === active?.connectionId);
@@ -43,6 +53,7 @@ export function NoteForm({ state, language, onState, onDirty }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [outcome, setOutcome] = useState<WriteOutcome | null>(null);
+  const [saved, setSaved] = useState<AtomicMemoryRecord[]>([]);
   const submitting = useRef(false);
   const composing = useRef(false);
   const lifetime = useRef(0);
@@ -54,6 +65,7 @@ export function NoteForm({ state, language, onState, onDirty }: Props) {
     setText("");
     setError(null);
     setOutcome(null);
+    setSaved([]);
     onDirty(false);
     submitting.current = false;
     setBusy(false);
@@ -81,11 +93,14 @@ export function NoteForm({ state, language, onState, onDirty }: Props) {
     setBusy(true);
     setError(null);
     setOutcome(null);
+    setSaved([]);
     try {
       const result = await desktopApi.remember(original, text);
       if (isCurrent()) {
         setOutcome(result);
         if (result.record.status === "succeeded") {
+          // Zero, one, or multiple returned records: represent each honestly.
+          setSaved(result.result?.records ?? []);
           setText("");
           onDirty(false);
         }
@@ -154,16 +169,52 @@ export function NoteForm({ state, language, onState, onDirty }: Props) {
           {t.failed} {connectionError(error, language)}
         </p>
       )}
-      {outcome && (
-        <p role={outcome.record.status === "succeeded" ? "status" : "alert"}>
-          {outcome.record.status === "succeeded"
-            ? outcome.result?.records.length
-              ? t.success
-              : t.noEntry
-            : outcome.record.status === "unknown"
-              ? t.unknown
-              : `${t.failed} ${connectionError(outcome.record.error, language)}`}
-        </p>
+      {outcome &&
+        (outcome.record.status === "unknown" ||
+          outcome.record.status === "failed") && (
+          <p role="alert">
+            {outcome.record.status === "unknown" ? t.unknown : t.failed}
+            {outcome.record.status === "failed" &&
+              ` ${connectionError(outcome.record.error, language)}`}
+            <br />
+            <span className="small">
+              {t.original}:{" "}
+              <code>
+                {outcome.record.context.endpoint} ·{" "}
+                {outcome.record.context.scopeId}
+              </code>
+            </span>
+          </p>
+        )}
+      {saved.length > 0 && (
+        <div className="stack">
+          <p role="status">{t.savedReturned(saved.length)}</p>
+          <ul className="memory-hits">
+            {saved.map((record) => {
+              const key = JSON.stringify(record.artifact);
+              const title = record.text.split("\n", 1)[0] || record.text;
+              return (
+                <li key={key}>
+                  <div className="hit-card">
+                    <img src={memoryIcon} alt="" />
+                    <div className="hit-main">
+                      <div className="hit-title">{title}</div>
+                      <div className="hit-snippet">{record.text}</div>
+                    </div>
+                    <div className="hit-actions">
+                      <button onClick={() => onReadSaved(record.artifact)}>
+                        {t.openSaved}
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+      {outcome?.record.status === "succeeded" && saved.length === 0 && (
+        <p role="status">{t.noEntry}</p>
       )}
     </section>
   );
@@ -172,15 +223,14 @@ export function MemoryWorkspace(props: Props) {
   const { state, language, onState, onDirty } = props;
   const t = memoryMessages[language];
   const active = state?.active;
-  const readerHeading = useRef<HTMLHeadingElement>(null);
   const readButton = useRef<HTMLButtonElement | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<MemorySearchHit[] | null>(null);
   const [entry, setEntry] = useState<AtomicMemoryDetail | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [savedRead, setSavedRead] = useState(false);
   const [busy, setBusy] = useState<"search" | "detail" | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [copied, setCopied] = useState("");
   const sequence = useRef(0);
   const pendingCancel = useRef(Promise.resolve());
   const current = useRef(active?.generation);
@@ -191,8 +241,8 @@ export function MemoryWorkspace(props: Props) {
     setHits(null);
     setEntry(null);
     setSelected(null);
+    setSavedRead(false);
     setError(null);
-    setCopied("");
     setBusy(null);
   }
   function cancel() {
@@ -213,13 +263,13 @@ export function MemoryWorkspace(props: Props) {
         void desktopApi.cancelMemory(active.generation).catch(() => {});
     };
   }, [active?.generation]);
-  async function read(reference?: ArtifactReference) {
+  async function read(reference?: ArtifactReference, fromSave = false) {
     if (!active?.scope) return;
     const generation = active.generation;
     const ticket = ++sequence.current;
     setError(null);
     setEntry(null);
-    setCopied("");
+    setSavedRead(fromSave);
     setBusy(reference ? "detail" : "search");
     if (reference) setSelected(JSON.stringify(reference));
     else setHits(null);
@@ -243,6 +293,7 @@ export function MemoryWorkspace(props: Props) {
         setHits(null);
         setEntry(null);
         setSelected(null);
+        setSavedRead(false);
         try {
           onState(await desktopApi.state());
         } catch {
@@ -253,19 +304,8 @@ export function MemoryWorkspace(props: Props) {
       if (ticket === sequence.current) setBusy(null);
     }
   }
-  useEffect(() => {
-    if (entry) readerHeading.current?.focus();
-  }, [entry]);
-  async function copy(reference: boolean) {
-    if (!entry) return;
-    try {
-      await navigator.clipboard.writeText(
-        reference ? JSON.stringify(entry.artifact, null, 2) : entry.text,
-      );
-      setCopied(t.copied);
-    } catch {
-      setCopied(t.copyFailed);
-    }
+  async function readSaved(artifact: ArtifactReference) {
+    await read(artifact, true);
   }
   const record = state?.lastWrite;
   return (
@@ -295,6 +335,7 @@ export function MemoryWorkspace(props: Props) {
         language={language}
         onState={onState}
         onDirty={onDirty}
+        onReadSaved={(artifact) => void readSaved(artifact)}
       />
       <section className="card stack">
         <h2>{t.query}</h2>
@@ -398,81 +439,116 @@ export function MemoryWorkspace(props: Props) {
           <p className="note-line">{t.browseNote}</p>
         </section>
         {entry && (
-          <section className="card stack reader" aria-label={t.detail}>
-            <div className="card-heading">
-              <h2 ref={readerHeading} tabIndex={-1}>
-                {t.detail}
-              </h2>
-              <span className="badge">{entry.kind}</span>
-            </div>
-            <div className="plain-text reader-body" tabIndex={0}>
-              {entry.text}
-            </div>
-            {active?.scope && (
-              <p className="small">
-                {t.scopeBelong} <strong>{active.scope.title}</strong>
-              </p>
-            )}
-            <div className="reference-block">
-              <h3>{t.reference}</h3>
-              <dl className="reference-summary">
-                <dt>Artifact family</dt>
-                <dd>{entry.artifact.family}</dd>
-                <dt>Artifact ID</dt>
-                <dd>{entry.artifact.artifact_id}</dd>
-                <dt>Revision</dt>
-                <dd>{entry.artifact.revision}</dd>
-              </dl>
-              <p className="small">{t.referenceNote}</p>
-              <button
-                className="primary-outline"
-                onClick={() => void copy(true)}
-              >
-                {t.copyReference}
-              </button>
-            </div>
-            <div className="actions">
-              <button onClick={() => void copy(false)}>{t.copyText}</button>
-              <button
-                onClick={() => {
-                  setEntry(null);
-                  setCopied("");
-                  requestAnimationFrame(() => readButton.current?.focus());
-                }}
-              >
-                {t.close}
-              </button>
-            </div>
-            {copied && <p role="status">{copied}</p>}
-            <details>
-              <summary>{t.referenceFull}</summary>
-              <pre className="plain-text">
-                {JSON.stringify(entry.artifact, null, 2)}
-              </pre>
-            </details>
-            <details>
-              <summary>{t.sources}</summary>
-              {entry.source_refs.length ? (
-                <ul>
-                  {entry.source_refs.map((source) => (
-                    <li
-                      key={JSON.stringify([
-                        source.source_type,
-                        source.source_id,
-                      ])}
-                    >
-                      {source.source_type} <code>{source.source_id}</code>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p>{t.noSources}</p>
-              )}
-            </details>
-            <p className="note-line">{t.agentScopeNote}</p>
-          </section>
+          <ReaderPane
+            entry={entry}
+            activeScope={active?.scope ?? null}
+            savedRead={savedRead}
+            language={language}
+            onClose={() => {
+              setEntry(null);
+              setSavedRead(false);
+              requestAnimationFrame(() => readButton.current?.focus());
+            }}
+          />
         )}
       </div>
     </div>
+  );
+}
+type ReaderPaneProps = {
+  entry: AtomicMemoryDetail;
+  activeScope: { title: string } | null;
+  savedRead: boolean;
+  language: Language;
+  onClose: () => void;
+};
+function ReaderPane({
+  entry,
+  activeScope,
+  savedRead,
+  language,
+  onClose,
+}: ReaderPaneProps) {
+  const t = memoryMessages[language];
+  const readerHeading = useRef<HTMLHeadingElement>(null);
+  const [copied, setCopied] = useState("");
+  useEffect(() => {
+    if (entry) readerHeading.current?.focus();
+  }, [entry]);
+  async function copy(reference: boolean) {
+    try {
+      await navigator.clipboard.writeText(
+        reference ? JSON.stringify(entry.artifact, null, 2) : entry.text,
+      );
+      setCopied(t.copied);
+    } catch {
+      setCopied(t.copyFailed);
+    }
+  }
+  return (
+    <section className="card stack reader" aria-label={t.detail}>
+      {savedRead && (
+        <p role="status">
+          {t.savedSection} · {entry.artifact.family}{" "}
+          <code>{entry.artifact.artifact_id}</code> @{" "}
+          <code>{entry.artifact.revision}</code>
+        </p>
+      )}
+      <div className="card-heading">
+        <h2 ref={readerHeading} tabIndex={-1}>
+          {t.detail}
+        </h2>
+        <span className="badge">{entry.kind}</span>
+      </div>
+      <div className="plain-text reader-body" tabIndex={0}>
+        {entry.text}
+      </div>
+      {activeScope && (
+        <p className="small">
+          {t.scopeBelong} <strong>{activeScope.title}</strong>
+        </p>
+      )}
+      <div className="reference-block">
+        <h3>{t.reference}</h3>
+        <dl className="reference-summary">
+          <dt>Artifact family</dt>
+          <dd>{entry.artifact.family}</dd>
+          <dt>Artifact ID</dt>
+          <dd>{entry.artifact.artifact_id}</dd>
+          <dt>Revision</dt>
+          <dd>{entry.artifact.revision}</dd>
+        </dl>
+        <p className="small">{t.referenceNote}</p>
+        <button className="primary-outline" onClick={() => void copy(true)}>
+          {t.copyReference}
+        </button>
+      </div>
+      <div className="actions">
+        <button onClick={() => void copy(false)}>{t.copyText}</button>
+        <button onClick={onClose}>{t.close}</button>
+      </div>
+      {copied && <p role="status">{copied}</p>}
+      <details>
+        <summary>{t.referenceFull}</summary>
+        <pre className="plain-text">
+          {JSON.stringify(entry.artifact, null, 2)}
+        </pre>
+      </details>
+      <details>
+        <summary>{t.sources}</summary>
+        {entry.source_refs.length ? (
+          <ul>
+            {entry.source_refs.map((source) => (
+              <li key={JSON.stringify([source.source_type, source.source_id])}>
+                {source.source_type} <code>{source.source_id}</code>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>{t.noSources}</p>
+        )}
+      </details>
+      <p className="note-line">{t.agentScopeNote}</p>
+    </section>
   );
 }

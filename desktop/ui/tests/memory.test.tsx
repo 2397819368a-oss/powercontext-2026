@@ -121,6 +121,7 @@ function form() {
       language="en"
       onState={vi.fn()}
       onDirty={vi.fn()}
+      onReadSaved={vi.fn()}
     />,
   );
 }
@@ -132,6 +133,7 @@ test("a save without records succeeds without inventing a memory or submitting o
   expect(desktopApi.remember).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(desktopApi.remember).toHaveBeenCalledWith(1, "Café 中文\nnote");
+  expect(screen.getByRole("status").textContent).toMatch(/Saved successfully/);
   expect(screen.getByRole("status").textContent).toMatch(
     /Server returned no memory/,
   );
@@ -162,7 +164,12 @@ test.each([1, 2])(
     vi.mocked(desktopApi.remember).mockResolvedValue(saved);
     await user.type(screen.getByLabelText("Memory text"), "Atomic note");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(screen.getByRole("status").textContent).toBe("Saved successfully.");
+    expect(screen.getByRole("status").textContent).toBe(
+      `Saved successfully, ${count} record${count === 1 ? "" : "s"} returned; each can open its exact revision directly.`,
+    );
+    expect(
+      screen.getAllByRole("button", { name: "Open saved record" }),
+    ).toHaveLength(count);
     expect(
       (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
     ).toBe("");
@@ -212,7 +219,9 @@ test("an Atomic save can be searched, opened and copied by exact Artifact refere
   );
   await user.type(screen.getByLabelText("Memory text"), "Atomic note");
   await user.click(screen.getByRole("button", { name: "Save" }));
-  expect(screen.getByRole("status").textContent).toBe("Saved successfully.");
+  expect(screen.getByRole("status").textContent).toBe(
+    "Saved successfully, 1 record returned; each can open its exact revision directly.",
+  );
   await user.type(screen.getByLabelText("Keyword search"), "Atomic");
   await user.click(screen.getByRole("button", { name: "Search" }));
   await user.click(screen.getByRole("button", { name: "Read exact version" }));
@@ -245,13 +254,56 @@ test("UTF-8 overflow and IME composition cannot accidentally submit", async () =
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(desktopApi.remember).not.toHaveBeenCalled();
 });
-test("unknown save retains the draft and does not replay automatically", async () => {
+test("a saved record opens its exact revision through the existing reader", async () => {
+  const user = userEvent.setup();
+  const saved = outcome("succeeded");
+  saved.result = {
+    changed: true,
+    records: [
+      {
+        artifact,
+        kind: "note",
+        text: "Just saved note",
+        state: "active",
+        state_version: 0,
+        merged_into_id: null,
+      },
+    ],
+  };
+  saved.record.references = [artifact];
+  vi.mocked(desktopApi.remember).mockResolvedValue(saved);
+  vi.mocked(desktopApi.atomicEntry).mockResolvedValue({
+    artifact,
+    kind: "note",
+    text: "Just saved note",
+    source_refs: [],
+  });
+  render(
+    <MemoryWorkspace
+      state={state}
+      language="en"
+      onState={vi.fn()}
+      onDirty={vi.fn()}
+    />,
+  );
+  await user.type(screen.getByLabelText("Memory text"), "Just saved note");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await user.click(screen.getByRole("button", { name: "Open saved record" }));
+  expect(desktopApi.atomicEntry).toHaveBeenCalledWith(1, artifact);
+  expect(screen.getByRole("heading", { name: "Memory details" })).toBeTruthy();
+  expect(screen.getByText(/Records returned by this save/)).toBeTruthy();
+});
+
+test("unknown save retains the draft, names its original target, and does not replay automatically", async () => {
   const user = userEvent.setup();
   form();
   vi.mocked(desktopApi.remember).mockResolvedValue(outcome("unknown"));
   await user.type(screen.getByLabelText("Memory text"), "preserve me");
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(screen.getByRole("alert").textContent).toContain("outcome is unknown");
+  expect(screen.getByRole("alert").textContent).toContain(
+    "http://127.0.0.1:8000 · scope-a",
+  );
   expect(
     (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
   ).toBe("preserve me");
