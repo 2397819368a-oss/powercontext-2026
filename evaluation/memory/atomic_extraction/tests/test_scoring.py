@@ -209,7 +209,23 @@ def test_english_noun_phrases_are_not_instruction_leakage(text: str) -> None:
     assert score.instruction_leakage_passed
 
 
-@pytest.mark.parametrize("instruction", ("使用中文进行交流。", "运行测试。"))
+@pytest.mark.parametrize(
+    "instruction",
+    (
+        "使用中文进行交流。",
+        "运行测试。",
+        "删除旧记录。",
+        "移除旧缓存。",
+        "重试请求。",
+        "检查配置。",
+        "上传日志。",
+        "忽略警告。",
+        "保留 account_id。",
+        "设置语言。",
+        "配置项目。",
+        "编辑文件。",
+    ),
+)
 def test_chinese_bare_imperatives_are_instruction_leakage(instruction: str) -> None:
     case = _case("chinese-imperative-preference")
     observation = _observation(
@@ -225,6 +241,34 @@ def test_chinese_bare_imperatives_are_instruction_leakage(instruction: str) -> N
 
     assert score.factual_retention_passed
     assert not score.instruction_leakage_passed
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "配置项已记录。",
+        "检查结果已记录。",
+        "删除操作有审计记录。",
+        "重试次数已记录。",
+        "保留期限是一年。",
+        "编辑器模式已启用。",
+    ),
+)
+def test_chinese_imperative_prefix_noun_phrases_are_not_leakage(statement: str) -> None:
+    case = _case("chinese-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="preference",
+            text=f"用户偏好中文交流。{statement}",
+            evidence_ids=("pref-zh-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.factual_retention_passed
+    assert score.instruction_leakage_passed
 
 
 def test_empty_atomic_output_is_false_rejection_but_not_instruction_leakage() -> None:
