@@ -39,6 +39,7 @@ from sqlalchemy.pool import ConnectionPoolEntry, StaticPool
 
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.dream_schema import assert_dream_schema_ready
+from powercontext.builtin.persistence.errors import PersistenceError
 from powercontext.builtin.persistence.schema import create_tables
 
 _WARMUP_RETRY_SECONDS = 0.05
@@ -98,6 +99,11 @@ class SQLiteProfile:
     ) -> AsyncIterator[SQLiteProfile]:
         """Create, initialize and exclusively own one SQLite engine."""
 
+        if sqlite3.sqlite_version_info < (3, 35, 0):
+            raise PersistenceError(  # noqa: TRY003
+                "SQLite 3.35.0 or newer is required for retrieval; "
+                f"this Python uses SQLite {sqlite3.sqlite_version}. Upgrade Python's SQLite library."
+            )
         _create_database_directory(config.url)
         engine_options: dict[str, object] = {"echo": config.echo, "hide_parameters": True}
         if not config.is_persistent:
