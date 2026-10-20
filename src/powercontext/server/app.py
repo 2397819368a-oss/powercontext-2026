@@ -1308,6 +1308,7 @@ class _PreconditionRequiredError(RuntimeError):
 def create_app(
     *,
     application: ServerApplication | None = None,
+    infrastructure_only: bool = False,
     capability_provider: CapabilityProvider | None = None,
     readiness_probe: ReadinessProbe | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
@@ -1326,6 +1327,7 @@ def create_app(
         title=API_TITLE,
         version=API_VERSION,
         description=API_DESCRIPTION,
+        openapi_url=None if infrastructure_only else "/openapi.json",
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -1417,6 +1419,10 @@ def create_app(
         )
         response.headers[REQUEST_ID_HEADER] = request_id
         return response
+
+    if infrastructure_only:
+        _add_route(app, GET_LIVENESS, get_liveness)
+        return app
 
     _add_route(app, CREATE_DREAM_RUN, create_dream_run)
     _add_route(app, GET_DREAM_RUN, get_dream_run)
@@ -1599,14 +1605,20 @@ async def get_readiness(request: Request) -> JSONResponse:
 
 
 async def _access_readiness_checks(request: Request) -> dict[str, str]:
-    mode: str = request.app.state.access_mode
-    access: AccessControlService | None = request.app.state.access_control
+    return await access_readiness_checks(request.app.state)
+
+
+async def access_readiness_checks(state: Any) -> dict[str, str]:
+    """Access and authentication readiness installed on Server application state."""
+
+    mode: str = state.access_mode
+    access: AccessControlService | None = state.access_control
     provider = (
         ("ready" if await access.readiness() else "not_ready")
         if access is not None
         else ("not_ready" if mode == "enforced" else "disabled")
     )
-    authentication: AuthenticationProvider | None = request.app.state.authentication_provider
+    authentication: AuthenticationProvider | None = state.authentication_provider
     if mode == "disabled":
         authentication_status = "disabled"
     elif authentication is None:

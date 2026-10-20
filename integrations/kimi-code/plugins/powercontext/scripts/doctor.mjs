@@ -32,8 +32,11 @@ catch (error) { checks[['authentication_failed', 'invalid_credentials'].includes
 if (settings) {
   checks.settings = { status: 'ok', detail: 'Installed endpoint, Scope and runtime credentials are valid.' }
   try {
-    const { value } = await request(settings, 'GET', '/health/ready', undefined, AbortSignal.timeout(1500))
-    checks.server = ['ready', 'degraded'].includes(value.status) ? { status: 'ok', detail: value.status === 'ready' ? 'Server is ready.' : 'Server is available; optional capabilities are degraded.' } :
+    const { status, value } = await request(settings, 'GET', '/health/ready', undefined, AbortSignal.timeout(1500))
+    const valid = status === 200 && value.checks && typeof value.checks === 'object' && !Array.isArray(value.checks) &&
+      Object.values(value.checks).every(item => typeof item === 'string') && Object.keys(value).every(key => ['status', 'checks'].includes(key))
+    checks.server = valid && ['ready', 'degraded'].includes(value.status) ? { status: value.status === 'ready' ? 'ok' : 'degraded',
+      detail: value.status === 'ready' ? 'Server is ready.' : 'Server is available; optional capabilities are degraded.', checks: value.checks } :
       { status: 'failed', detail: 'Server is not ready.' }
   } catch (error) { checks.server = result(error) }
   try {
@@ -51,4 +54,4 @@ if (values.runtime) {
       .includes(error.code ?? error.message) ? error.code ?? error.message : 'runtime_unavailable' }
   }
 }
-process.stdout.write(JSON.stringify({ schema: 'powercontext.kimi-code.diagnostics.v1', checks, ...(runtime ? { runtime } : {}) }) + '\n')
+process.stdout.write(JSON.stringify({ schema: 'powercontext.kimi-code.diagnostics.v2', checks, ...(runtime ? { runtime } : {}) }) + '\n')

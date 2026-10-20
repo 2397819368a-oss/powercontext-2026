@@ -109,7 +109,11 @@ def create_cli(commands: Iterable[typer.Typer] | None = None) -> typer.Typer:
             raise ValueError("CLI command applications must define a name")  # noqa: TRY003
         if name in registered_names:
             raise ValueError(f"duplicate CLI command provider: {name}")  # noqa: TRY003
-        cli.add_typer(command, name=name)
+        callback = command.registered_callback.callback if command.registered_callback else None
+        if not command.registered_commands and not command.registered_groups and callback is not None:
+            cli.command(name=name, help=command.info.help, context_settings=command.info.context_settings)(callback)
+        else:
+            cli.add_typer(command, name=name)
         registered_names.add(name)
     return cli
 

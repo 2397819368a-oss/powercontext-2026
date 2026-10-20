@@ -172,3 +172,49 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     except ValueError:
         return None
     return True
+
+
+@pytest.fixture
+def installed_agent_checks(monkeypatch):
+    """Isolate native installation behavior from separately exercised runtime probes."""
+    from powercontext.cli import hosts
+    from powercontext.cli.system import Diagnostic, DiagnosticStatus
+
+    monkeypatch.setattr(
+        hosts, "doctor_checks", lambda *args, **kwargs: {"integration": Diagnostic(DiagnosticStatus.OK, "available")}
+    )
+
+
+@pytest.fixture
+def server_checks(monkeypatch):
+    """Exercise native agent diagnostics without contacting an external Server."""
+    from powercontext.cli import system
+
+    monkeypatch.setattr(system, "server_diagnostics", lambda **kwargs: {})
+
+
+@pytest.fixture
+def hermes_activation(monkeypatch):
+    """Model Hermes' native config writes for filesystem installation scenarios."""
+    from subprocess import CompletedProcess
+
+    import yaml
+
+    from powercontext.cli import hermes
+
+    run = hermes._run_hermes_command
+
+    def native(command):
+        if command[1:3] not in (["plugins", "enable"], ["memory", "setup"]):
+            return run(command)
+        path = hermes.hermes_home() / "config.yaml"
+        config = yaml.safe_load(path.read_text()) if path.exists() else {}
+        if command[1] == "plugins":
+            config.setdefault("plugins", {}).setdefault("enabled", []).append("powercontext-command")
+        else:
+            config.setdefault("memory", {})["provider"] = "powercontext"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(config))
+        return CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(hermes, "_run_hermes_command", native)
