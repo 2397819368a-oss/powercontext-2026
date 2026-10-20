@@ -248,7 +248,7 @@ class TopicMemorySearchResult(BaseModel):
     query_embedding: MemoryQueryEmbedding | None = Field(default=None, exclude=True)
     embedding_calls: int = Field(default=0, exclude=True)
     matches: tuple[ArtifactSearchMatch, ...] = Field(default=(), exclude=True)
-    artifacts: tuple[TopicMemory, ...] | None = Field(default=None, exclude=True)
+    artifacts: tuple[TopicMemory, ...] = Field(default=(), exclude=True)
 
 
 class PublishedTopicMemory(BaseModel):

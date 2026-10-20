@@ -31,6 +31,8 @@ from sqlalchemy import Column, Index, Integer, MetaData, String, Table, select
 
 from powercontext.builtin.persistence.seekdb import LegacySeekDBDatabaseError, SeekDBConfig, SeekDBProfile
 from powercontext.builtin.persistence.seekdb import profile as seekdb_profile
+from powercontext.server.factory import create_server_app
+from powercontext.server.settings import ServerSettings
 
 
 def database_snapshot(options: dict[str, object]) -> None:
@@ -135,17 +137,34 @@ async def scenario(directory: Path) -> None:
                     await connection.execute(records.insert().values(id=1, value="preserved"))
                 stage("seed: closing")
             stage("implicit choice: opening")
+            app = create_server_app(settings=ServerSettings(database=SeekDBConfig(path=path), workspace=directory))
             try:
-                async with SeekDBProfile.open(SeekDBConfig(path=path), tables=(records,)):
+                async with app.router.lifespan_context(app):
                     raise AssertionError("Implicit database switch must be rejected")  # noqa: TRY003
-            except LegacySeekDBDatabaseError:
-                pass
+            except LegacySeekDBDatabaseError as error:
+                assert "database='test'" in str(error)
+                assert "database='powercontext'" in str(error)
             stage("old data: reopening test")
+            app = create_server_app(settings=ServerSettings(database=old, workspace=directory))
+            async with app.router.lifespan_context(app):
+                stage("explicit legacy choice: server started")
             async with SeekDBProfile.open(old, tables=(records,)) as profile:
                 stage("old data: read")
                 await assert_preserved(profile)
+                async with profile.database.transaction() as connection:
+                    assert (
+                        await connection.exec_driver_sql(
+                            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s",
+                            ("powercontext",),
+                        )
+                    ).first() is None
                 stage("old data: closing")
             stage("explicit choice: opening powercontext")
+            app = create_server_app(
+                settings=ServerSettings(database=SeekDBConfig(path=path, database="powercontext"), workspace=directory)
+            )
+            async with app.router.lifespan_context(app):
+                stage("explicit default choice: server started")
             async with SeekDBProfile.open(
                 SeekDBConfig(path=path, database="powercontext"), tables=(records,)
             ) as profile:

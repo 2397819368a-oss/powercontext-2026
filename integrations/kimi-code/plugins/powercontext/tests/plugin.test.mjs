@@ -44,7 +44,7 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
     const answer = req.url === '/v1/scope-bindings/resolve' ? { scope_id: 'scope-test' } :
       req.url === '/v1/context/prepare' ? { schema: 'powercontext.prepared-context.v1', status: 'ready',
         content: 'Historical context: use uv.', content_bytes: Buffer.byteLength('Historical context: use uv.') } :
-      req.url === '/health/ready' ? { status: 'ready' } : undefined
+      req.url === '/health/ready' ? { status: 'ready', checks: {} } : undefined
     if (answer) { res.writeHead(200); res.end(JSON.stringify(answer)); return }
     if (req.url === '/v1/sources/content') {
       captures.push(body)

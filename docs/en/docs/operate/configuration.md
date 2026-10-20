@@ -79,6 +79,11 @@ Without an override, the default is:
 The default SQLite database is `powercontext.db` in this directory. Built-in background processors persist
 intents and scheduling checkpoints in the same database. Existing installations require [offline migration](artifact-processing-migration.md).
 
+The built-in SQLite backend requires Python's linked SQLite library (`sqlite3.sqlite_version`) to be **3.38.0 or newer**,
+with FTS5, JSON functions, and loadable sqlite-vec for vector search. This retains the backend minimum specified in
+[the Memory design](../../rfcs/0014_memory_layer_design.md#sqlite-adapter), including native vector `IN` filtering.
+Older libraries are rejected before database initialization or accepting writes.
+
 ## Server
 
 Server settings use the `POWERCONTEXT_SERVER_` prefix.
@@ -105,6 +110,7 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_LOGGING_FORMAT` | `console` | `console` or structured `json` output |
 | `POWERCONTEXT_SERVER_LOGGING_ACCESS` | `true` | Log external HTTP and logical MCP request completion |
 | `POWERCONTEXT_SERVER_METRICS_ENABLED` | `true` | Expose Prometheus metrics at `/metrics` |
+| `POWERCONTEXT_SERVER_METRICS_BACKGROUND_PORT` | `8001` | Background-role infrastructure listener port; uses `HTTP_HOST` and is disabled with metrics |
 | `POWERCONTEXT_SERVER_TRACING_ENABLED` | `false` | Enable span recording and OTLP export |
 | `POWERCONTEXT_SERVER_CURSOR_SIGNING_SECRET` | local persisted key | Shared secret of at least 32 bytes for signing REST pagination cursors |
 | `POWERCONTEXT_SERVER_DATABASE_KIND` | `sqlite` | Storage backend: `sqlite`, `seekdb`, or `oceanbase` |
@@ -141,6 +147,7 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_ALLOW_WITH_RERANK` | `false` | Whether expansion may still run when `MEMORY_RERANK_ENABLED` is set; by default reranking ends the expansion |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_FTS_WEIGHT` | `1.0` | Relative FTS contribution in hybrid Atomic Memory and Topic Memory RRF; `0` excludes FTS-only matches from hybrid results |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_VECTOR_WEIGHT` | `1.0` | Relative vector contribution in hybrid Atomic Memory and Topic Memory RRF; `0` excludes vector-only matches from hybrid results |
+| `POWERCONTEXT_SERVER_RUNTIME_RECALL_EMBEDDING_TIMEOUT_SECONDS` | `0.25` | Seconds each Atomic Memory or Topic Memory search inside a context preparation waits for the query embedding, at most `60`. A preparation searches the Scope and each of its context references in turn, so the waits add up. When a budget expires, that search continues with lexical matching only and logs `memory.search.embedding_fallback` or `topic_memory.search.embedding_fallback`. A remote embedding provider needs more than the default; keep the summed waits inside the host's Hook request timeout, 3 seconds on most hosts |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_SCHEDULE_SECONDS` | unset | Memory automatic admission interval; `SCHEDULE_SECONDS` remains a compatibility alias |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SCHEDULE_SECONDS` | unset | Topic Memory automatic admission interval; unset disables new automatic admission |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SOURCE_WINDOW_LIMIT` | `10` | Maximum Sources per Topic Memory Window, capped at 100; one Scope invocation can finish several Windows |
@@ -315,9 +322,11 @@ family, or disabling built-in background families with `ARTIFACT_PROCESSING_FAMI
 before accepting work. Turning off schedules alone is insufficient because explicit requests still start workers.
 Custom Source registries remain available to synchronous SDK contexts and API-only composition.
 
-The authenticated `/metrics` endpoint exposes `powercontext_server_artifact_processing_*` observations with only a `family`
-label: Worker capacity, ready/retry queues, unacknowledged Scopes, discovery and invocation duration, completions,
+The authenticated `/metrics` endpoint exposes `powercontext_server_artifact_processing_*` observations with a bounded `family`
+label and, where applicable, `state`, `outcome`, `category`, or `reason`: Worker capacity, ready/retry queues,
+unacknowledged Scopes, discovery and invocation duration, completions,
 failures, and timeouts. Unacknowledged counts reflect the latest discovery; counters reset with the Supervisor instance.
+See [Logs, metrics, and tracing](observability.md) for freshness, state, attempt/acknowledgement, and alert semantics.
 
 The `extraction` object in `GET /v1/capabilities` separates configuration, background execution, and local observations.
 Reading this snapshot does not query the database or call a model, and does not produce an overall health verdict.
@@ -409,9 +418,13 @@ Handoff Report API routes are independently enabled by default. See
 [Use Handoff Report](../workflows/use-handoff-report.md) for selection, inspection, and export.
 
 The Artifact Processing Supervisor is enabled by the default `all` role. OceanBase deployments may run `api` and
-`background` separately; `powercontext server run --role background` starts no HTTP, MCP, or Dashboard listener, and
-multiple background candidates use the database Lease to elect one active Leader. SQLite and embedded seekdb support
-only the single-process `all` role. Automatic Topic Memory waves remain disabled until a positive interval is set;
+`background` separately. When metrics are enabled, `powercontext server run --role background` exposes `/metrics` and
+public `/health/live` using `POWERCONTEXT_SERVER_HTTP_HOST` and `POWERCONTEXT_SERVER_METRICS_BACKGROUND_PORT`
+(default `8001`); it does not serve business APIs, MCP, Dashboard, OpenAPI, or `/health/ready`.
+`/metrics` uses the same authentication and `server.observe` authorization as the API host.
+Use distinct ports for API and background processes on the same host. `POWERCONTEXT_SERVER_METRICS_ENABLED=false`
+opens no background listener. Multiple background candidates use the database Lease to elect one active Leader.
+SQLite and embedded seekdb support only the single-process `all` role. Automatic Topic Memory waves remain disabled until a positive interval is set;
 explicit flush work remains recoverable regardless of that interval. Topic workers need file-backed SQLite: configuring
 a generation model with an in-memory SQLite database is rejected before processing is advertised. Use a persistent
 `POWERCONTEXT_SERVER_DATABASE_URL`, such as `sqlite+aiosqlite:////srv/powercontext/runtime.db`.

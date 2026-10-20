@@ -31,13 +31,13 @@ set +a
 powercontext setup claude-code --server-url "$POWERCONTEXT_CLAUDE_SERVER_URL"
 ```
 
-修改 Claude Code 设置前，setup 会报告设置项、插件缓存、持久化数据位置、所需权限和准确的回滚命令。
-之后命令会注册或刷新 Marketplace、以 user scope 更新或安装插件，并通过 Claude Code 的 JSON 输出确认插件已启用。
+setup 会注册或刷新 Marketplace，再以 user scope 安装或更新插件。更新保留显式禁用状态，结果报告已安装版本、
+插件缓存和持久化数据位置。
 
-Marketplace registry、按版本保存的插件缓存和插件数据目录由 Claude Code 管理。Claude 2.1.133 的
-`plugin install` 不支持配置参数，因此 setup 会在安装成功后，把 `server_url` 和 `capture_prompts`
-原子合并到用户级 `pluginConfigs`，并保留其他设置；失败时恢复安装前快照。PowerContext 从
-`CLAUDE_CONFIG_DIR` 或 Claude Code 默认配置目录解析这些位置。
+Marketplace registry、按版本保存的插件缓存和插件数据目录由 Claude Code 管理。安装成功后，setup 将
+`server_url` 和 `capture_prompts` 合并到用户级 `pluginConfigs`，保留其他设置及省略的采集偏好。
+连接配置失败时恢复该阶段的本地变更，已完成的原生安装保留。PowerContext 从 `CLAUDE_CONFIG_DIR`
+或 Claude Code 默认配置目录解析这些位置。
 
 使用本地 checkout 时，传入目录：
 
@@ -76,6 +76,10 @@ MCP endpoint 来自 setup 保存的 `server_url`，Hook 可被 `POWERCONTEXT_CLA
 2. 最多调用一次 `POST /v1/context/prepare`；
 3. 严格校验 `powercontext.prepared-context.v1`，再通过 `additionalContext` 原样注入；
 4. 独立地将 prompt 采集为普通 Content Source 证据。
+
+召回在构造请求前先给 query 定界：不超过 8192 个字符、也不超过 8192 个 UTF-8 字节的 prompt 原样发送；更长的
+prompt 改用最近的文本召回，先取末尾 8192 个字符、再截到末尾 8192 字节。因此长 prompt 只会收窄 query，不会让
+召回失败。采集独立进行，仍按自身上限执行。
 
 启动上下文是独立且默认关闭的 `SessionStart` 路径。在启动 Claude Code 前显式启用：
 

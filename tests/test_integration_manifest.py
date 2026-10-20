@@ -36,14 +36,14 @@ from integration_manifest import (
 )
 from pydantic import ValidationError
 
-from powercontext.cli.system import setup_app
-
 
 def test_manifest_matches_setup_catalog_evidence_and_actual_tool_surfaces() -> None:
     manifest = load_integration_manifest()
 
     agent_hosts = {integration.id for integration in manifest.integrations if integration.kind == "agent_host"}
-    setup_targets = {command.name for command in setup_app.registered_commands if command.name != "select"}
+    from powercontext.cli.installation import installers
+
+    setup_targets = set(installers())
 
     assert agent_hosts == setup_targets
     assert integration_directory_errors(manifest) == ()

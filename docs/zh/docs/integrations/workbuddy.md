@@ -21,7 +21,7 @@ description: 安装 PowerContext WorkBuddy hooks 并控制其本地行为。
 
 ## 使用 PowerContext CLI 安装
 
-WorkBuddy 不在 `setup select` 或 `doctor integrations` 的宿主目录中，使用本页的独立安装和诊断命令。
+WorkBuddy 支持 `setup workbuddy`、`config agent workbuddy` 和 `doctor workbuddy`，也可与其他 Agent 一起操作。
 
 CLI 可以从本地 checkout 或 GitHub 源一键安装 hooks、MCP Server 和 Skill：
 

@@ -492,6 +492,53 @@ def test_server_settings_accept_custom_embedded_seekdb_database(tmp_path, monkey
     assert "database" in settings.database.model_fields_set
 
 
+@pytest.mark.parametrize("source", ["model", "mapping", "environment"])
+@pytest.mark.parametrize("name", [None, "powercontext", "test", "team_context"])
+def test_server_settings_preserve_seekdb_database_choice(tmp_path, monkeypatch, source, name) -> None:
+    values = {"kind": "seekdb", "path": tmp_path / "seekdb"}
+    if name is not None:
+        values["database"] = name
+    original = SeekDBConfig.model_validate(values)
+    original_fields = original.model_fields_set.copy()
+    if source == "model":
+        settings = ServerSettings(database=original)
+    elif source == "mapping":
+        settings = ServerSettings(database=values)  # ty: ignore[invalid-argument-type] Pydantic accepts nested mappings.
+    else:
+        for key, value in values.items():
+            monkeypatch.setenv(f"POWERCONTEXT_SERVER_DATABASE_{key.upper()}", str(value))
+        settings = ServerSettings()
+
+    assert isinstance(settings.database, SeekDBConfig)
+    assert settings.database.database == (name or "powercontext")
+    assert ("database" in settings.database.model_fields_set) is (name is not None)
+    assert settings.database.path == original.path
+    assert original.model_fields_set == original_fields
+
+
+@pytest.mark.parametrize("name", [None, "powercontext", "test", "team_context"])
+def test_server_settings_merge_seekdb_model_with_environment(tmp_path, monkeypatch, name) -> None:
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_DATABASE", "environment_context")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_PATH", str(tmp_path / "environment"))
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_ECHO", "true")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_POOL_PRE_PING", "false")
+    original = (
+        SeekDBConfig(path=tmp_path / "seekdb")
+        if name is None
+        else SeekDBConfig(path=tmp_path / "seekdb", database=name)
+    )
+
+    settings = ServerSettings(database=original)
+
+    assert isinstance(settings.database, SeekDBConfig)
+    assert settings.database.database == (name or "environment_context")
+    assert "database" in settings.database.model_fields_set
+    assert settings.database.path == original.path
+    assert settings.database.echo is original.echo
+    assert settings.database.pool_pre_ping is original.pool_pre_ping
+    assert ("database" in original.model_fields_set) is (name is not None)
+
+
 def test_supervisor_uses_primary_database_without_scheduler_sidecar(tmp_path, monkeypatch) -> None:
     data_dir = tmp_path / "powercontext-data"
     monkeypatch.setenv("POWERCONTEXT_HOME", str(data_dir))

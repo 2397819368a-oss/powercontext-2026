@@ -24,11 +24,13 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+from typing_extensions import override
 
 from powercontext.builtin.artifacts.skill import AgentSkillTarget
 from powercontext.builtin.code.models import CodeConfig
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
+from powercontext.builtin.persistence.seekdb import SeekDBConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime.config import (
     DatabaseConfig,
@@ -176,6 +178,7 @@ class MetricsConfig(BaseModel):
     """Prometheus metrics exposed by the Server."""
 
     enabled: bool = True
+    background_port: int = Field(default=8001, ge=1, le=65535)
 
 
 class TracingConfig(BaseModel):
@@ -217,6 +220,26 @@ class ServerSettings(BaseSettings):
     handoff_report: HandoffReportConfig = Field(default_factory=HandoffReportConfig)
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
     external_skills: ExternalSkillsConfig = Field(default_factory=ExternalSkillsConfig)
+
+    @classmethod
+    @override
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        if isinstance(init_settings, InitSettingsSource) and init_settings.nested_model_default_partial_update:
+            database = init_settings.init_kwargs.get("database")
+            if isinstance(database, SeekDBConfig) and "database" not in database.model_fields_set:
+                # BaseSettings serializes nested model defaults before validation. Keep an
+                # omitted name implicit so legacy detection and environment selection work.
+                init_settings.init_kwargs["database"] = database.model_dump(exclude={"database"})
+        return super().settings_customise_sources(
+            settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings
+        )
 
     @field_validator("cursor_signing_secret")
     @classmethod
@@ -320,7 +343,9 @@ class ServerSettings(BaseSettings):
             raise ValueError("AUTH_TOKEN requires ACCESS_MODE=enforced or legacy AUTH_ENABLED=true")  # noqa: TRY003
         if self.access.mode == "disabled" and self.access.background_principal_id is not None:
             raise ValueError("ACCESS_MODE=disabled cannot configure a background Principal")  # noqa: TRY003
-        if self.runtime.artifact_processing_role != "background" and is_unauthenticated_non_loopback_bind(
+        if (
+            self.runtime.artifact_processing_role != "background" or self.metrics.enabled
+        ) and is_unauthenticated_non_loopback_bind(
             host=self.http.host,
             auth_enabled=self.access.mode != "disabled",
             allow_unauthenticated_non_loopback=self.allow_unauthenticated_non_loopback,
