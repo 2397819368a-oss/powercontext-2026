@@ -30,6 +30,10 @@ powercontext server run
 pi
 ```
 
+如果其他路径下的旧 PowerContext 包带有 Pi 资源筛选，setup 会在修改宿主前停止。
+请将该包的注册路径改为报错中给出的受管理路径，保留筛选设置后重新执行 setup。
+已位于受管理路径的包在更新时保留现有筛选。
+
 ## 了解 package 的行为
 
 Pi 开始 agent turn 前，package 会以默认 8000-byte 预算调用一次 `POST /v1/context/prepare`。它只严格接受

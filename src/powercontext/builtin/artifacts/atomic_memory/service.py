@@ -16,7 +16,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -59,10 +60,16 @@ from powercontext.builtin.artifacts.merge_models import (
     ArtifactMergeWrite,
     PreparedArtifactMerge,
 )
-from powercontext.builtin.persistence.artifact_governance import ArtifactGovernance, ArtifactLifecycleState
+from powercontext.builtin.persistence.artifact_governance import (
+    ArtifactGovernance,
+    ArtifactLifecycleState,
+    decode_artifact_governance,
+)
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository
 from powercontext.builtin.persistence.atomic_memory_index import PreparedAtomicMemoryProjection
+from powercontext.builtin.persistence.errors import RepositoryNotFoundError
+from powercontext.errors import ArtifactNotFoundError
 from powercontext.sources import SourceRef
 
 if TYPE_CHECKING:
@@ -323,6 +330,31 @@ class AtomicMemoryService:
         return _atomic_record(
             await self.shared.get(connection, scope_id, artifact_id, context, revision=revision, for_update=for_update)
         )
+
+    async def read_many(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        heads: Sequence[Mapping[Any, Any]],
+    ) -> tuple[AtomicMemoryRecord, ...]:
+        """Hydrate a snapshot's heads without rereading their Revision or governance."""
+        states = tuple(decode_artifact_governance(head) for head in heads)
+        artifacts = await self.artifacts.decode_many(connection, scope_id, heads)
+        return tuple(
+            _atomic_record(ArtifactMergeRecord(artifact=artifact, state=state))
+            for artifact, state in zip(artifacts, states, strict=True)
+        )
+
+    async def read_state(self, connection, scope_id: str, artifact_id: str, context) -> AtomicMemoryRead:
+        """Read the current reference and lifecycle from one authoritative head."""
+        ref = ArtifactRef(family="atomic-memory", artifact_id=artifact_id, revision=1)
+        current = None
+        with suppress(RepositoryNotFoundError):
+            current = await self.shared.states.get(connection, scope_id, "atomic-memory", artifact_id)
+        await self.security.authorize(connection, scope_id, context, "read", ref)
+        if current is None:
+            raise ArtifactNotFoundError(ref)
+        return AtomicMemoryRead(ref=current.artifact, **_atomic_state(current).model_dump())
 
     async def inspect_change(
         self,

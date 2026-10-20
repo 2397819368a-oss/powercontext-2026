@@ -110,7 +110,7 @@ powercontext archive restore ./backups/payments.pcb --yes
 | --- | --- |
 | Scope identity、层级、context/external reference 和创建 identity | Scope access binding 和 host-local default selection |
 | Source journal head、Source record 和引用的远程 Source Definition manifest | 搜索 projection 和 index |
-| Artifact Revision、稳定句柄、lineage、跨 Scope 发布来源和 head | Source cursor 和 scheduler state |
+| Artifact Revision 及其时间戳、actor、回滚元数据；稳定句柄、lineage、跨 Scope 发布来源和 head | Source cursor 和 scheduler state |
 | Atomic Memory 合并关系和带合并输入标记的 lineage | External Skill registration 和 host-local installation state |
 | Candidate version、decision head 及其 evidence reference | Audit event、usage fact、evaluation receipt 和 restore receipt |
 | 托管 Skill 包的文件内容与 manifest；Artifact 标签 | 下载地址和主机本地 Skill 路径 |
@@ -179,8 +179,10 @@ record type。producer version 仅用于诊断，不能替代 archive schema ver
 writer 只生成版本 `1`，不支持降级到格式 `0`。遇到未知 archive 或 record schema
 version 时，reader 会在目标写入前拒绝。跨 PowerContext 大版本升级时，应保留旧二进制，直到恢复演练通过。
 
-`artifact_head`、`artifact_lineage_artifact` 和 `candidate_head` 要求 record schema version `2`。
-reader 会拒绝这些记录不完整的 schema version `1` 表示，而不是补上默认合并状态或 Candidate 类型。
+`artifact_revision`、`artifact_head`、`artifact_lineage_artifact` 和 `candidate_head` 要求 record schema version `2`。
+reader 会拒绝这些记录不完整的 schema version `1` 表示，而不是丢弃 revision 元数据或补上默认合并状态、Candidate 类型。
+旧数据库中 revision 元数据为空时，归档保留显式 null，不会编造 actor、时间戳或回滚历史。目标缺少归档所需列时，
+应先用当前 Runtime 升级；dry-run 会报告不兼容，不会修改目标数据库。
 归档不满足兼容检查时，请用当前二进制从源数据库重新导出。
 二进制字段使用 canonical Base64；时间戳使用受支持数据库 profile 输出的 canonical、无时区 ISO 文本。恢复会在写入前拒绝
 替代编码、携带时区偏移的时间戳及超出存储范围的值，不会接受读回后 digest 改变、再次恢复却产生冲突的表示。

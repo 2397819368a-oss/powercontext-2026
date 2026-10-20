@@ -52,6 +52,7 @@ from powercontext.builtin.runtime import (
     GetDreamRunRequest,
     InferenceConfig,
     ProposeExperienceRequest,
+    RuntimeConfig,
     composition,
 )
 from powercontext.builtin.runtime.family_processing import FamilyWorkerSpec, _run_family_worker
@@ -176,6 +177,9 @@ def test_dream_worker_usage_persists_once_in_scope_stats(tmp_path, monkeypatch, 
     config = BuiltinConfig(
         database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'dream-usage.db'}"),
         inference=InferenceConfig(generation_model="openai-chat:controlled-usage"),
+        # Exact totals need time for concurrent SQLite writers to finish. The
+        # recorder tests cover drops under short best-effort write/flush budgets.
+        runtime=RuntimeConfig(model_usage_write_timeout_seconds=5.0, model_usage_flush_timeout_seconds=10.0),
     )
     proposals = {}
 
@@ -267,7 +271,12 @@ def test_dream_worker_usage_persists_once_in_scope_stats(tmp_path, monkeypatch, 
 
 
 def test_memory_dream_approval_embedding_usage_survives_replay_and_restart(tmp_path):
-    config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'approval-usage.db'}"))
+    config = BuiltinConfig(
+        database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'approval-usage.db'}"),
+        # Verify persistence and replay without exhausting the usage budget on a
+        # loaded runner; wait for accepted records before comparing exact totals.
+        runtime=RuntimeConfig(model_usage_write_timeout_seconds=5.0, model_usage_flush_timeout_seconds=10.0),
+    )
 
     class Embedding:
         profile = EmbeddingProfile(

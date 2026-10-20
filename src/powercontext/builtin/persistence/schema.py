@@ -46,6 +46,7 @@ async def ensure_portable_timestamp_precision(connection: AsyncConnection, table
         return
 
     portable_columns = {
+        "pc_artifacts": "created_at",
         "pc_profile_policies": "updated_at",
         "pc_topic_memory_revision_publications": "published_at",
         "pc_artifact_tags": "assigned_at",
@@ -62,6 +63,7 @@ async def ensure_portable_timestamp_precision(connection: AsyncConnection, table
             {"table_name": table.name, "column_name": column},
         )
         if precision is not None and int(precision) < 6:
+            nullability = "NULL" if table.c[column].nullable else "NOT NULL"
             await connection.exec_driver_sql(
-                f"ALTER TABLE `{table.name}` MODIFY COLUMN `{column}` DATETIME(6) NOT NULL"
+                f"ALTER TABLE `{table.name}` MODIFY COLUMN `{column}` DATETIME(6) {nullability}"
             )

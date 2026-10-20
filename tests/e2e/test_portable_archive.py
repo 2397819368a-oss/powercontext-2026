@@ -48,6 +48,7 @@ from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.seekdb import SeekDBConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import (
+    ARTIFACTS_TABLE,
     MEMORY_ENTRY_VERSIONS_TABLE,
     SCOPES_TABLE,
     SOURCE_JOURNAL_HEADS_TABLE,
@@ -247,6 +248,119 @@ def test_archive_recovers_canonical_default_scope_into_a_fresh_deployment(
             assert target.archive is not None
             reexported = await target.archive.export([restored.scope_id], tmp_path / "again.pcb", authorize=authorize)
             assert reexported.total_digest == exported.total_digest
+
+    asyncio.run(scenario())
+
+
+def test_archive_preserves_revision_metadata_after_restart(tmp_path: Path, target_config: BuiltinConfig) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive = tmp_path / "revisions.pcb"
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Revision history", summary="Preserve audit evidence", idempotency_key="revisions")
+            )
+            created = await source.records.create_artifact(
+                scope.scope_id, "profile", ArtifactWrite(content={"content": "# Profile\n\nKeep the original choice."})
+            )
+            original = await source.records.get_artifact(scope.scope_id, "profile", created.artifact_id)
+            await source.records.replace_artifact(
+                scope.scope_id,
+                "profile",
+                created.artifact_id,
+                '"revision:1"',
+                ArtifactWrite(content={"content": "# Profile\n\nUse a different choice."}),
+            )
+            rollback = await source.records.replace_artifact(
+                scope.scope_id,
+                "profile",
+                created.artifact_id,
+                '"revision:2"',
+                ArtifactWrite(
+                    content={"content": original.content["content"]},
+                    restored_from_revision=1,
+                    reason="Restore the confirmed choice",
+                ),
+                actor_type="user",
+                actor_id="archive-operator",
+            )
+            assert rollback.created_at is not None
+            assert rollback.created_by is not None and rollback.created_by.id == "archive-operator"
+            expected = await source.records.list_artifact_revisions(
+                scope.scope_id, "profile", created.artifact_id, limit=10, cursor=None
+            )
+            exported = await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        async with open_builtin_contexts(target_config) as legacy:
+            legacy_scope = await legacy.scopes.create(
+                ScopeDraft(title="Legacy metadata", summary="Unknown timestamp", idempotency_key="legacy-metadata")
+            )
+            legacy_profile = await legacy.records.create_artifact(
+                legacy_scope.scope_id,
+                "profile",
+                ArtifactWrite(content={"content": "# Profile\n\nKeep unknown history."}),
+            )
+            async with legacy.database.transaction() as connection:
+                await connection.execute(
+                    update(ARTIFACTS_TABLE)
+                    .where(ARTIFACTS_TABLE.c.scope_id == legacy_scope.scope_id)
+                    .values(created_at=None)
+                )
+                if connection.dialect.name == "mysql":
+                    await connection.exec_driver_sql("ALTER TABLE pc_artifacts MODIFY COLUMN created_at DATETIME NULL")
+        async with open_builtin_contexts(target_config) as target:
+            assert (
+                await target.records.get_artifact(legacy_scope.scope_id, "profile", legacy_profile.artifact_id)
+            ).created_at is None
+            assert (await target.portability.restore(archive)).projections_ready
+            assert (await target.portability.restore(archive)).inserted == 0
+        async with open_builtin_contexts(target_config) as target:
+            assert await target.records.get_artifact(scope.scope_id, "profile", created.artifact_id) == rollback
+            assert (
+                await target.records.list_artifact_revisions(
+                    scope.scope_id, "profile", created.artifact_id, limit=10, cursor=None
+                )
+                == expected
+            )
+            reexported = await target.portability.export(
+                [scope.scope_id], tmp_path / "reexport.pcb", authorize=authorize
+            )
+            assert reexported.total_digest == exported.total_digest
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("created_at", None), ("created_by", '{"type":"user","id":"another-operator"}')],
+)
+def test_archive_detects_revision_metadata_conflicts(tmp_path: Path, field: str, value: object) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive = tmp_path / "metadata-conflict.pcb"
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Metadata conflict", summary="Preserve immutable history", idempotency_key="metadata")
+            )
+            created = await source.records.create_artifact(
+                scope.scope_id, "profile", ArtifactWrite(content={"content": "# Profile\n\nKeep the recorded choice."})
+            )
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            await target.portability.restore(archive)
+            async with target.database.transaction() as connection:
+                await connection.execute(
+                    update(ARTIFACTS_TABLE).where(ARTIFACTS_TABLE.c.scope_id == scope.scope_id).values({field: value})
+                )
+            before = await target.records.get_artifact(scope.scope_id, "profile", created.artifact_id)
+            validation = await target.portability.validate(archive)
+            assert not validation.compatible and validation.conflicts == 1
+            with pytest.raises(BundleConflictError):
+                await target.portability.restore(archive)
+            assert await target.records.get_artifact(scope.scope_id, "profile", created.artifact_id) == before
 
     asyncio.run(scenario())
 

@@ -21,7 +21,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel, RootModel
-from sqlalchemy import insert, select, update
+from sqlalchemy import case, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef
@@ -42,6 +42,7 @@ from powercontext.builtin.review.models import (
     MAX_CANDIDATE_PAGE_SIZE,
     Candidate,
     CandidateAudit,
+    CandidateCatalogItem,
     CandidatePage,
     CandidateStatus,
 )
@@ -126,50 +127,62 @@ class CandidateRepository:
             raise CandidateNotFoundError(candidate_id)
         return self.decode_candidate(row)
 
-    async def list(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        /,
-        *,
-        status: CandidateStatus,
-        family: str | None,
-        cursor: str | None,
-        limit: int,
-    ) -> CandidatePage[Any]:
-        """List one stable Review Inbox page ordered by Candidate identity."""
+    async def page(self, connection, scope_id, *, status, family, candidate_kind, cursor, limit, metadata_only=False):
+        """Read a stable bounded window; Tag proposals retain their required target basis."""
+        from powercontext.builtin.persistence.catalog_changes import decode_tag_candidate
 
         _require_scope(scope_id)
-        if limit < 1 or limit > MAX_CANDIDATE_PAGE_SIZE:
+        if not 1 <= limit <= MAX_CANDIDATE_PAGE_SIZE:
             raise InvalidRepositoryArgumentError("limit", f"must be between 1 and {MAX_CANDIDATE_PAGE_SIZE}")
+        heads, versions = CANDIDATE_HEADS_TABLE, CANDIDATE_VERSIONS_TABLE
+        columns = (heads, versions)
+        if metadata_only:
+            columns = (
+                heads.c.candidate_id,
+                heads.c.candidate_kind,
+                heads.c.family,
+                heads.c.version,
+                heads.c.status,
+                versions.c.reason,
+                heads.c.result_payload,
+                heads.c.decision_reason,
+                case((heads.c.candidate_kind == "tag", versions.c.proposal), else_=None).label("proposal"),
+            )
         statement = (
-            select(CANDIDATE_HEADS_TABLE, CANDIDATE_VERSIONS_TABLE)
+            select(*columns)
             .join(
-                CANDIDATE_VERSIONS_TABLE,
-                (CANDIDATE_VERSIONS_TABLE.c.scope_id == CANDIDATE_HEADS_TABLE.c.scope_id)
-                & (CANDIDATE_VERSIONS_TABLE.c.candidate_id == CANDIDATE_HEADS_TABLE.c.candidate_id)
-                & (CANDIDATE_VERSIONS_TABLE.c.version == CANDIDATE_HEADS_TABLE.c.version),
+                versions,
+                (heads.c.scope_id == versions.c.scope_id)
+                & (heads.c.candidate_id == versions.c.candidate_id)
+                & (heads.c.version == versions.c.version),
             )
-            .where(
-                CANDIDATE_HEADS_TABLE.c.scope_id == scope_id,
-                CANDIDATE_HEADS_TABLE.c.candidate_kind == "artifact",
-                CANDIDATE_HEADS_TABLE.c.status == status.value,
-            )
-            .order_by(CANDIDATE_HEADS_TABLE.c.candidate_id)
-            .limit(limit + 1)
+            .where(heads.c.scope_id == scope_id, heads.c.status == status.value)
         )
         if family is not None:
-            if family not in self._proposal_types:
-                raise InvalidCandidateError("family", family)
-            statement = statement.where(CANDIDATE_HEADS_TABLE.c.family == family)
+            statement = statement.where(heads.c.family == family)
+        if candidate_kind is not None:
+            statement = statement.where(heads.c.candidate_kind == candidate_kind)
         if cursor is not None:
-            statement = statement.where(CANDIDATE_HEADS_TABLE.c.candidate_id > cursor)
-        rows = list((await connection.execute(statement)).mappings())
-        has_more = len(rows) > limit
-        selected = rows[:limit]
-        candidates = tuple(self.decode_candidate(row) for row in selected)
-        next_cursor = candidates[-1].candidate_id if has_more and candidates else None
-        return CandidatePage(candidates=candidates, next_cursor=next_cursor)
+            statement = statement.where(heads.c.candidate_id > cursor)
+        rows = tuple((await connection.execute(statement.order_by(heads.c.candidate_id).limit(limit + 1))).mappings())
+        items = tuple(
+            decode_tag_candidate(row)
+            if row["candidate_kind"] == "tag"
+            else CandidateCatalogItem.model_validate(row)
+            if metadata_only
+            else self.decode_candidate(row)
+            for row in rows[:limit]
+        )
+        return items, rows[limit - 1]["candidate_id"] if len(rows) > limit else None
+
+    async def list(self, connection, scope_id, /, *, status, family, cursor, limit):
+        """List one stable Artifact Review Inbox page ordered by Candidate identity."""
+        if family is not None and family not in self._proposal_types:
+            raise InvalidCandidateError("family", family)
+        items, cursor = await self.page(
+            connection, scope_id, status=status, family=family, candidate_kind="artifact", cursor=cursor, limit=limit
+        )
+        return CandidatePage(candidates=items, next_cursor=cursor)
 
     async def revise(
         self,

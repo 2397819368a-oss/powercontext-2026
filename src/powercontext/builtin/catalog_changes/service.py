@@ -73,11 +73,15 @@ class CatalogChangeService:
         self._repository = CatalogCandidateRepository()
         self._bound_connection = connection
         self._authorization_context = authorization_context
+        self._authorize_many = None
         self.authorize_action: Callable[[str, str, TagDreamTarget], Awaitable[None]] | None = None
 
-    def configure_authorization(self, authorize: EvidenceAuthorizer, context: AuthorizationContext) -> None:
+    def configure_authorization(
+        self, authorize: EvidenceAuthorizer, context: AuthorizationContext, *, authorize_many=None
+    ) -> None:
         self._evidence.authorize = authorize
         self._authorization_context = context
+        self._authorize_many = authorize_many
 
     @asynccontextmanager
     async def _connection(self) -> AsyncIterator[AsyncConnection]:
@@ -90,6 +94,16 @@ class CatalogChangeService:
             raise InvalidCandidateError("basis", "missing content basis")
         if self._evidence.authorize is not None:
             await self._evidence.authorize(reference)
+
+    async def _authorize_targets(self, candidates, connection):
+        if self._authorize_many is None:
+            for candidate in candidates:
+                await self._authorize_target(candidate.proposal)
+            return
+        refs = tuple(candidate.proposal.basis_ref for candidate in candidates)
+        if any(ref is None for ref in refs):
+            raise InvalidCandidateError("basis", "missing content basis")
+        await self._authorize_many(refs, connection)
 
     async def _basis(self, connection: AsyncConnection, target: TagDreamTarget) -> None:
         await self._authorize_target(target)
@@ -171,11 +185,18 @@ class CatalogChangeService:
                 raise TagPreconditionError
             return await self._repository.create(connection, self._scope_id, candidate)
 
-    async def get(self, candidate_id: str, *, current: bool = False) -> CatalogChangeCandidate:
-        async with self._connection() as connection:
+    async def get(self, candidate_id: str, *, current: bool = False, connection=None) -> CatalogChangeCandidate:
+        async with (
+            self._authorization_context(),
+            self._database.connection(connection if connection is not None else self._bound_connection) as connection,
+        ):
             candidate = await self._repository.get(connection, self._scope_id, candidate_id, current=current)
-            await self._authorize_target(candidate.proposal)
+            await self._authorize_targets((candidate,), connection)
             return candidate
+
+    async def authorize_candidates(self, candidates, connection):
+        async with self._authorization_context():
+            await self._authorize_targets(candidates, connection)
 
     async def list(
         self,
@@ -192,17 +213,19 @@ class CatalogChangeService:
             candidates = await self._repository.list(
                 connection, self._scope_id, status=status, after=cursor or "", limit=limit + 1
             )
-            for candidate in candidates[:limit]:
-                await self._authorize_target(candidate.proposal)
+            await self._authorize_targets(candidates[:limit], connection)
             return CatalogCandidatePage(
                 candidates=candidates[:limit],
                 next_cursor=candidates[limit - 1].candidate_id if len(candidates) > limit else None,
             )
 
-    async def history(self, candidate_id: str) -> tuple[CatalogChangeCandidate, ...]:
-        async with self._connection() as connection:
+    async def history(self, candidate_id: str, *, connection=None) -> tuple[CatalogChangeCandidate, ...]:
+        async with (
+            self._authorization_context(),
+            self._database.connection(connection if connection is not None else self._bound_connection) as connection,
+        ):
             candidates = await self._repository.history(connection, self._scope_id, candidate_id)
-            await self._authorize_target(candidates[-1].proposal)
+            await self._authorize_targets(candidates[-1:], connection)
             return candidates
 
     async def revise(

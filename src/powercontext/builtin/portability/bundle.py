@@ -107,6 +107,7 @@ from powercontext.builtin.persistence.tables import (
     SOURCES_TABLE,
     TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE,
 )
+from powercontext.builtin.records import ArtifactRevisionActor
 from powercontext.builtin.sources.observation_validation import (
     validate_source_definition_manifest,
     validate_source_observation,
@@ -311,7 +312,8 @@ _SPECS: dict[RecordType, _RecordSpec] = {
     "artifact_revision": _RecordSpec(
         ARTIFACTS_TABLE,
         ("scope_id", "family", "artifact_id", "revision"),
-        ("content",),
+        ("content", "created_at", "created_by", "restored_from_revision", "rollback_reason"),
+        schema_version=2,
     ),
     "artifact_handle": _RecordSpec(
         ARTIFACT_HANDLES_TABLE,
@@ -475,7 +477,7 @@ class PortableBundleService:
         projection_rebuilder: ProjectionRebuilder | None = None,
         supported_source_types: Iterable[str] | None = None,
         supported_artifact_families: Iterable[str] | None = None,
-        artifact_content_decoder: Callable[[str, bytes], object] | None = None,
+        artifact_content_decoder: Callable[[Mapping[str, Any]], object] | None = None,
         candidate_decoder: Callable[[Mapping[str, Any]], object] | None = None,
         source_decoder: Callable[[Mapping[str, Any]], object] | None = None,
     ) -> None:
@@ -742,12 +744,25 @@ class PortableBundleService:
                     if sqlalchemy_inspect(sync_connection).has_table(spec.table.name)
                 }
             )
+            checked_types: set[RecordType] = set()
             for processed, record in enumerate(_iter_records(source), start=1):
                 self._validate_target_content(record, supported_source_types=supported_source_types)
-                table = _SPECS[record.record_type].table
+                spec = _SPECS[record.record_type]
+                table = spec.table
                 if table.name not in existing_tables:
                     _report_progress(progress, "target", processed, total)
                     continue
+                if record.record_type not in checked_types:
+                    columns = await connection.run_sync(
+                        lambda sync_connection, table_name=table.name: {
+                            column["name"] for column in sqlalchemy_inspect(sync_connection).get_columns(table_name)
+                        }
+                    )
+                    if not {*spec.identity, *spec.payload} <= columns:
+                        raise BundleCompatibilityError(
+                            "target schema lacks required archive fields; start the current Runtime to upgrade it"
+                        )
+                    checked_types.add(record.record_type)
                 keys = (record.identity, *_unique_identities(record))
                 where = or_(
                     *(
@@ -755,7 +770,8 @@ class PortableBundleService:
                         for identity in keys
                     )
                 )
-                rows = (await connection.execute(select(table).where(where))).mappings().all()
+                statement = select(*(table.c[field] for field in (*spec.identity, *spec.payload))).where(where)
+                rows = (await connection.execute(statement)).mappings().all()
                 if rows:
                     if all(
                         _record_from_row(record.record_type, cast(Mapping[str, Any], row)).digest == record.digest
@@ -781,7 +797,7 @@ class PortableBundleService:
         if self._supported_artifact_families is not None and family not in self._supported_artifact_families:
             return
         try:
-            self._artifact_content_decoder(family, cast(bytes, _database_value(record.payload["content"])))
+            self._artifact_content_decoder(_row_values(record))
         except InvalidStoredPayloadError as error:
             raise BundleFormatError("Artifact content does not match the target family decoder") from error
 
@@ -1388,6 +1404,17 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             raise BundleFormatError("Skill package has invalid digest")
     elif kind == "artifact_revision":
         bytes_values("content")
+        strings("created_at", "created_by", "rollback_reason", nullable=("created_at", "created_by", "rollback_reason"))
+        if payload["created_at"] is not None:
+            _validate_datetime_text(payload["created_at"])
+        if payload["created_by"] is not None:
+            try:
+                ArtifactRevisionActor.model_validate_json(payload["created_by"])
+            except ValueError as error:
+                raise BundleFormatError("Artifact revision has invalid actor metadata") from error
+        restored = payload["restored_from_revision"]
+        if restored is not None and (type(restored) is not int or not 0 < restored < int(identity["revision"])):
+            raise BundleFormatError("Artifact revision has invalid rollback metadata")
     elif kind == "artifact_handle":
         strings("artifact_id")
         integers("revision", positive=True)
@@ -1797,8 +1824,11 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
         for ref in refs:
             if not contains("artifact_revision", {"scope_id": scope, **ref.model_dump()}):
                 raise BundleFormatError("recurrence references missing exact Artifact revision")
-    elif record.record_type == "artifact_revision" and identity["family"] == "topic-memory":
-        if not contains("topic_memory_publication", identity):
+    elif record.record_type == "artifact_revision":
+        restored = payload["restored_from_revision"]
+        if restored is not None and not contains("artifact_revision", {**identity, "revision": restored}):
+            raise BundleFormatError("Artifact rollback references missing revision")
+        if identity["family"] == "topic-memory" and not contains("topic_memory_publication", identity):
             raise BundleFormatError("Topic Memory revision has no publication metadata")
     elif record.record_type == "topic_memory_publication":
         if not contains("artifact_revision", identity):

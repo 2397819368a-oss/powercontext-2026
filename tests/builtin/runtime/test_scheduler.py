@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from collections import Counter
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -570,16 +571,23 @@ def test_scheduler_activation_drops_finished_startup_request(tmp_path, caplog, f
         assert current_request_id() is None
         try:
             dispatched = triggers.dispatched if family == "memory" else incubation.dispatched
-            await asyncio.wait_for(dispatched.wait(), timeout=3)
-            records = [r for r in caplog.records if getattr(r, "event", None) == "background.operation.completed"]
-            assert records
-            assert all(r.outcome == "success" for r in records)
-            assert all(r.request_id is None for r in records)
-            roots = [s for s in exporter.get_finished_spans() if s.name.startswith("scheduled.")]
-            assert roots and all(s.parent is None for s in roots)
-            assert all(r.trace_id == format(roots[0].context.trace_id, "032x") for r in records)
+            # Exercise multiple activations without assuming how many run before shutdown.
+            for _ in range(2):
+                await asyncio.wait_for(dispatched.wait(), timeout=3)
+                dispatched.clear()
         finally:
             await runtime.close()
+
+        records = [r for r in caplog.records if getattr(r, "event", None) == "background.operation.completed"]
+        assert records
+        assert all(r.outcome == "success" for r in records)
+        assert all(r.request_id is None for r in records)
+        roots = [s for s in exporter.get_finished_spans() if s.name.startswith("scheduled.")]
+        assert len(roots) >= 2 and all(s.parent is None for s in roots)
+        assert len({s.context.trace_id for s in roots}) == len(roots)
+        assert Counter((r.trace_id, r.span_id) for r in records) == Counter(
+            (format(s.context.trace_id, "032x"), format(s.context.span_id, "016x")) for s in roots
+        )
 
     try:
         asyncio.run(scenario())

@@ -258,6 +258,9 @@ def _emit_validation_result(source: Path, /, *, env_file: Path | None) -> None:
         _emit(validation)
         if not validation.compatible:
             raise typer.Exit(code=3)
+    except BundleCompatibilityError as error:
+        typer.echo(f"error: archive target is incompatible: {error}", err=True)
+        raise typer.Exit(code=3) from error
     except BundleFormatError as error:
         typer.echo(f"error: archive validation failed: {error}", err=True)
         raise typer.Exit(code=2) from error

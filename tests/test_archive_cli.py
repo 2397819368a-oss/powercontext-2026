@@ -14,6 +14,7 @@
 
 import asyncio
 import json
+import sqlite3
 import struct
 import zipfile
 from pathlib import Path
@@ -25,6 +26,7 @@ from typer.testing import CliRunner
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import SCOPES_TABLE
+from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts, open_builtin_runtime
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.cli import archive as archive_module
@@ -33,6 +35,47 @@ from powercontext.cli.archive import archive_app
 from powercontext.paths import default_database_path, sqlite_url
 from powercontext.sources import AdapterSourceDefinition, SourceDefinitionRegistry
 from tests.builtin.persistence.contract import NoteAdapter, NoteInput
+
+
+def test_archive_cli_dry_run_reports_legacy_target_without_migrating_it(tmp_path, monkeypatch) -> None:
+    archive = tmp_path / "revisions.pcb"
+    target_file = tmp_path / "target.db"
+    target_url = sqlite_url(target_file)
+    target_config = BuiltinConfig(database=SQLiteConfig(url=target_url))
+
+    async def seed() -> None:
+        async def authorize(_scopes: tuple[str, ...]) -> None:
+            pass
+
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Revision metadata", summary="Upgrade before validation", idempotency_key="metadata")
+            )
+            await source.records.create_artifact(
+                scope.scope_id, "profile", ArtifactWrite(content={"content": "# Profile\n\nRetain revision metadata."})
+            )
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        async with open_builtin_contexts(target_config):
+            pass
+
+    asyncio.run(seed())
+    with sqlite3.connect(target_file) as connection:
+        for column in ("created_at", "created_by", "restored_from_revision", "rollback_reason"):
+            connection.execute(f"ALTER TABLE pc_artifacts DROP COLUMN {column}")
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_KIND", "sqlite")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", target_url)
+    runner = CliRunner()
+    cli = create_cli([archive_app])
+    before = target_file.read_bytes()
+    dry_run = runner.invoke(cli, ["archive", "restore", str(archive), "--dry-run"])
+    assert dry_run.exit_code == 3, dry_run.output
+    assert "target schema lacks required archive fields" in dry_run.output
+    assert target_file.read_bytes() == before
+    restored = runner.invoke(cli, ["archive", "restore", str(archive), "--yes"])
+    assert restored.exit_code == 0, restored.output
+    compatible = runner.invoke(cli, ["archive", "restore", str(archive), "--dry-run"])
+    assert compatible.exit_code == 0, compatible.output
 
 
 def test_archive_cli_restore_reports_unsupported_native_sources_consistently(tmp_path, monkeypatch) -> None:

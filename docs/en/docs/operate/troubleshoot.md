@@ -11,12 +11,12 @@ Start with:
 powercontext doctor
 ```
 
-The command checks the package, Server liveness, and Server readiness. It exits with status 1 unless every check is
+The command checks saved agents and their Servers, or the package and Server when no agents are saved. It exits 1 unless every check is
 `ok`; a `degraded` readiness result is usable but is not a complete diagnostic success. Add `--json` for automation;
-the top-level result and every check include `ok` and `status`. Check optional host integrations separately:
+JSON includes the overall `ok` result and individual diagnostic statuses. Select host integrations explicitly:
 
 ```bash
-powercontext doctor integrations
+powercontext doctor codex dsh
 powercontext doctor codex
 powercontext doctor claude-code
 powercontext doctor dsh
@@ -26,9 +26,9 @@ powercontext doctor pi
 powercontext doctor hermes
 ```
 
-`doctor integrations` prints every first-class host. A host whose CLI is not on PATH is `missing` and does not fail
-the command. A present host that is broken still exits 1. Single-host commands such as `doctor codex` stay fail-closed
-when that CLI is missing.
+`doctor` checks saved agent connections by default, falling back to package and Server checks when none are saved.
+Explicit names select the agents to check. A missing required CLI or unhealthy agent makes the command exit 1;
+other selected agents still receive their own results.
 
 ## Installation cannot read the Git URL
 
@@ -60,7 +60,7 @@ command -v hermes
 Add the uv tool bin directory to `PATH` if needed. `powercontext setup codex`, `powercontext setup claude-code`,
 `powercontext setup dsh`, `powercontext setup openclaw`, `powercontext setup opencode`, `powercontext setup pi`, and
 `powercontext setup hermes` report an error rather than attempting installation when the host CLI is unavailable.
-`powercontext setup select` installs only the hosts you choose. A selected host that is missing still fails that row
+`powercontext setup codex dsh` installs only the hosts you choose. A selected host that is missing still fails that row
 and does not block the other selected hosts. An unselected host is skipped even if its CLI is on `PATH`.
 
 ## The plugin is missing or stale

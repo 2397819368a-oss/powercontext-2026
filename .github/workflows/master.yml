@@ -6,6 +6,7 @@ on:
       - master
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,6 +16,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-changes.yml
+
   quality:
     timeout-minutes: 20
     runs-on: ubuntu-latest
@@ -44,6 +48,8 @@ jobs:
         run: make contract-test
 
   tests:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').tests) }}
     timeout-minutes: 40
     runs-on: ubuntu-latest
     strategy:
@@ -66,7 +72,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Set up project tools
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
 
       - name: Cache DSH configuration dependencies
         if: matrix.suite == 'unit'
@@ -93,7 +99,50 @@ jobs:
         if: matrix.suite == 'e2e'
         run: make e2e-test
 
+  worker-observability:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.12"
+
+      - name: Test worker traces and metrics without skips
+        run: |
+          uv run --locked --extra tracing-otlp python -m pytest -q -ra \
+            tests/e2e/test_worker_otlp.py \
+            tests/e2e/test_worker_model_usage.py \
+            tests/test_observability_health.py \
+            --junitxml="$RUNNER_TEMP/worker-observability.xml"
+          uv run --locked --extra tracing-otlp python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ["RUNNER_TEMP"]) / "worker-observability.xml"
+          cases = list(ET.parse(report).iter("testcase"))
+          if not cases or any(case.find(tag) is not None for case in cases for tag in ("skipped", "failure", "error")):
+              raise SystemExit("Worker traces and metrics must execute and pass without skips")
+          print(f"Worker observability: {len(cases)} cases passed without skips.")
+          PY
+
+      - name: Save worker observability results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: worker-observability
+          path: ${{ runner.temp }}/worker-observability.xml
+          if-no-files-found: error
+
   evaluation-tests:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').evaluation) }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -154,6 +203,8 @@ jobs:
           echo "::error title=evaluation unit tests failed::${detail}"
 
   code-seekdb:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').database) }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     strategy:
@@ -231,8 +282,10 @@ jobs:
           if-no-files-found: ignore
 
   atomic-memory-clean-seekdb:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').database) }}
     name: Atomic Memory clean migration (SeekDB)
-    timeout-minutes: 40
+    timeout-minutes: 50
     runs-on: ubuntu-latest
     env:
       POWERCONTEXT_TEST_MIGRATION_SEEKDB: "1"
@@ -258,6 +311,16 @@ jobs:
           uv run --locked --extra seekdb python scripts/run_atomic_memory_clean_migration.py \
             seekdb --output "$MIGRATION_REPORTS"
 
+      - name: Test long-query retrieval and admission without skips
+        timeout-minutes: 10
+        env:
+          TMPDIR: ${{ runner.temp }}/am-seekdb
+        run: |
+          uv run --locked --extra seekdb python scripts/run_atomic_memory_clean_migration.py \
+            seekdb --output "$MIGRATION_REPORTS/long-query" --tests \
+            tests/e2e/test_atomic_artifact_search_http.py \
+            tests/e2e/test_atomic_memory_long_fts_query.py
+
       - name: Collect native diagnostics
         if: always()
         env:
@@ -281,6 +344,8 @@ jobs:
           retention-days: 7
 
   windows-unit-portability:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').tests) }}
     timeout-minutes: 20
     runs-on: windows-latest
     steps:
@@ -343,9 +408,10 @@ jobs:
           tests/test_service.py
           tests/test_service_bootstrap.py
           tests/test_service_environment.py
-          tests/test_cli_workbuddy.py::test_setup_workbuddy_remote_checkout_refreshes_the_requested_ref
 
   dify-tools:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').dify) }}
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -401,7 +467,7 @@ jobs:
           cache-dependency-path: .artifacts/dify-daemon/go.sum
 
       - name: Set up project tools
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
 
       - name: Check daemon serialization, host casting, Workflow selectors and SDK HTTP readback
         env:
@@ -410,6 +476,8 @@ jobs:
         run: make dify-test
 
   hermes-skills:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').hermes) }}
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -435,6 +503,8 @@ jobs:
         run: uv run pytest tests/e2e/test_hermes_skills.py
 
   dsh-package:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').dsh) }}
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
@@ -447,7 +517,7 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Set up project tools
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
 
       - name: Cache DSH dependencies
         uses: ./.github/actions/cache-pnpm
@@ -480,6 +550,8 @@ jobs:
         run: uv run pytest tests/test_integration_guidance_evaluation.py::test_dsh_controlled_native_handoff_uses_only_mcp_tools_and_preserves_complete_carriers
 
   pi-package:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').pi) }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -492,7 +564,7 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Set up project tools
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
 
       - name: Cache Pi dependencies
         uses: ./.github/actions/cache-pnpm
@@ -507,6 +579,8 @@ jobs:
         run: uv run pytest "tests/test_integration_guidance_evaluation.py::test_native_adapter_handoff_uses_real_request_mapping_and_response_envelopes[pi]"
 
   opencode-package:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').opencode) }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -516,7 +590,7 @@ jobs:
       - name: Set up the Python environment
         uses: ./.github/actions/setup-python-env
 
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
       - name: Cache OpenCode dependencies
         uses: ./.github/actions/cache-pnpm
         with:
@@ -529,6 +603,8 @@ jobs:
         run: uv run pytest "tests/test_integration_guidance_evaluation.py::test_native_adapter_handoff_uses_real_request_mapping_and_response_envelopes[opencode]"
 
   openclaw-package:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').openclaw) }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -538,7 +614,7 @@ jobs:
       - name: Set up the Python environment
         uses: ./.github/actions/setup-python-env
 
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
       # The pinned OpenClaw SDK requires the SQLite runtime shipped with Node 24.15+.
       - run: mise install node@24.15.0
       - name: Cache OpenClaw dependencies
@@ -553,6 +629,8 @@ jobs:
         run: mise exec node@24.15.0 -- uv run pytest tests/test_integration_guidance_evaluation.py::test_openclaw_handoff_adapter_preserves_generated_source_identity
 
   opendal-package:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').opendal) }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -571,6 +649,8 @@ jobs:
 
 
   website-link-validation-windows:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').website) }}
     timeout-minutes: 20
     runs-on: windows-latest
     steps:
@@ -580,7 +660,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up website tools
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
 
       - name: Cache website dependencies
         uses: ./.github/actions/cache-pnpm
@@ -595,6 +675,8 @@ jobs:
         run: pnpm --dir website test:links
 
   check-website:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').website) }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -607,7 +689,7 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Set up website tools
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
 
       - name: Cache website dependencies
         uses: ./.github/actions/cache-pnpm

@@ -54,7 +54,7 @@ class ExperienceArtifactSearcher:
         if isinstance(self._index, NoExperienceIndex):
             raise ArtifactSearchUnsupported(self.family, field="mode")
         scope = validate_scope_id(scope_id)
-        async with self._database.transaction() as connection:
+        async with self._database.transaction(consistent_snapshot=True) as connection:
             outcome = await self._index.search(
                 connection,
                 scope,
@@ -65,19 +65,17 @@ class ExperienceArtifactSearcher:
                 require_scores=True,
             )
             matches: list[ArtifactSearchMatch] = []
-            artifacts: list[Experience] = []
             for hit in outcome.hits:
                 if hit.retrieval_score is None or hit.channel_scores is None or "text" not in hit.channel_scores:
                     raise InvalidSearchScore("public Experience search requires true text scoring metadata")  # noqa: TRY003
                 matches.append(ArtifactSearchMatch(hit.artifact_ref, hit.retrieval_score, hit.channel_scores))
-                try:
-                    artifact = await self._artifacts.get(connection, scope, hit.artifact_ref)
-                except RepositoryNotFoundError as error:
-                    raise ArtifactSearchContractError(
-                        self.family, "selected exact Artifact revision is missing"
-                    ) from error
-                artifacts.append(cast(Experience, artifact))
-            return replace(outcome, matches=tuple(matches), artifacts=tuple(artifacts))
+            try:
+                artifacts = await self._artifacts.get_many(
+                    connection, scope, tuple(hit.artifact_ref for hit in outcome.hits)
+                )
+            except RepositoryNotFoundError as error:
+                raise ArtifactSearchContractError(self.family, "selected exact Artifact revision is missing") from error
+            return replace(outcome, matches=tuple(matches), artifacts=cast(tuple[Experience, ...], artifacts))
 
 
 __all__ = ["ExperienceArtifactSearcher"]

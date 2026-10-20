@@ -20,7 +20,12 @@ env:
   CI: 'true'
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-changes.yml
+
   controlled-cli:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').kimi) }}
     name: controlled-cli (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15

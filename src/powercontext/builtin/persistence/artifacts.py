@@ -17,12 +17,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
-from sqlalchemy import insert, select, true, tuple_, update
+from sqlalchemy import and_, insert, literal, select, true, tuple_, union_all, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.sql import FromClause, Select
 
 from powercontext.artifacts import (
     Artifact,
@@ -40,6 +42,11 @@ from powercontext.builtin.persistence.errors import (
     RepositoryNotFoundError,
     StoredPayloadConflictError,
 )
+from powercontext.builtin.persistence.revision_meta import (
+    attach_revision_meta,
+    meta_from_row,
+    rollback_columns,
+)
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_LINEAGE_ARTIFACTS_TABLE,
@@ -54,6 +61,19 @@ from powercontext.errors import (
 )
 from powercontext.limits import MAX_SCOPE_ID_LENGTH
 from powercontext.sources import SourceRef
+
+
+def with_artifact_content(statement: Select[Any], heads: FromClause = ARTIFACT_HEADS_TABLE) -> Select[Any]:
+    """Join each selected head to its exact body, retaining dangling heads for validation."""
+    return statement.add_columns(
+        *(
+            ARTIFACTS_TABLE.c[name]
+            for name in ("content", "created_at", "created_by", "restored_from_revision", "rollback_reason")
+        )
+    ).outerjoin(
+        ARTIFACTS_TABLE,
+        and_(*(ARTIFACTS_TABLE.c[name] == heads.c[name] for name in ("scope_id", "family", "artifact_id", "revision"))),
+    )
 
 
 class RepositoryArtifactDraft(BaseModel):
@@ -91,12 +111,6 @@ class ArtifactRepository:
         """Return the registered domain Families whose writes require their owning service."""
 
         return frozenset(self._by_family)
-
-    def decode_content(self, family: str, payload: bytes, /) -> BaseModel:
-        """Decode canonical content using the registered family's storage contract."""
-
-        self._artifact_type(family)
-        return load_model(self._content_types[family], payload, kind="artifact", name=family)
 
     @property
     def source_repository(self) -> Any | None:
@@ -398,18 +412,19 @@ class ArtifactRepository:
         """Load one exact revision with ordered direct lineage."""
 
         _require_scope(scope_id)
+        if not for_update:
+            return (await self.get_many(connection, scope_id, (ref,)))[0]
         statement = select(ARTIFACTS_TABLE).where(
             ARTIFACTS_TABLE.c.scope_id == scope_id,
             ARTIFACTS_TABLE.c.family == ref.family,
             ARTIFACTS_TABLE.c.artifact_id == ref.artifact_id,
             ARTIFACTS_TABLE.c.revision == ref.revision,
         )
-        if for_update:
-            statement = statement.with_for_update()
+        statement = statement.with_for_update()
         row = (await connection.execute(statement)).mappings().one_or_none()
         if row is None:
             raise RepositoryNotFoundError("artifact", (scope_id, ref))
-        return await self._decode_row(connection, row)
+        return (await self.decode_many(connection, scope_id, (row,)))[0]
 
     async def get_many(
         self,
@@ -435,28 +450,45 @@ class ArtifactRepository:
             ARTIFACTS_TABLE.c.artifact_id,
             ARTIFACTS_TABLE.c.revision,
         )
-        rows = (
-            await connection.execute(
-                select(ARTIFACTS_TABLE).where(
-                    ARTIFACTS_TABLE.c.scope_id == scope_id,
-                    identity.in_(keys),
+        by_key = {}
+        for offset in range(0, len(keys), 100):
+            rows = (
+                await connection.execute(
+                    select(ARTIFACTS_TABLE).where(
+                        ARTIFACTS_TABLE.c.scope_id == scope_id,
+                        identity.in_(keys[offset : offset + 100]),
+                    )
                 )
-            )
-        ).mappings()
-        by_key = {(str(row["family"]), str(row["artifact_id"]), int(row["revision"])): row for row in rows}
+            ).mappings()
+            by_key.update({(str(row["family"]), str(row["artifact_id"]), int(row["revision"])): row for row in rows})
         for ref in requested:
             key = (ref.family, ref.artifact_id, ref.revision)
             if key not in by_key:
                 raise RepositoryNotFoundError("artifact", (scope_id, ref))
 
-        lineage = await self._load_lineage_many(connection, scope_id, keys)
-        return tuple(
-            self._decode_artifact(
-                by_key[(ref.family, ref.artifact_id, ref.revision)],
-                lineage[(ref.family, ref.artifact_id, ref.revision)],
-            )
-            for ref in requested
-        )
+        decoded = await self.decode_many(connection, scope_id, tuple(by_key.values()))
+        by_ref = {(artifact.family, artifact.artifact_id, artifact.revision): artifact for artifact in decoded}
+        return tuple(by_ref[(ref.family, ref.artifact_id, ref.revision)] for ref in requested)
+
+    async def decode_many(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        rows: Sequence[Mapping[Any, Any]],
+    ) -> tuple[Artifact[Any], ...]:
+        """Expand already-read authoritative rows, preserving direct and publication lineage."""
+        if not rows:
+            return ()
+        keys = tuple((str(row["family"]), str(row["artifact_id"]), int(row["revision"])) for row in rows)
+        for key, row in zip(keys, rows, strict=True):
+            if row["content"] is None:
+                raise RepositoryNotFoundError(
+                    "artifact", (scope_id, ArtifactRef(family=key[0], artifact_id=key[1], revision=key[2]))
+                )
+        lineage = {}
+        for offset in range(0, len(keys), 100):
+            lineage.update(await self._load_lineage_many(connection, scope_id, keys[offset : offset + 100]))
+        return tuple(self._decode_artifact(row, lineage[key]) for key, row in zip(keys, rows, strict=True))
 
     async def latest(
         self,
@@ -550,10 +582,7 @@ class ArtifactRepository:
                 .order_by(ARTIFACTS_TABLE.c.revision)
             )
         ).mappings()
-        revisions: list[Artifact[Any]] = []
-        for row in rows:
-            revisions.append(await self._decode_row(connection, row))
-        return tuple(revisions)
+        return await self.decode_many(connection, scope_id, tuple(rows))
 
     async def copy_exact(
         self,
@@ -603,6 +632,8 @@ class ArtifactRepository:
         if not isinstance(content, BaseModel):
             raise TypeError("artifact content must be a BaseModel")  # noqa: TRY003
         payload = dump_model(content, kind="artifact", name=artifact_type.family)
+        created_at = datetime.now(UTC)
+        stamped = rollback_columns(ref.family, ref.artifact_id, ref.revision)
         await connection.execute(
             insert(ARTIFACTS_TABLE).values(
                 scope_id=scope_id,
@@ -610,6 +641,8 @@ class ArtifactRepository:
                 artifact_id=ref.artifact_id,
                 revision=ref.revision,
                 content=payload,
+                created_at=created_at,
+                **stamped,
             )
         )
         if lineage.sources:
@@ -651,23 +684,10 @@ class ArtifactRepository:
             content=content,
             lineage=lineage,
         )
+        attach_revision_meta(artifact, meta_from_row({"created_at": created_at, **stamped}))
         if artifact.as_ref() != ref:
             raise IdentityMismatchError("artifact", ref, artifact.as_ref())
         return artifact
-
-    async def _decode_row(
-        self,
-        connection: AsyncConnection,
-        row: Mapping[Any, Any],
-    ) -> Artifact[Any]:
-        family = str(row["family"])
-        ref = ArtifactRef(
-            family=family,
-            artifact_id=str(row["artifact_id"]),
-            revision=int(row["revision"]),
-        )
-        lineage = await self._load_lineage(connection, str(row["scope_id"]), ref)
-        return self._decode_artifact(row, lineage)
 
     def _decode_artifact(
         self,
@@ -676,10 +696,7 @@ class ArtifactRepository:
     ) -> Artifact[Any]:
         family = str(row["family"])
         artifact_type = self._artifact_type(family)
-        content = self.decode_content(
-            family,
-            stored_bytes(row["content"], column="payload"),
-        )
+        content = self.decode_content(row)
         ref = ArtifactRef(
             family=family,
             artifact_id=str(row["artifact_id"]),
@@ -691,9 +708,21 @@ class ArtifactRepository:
             content=content,
             lineage=lineage,
         )
+        attach_revision_meta(artifact, meta_from_row(row))
         if artifact.as_ref() != ref:
             raise IdentityMismatchError("artifact", ref, artifact.as_ref())
         return artifact
+
+    def decode_content(self, row: Mapping[Any, Any]) -> BaseModel:
+        """Validate a stored body's Family schema without inventing unrequested lineage."""
+        family = str(row["family"])
+        self._artifact_type(family)
+        return load_model(
+            self._content_types[family],
+            stored_bytes(row["content"], column="payload"),
+            kind="artifact",
+            name=family,
+        )
 
     async def _load_lineage_many(
         self,
@@ -701,168 +730,160 @@ class ArtifactRepository:
         scope_id: str,
         keys: Sequence[tuple[str, str, int]],
     ) -> dict[tuple[str, str, int], ArtifactLineage]:
-        source_identity = tuple_(
-            ARTIFACT_LINEAGE_SOURCES_TABLE.c.family,
-            ARTIFACT_LINEAGE_SOURCES_TABLE.c.artifact_id,
-            ARTIFACT_LINEAGE_SOURCES_TABLE.c.revision,
+        source, artifact, publication = (
+            ARTIFACT_LINEAGE_SOURCES_TABLE.c,
+            ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c,
+            ARTIFACT_PUBLICATIONS_TABLE.c,
         )
-        source_rows = (
-            await connection.execute(
-                select(ARTIFACT_LINEAGE_SOURCES_TABLE)
-                .where(
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.scope_id == scope_id,
-                    source_identity.in_(keys),
-                )
-                .order_by(
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.family,
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.artifact_id,
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.revision,
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.ordinal,
-                )
+        columns = (
+            "relation",
+            "family",
+            "artifact_id",
+            "revision",
+            "ordinal",
+            "ref_scope",
+            "ref_family",
+            "ref_id",
+            "ref_revision",
+            "digest",
+        )
+
+        def project(relation, table, *, prefix="", **references):
+            fields = {
+                "relation": literal(relation),
+                **{name: table[prefix + name] for name in ("family", "artifact_id", "revision")},
+                **references,
+            }
+            return select(*(fields.get(name, literal(None)).label(name) for name in columns)).where(
+                table[prefix + "scope_id"] == scope_id,
+                tuple_(*(table[prefix + name] for name in ("family", "artifact_id", "revision"))).in_(keys),
             )
-        ).mappings()
-        artifact_identity = tuple_(
-            ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.family,
-            ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.artifact_id,
-            ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.revision,
-        )
-        artifact_rows = (
+
+        relations = union_all(
+            project("source", source, ordinal=source.ordinal, ref_family=source.source_type, ref_id=source.source_id),
+            project(
+                "artifact",
+                artifact,
+                ordinal=artifact.ordinal,
+                ref_family=artifact.upstream_family,
+                ref_id=artifact.upstream_artifact_id,
+                ref_revision=artifact.upstream_revision,
+            ),
+            project(
+                "publication",
+                publication,
+                prefix="target_",
+                ordinal=literal(0),
+                ref_scope=publication.source_scope_id,
+                ref_family=publication.source_family,
+                ref_id=publication.source_artifact_id,
+                ref_revision=publication.source_revision,
+                digest=publication.content_digest,
+            ),
+        ).subquery("artifact_relations")
+        rows = (
             await connection.execute(
-                select(ARTIFACT_LINEAGE_ARTIFACTS_TABLE)
-                .where(
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.scope_id == scope_id,
-                    artifact_identity.in_(keys),
-                )
-                .order_by(
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.family,
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.artifact_id,
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.revision,
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.ordinal,
+                select(relations).order_by(
+                    relations.c.family,
+                    relations.c.artifact_id,
+                    relations.c.revision,
+                    relations.c.relation,
+                    relations.c.ordinal,
                 )
             )
         ).mappings()
         sources: dict[tuple[str, str, int], list[SourceRef]] = {key: [] for key in keys}
         artifacts: dict[tuple[str, str, int], list[ArtifactRef]] = {key: [] for key in keys}
-        for row in source_rows:
+        publications = {}
+        for row in rows:
             key = (str(row["family"]), str(row["artifact_id"]), int(row["revision"]))
-            sources[key].append(SourceRef(source_type=str(row["source_type"]), source_id=str(row["source_id"])))
-        for row in artifact_rows:
-            key = (str(row["family"]), str(row["artifact_id"]), int(row["revision"]))
-            artifacts[key].append(
-                ArtifactRef(
-                    family=str(row["upstream_family"]),
-                    artifact_id=str(row["upstream_artifact_id"]),
-                    revision=int(row["upstream_revision"]),
+            if row["relation"] == "source":
+                sources[key].append(SourceRef(source_type=str(row["ref_family"]), source_id=str(row["ref_id"])))
+            elif row["relation"] == "artifact":
+                artifacts[key].append(
+                    ArtifactRef(
+                        family=str(row["ref_family"]),
+                        artifact_id=str(row["ref_id"]),
+                        revision=int(row["ref_revision"]),
+                    )
                 )
+            else:
+                publications[scope_id, *key] = (
+                    (str(row["ref_scope"]), str(row["ref_family"]), str(row["ref_id"]), int(row["ref_revision"])),
+                    str(row["digest"]),
+                )
+        provenance = await self._load_publication_provenance_many(connection, scope_id, keys, publications)
+        return {
+            key: ArtifactLineage(
+                sources=tuple(sources[key]),
+                artifacts=tuple(artifacts[key]),
+                publication_source=provenance[key][0],
+                publication_digest=provenance[key][1],
             )
-        return {key: ArtifactLineage(sources=tuple(sources[key]), artifacts=tuple(artifacts[key])) for key in keys}
+            for key in keys
+        }
 
-    async def _load_lineage(
+    async def _load_publication_provenance_many(
         self,
         connection: AsyncConnection,
         scope_id: str,
-        ref: ArtifactRef,
-    ) -> ArtifactLineage:
-        sources = (
-            await connection.execute(
-                select(
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.source_type,
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.source_id,
-                )
-                .where(
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.scope_id == scope_id,
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.family == ref.family,
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.artifact_id == ref.artifact_id,
-                    ARTIFACT_LINEAGE_SOURCES_TABLE.c.revision == ref.revision,
-                )
-                .order_by(ARTIFACT_LINEAGE_SOURCES_TABLE.c.ordinal)
-            )
-        ).all()
-        artifacts = (
-            await connection.execute(
-                select(
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.upstream_family,
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.upstream_artifact_id,
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.upstream_revision,
-                )
-                .where(
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.scope_id == scope_id,
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.family == ref.family,
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.artifact_id == ref.artifact_id,
-                    ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.revision == ref.revision,
-                )
-                .order_by(ARTIFACT_LINEAGE_ARTIFACTS_TABLE.c.ordinal)
-            )
-        ).all()
-        publication_source, publication_digest = await self._load_publication_provenance(
-            connection,
-            ArtifactAddress(scope_id=scope_id, artifact=ref),
-        )
-        return ArtifactLineage(
-            sources=tuple(SourceRef(source_type=str(row.source_type), source_id=str(row.source_id)) for row in sources),
-            artifacts=tuple(
-                ArtifactRef(
-                    family=str(row.upstream_family),
-                    artifact_id=str(row.upstream_artifact_id),
-                    revision=int(row.upstream_revision),
-                )
-                for row in artifacts
-            ),
-            publication_source=publication_source,
-            publication_digest=publication_digest,
-        )
-
-    async def _load_publication_provenance(
-        self,
-        connection: AsyncConnection,
-        target: ArtifactAddress,
-    ) -> tuple[ArtifactAddress | None, str | None]:
-        """Resolve a publication chain to the Scope that owns the original revision."""
-
-        current = target
-        digest: str | None = None
-        visited: set[tuple[str, str, str, int]] = set()
-        while True:
-            key = (
-                current.scope_id,
-                current.artifact.family,
-                current.artifact.artifact_id,
-                current.artifact.revision,
-            )
-            if key in visited:
-                raise InvalidPublicationLineageError("cycle")
-            visited.add(key)
-
-            publication = (
-                (
-                    await connection.execute(
-                        select(ARTIFACT_PUBLICATIONS_TABLE).where(
-                            ARTIFACT_PUBLICATIONS_TABLE.c.target_scope_id == current.scope_id,
-                            ARTIFACT_PUBLICATIONS_TABLE.c.target_family == current.artifact.family,
-                            ARTIFACT_PUBLICATIONS_TABLE.c.target_artifact_id == current.artifact.artifact_id,
-                            ARTIFACT_PUBLICATIONS_TABLE.c.target_revision == current.artifact.revision,
+        keys: Sequence[tuple[str, str, int]],
+        publications: dict[tuple[str, str, str, int], tuple[tuple[str, str, str, int], str]],
+    ) -> dict[tuple[str, str, int], tuple[ArtifactAddress | None, str | None]]:
+        """Read each publication frontier once and validate every exact path."""
+        current = {key: (scope_id, *key) for key in keys}
+        digests: dict[tuple[str, str, int], str | None] = dict.fromkeys(keys)
+        visited = {key: set() for key in keys}
+        known = set(current.values())
+        result = {}
+        table = ARTIFACT_PUBLICATIONS_TABLE.c
+        identity = tuple_(table.target_scope_id, table.target_family, table.target_artifact_id, table.target_revision)
+        while current:
+            missing = sorted(set(current.values()) - known)
+            for offset in range(0, len(missing), 100):
+                batch = missing[offset : offset + 100]
+                rows = (
+                    await connection.execute(select(ARTIFACT_PUBLICATIONS_TABLE).where(identity.in_(batch)))
+                ).mappings()
+                for row in rows:
+                    target = (
+                        str(row["target_scope_id"]),
+                        str(row["target_family"]),
+                        str(row["target_artifact_id"]),
+                        int(row["target_revision"]),
+                    )
+                    source = (
+                        str(row["source_scope_id"]),
+                        str(row["source_family"]),
+                        str(row["source_artifact_id"]),
+                        int(row["source_revision"]),
+                    )
+                    publications[target] = source, str(row["content_digest"])
+                known.update(batch)
+            pending = {}
+            for origin, target in current.items():
+                if target in visited[origin]:
+                    raise InvalidPublicationLineageError("cycle")
+                visited[origin].add(target)
+                publication = publications.get(target)
+                if publication is None:
+                    address = (
+                        None
+                        if digests[origin] is None
+                        else ArtifactAddress(
+                            scope_id=target[0],
+                            artifact=ArtifactRef(family=target[1], artifact_id=target[2], revision=target[3]),
                         )
                     )
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if publication is None:
-                return (None, None) if digest is None else (current, digest)
-
-            current_digest = str(publication["content_digest"])
-            if digest is None:
-                digest = current_digest
-            elif digest != current_digest:
-                raise InvalidPublicationLineageError("digest")
-            current = ArtifactAddress(
-                scope_id=str(publication["source_scope_id"]),
-                artifact=ArtifactRef(
-                    family=str(publication["source_family"]),
-                    artifact_id=str(publication["source_artifact_id"]),
-                    revision=int(publication["source_revision"]),
-                ),
-            )
+                    result[origin] = address, digests[origin]
+                    continue
+                source, digest = publication
+                if digests[origin] is not None and digests[origin] != digest:
+                    raise InvalidPublicationLineageError("digest")
+                digests[origin] = digest
+                pending[origin] = source
+            current = pending
+        return result
 
     async def _head_conflict(
         self,

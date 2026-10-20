@@ -129,7 +129,7 @@ Format version 1 carries the portable relational representation of these support
 | --- | --- |
 | Scope identity, hierarchy, context/external references, and creation identity | Scope access bindings and host-local default selection |
 | Source journal heads, Source records, and referenced remote Source Definition manifests | Search projections and indexes |
-| Artifact Revisions, stable handles, lineage, cross-Scope publication provenance, and heads | Source cursors and scheduler state |
+| Artifact Revisions, their timestamps/actors/rollback metadata, stable handles, lineage, cross-Scope publication provenance, and heads | Source cursors and scheduler state |
 | Atomic Memory merge relationships and marked merge-input lineage | External Skill registrations and host-local installation state |
 | Candidate versions, decision heads, and their evidence references | Audit events, usage facts, evaluation receipts, and restore receipts |
 | Managed Skill package bytes and manifests; Artifact tags | Download locations and host-local Skill paths |
@@ -206,8 +206,11 @@ does not replace the archive schema version or record-type compatibility checks.
 format `0` downgrade. A reader rejects unknown archive or record schema versions before target writes. Keep the old
 binary available until a restore drill succeeds when upgrading across a PowerContext major release.
 
-`artifact_head`, `artifact_lineage_artifact` and `candidate_head` require record schema version `2`. Incomplete schema
-version `1` representations of these records are rejected rather than assigning default merge state or Candidate kind.
+`artifact_revision`, `artifact_head`, `artifact_lineage_artifact` and `candidate_head` require record schema version `2`.
+Incomplete schema version `1` representations of these records are rejected rather than discarding revision metadata
+or assigning default merge state or Candidate kind. Legacy database revisions retain explicit null metadata; restore
+does not invent an actor, timestamp or rollback history. A target missing required archive columns must first be
+upgraded by the current Runtime; dry-run reports this incompatibility without changing the target.
 Create a fresh bundle from the source database with the current binary when a bundle fails these compatibility checks.
 Binary fields use canonical Base64, and timestamp fields use the canonical timezone-naive ISO text emitted by the
 supported database profiles. Alternative encodings, offset-bearing timestamps and out-of-range storage values are

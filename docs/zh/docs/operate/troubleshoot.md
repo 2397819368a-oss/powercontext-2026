@@ -11,12 +11,12 @@ description: 诊断 PowerContext 安装、Server、数据库和宿主集成问�
 powercontext doctor
 ```
 
-该命令检查安装包、Server liveness 和 Server readiness；只有所有检查均为 `ok` 时才以状态码 0 退出。
-`degraded` 表示仍可使用，但不算完整诊断成功。自动化场景可添加 `--json`，顶层结果和每个检查都会包含
-`ok` 与 `status`。可单独检查可选的宿主集成：
+该命令检查已保存的 Agent 及其 Server；未保存连接时检查安装包和 Server。只有所有检查均为 `ok` 时才以状态码 0 退出。
+`degraded` 表示仍可使用，但不算完整诊断成功。自动化场景可添加 `--json`，查看整体 `ok` 结果
+和各项诊断状态。可显式选择要检查的宿主集成：
 
 ```bash
-powercontext doctor integrations
+powercontext doctor codex dsh
 powercontext doctor codex
 powercontext doctor claude-code
 powercontext doctor dsh
@@ -26,8 +26,8 @@ powercontext doctor pi
 powercontext doctor hermes
 ```
 
-`doctor integrations` 会打印全部一级宿主。CLI 不在 PATH 上时该行是 `missing`，不会让整条命令失败；已安装但异常的
-宿主仍会以状态码 1 退出。单宿主命令（如 `doctor codex`）在该 CLI 缺失时仍然失败。
+`doctor` 默认检查已保存的 Agent 连接，没有已保存连接时检查安装包和 Server。显式名称用于选择检查对象。
+选中的 Agent 缺少必需 CLI 或检查异常时，命令以状态码 1 退出，其余选中 Agent 仍会得到各自结果。
 
 ## 安装时无法读取 Git 地址
 
@@ -59,12 +59,12 @@ command -v hermes
 必要时把 uv tool bin 目录加入 `PATH`。宿主 CLI 不可用时，`powercontext setup codex`、
 `powercontext setup claude-code`、`powercontext setup dsh`、`powercontext setup openclaw`、
 `powercontext setup opencode`、`powercontext setup pi` 和 `powercontext setup hermes` 都会报告错误，而不会尝试安装。
-`powercontext setup select` 只安装你选中的宿主。某个选中宿主未安装时，该行失败，但不会阻塞其余选中项；
+`powercontext setup codex dsh` 只安装你选中的宿主。某个选中宿主未安装时，该行失败，但不会阻塞其余选中项；
 未选中的宿主即使已在 `PATH` 上也不会安装。
 
 ## 插件缺失或版本不一致
 
-先在不涉及 Server 的情况下确认集成故障：
+检查选中的集成及其 Server 连接：
 
 ```bash
 powercontext doctor codex

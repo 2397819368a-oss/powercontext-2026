@@ -6,7 +6,7 @@ status: community
 
 # Kimi Code
 
-The integration is experimental and supports the minimal profile: Memory read/write, automatic Source capture and context injection. One configured Scope is shared across projects and sessions in the selected Kimi home. Use another Kimi home or explicitly reconfigure the Scope when work needs isolation.
+The integration is experimental and supports the minimal profile: Memory read/write, automatic Source capture and context injection. An explicit Scope can be shared across projects, or workspace bindings can select a separate Scope for each working directory.
 
 ## Install
 
@@ -29,7 +29,7 @@ kimi
 
 The source must be a local checkout or the unconfigured plugin directory from it; the installed managed copy is not an update source. Kimi and Node must be on PATH; KIMI_CLI_BIN can point to a real binary or built main.mjs for diagnostics and acceptance. KIMI_CODE_HOME selects the Kimi home, defaulting to ~/.kimi-code.
 
-Setup installs a managed copy at <Kimi home>/plugins/managed/powercontext and registers it in plugins/installed.json. It leaves model configuration and other plugins intact, preserves plugin/MCP disablement, and restores previous registration and plugin contents if publication fails. If rollback itself is denied, setup retains the previous plugin at plugins/managed/.powercontext-kimi-backup and reports the recovery path; restore it before retrying. Repeat setup to update; omitted endpoint, Scope and capture options preserve installed settings. Reinstall from the source to change files in the managed copy.
+Setup installs a managed copy at <Kimi home>/plugins/managed/powercontext and registers it in plugins/installed.json. It leaves model configuration and other plugins intact, preserves plugin/MCP disablement, and restores previous registration and plugin contents if publication fails. If rollback itself is denied, setup reports where the previous contents remain; restore the reported target from that path before retrying. Repeat setup to update; omitted endpoint, Scope and capture options preserve installed settings. Reinstall from the source to change files in the managed copy.
 
 Open a **new session** after installation or reconfiguration; an existing session may retain its old Skill or MCP configuration. The plugin is user-wide, not repository-local. Setup does not create a Scope or modify bindings. HTTPS and loopback HTTP are supported; non-loopback plaintext HTTP is rejected.
 
@@ -54,6 +54,29 @@ powercontext setup kimi-code --source /path/to/powercontext --no-capture-prompts
 The Hook has a 4-second total budget and returns context through Kimi's message field. Failures continue ordinary work and emit redacted stderr diagnostics. A capture response lost after sending is unknown and is not retried automatically. Separate submissions, including identical text, get separate Source IDs.
 
 Explicit Memory operations need no Generation API. Automatic Memory requires the Server's Generation configuration and scheduled processing; Source acceptance alone does not prove Memory creation, and the plugin does not flush. Kimi credentials do not supply Server Generation credentials.
+
+
+## Workspace Scope binding
+
+To use separate project Scopes within one Kimi home, install or update in workspace mode:
+
+```text
+powercontext setup kimi-code --source /path/to/powercontext --workspace-scope
+node "<Kimi home>/plugins/managed/powercontext/scripts/scope.mjs" bind --cwd /absolute/project --scope-id <existing-scope-id>
+node "<Kimi home>/plugins/managed/powercontext/scripts/scope.mjs" resolve --cwd /absolute/project
+powercontext doctor kimi-code --cwd /absolute/project --json
+node "<Kimi home>/plugins/managed/powercontext/scripts/scope.mjs" unbind --cwd /absolute/project
+```
+
+Open a new Kimi session after changing the installation mode. An explicit `--scope-id` overrides workspace bindings; `--workspace-scope` clears that explicit selection, and the options are mutually exclusive. Omitting both on an update preserves the installed mode. Initial installation requires one of them.
+
+The Hook, Scope script and doctor use the same Server resolution: explicit Scope, then the workspace binding, then the Server default. A missing or broken binding target fails resolution without client fallback or Scope creation. Explicit Scope resolution does not require a workspace key: `scope.mjs resolve` may omit `--cwd` in that mode. Workspace-mode resolution and all bind/unbind operations require an absolute working directory.
+
+The binding key uses integration `kimi-code`, kind `workspace`, and SHA-256 of the absolute working directory after native real-path resolution; it contains no raw path. Existing directories share a binding across symlink/junction aliases and case variants recognized by the filesystem. On POSIX, symlinks are followed before interpreting subsequent `..` components; Windows uses its native path semantics. Use the Kimi session's working directory; subdirectories retain separate identities, without Git-root discovery. If real-path resolution fails, the key uses the lexically normalized absolute path. Bind existing, accessible directories and bind again if their resolved identity changes. Session bindings are outside this integration's scope.
+
+Bind/unbind changes only that workspace's Server-owned binding. The JSON result keeps `binding` separate from subsequent resolution: a saved binding may be masked by an explicit Scope (`bound_scope_is_current: false`), or remain saved when resolution fails. An unconfirmed write stays `unknown` and is not retried automatically. Resolve again before claiming the active Scope changed.
+
+For native MCP operations, use this request's Hook binding metadata or a successful read-only Scope-script result for the actual workspace; never infer a Scope from historical content. Doctor reports the current Scope ID and selection strategy (`explicit` or `workspace_or_default`); the latter does not assert which fallback matched.
 
 ## Diagnose and remove
 
@@ -83,7 +106,7 @@ The local status script needs neither Server nor runtime token and never maintai
 node "<Kimi home>/plugins/managed/powercontext/scripts/status.mjs" --cwd /path/to/workspace --session-id <Kimi session ID>
 ```
 
-Doctor still probes current Server/Scope connectivity. `--runtime` adds local history without capture or flush; successful current probes do not rewrite historical outcomes.
+In workspace mode, history retains the Scope resolved at that time; offline queries do not recheck later binding changes. Use the doctor scope result for current resolution. Doctor still probes current Server/Scope connectivity. `--runtime` adds local history without capture or flush; successful current probes do not rewrite historical outcomes.
 
 ## Verification
 
