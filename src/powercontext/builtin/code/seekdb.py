@@ -420,8 +420,8 @@ class SeekDBGraphStore:
 
     def remove_generation(self, generation_id: str, binding: str, deadline: float) -> None:
         """Delete a commit whose directory is gone; the identifier is the only handle left."""
-        try:
-            with self.connection(deadline) as connection, connection.cursor() as cursor:
+        with self.connection(deadline) as connection, connection.cursor() as cursor:
+            try:
                 for table in ("pc_code_edges", "pc_code_nodes"):
                     check_deadline(deadline)
                     cursor.execute(f"DELETE FROM {table} WHERE generation_id = %s", (generation_id,))  # noqa: S608 - constant tables.
@@ -429,9 +429,13 @@ class SeekDBGraphStore:
                     "DELETE FROM pc_code_generations WHERE id = %s AND binding = %s", (generation_id, binding)
                 )
                 connection.commit()
-        except pymysql.MySQLError as error:
-            if error.args[0] != 1146:  # This binding never created its tables.
-                raise
+            except pymysql.MySQLError as error:
+                # A binding whose first build was interrupted before initialize() has no
+                # tables yet, so nothing can be committed under this identifier. Handled
+                # inside the context because connection() turns MySQL errors into
+                # CodeError on exit, which would fail the retry this call exists to allow.
+                if error.args[0] != 1146:
+                    raise
 
     def _incomplete_staging(self, directory: Path, deadline: float) -> bool:
         # Older builders wrote graph.json in place before opening the transaction.

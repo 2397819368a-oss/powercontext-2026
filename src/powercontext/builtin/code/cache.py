@@ -125,8 +125,9 @@ class Generation:
 
 
 class GenerationCache:
-    #: Publication records are bookkeeping, not data: keeping a short window is
-    #: enough to reclaim an interrupted build and bounded on a long-lived binding.
+    #: How many publication records a binding normally carries. The bound is
+    #: enforced by recalling the commits it retires, never by forgetting a handle,
+    #: so a binding that keeps many generations pinned may stand above it.
     PUBLICATION_WINDOW = 64
 
     def __init__(self, directory: Path, store: GraphStore | None = None) -> None:
@@ -211,7 +212,7 @@ class GenerationCache:
             raise CodeError("index_integrity_failed")
         return {str(attempt): record for attempt, record in records.items() if isinstance(record, dict)}
 
-    def begin_publication(self, staging: Path) -> str:
+    def begin_publication(self, staging: Path, deadline: float) -> str:
         """Name the attempt before the store writes any row under it.
 
         The identifier has to come from here rather than the store: a commit that
@@ -221,18 +222,8 @@ class GenerationCache:
         attempt = uuid.uuid4().hex
         records = self.publications()
         records[attempt] = {"directory": staging.name, "state": "pending", "started_at": time.time()}
-        self._write_publications(records)
+        self._write_publications(records, deadline)
         return attempt
-
-    def complete_publication(self, attempt: str, directory: Path) -> None:
-        records = self.publications()
-        # The generation is already reachable at this point, so a missing record is
-        # repaired rather than raised: losing a name must not fail a live publication.
-        record = records.setdefault(
-            attempt, {"started_at": time.time(), "state": "pending", "directory": directory.name}
-        )
-        record.update({"directory": directory.name, "state": "published"})
-        self._write_publications(records)
 
     def recover(self, deadline: float) -> int:
         """Reclaim commits whose generation directory no longer exists.
@@ -240,35 +231,78 @@ class GenerationCache:
         ``collect()`` starts from directory names, so it cannot see a commit whose
         directory was removed out of band — a wiped cache, a pruned staging area.
         The records are the only place that still knows the identifier.
+
+        A missing directory is not proof that the commit is unwanted. The pointer
+        can still reach a generation whose manifest names the identifier these rows
+        were committed under, and a reader may be holding it. Reclaiming on
+        directory absence alone deletes live data, so that name is checked first.
         """
         records = self.publications()
+        retained = self._retained_identifiers()
         abandoned = [
             attempt
             for attempt, record in records.items()
-            if not (self.directory / str(record.get("directory", ""))).exists()
+            if attempt not in retained and not (self.directory / self._recorded_directory(record)).exists()
         ]
         for attempt in abandoned:
             self.store.remove_generation(attempt, self.directory.name, deadline)
             records.pop(attempt)
-        if abandoned:
-            self._write_publications(records)
+        if abandoned or len(records) > self.PUBLICATION_WINDOW:
+            self._write_publications(records, deadline)
         return len(abandoned)
 
-    def _write_publications(self, records: dict[str, dict[str, Any]]) -> None:
-        if len(records) > self.PUBLICATION_WINDOW:
-            ordered = sorted(records.items(), key=lambda item: item[1].get("started_at", 0))
-            records = dict(ordered[-self.PUBLICATION_WINDOW :])
-        self.replace_json("publication.json", {"attempts": records})
+    def _retained_identifiers(self) -> set[str]:
+        """Identifiers the pointer still reaches, read from the generations themselves.
 
-    def _forget_collected(self) -> None:
-        records = self.publications()
-        live = {
-            attempt: record
-            for attempt, record in records.items()
-            if (self.directory / str(record.get("directory", ""))).exists()
-        }
-        if len(live) != len(records):
-            self._write_publications(live)
+        A row is addressed by its identifier, not by the directory that carries it,
+        so the manifest inside each reachable generation is the only place that can
+        say which rows a live generation owns. A record whose directory has gone can
+        still point at one of them — that is the crash this guard exists for.
+        """
+        try:
+            pointer = self.pointer()
+        except CodeError:
+            return set()
+        retained: set[str] = set()
+        for reference in (pointer or {}).values():
+            if not isinstance(reference, dict):
+                continue
+            directory = reference.get("directory")
+            if not isinstance(directory, str):
+                continue
+            try:
+                manifest = read_json(self.directory / directory / "manifest.json")
+            except (CodeError, OSError):
+                continue
+            graph = manifest.get("graph")
+            identifier = graph.get("id") if isinstance(graph, dict) else None
+            if isinstance(identifier, str):
+                retained.add(identifier)
+        return retained
+
+    @staticmethod
+    def _recorded_directory(record: dict[str, Any]) -> str:
+        return str(record.get("directory", ""))
+
+    def _write_publications(self, records: dict[str, dict[str, Any]], deadline: float) -> None:
+        excess = len(records) - self.PUBLICATION_WINDOW
+        if excess > 0:
+            # A record is the only handle to rows that outlive their directory, so the
+            # window recalls those commits instead of forgetting them. A record whose
+            # directory still exists is a generation a reader may hold; it is never
+            # dropped, and the excess is allowed to stand.
+            stale = sorted(
+                (
+                    (attempt, record)
+                    for attempt, record in records.items()
+                    if not (self.directory / self._recorded_directory(record)).exists()
+                ),
+                key=lambda item: item[1].get("started_at", 0),
+            )
+            for attempt, _ in stale[:excess]:
+                self.store.remove_generation(attempt, self.directory.name, deadline)
+                records.pop(attempt)
+        self.replace_json("publication.json", {"attempts": records})
 
     def publish(
         self,
@@ -301,15 +335,26 @@ class GenerationCache:
                 if size > max_bytes:
                     raise CodeError("code_cache_limit_exceeded")
             directory = self.directory / ("generation-" + uuid.uuid4().hex)
+            if attempt is not None:
+                # Name the generation before it exists. Recording the final name only
+                # after the rename leaves a window where the record still points at a
+                # staging directory that has already gone: recovery would then read
+                # "directory missing" and delete the rows of a live generation.
+                # Written first, the record can only be wrong in the harmless
+                # direction — it names a directory that was never created, and the
+                # rows it recalls are the ones this attempt committed.
+                records = self.publications()
+                records[attempt] = {
+                    "directory": directory.name,
+                    "state": "published",
+                    "started_at": records.get(attempt, {}).get("started_at", time.time()),
+                }
+                self._write_publications(records, deadline)
             os.replace(staging, directory)
             reference = {"directory": directory.name, "manifest_sha256": digest_bytes(manifest_content)}
             self.replace_json(
                 "current.json", {"current": reference, "previous": pointer["current"] if pointer else None}
             )
-            if attempt is not None:
-                # The rename is the moment the generation becomes reachable, so the
-                # record has to point at the final name before anything reads it.
-                self.complete_publication(attempt, directory)
             self.collect(self.pointer(), deadline)
         return Generation(directory, manifest, self.store)
 
@@ -353,6 +398,10 @@ class GenerationCache:
             finally:
                 os.close(descriptor)
             self.collect(None, deadline)
+            # A directory that was removed out of band leaves nothing for collect() to
+            # start from; clearing is the last moment the binding is still named, so
+            # the records have to be settled here or their rows are charged forever.
+            self.recover(deadline)
             retained = sum(path.is_dir() and not path.is_symlink() for path in self.directory.glob("generation-*"))
             return {"status": "cleared", "retained_reader_generations": retained}
 
@@ -368,4 +417,3 @@ class GenerationCache:
             except CodeError as error:
                 if error.code != "code_cache_busy":
                     raise
-        self._forget_collected()

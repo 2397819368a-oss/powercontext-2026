@@ -156,7 +156,7 @@ class CodeService:
                     attributes.update(edge_count=len(edges), diagnostic_count=sum(map(len, diagnostics.values())))
                 nodes = [node for fact in facts for node in fact["nodes"]]
                 with stage("store"):
-                    publication = cache.begin_publication(staging)
+                    publication = cache.begin_publication(staging, deadline)
                     storage = self.store.create(staging, nodes, edges, deadline, generation_id=publication)
                 for path, issues in diagnostics.items():
                     key = entries[path]["extraction_key"]
