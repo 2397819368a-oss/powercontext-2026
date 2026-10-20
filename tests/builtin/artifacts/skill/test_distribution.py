@@ -153,8 +153,9 @@ def test_remote_publish_reconcile_download_receipt_and_safe_unpublish_converge()
             assert publication.generation == 0
             assert publication.state is AgentSkillProjectionState.PENDING
             statuses = await service.list_targets(scope_id, target_id=target.target_id)
-            assert await service.publish(scope_id, target.target_id, artifact, publication.generation) == (
-                statuses[0].publications[0]
+            assert (
+                await service.publish(scope_id, target.target_id, artifact, publication.generation)
+                == (statuses[0].publications[0])
             )
             assert len(statuses) == 1
             assert statuses[0].target.target_id == target.target_id
