@@ -66,6 +66,29 @@ def _show_version(value: bool) -> None:
         raise typer.Exit()
 
 
+def _load_command_providers() -> list[typer.Typer]:
+    requirements = tuple(Requirement(value) for value in requires("powercontext") or ())
+    available_roles = {role: _role_available(role, requirements) for role in set(_OPTIONAL_COMMAND_ROLES.values())}
+    commands: list[typer.Typer] = []
+    for entry_point in sorted(entry_points(group=COMMAND_PROVIDER_GROUP), key=lambda item: item.name):
+        role = _OPTIONAL_COMMAND_ROLES.get(entry_point.value)
+        if role is not None and not available_roles[role]:
+            continue
+        try:
+            command = entry_point.load()
+        except ModuleNotFoundError as error:
+            raise RuntimeError(  # noqa: TRY003
+                f"Cannot load CLI command provider {entry_point.name!r}: missing module {error.name!r}. "
+                "Repair the provider's installation and its dependencies."
+            ) from error
+        if not isinstance(command, typer.Typer):
+            raise TypeError(  # noqa: TRY003
+                f"CLI command provider {entry_point.name!r} did not load a Typer application"
+            )
+        commands.append(command)
+    return commands
+
+
 def create_cli(commands: Iterable[typer.Typer] | None = None) -> typer.Typer:
     """Create the Server-backed CLI with optional process command providers."""
 
@@ -120,26 +143,7 @@ def create_cli(commands: Iterable[typer.Typer] | None = None) -> typer.Typer:
     registered_names = register_commands(cli)
 
     if commands is None:
-        installed_commands: list[typer.Typer] = []
-        requirements = tuple(Requirement(value) for value in requires("powercontext") or ())
-        available_roles = {role: _role_available(role, requirements) for role in set(_OPTIONAL_COMMAND_ROLES.values())}
-        for entry_point in sorted(entry_points(group=COMMAND_PROVIDER_GROUP), key=lambda item: item.name):
-            role = _OPTIONAL_COMMAND_ROLES.get(entry_point.value)
-            if role is not None and not available_roles[role]:
-                continue
-            try:
-                command = entry_point.load()
-            except ModuleNotFoundError as error:
-                raise RuntimeError(  # noqa: TRY003
-                    f"Cannot load CLI command provider {entry_point.name!r}: missing module {error.name!r}. "
-                    "Repair the provider's installation and its dependencies."
-                ) from error
-            if not isinstance(command, typer.Typer):
-                raise TypeError(  # noqa: TRY003
-                    f"CLI command provider {entry_point.name!r} did not load a Typer application"
-                )
-            installed_commands.append(command)
-        commands = installed_commands
+        commands = _load_command_providers()
 
     for command in commands:
         name = command.info.name
