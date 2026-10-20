@@ -42,7 +42,8 @@ from powercontext.builtin.persistence.tables import (
 
 
 @pytest.mark.parametrize("existing", (False, True))
-def test_unsupported_sqlite_is_rejected_without_changing_storage(tmp_path, monkeypatch, existing) -> None:
+@pytest.mark.parametrize("version", ((3, 34, 1), (3, 37, 2)))
+def test_unsupported_sqlite_is_rejected_without_changing_storage(tmp_path, monkeypatch, existing, version) -> None:
     database = tmp_path / "legacy.db"
     if existing:
         with sqlite3.connect(database) as connection:
@@ -50,12 +51,12 @@ def test_unsupported_sqlite_is_rejected_without_changing_storage(tmp_path, monke
             connection.execute("INSERT INTO preserved VALUES ('keep')")
     before = database.read_bytes() if existing else None
     # Simulate the linked-library version; the test host still runs its installed SQLite.
-    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 34, 1))
-    monkeypatch.setattr(sqlite3, "sqlite_version", "3.34.1")
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", version)
+    monkeypatch.setattr(sqlite3, "sqlite_version", ".".join(map(str, version)))
 
     async def scenario() -> None:
         config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")
-        with pytest.raises(PersistenceError, match=r"SQLite 3\.35\.0.*SQLite 3\.34\.1"):
+        with pytest.raises(PersistenceError, match=r"SQLite 3\.38\.0.*this Python uses SQLite"):
             async with SQLiteProfile.open(config, tables=SHARED_TABLES):
                 pytest.fail("Unsupported SQLite must not accept database operations")
 

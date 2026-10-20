@@ -682,7 +682,9 @@ class RelationalAtomicMemoryIndex:
                 probe_lower_similarity=floor.min_semantic_similarity,
             )
             distance = "vec_distance_l2" if dialect == "sqlite" else "l2_distance"
-            similarity = f"(1.0 - POWER({distance}(embedding, :probe_vector), 2) / 2.0)"
+            distance_sql = f"{distance}(embedding, :probe_vector)"
+            squared = f"({distance_sql} * {distance_sql})" if dialect == "sqlite" else f"POWER({distance_sql}, 2)"
+            similarity = f"(1.0 - {squared} / 2.0)"
             current.append(f"({similarity} >= :probe_similarity)")
             recoverable.append(f"({similarity} >= :probe_lower_similarity)")
         if not recoverable:

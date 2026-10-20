@@ -33,6 +33,7 @@ from powercontext.builtin.persistence.atomic_memory_index import (
     AtomicMemoryRelatedRequest,
     AtomicMemorySearchRequest,
 )
+from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.tags import TagFilter
 from tests.e2e.atomic_memory_migration_backend import MigrationBackend, migration_index, migration_profile
 
@@ -115,7 +116,9 @@ def test_vector_search_filters_and_complete_threshold_enumeration(migration_back
                         connection,
                         "scope",
                         AtomicMemoryProjection(
-                            artifact_ref=ArtifactRef(family="atomic-memory", artifact_id=f"memory-{n:02}", revision=1),
+                            artifact_ref=ArtifactRef(
+                                family="atomic-memory", artifact_id=f"memory-{39 - n:02}", revision=1
+                            ),
                             state_version=0,
                             prepared=prepared,
                             tag_keys=("keep" if n % 3 else "other",),
@@ -132,7 +135,7 @@ def test_vector_search_filters_and_complete_threshold_enumeration(migration_back
                     ),
                 )
             filters = AtomicMemoryIndexFilter(kind="fact", tag_filter=TagFilter(tags=("keep",), match="all"))
-            expected = {f"memory-{n:02}" for n in range(40) if n % 2 and n % 3}
+            expected = {f"memory-{39 - n:02}" for n in range(40) if n % 2 and n % 3}
             request = AtomicMemorySearchRequest(
                 query="semantic",
                 filters=filters,
@@ -150,9 +153,19 @@ def test_vector_search_filters_and_complete_threshold_enumeration(migration_back
                 max_distance=0.1,
             )
             async with profile.database.transaction() as connection:
+                if isinstance(migration_backend.config, SQLiteConfig):
+                    # Supported SQLite builds need not enable optional math functions.
+                    driver = (await connection.get_raw_connection()).driver_connection
+                    assert driver is not None
+                    await driver.create_function("power", 2, None)
                 hits = (await index.search(connection, "scope", request)).vector
                 assert len(hits) == 5
                 assert {h.artifact_ref.artifact_id for h in hits} <= expected
+                if isinstance(migration_backend.config, SQLiteConfig):
+                    assert [hit.artifact_ref.artifact_id for hit in hits] == sorted(expected)[:5]
+                assert not await index.probe_recoverable(
+                    connection, "scope", request, AdmissionFloor(min_semantic_similarity=-1)
+                )
                 all_hits = await index.enumerate_related(connection, "scope", related)
                 assert {h.artifact_ref.artifact_id for h in all_hits} == expected
                 expanded = (await index.search(connection, "scope", replace(request, limit=20000))).vector

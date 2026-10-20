@@ -217,11 +217,10 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                 f"WHERE scope_id = :scope_id AND ({eligibility}))"
             )
         return (
-            f"WITH nearest AS MATERIALIZED (SELECT {_HIT_COLUMNS}, distance FROM {_VECTOR_TABLE} "  # noqa: S608
-            f"WHERE embedding MATCH :query_vector AND k = :neighbor_limit AND scope_id = :scope_id{filters}) "
-            f"SELECT {_HIT_COLUMNS}, distance, 0 AS invalid_vectors FROM nearest "
-            "WHERE max(-1.0, min(1.0, 1.0 - distance * distance / 2.0)) >= :min_semantic_similarity "
-            "ORDER BY distance, artifact_id"
+            f"SELECT {_HIT_COLUMNS}, distance, 0 AS invalid_vectors FROM {_VECTOR_TABLE} "  # noqa: S608
+            f"WHERE embedding MATCH :query_vector AND k = :neighbor_limit AND scope_id = :scope_id{filters} "
+            "AND max(-1.0, min(1.0, 1.0 - distance * distance / 2.0)) >= :min_semantic_similarity "
+            "ORDER BY distance"
         )
 
     async def _initialize_fts(self, connection: AsyncConnection) -> None:
@@ -390,7 +389,8 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                 neighbor_limit = min(4096, neighbor_limit * 2)
                 parameters["neighbor_limit"] = neighbor_limit
                 rows = tuple((await connection.execute(text(sql), parameters)).mappings())
-            rows = rows[:limit]
+            # vec0 orders only by distance; apply the ID tie break after collecting boundary ties.
+            rows = tuple(sorted(rows, key=lambda row: (row["distance"], row["artifact_id"])))[:limit]
         return atomic_memory_channel_hits(rows, vector=True)
 
 
