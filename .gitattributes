@@ -1,4 +1,5 @@
 evaluation/memory/locomo/dataset/locomo10.json text eol=lf
+evaluation/memory/atomic_extraction/cases/*.json text eol=lf
 e2e/bub/harbor-tasks/** text eol=lf
 e2e/bub/tasks/*.yaml text eol=lf
 integrations/dsh/plugins/powercontext/src/operations.generated.ts text eol=lf
