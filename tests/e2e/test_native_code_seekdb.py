@@ -294,8 +294,8 @@ if checkpoint == "descriptor":
     seekdb.write_private = interrupted_write
 else:
     create = seekdb.SeekDBGraphStore.create
-    def interrupted_create(self, *args):
-        result = create(self, *args)
+    def interrupted_create(self, *args, **kwargs):
+        result = create(self, *args, **kwargs)
         pause()
         return result
     seekdb.SeekDBGraphStore.create = interrupted_create
