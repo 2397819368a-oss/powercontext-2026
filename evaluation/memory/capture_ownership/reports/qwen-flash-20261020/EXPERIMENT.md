@@ -100,7 +100,11 @@ The two full-run conservative cost reservations total 0.4225 CNY, including rese
 
 See [the suite README](../../README.md) for installation, freeze/run/review/report commands, provider configuration
 and offline acceptance tests. `report.json` binds the exact run, manifest, model configuration, prompt and generation
-harness via hashes. `follow-up-issue.md` is a ready-to-review issue draft and is not an assertion that it was published.
+harness via hashes.
+
+This directory retains the curated experiment account, aggregate report, and deterministic support audit as
+reference evidence for #2069. The production follow-up design is tracked in
+[#2119](https://github.com/oceanbase/powercontext/issues/2119).
 
 The inference evidence covers one model snapshot, one extraction profile, synthetic host payloads and SQLite. A
 stronger/different model can change the frequency and type of candidate errors. The evidence establishes these

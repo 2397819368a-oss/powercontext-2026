@@ -161,6 +161,19 @@ A positive decision emits `follow-up-issue.md`, covering raw retention, identity
 unknown eligibility, authority separation, idempotency, old-capture compatibility/rebuild, per-host contracts, and
 design-first OpenAPI changes. Publish a separate production issue with the reproduced case IDs and aggregate hashes.
 
+## Maintained reference evidence
+
+The maintained reference snapshot is under `reports/qwen-flash-20261020/`.
+It contains `EXPERIMENT.md`, `report.json`, and `deterministic-support-audit.json`
+as evidence for #2069.
+
+The production design follow-up is tracked in
+[#2119](https://github.com/oceanbase/powercontext/issues/2119).
+
+Routine generated reports and issue drafts should remain in private run/output
+directories outside the checkout or an external artifact archive. Additional
+committed snapshots should have an explicit purpose as maintained reference evidence.
+
 ## Validation
 
 ```bash
