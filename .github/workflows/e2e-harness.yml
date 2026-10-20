@@ -261,11 +261,18 @@ jobs:
           echo 'OceanBase did not become ready within 10 minutes.' >&2
           exit 1
 
+      - name: Test interrupted Scope search migrations without skips
+        timeout-minutes: 10
+        run: |
+          uv run --locked python scripts/run_atomic_memory_clean_migration.py \
+            oceanbase --output "$MIGRATION_REPORTS/scope-search" --tests \
+            tests/e2e/test_scope_search_migration.py
+
       - name: Run clean migration evidence, grants and vectors without skips
         timeout-minutes: 45
         run: |
           uv run --locked python scripts/run_atomic_memory_clean_migration.py \
-            oceanbase --output "$MIGRATION_REPORTS"
+            oceanbase --output "$MIGRATION_REPORTS/clean-migration"
 
       - name: Test long-query retrieval and admission without skips
         timeout-minutes: 10

@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.persistence.scope_search_schema import ensure_scope_search_schema
@@ -134,3 +135,40 @@ def test_oceanbase_scope_search_migration_adds_portable_projection_columns() -> 
     assert "ALTER TABLE pc_scope_external_references ADD COLUMN value_search MEDIUMTEXT NULL" in statements
     assert "ALTER TABLE pc_scope_bindings ADD COLUMN external_id_search MEDIUMTEXT NULL" in statements
     assert "ALTER TABLE pc_scopes MODIFY COLUMN scope_id_search MEDIUMTEXT NOT NULL" in statements
+
+
+@pytest.mark.parametrize("nullable", [True, False])
+def test_oceanbase_scope_search_migration_recovers_existing_nullable_columns(nullable: bool) -> None:
+    columns = {
+        "pc_scopes": ("scope_id_search", "title_search", "summary_search"),
+        "pc_scope_external_references": ("value_search",),
+        "pc_scope_bindings": ("external_id_search",),
+    }
+
+    async def execute(statement, parameters=None):
+        rows = (
+            [
+                {"column_name": column, "is_nullable": "YES" if nullable else "NO"}
+                for column in columns[parameters["table_name"]]
+            ]
+            if parameters is not None
+            else []
+        )
+        return SimpleNamespace(mappings=lambda: rows)
+
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="mysql"),
+        execute=AsyncMock(side_effect=execute),
+        exec_driver_sql=AsyncMock(),
+    )
+    asyncio.run(ensure_scope_search_schema(cast(AsyncConnection, connection)))
+    statements = [call.args[0] for call in connection.exec_driver_sql.await_args_list]
+    assert statements == (
+        [
+            f"ALTER TABLE {table} MODIFY COLUMN {column} MEDIUMTEXT NOT NULL"
+            for table, names in columns.items()
+            for column in names
+        ]
+        if nullable
+        else []
+    )

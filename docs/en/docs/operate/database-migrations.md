@@ -305,3 +305,11 @@ conditions allow, but they do not bypass structural verification or replace the 
 Restoration is separate, explicit, and performed with writes stopped. Restore the database, required files, and matching
 program before verification. Application rollback is not database rollback. Manual mode does not claim verified recovery;
 skip cannot promise recovery of original data.
+
+## Legacy Scope search startup recovery
+
+The existing Scope discovery startup migration inspects the actual search-column nullability in MySQL-compatible
+storage. If an earlier startup stopped after adding nullable columns or backfilling them, the next startup fills any
+remaining missing values from the original text and completes `NOT NULL` constraints. Columns already marked
+`NOT NULL` do not receive another `MODIFY COLUMN`. Original Scope titles, summaries, external references, and binding
+identifiers are preserved. This compatibility repair is separate from the four-table unified migration bundle above.
