@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import os
 import socket
@@ -78,8 +79,12 @@ from powercontext.http import (
     CandidatePage,
     CandidateStatus,
     Capabilities,
+    ClearScopeBindingRequest,
+    ClearScopeBindingResponse,
+    ContextReference,
     CreateDreamRunRequest,
     CreateRemoteSkillTargetRequest,
+    CreateScopeRequest,
     DreamOperation,
     DreamRun,
     DreamRunPage,
@@ -119,13 +124,22 @@ from powercontext.http import (
     RemoteSkillTargetStatus,
     RenameRemoteSkillTargetRequest,
     ResolveExternalSkillRequest,
+    ResolveScopeBindingRequest,
     ReviseCandidateRequest,
     RevokeRemoteSkillTargetRequest,
     ScanExternalSkillsRequest,
     ScanExternalSkillsResponse,
+    ScopeBinding,
+    ScopeBindingKey,
+    ScopeDescriptor,
     ScopedStats,
+    ScopeExternalReference,
     ScopeId,
+    ScopePage,
+    ScopeQueryField,
     ScopeSelection,
+    SetDefaultScopeRequest,
+    SetScopeBindingRequest,
     SkillArtifact,
     SkillGenerationOrigin,
     SkillProposal,
@@ -134,6 +148,7 @@ from powercontext.http import (
     StatsPeriod,
     SubtreeScopeSelection,
     UnpublishRemoteSkillRequest,
+    UpdateScopeRequest,
 )
 from powercontext.http._generated.models import (
     GetTopicMemoryProcessingBlockRequest,
@@ -163,11 +178,15 @@ _ClientResponse: TypeAlias = (
     | RemoteSkillPublication
     | RemoteSkillTarget
     | ScanExternalSkillsResponse
+    | ScopeBinding
+    | ScopeDescriptor
+    | ScopePage
     | SkillArtifact
     | ScopedStats
     | TopicMemoryProcessingBlock
     | TopicMemoryProcessingStatus
     | RetryTopicMemoryProcessingResponse
+    | ClearScopeBindingResponse
 )
 _ClientOperation: TypeAlias = Callable[[PowerContextClient], Awaitable[_ClientResponse]]
 
@@ -313,7 +332,185 @@ external_skill_app = typer.Typer(
     help="Discover and exactly resolve Agent-native Skills on the Server host.",
     no_args_is_help=True,
 )
+scope_app = typer.Typer(
+    name="scope",
+    context_settings={"help_option_names": HELP_OPTION_NAMES},
+    help="Create, inspect, and bind isolated Scope boundaries.",
+    no_args_is_help=True,
+)
+scope_binding_app = typer.Typer(
+    name="binding",
+    context_settings={"help_option_names": HELP_OPTION_NAMES},
+    help="Bind external integration identities to one Scope.",
+    no_args_is_help=True,
+)
+scope_app.add_typer(scope_binding_app, name="binding")
 candidate_app.add_typer(candidate_revise_app, name="revise")
+
+_BINDING_KIND_SESSION = "session"
+_BINDING_KIND_WORKSPACE = "workspace"
+_DEFAULT_BINDING_INTEGRATION = "opencode"
+
+
+def _workspace_binding_external_id(cwd: Path) -> str:
+    # Must match the agent plugins' workspace binding key derivation: an absolute,
+    # lexically normalized path without symlink resolution.
+    return hashlib.sha256(os.path.abspath(cwd).encode("utf-8")).hexdigest()
+
+
+def _binding_key(integration: str, kind: str, external_id: str) -> ScopeBindingKey:
+    return ScopeBindingKey(integration=integration, kind=kind, external_id=external_id)
+
+
+def _external_reference(value: str) -> ScopeExternalReference:
+    kind, separator, reference_value = value.partition("=")
+    if not separator or not kind.strip() or not reference_value.strip():
+        raise typer.BadParameter("--external-reference expects kind=value")  # noqa: TRY003
+    return ScopeExternalReference(kind=kind.strip(), value=reference_value.strip())
+
+
+@scope_app.command("create")
+def create_scope(
+    context: typer.Context,
+    title: Annotated[str, typer.Option(help="Human-readable Scope title.")],
+    summary: Annotated[str, typer.Option(help="One-line description of the Scope boundary.")],
+    idempotency_key: Annotated[
+        str | None, typer.Option(help="Stable creation key; repeating it returns the same Scope.")
+    ] = None,
+    parent_scope_id: Annotated[str | None, typer.Option(help="Optional parent Scope ID.")] = None,
+    context_reference: Annotated[list[str] | None, typer.Option(help="Related Scope ID; repeatable.")] = None,
+    external_reference: Annotated[
+        list[str] | None, typer.Option(help="External reference as kind=value; repeatable.")
+    ] = None,
+) -> None:
+    """Create one independent Scope boundary and print its opaque Scope ID."""
+
+    request = CreateScopeRequest(
+        title=title,
+        summary=summary,
+        idempotency_key=idempotency_key if idempotency_key is not None else uuid4().hex,
+        parent_scope_id=parent_scope_id,
+        context_references=[ContextReference(value) for value in context_reference or []],
+        external_references=[_external_reference(value) for value in external_reference or []],
+    )
+    asyncio.run(_execute(context, lambda client: client.create_scope(request)))
+    if not _options(context).json_output:
+        typer.echo("Next: put this ID into the matching client SCOPE_ID environment variable.")
+
+
+@scope_app.command("list")
+def list_scopes(
+    context: typer.Context,
+    query: Annotated[str | None, typer.Option(help="Bounded substring query over the selected field.")] = None,
+    query_field: Annotated[
+        ScopeQueryField | None, typer.Option(help="Field matched by --query; defaults to Server-defined behavior.")
+    ] = None,
+    cursor: Annotated[str | None, typer.Option(help="Opaque cursor from the previous page.")] = None,
+    limit: Annotated[int, typer.Option(min=1, max=100, help="Maximum Scopes to return.")] = 50,
+) -> None:
+    """List a bounded page of Scope descriptors."""
+
+    asyncio.run(
+        _execute(
+            context,
+            lambda client: client.list_scopes(query=query, query_field=query_field, limit=limit, cursor=cursor),
+        )
+    )
+
+
+@scope_app.command("get")
+def get_scope(context: typer.Context, scope_id: Annotated[str, typer.Argument(help="Exact Scope ID.")]) -> None:
+    """Read one exact Scope descriptor."""
+
+    asyncio.run(_execute(context, lambda client: client.get_scope(scope_id)))
+
+
+@scope_app.command("update")
+def update_scope(
+    context: typer.Context,
+    scope_id: Annotated[str, typer.Argument(help="Exact Scope ID.")],
+    title: Annotated[str, typer.Option(help="Replacement Scope title.")],
+    summary: Annotated[str, typer.Option(help="Replacement one-line description.")],
+    expected_version: Annotated[int, typer.Option(min=1, help="Current version read from `scope get`.")],
+) -> None:
+    """Replace mutable Scope metadata behind an explicit optimistic-lock version."""
+
+    request = UpdateScopeRequest(expected_version=expected_version, title=title, summary=summary)
+    asyncio.run(_execute(context, lambda client: client.update_scope(scope_id, request)))
+
+
+@scope_app.command("default")
+def show_default_scope(context: typer.Context) -> None:
+    """Read the host's default Scope target."""
+
+    asyncio.run(_execute(context, lambda client: client.get_default_scope()))
+
+
+@scope_app.command("set-default")
+def set_default_scope(context: typer.Context, scope_id: Annotated[str, typer.Argument(help="Exact Scope ID.")]) -> None:
+    """Change the host's default Scope target used when no binding matches."""
+
+    request = SetDefaultScopeRequest(scope_id=scope_id)
+    asyncio.run(_execute(context, lambda client: client.set_default_scope(request)))
+
+
+@scope_app.command("resolve")
+def resolve_scope(
+    context: typer.Context,
+    scope_id: Annotated[
+        str | None, typer.Option(help="Explicit Scope ID, mirroring a client SCOPE_ID setting.")
+    ] = None,
+    cwd: Annotated[
+        Path | None, typer.Option(help="Workspace directory for the workspace binding key; defaults to here.")
+    ] = None,
+    session_id: Annotated[str | None, typer.Option(help="Session ID for the session binding key.")] = None,
+    integration: Annotated[str, typer.Option(help="Binding integration name.")] = _DEFAULT_BINDING_INTEGRATION,
+    allow_default: Annotated[
+        bool, typer.Option("--allow-default/--no-allow-default", help="Fall back to the default Scope when unset.")
+    ] = True,
+) -> None:
+    """Resolve a Scope the way an agent plugin does: explicit ID, then bindings, then the default."""
+
+    binding_keys = []
+    if session_id is not None and session_id.strip():
+        binding_keys.append(_binding_key(integration, _BINDING_KIND_SESSION, session_id.strip()))
+    workspace = cwd if cwd is not None else Path.cwd()
+    binding_keys.append(_binding_key(integration, _BINDING_KIND_WORKSPACE, _workspace_binding_external_id(workspace)))
+    request = ResolveScopeBindingRequest(
+        explicit_scope_id=scope_id,
+        binding_keys=binding_keys,
+        allow_default=allow_default,
+    )
+    asyncio.run(_execute(context, lambda client: client.resolve_scope_binding(request)))
+
+
+@scope_binding_app.command("set")
+def set_scope_binding(
+    context: typer.Context,
+    scope_id: Annotated[str, typer.Argument(help="Exact Scope ID to bind.")],
+    kind: Annotated[str, typer.Option(help="Binding kind, e.g. session or workspace.")],
+    external_id: Annotated[str, typer.Option(help="Integration-specific identity, e.g. a session or path hash.")],
+    integration: Annotated[str, typer.Option(help="Binding integration name.")] = _DEFAULT_BINDING_INTEGRATION,
+) -> None:
+    """Bind one external integration identity to a Scope."""
+
+    request = SetScopeBindingRequest(
+        root=ScopeBinding(key=_binding_key(integration, kind, external_id), scope_id=scope_id)
+    )
+    asyncio.run(_execute(context, lambda client: client.set_scope_binding(request)))
+
+
+@scope_binding_app.command("clear")
+def clear_scope_binding(
+    context: typer.Context,
+    kind: Annotated[str, typer.Option(help="Binding kind, e.g. session or workspace.")],
+    external_id: Annotated[str, typer.Option(help="Integration-specific identity, e.g. a session or path hash.")],
+    integration: Annotated[str, typer.Option(help="Binding integration name.")] = _DEFAULT_BINDING_INTEGRATION,
+) -> None:
+    """Clear one external integration binding."""
+
+    request = ClearScopeBindingRequest(key=_binding_key(integration, kind, external_id))
+    asyncio.run(_execute(context, lambda client: client.clear_scope_binding(request)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1818,14 +2015,8 @@ def _print_artifact_page(response: ArtifactPage) -> None:
         typer.echo(f"Next cursor: {response.next_cursor}")
 
 
-def _print_human_response(response: _ClientResponse) -> None:
-    if isinstance(response, (DreamRun, DreamRunPage)):
-        _print_dream_response(response)
-        return
-    if isinstance(response, (ListRemoteSkillTargetsResponse, RemoteSkillPublication, RemoteSkillTarget)):
-        _print_remote_response(response)
-        return
-    if isinstance(
+def _dump_json_response(response: _ClientResponse) -> bool:
+    if not isinstance(
         response,
         (
             Candidate,
@@ -1842,11 +2033,60 @@ def _print_human_response(response: _ClientResponse) -> None:
             RetryTopicMemoryProcessingResponse,
         ),
     ):
-        typer.echo(response.model_dump_json(indent=2))
-        return
+        return False
+    typer.echo(response.model_dump_json(indent=2))
+    return True
+
+
+def _print_scope_response(response: ScopeDescriptor | ScopePage | ScopeBinding | ClearScopeBindingResponse) -> None:
     match response:
-        case Capabilities():
-            _print_capabilities(response)
+        case ScopeDescriptor():
+            _print_scope_descriptor(response)
+        case ScopePage():
+            if not response.items:
+                typer.echo("No Scopes found.")
+                return
+            for item in response.items:
+                _print_scope_descriptor(item)
+            if response.next_cursor is not None:
+                typer.echo(f"Next cursor: {response.next_cursor}")
+        case ScopeBinding():
+            key = response.key
+            typer.echo(f"Binding {key.integration}/{key.kind}/{key.external_id} -> {response.scope_id}")
+        case ClearScopeBindingResponse():
+            typer.echo("Binding cleared." if response.cleared else "Binding was not set.")
+
+
+def _print_scope_descriptor(response: ScopeDescriptor) -> None:
+    typer.echo(f"{response.scope_id}  {response.title} (version {response.version})")
+    if response.parent_scope_id is not None:
+        typer.echo(f"  Parent: {response.parent_scope_id}")
+    for reference in response.context_references:
+        typer.echo(f"  Context reference: {reference.root}")
+    for reference in response.external_references:
+        typer.echo(f"  External reference: {reference.kind}={reference.value}")
+
+
+def _print_human_response(response: _ClientResponse) -> None:
+    if isinstance(response, (DreamRun, DreamRunPage)):
+        _print_dream_response(response)
+        return
+    if isinstance(response, (ScopeDescriptor, ScopePage, ScopeBinding, ClearScopeBindingResponse)):
+        _print_scope_response(response)
+        return
+    if isinstance(response, (ListRemoteSkillTargetsResponse, RemoteSkillPublication, RemoteSkillTarget)):
+        _print_remote_response(response)
+        return
+    if _dump_json_response(response):
+        return
+    if isinstance(response, Capabilities):
+        _print_capabilities(response)
+        return
+    _print_service_response(response)
+
+
+def _print_service_response(response: _ClientResponse) -> None:
+    match response:
         case ReadinessResponse():
             typer.echo(f"Status: {response.status}")
             for name, status in sorted(response.checks.items()):
@@ -1857,6 +2097,8 @@ def _print_human_response(response: _ClientResponse) -> None:
             _print_stats(response)
         case ArtifactPage():
             _print_artifact_page(response)
+        case _:
+            return
 
 
 def _print_capabilities(response: Capabilities) -> None:
@@ -1928,6 +2170,18 @@ def _print_remote_response(
                 f"Remote target {response.display_name} ({response.target_id}): state={response.state.value}, "
                 f"agent={response.agent_kind.value}, generation={response.generation}"
             )
+
+
+def _print_capabilities(response: Capabilities) -> None:
+    typer.echo(f"Source types: {_items(response.source_types)}")
+    typer.echo(f"Artifact families: {_items(response.artifact_families)}")
+    typer.echo(f"Memory extraction: {'enabled' if response.memory_extraction else 'disabled'}")
+    typer.echo(f"Experience generation: {'enabled' if response.experience_generation else 'disabled'}")
+    typer.echo(f"Managed Skill generation: {'enabled' if response.managed_skill_generation else 'disabled'}")
+    typer.echo(f"External Skill Registry: {'enabled' if response.external_skill_registry else 'disabled'}")
+    typer.echo(f"Handoff generation: {'enabled' if response.handoff_generation else 'disabled'}")
+    typer.echo(f"Search modes: {_items(response.search_modes)}")
+    typer.echo(f"Context versions: {_items(response.context_versions)}")
 
 
 def _print_remote_skill_targets(response: ListRemoteSkillTargetsResponse) -> None:
@@ -2049,6 +2303,7 @@ def register_commands(cli: typer.Typer) -> set[str]:
     cli.add_typer(experience_app, name="experience")
     cli.add_typer(skill_app, name="skill")
     cli.add_typer(external_skill_app, name="external-skill")
+    cli.add_typer(scope_app, name="scope")
     return {
         "capabilities",
         "stats",
@@ -2061,6 +2316,7 @@ def register_commands(cli: typer.Typer) -> set[str]:
         "experience",
         "skill",
         "external-skill",
+        "scope",
     }
 
 
