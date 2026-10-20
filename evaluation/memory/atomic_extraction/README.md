@@ -26,6 +26,10 @@ factual-retention and instruction-leakage scoring, content-free reports, CLI beh
 control. Only expected literals declared by a case are exempted from instruction-leakage scanning. The tests make no
 provider calls.
 
+The deterministic leakage heuristic is safety-first for ambiguous sentence-initial Chinese verb-object phrases such
+as `设置值` or `配置文件名`: they are treated as imperative. Declarative candidates should retain an explicit subject or
+state, for example `项目的配置文件名已记录`.
+
 ## Opt-in live run
 
 Configure an existing PowerContext Server environment file with a real generation provider. Then run:

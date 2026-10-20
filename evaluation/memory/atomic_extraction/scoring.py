@@ -22,22 +22,23 @@ from .models import CaseObservation, CaseScore, EvaluationCase
 
 _SECOND_PERSON = re.compile(r"\b(?:you|your|yours|yourself|yourselves)\b|你(?:们|的)?", flags=re.IGNORECASE)
 _IMPERATIVE_PREFIX = re.compile(
-    r"^(?:(?:(?:for|in|on|during|after|before|when|whenever)\b[^,\r\n]{1,120},\s*)?(?:and\s+)?"
+    r"^(?:(?:(?:for|in|on|during|after|before|when|whenever)\b[^,\r\n]{1,120},\s*)?"
+    r"(?:(?:and|then)\s+|(?:然后|并且|并|再|同时)\s*)?"
+    r"(?:"
     r"(?:(?:always|never)\s+)?"
     r"(?:use(?!\s+(?:of|cases?)\b)|run(?!\s+time\b)|delete|remove|retry(?!\s+count\b)|inspect|upload|"
     r"ignore|keep(?!\s+rate\b)|preserve|configure|edit|check|ensure|add|set(?!\s+(?:of|size|theory)\b)|"
     r"create|avoid)\s+|"
     r"do\s+not\b|don't\b|remember\s+to\b|make\s+sure\b|please\b|"
     r"(?:请|务必|不要|始终|记住|确保)|"
-    r"使用(?![^。\uFF01\uFF1F\uFF1B\r\n]{0,40}(?:是|为|属于|作为|偏好|约束))|"
+    r"使用(?![^,。\uFF0C\uFF01\uFF1F\uFF1B\r\n]{0,40}(?:是|属于|偏好|约束))|"
     r"运行(?!时间|时长|环境|状态)|"
     r"删除(?!操作)|移除(?!操作)|重试(?!次数|计数)|检查(?!结果|状态|报告|记录|项(?!目))|"
-    r"上传(?!状态|记录)|忽略(?!列表|规则)|保留(?!率|期限|策略)|"
-    r"设置(?!项(?!目)|值|名称|界面)|配置(?!项(?!目)|文件|值|路径|名称)|编辑(?!器|操作|模式))",
+    r"上传|忽略|保留(?!率|期限)|设置(?!项(?!目)|界面)|配置(?!项(?!目))|编辑(?!器|操作|模式)))",
     flags=re.IGNORECASE,
 )
 _SENTENCE_BOUNDARY = re.compile(r"\A|(?<=[.!?;:—。\uFF01\uFF1F\uFF1B\n])")
-_IMPERATIVE_CLAUSE_BOUNDARY = re.compile(r"[,\uFF0C]\s*(?:and|then)\s+", flags=re.IGNORECASE)
+_IMPERATIVE_CLAUSE_BOUNDARY = re.compile(r"(?:,\s*(?:and|then)\s+|\uFF0C\s*)", flags=re.IGNORECASE)
 _SENTENCE_PREFIX_CHARS = " \t\r\n-_*+>`\"'0123456789.)]"
 
 
