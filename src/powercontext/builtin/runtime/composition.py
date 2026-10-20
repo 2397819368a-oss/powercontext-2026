@@ -135,6 +135,7 @@ from powercontext.builtin.persistence.topic_memory_index import (
     CompositeTopicMemoryIndex,
     TopicMemoryIndex,
 )
+from powercontext.builtin.portability import BundleRecoveryRequiredError
 from powercontext.builtin.runtime._scope_cache import ScopeCacheObserver
 from powercontext.builtin.runtime.application import (
     BuiltinRuntime,
@@ -792,7 +793,9 @@ async def open_builtin_runtime(
             )
         )
         runtime.artifact_processing_supervisor = await resources.enter_async_context(
-            _open_artifact_processing_supervisor(config, contexts, processing_bindings, tracing=tracing)
+            _open_artifact_processing_supervisor(
+                config, contexts, processing_bindings, tracing=tracing, recovery=_archive_recovery
+            )
         )
         contexts.profiles.operation_context = runtime._operation
         if config.handoff_report.enabled:
@@ -970,8 +973,9 @@ async def _open_artifact_processing_supervisor(
     bindings: Sequence[ArtifactProcessingBinding],
     *,
     tracing: RuntimeTracing | None = None,
+    recovery: bool = False,
 ) -> AsyncIterator[ArtifactProcessingSupervisors | None]:
-    if config.runtime.artifact_processing_role == "api" or not bindings:
+    if recovery or config.runtime.artifact_processing_role == "api" or not bindings:
         yield None
         return
     groups = (
@@ -1103,7 +1107,8 @@ async def open_builtin_contexts(
                 tracing=tracing,
             )
             try:
-                await contexts.scopes.bootstrap_default()
+                if not _archive_recovery:
+                    await contexts.scopes.bootstrap_default()
                 yield contexts
             finally:
                 # Producers are stopped by now, and the profile below still owns
@@ -1181,7 +1186,8 @@ async def open_builtin_contexts(
             tracing=tracing,
         )
         try:
-            await contexts.scopes.bootstrap_default()
+            if not _archive_recovery:
+                await contexts.scopes.bootstrap_default()
             yield contexts
         finally:
             # Producers are stopped by now, and the profile below still owns the
@@ -1192,18 +1198,13 @@ async def open_builtin_contexts(
 async def _initialize_archive_aware_topics(
     connection: AsyncConnection, index: TopicMemoryIndex, *, worker: bool, recovery: bool
 ) -> None:
-    # Only an explicit restore may open incomplete projections, and only when
-    # a committed restore receipt explains their absence. Normal startup and
-    # workers retain the strict storage invariant checks.
-    pending = (
-        recovery
-        and not worker
-        and await connection.scalar(
-            select(PORTABLE_RESTORE_RECEIPTS_TABLE.c.bundle_id)
-            .where(PORTABLE_RESTORE_RECEIPTS_TABLE.c.projections_ready.is_(False))
-            .limit(1)
-        )
+    pending = await connection.scalar(
+        select(PORTABLE_RESTORE_RECEIPTS_TABLE.c.bundle_id)
+        .where(PORTABLE_RESTORE_RECEIPTS_TABLE.c.projections_ready.is_(False))
+        .limit(1)
     )
+    if pending and (not recovery or worker):
+        raise BundleRecoveryRequiredError()
     if pending:
         await index.initialize(connection)
     else:

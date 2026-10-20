@@ -15,11 +15,13 @@
 """Versioned logical export and restore for built-in relational data."""
 
 from powercontext.builtin.portability.bundle import (
+    BundleCompatibilityError,
     BundleConflictError,
     BundleFormatError,
     BundleInspection,
     BundleProgress,
     BundleReceipt,
+    BundleRecoveryRequiredError,
     BundleValidation,
     ExportAuthorizer,
     PortableBundleService,
@@ -27,11 +29,13 @@ from powercontext.builtin.portability.bundle import (
 )
 
 __all__ = [
+    "BundleCompatibilityError",
     "BundleConflictError",
     "BundleFormatError",
     "BundleInspection",
     "BundleProgress",
     "BundleReceipt",
+    "BundleRecoveryRequiredError",
     "BundleValidation",
     "ExportAuthorizer",
     "PortableBundleService",

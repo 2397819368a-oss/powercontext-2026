@@ -463,14 +463,14 @@ def test_source_list_stops_decoding_when_the_response_budget_is_full(monkeypatch
                 await records.create_source("scope-a", "content", f"{index}:" + "x" * 1_100_000)
 
             decoded = 0
-            original_decode = sources._decode_row
+            original_decode = sources.decode_source
 
             def counting_decode(row):
                 nonlocal decoded
                 decoded += 1
                 return original_decode(row)
 
-            monkeypatch.setattr(sources, "_decode_row", counting_decode)
+            monkeypatch.setattr(sources, "decode_source", counting_decode)
             first = await records.list_sources("scope-a", limit=8, cursor=None, caller="user:one")
 
             assert len(first.items) == 3

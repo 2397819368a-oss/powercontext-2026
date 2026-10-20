@@ -31,6 +31,7 @@ from sqlalchemy import insert, select
 
 from powercontext.builtin.artifacts.skill import capture_skill_directory
 from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.sources import SourceRepository
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
@@ -51,6 +52,18 @@ from powercontext.builtin.persistence.tables import (
     TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE,
 )
 from powercontext.builtin.portability import BundleConflictError, BundleFormatError, PortableBundleService
+from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY, ContentSource
+from powercontext.sources import SourceMaterialization
+
+_SOURCES = SourceRepository(BUILTIN_SOURCE_REGISTRY)
+
+
+def _content_payload(source_id: str, content: str) -> bytes:
+    return (
+        ContentSource(name=source_id, materialization=SourceMaterialization.CAPTURED, content=content)
+        .model_dump_json()
+        .encode()
+    )
 
 
 async def _authorize_export(_scopes: tuple[str, ...], /) -> None:
@@ -70,6 +83,45 @@ async def _insert_scope(connection, scope_id: str = "project:one") -> None:
             version=1,
         )
     )
+
+
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
+@pytest.mark.parametrize("output_name", ["source.db", "SOURCE.DB"])
+def test_export_cannot_replace_its_sqlite_database_or_journals(tmp_path: Path, suffix: str, output_name: str) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "source.db"
+        config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")
+        async with SQLiteProfile.open(config, tables=BUILTIN_TABLES) as source:
+            async with source.database.transaction() as connection:
+                await _insert_scope(connection)
+            with pytest.raises(BundleFormatError, match="source database"):
+                await PortableBundleService(source.database).export(
+                    ["project:one"], tmp_path / (output_name + suffix), authorize=_authorize_export
+                )
+        assert database.read_bytes().startswith(b"SQLite format 3\0")
+        async with (
+            SQLiteProfile.open(config, tables=BUILTIN_TABLES) as reopened,
+            reopened.database.transaction() as connection,
+        ):
+            assert await connection.scalar(select(SCOPES_TABLE.c.scope_id)) == "project:one"
+
+    asyncio.run(scenario())
+
+
+def test_export_preserves_its_callers_sqlite_transaction(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        archive = tmp_path / "snapshot.pcb"
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as source:
+            async with source.database.transaction() as connection:
+                await _insert_scope(connection)
+                await PortableBundleService(source.database).export(
+                    ["project:one"], archive, authorize=_authorize_export
+                )
+                assert await connection.scalar(select(SCOPES_TABLE.c.scope_id)) == "project:one"
+            async with source.database.transaction() as connection:
+                assert await connection.scalar(select(SCOPES_TABLE.c.scope_id)) == "project:one"
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("mutation", ["identity_override", "unknown_field", "missing_field", "wrong_type", "scope"])
@@ -125,7 +177,7 @@ def test_bundle_round_trips_authoritative_scope_data_and_excludes_projections(tm
                         scope_id="project:one",
                         source_type="content",
                         source_id="source-1",
-                        payload=b'{"name":"source-1"}',
+                        payload=_content_payload("source-1", "Original captured content."),
                         journal_position=1,
                     )
                 )
@@ -155,7 +207,7 @@ def test_bundle_round_trips_authoritative_scope_data_and_excludes_projections(tm
         async with SQLiteProfile.open(
             SQLiteConfig(url=f"sqlite+aiosqlite:///{target_path}"), tables=BUILTIN_TABLES
         ) as target:
-            service = PortableBundleService(target.database)
+            service = PortableBundleService(target.database, source_decoder=_SOURCES.decode_source)
             inspection = await service.validate(archive, supported_source_types=("content",))
             assert inspection.scopes == ("project:one",)
             restored = await service.restore(archive, supported_source_types=("content",))
@@ -291,7 +343,7 @@ def test_restore_rejects_divergent_immutable_identity_without_overwrite(tmp_path
                         scope_id="project:one",
                         source_type="content",
                         source_id="source-1",
-                        payload=b"original",
+                        payload=_content_payload("source-1", "original"),
                         journal_position=1,
                     )
                 )
@@ -306,18 +358,20 @@ def test_restore_rejects_divergent_immutable_identity_without_overwrite(tmp_path
                         scope_id="project:one",
                         source_type="content",
                         source_id="source-1",
-                        payload=b"different",
+                        payload=_content_payload("source-1", "different"),
                         journal_position=1,
                     )
                 )
-            service = PortableBundleService(target.database)
+            service = PortableBundleService(target.database, source_decoder=_SOURCES.decode_source)
             validation = await service.validate(archive)
             assert validation.compatible is False
             assert validation.conflicts == 1
             with pytest.raises(BundleConflictError):
                 await service.restore(archive)
             async with target.database.transaction() as connection:
-                assert await connection.scalar(select(SOURCES_TABLE.c.payload)) == b"different"
+                assert await connection.scalar(select(SOURCES_TABLE.c.payload)) == _content_payload(
+                    "source-1", "different"
+                )
 
     asyncio.run(scenario())
 
@@ -340,7 +394,7 @@ def test_failed_restore_rolls_back_earlier_records_and_can_be_retried(tmp_path: 
                         scope_id="project:one",
                         source_type="content",
                         source_id="source-1",
-                        payload=b"new source",
+                        payload=_content_payload("source-1", "new source"),
                         journal_position=1,
                     )
                 )
@@ -354,7 +408,7 @@ def test_failed_restore_rolls_back_earlier_records_and_can_be_retried(tmp_path: 
                     "CREATE TRIGGER reject_restore BEFORE INSERT ON pc_sources "
                     "BEGIN SELECT RAISE(ABORT, 'write rejected after preflight'); END"
                 )
-            service = PortableBundleService(target.database)
+            service = PortableBundleService(target.database, source_decoder=_SOURCES.decode_source)
             validation = await service.validate(archive)
             assert validation.compatible
             with pytest.raises(BundleConflictError, match="target constraint conflict"):
@@ -486,7 +540,7 @@ def test_restore_accepts_a_valid_bundle_with_records_in_a_different_physical_ord
                         scope_id="project:one",
                         source_type="content",
                         source_id="source-1",
-                        payload=b"source",
+                        payload=_content_payload("source-1", "source"),
                         journal_position=1,
                     )
                 )
@@ -516,7 +570,9 @@ def test_restore_accepts_a_valid_bundle_with_records_in_a_different_physical_ord
             output_archive.writestr("records.ndjson", b"\n".join(records) + b"\n")
 
         async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as target:
-            receipt = await PortableBundleService(target.database).restore(reordered)
+            receipt = await PortableBundleService(target.database, source_decoder=_SOURCES.decode_source).restore(
+                reordered
+            )
         assert receipt.inserted == 5
 
     asyncio.run(scenario())
@@ -529,7 +585,7 @@ def test_restore_keeps_large_bundle_payloads_out_of_process_memory(tmp_path: Pat
         archive = tmp_path / "large.pcb"
         source_path = tmp_path / "source.db"
         target_path = tmp_path / "target.db"
-        payload = b"x" * 8_192
+        payload = "x" * 8_192
         async with SQLiteProfile.open(
             SQLiteConfig(url=f"sqlite+aiosqlite:///{source_path}"), tables=BUILTIN_TABLES
         ) as source:
@@ -545,7 +601,7 @@ def test_restore_keeps_large_bundle_payloads_out_of_process_memory(tmp_path: Pat
                             "scope_id": "project:one",
                             "source_type": "content",
                             "source_id": f"source-{number}",
-                            "payload": payload,
+                            "payload": _content_payload(f"source-{number}", payload),
                             "journal_position": number,
                         }
                         for number in range(1, 1_501)
@@ -558,7 +614,9 @@ def test_restore_keeps_large_bundle_payloads_out_of_process_memory(tmp_path: Pat
             async with SQLiteProfile.open(
                 SQLiteConfig(url=f"sqlite+aiosqlite:///{target_path}"), tables=BUILTIN_TABLES
             ) as target:
-                receipt = await PortableBundleService(target.database).restore(archive)
+                receipt = await PortableBundleService(target.database, source_decoder=_SOURCES.decode_source).restore(
+                    archive
+                )
             _, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()

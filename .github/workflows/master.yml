@@ -322,6 +322,13 @@ jobs:
         run: |
           Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 0
 
+      - name: Verify portable archive restoration and SQLite URI targets on Windows
+        run: >-
+          uv run --locked --no-sync pytest -q
+          tests/builtin/portability/test_bundle.py
+          tests/test_archive_cli.py
+          tests/e2e/test_portable_archive.py
+
       # Keep pytest's default temporary root: a short --basetemp would hide
       # regressions in the nested checkout fixtures covered by issue #1501.
       - name: Run Windows portability regressions

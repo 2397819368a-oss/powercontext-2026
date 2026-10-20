@@ -53,8 +53,12 @@ from powercontext.builtin.persistence.tables import (
     SOURCE_JOURNAL_HEADS_TABLE,
     SOURCES_TABLE,
 )
-from powercontext.builtin.persistence.topic_memory import TopicMemoryStorageInvariantError
-from powercontext.builtin.portability import BundleConflictError, BundleFormatError, PortableBundleService
+from powercontext.builtin.portability import (
+    BundleConflictError,
+    BundleFormatError,
+    BundleRecoveryRequiredError,
+    PortableBundleService,
+)
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.review.models import CandidateAudit, CandidateStatus
 from powercontext.builtin.runtime import (
@@ -69,10 +73,12 @@ from powercontext.builtin.runtime import (
     open_builtin_contexts,
     open_builtin_runtime,
 )
-from powercontext.builtin.scope import ScopeDraft
+from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingBinding
+from powercontext.builtin.scope import ScopeDraft, ScopeExternalReference
 from powercontext.builtin.sources import ContentCapture
 from powercontext.builtin.tags import ArtifactTagTarget, TagFilter
 from powercontext.builtin.work import AcknowledgeHandoff, ReceiverChecks
+from powercontext.limits import MAX_ARTIFACT_ID_LENGTH
 from powercontext.sources import (
     AdapterSourceDefinition,
     SourceDefinitionRegistry,
@@ -105,8 +111,12 @@ def test_topic_restore_can_retry_after_projection_failure_and_restart(tmp_path: 
             await source.portability.export([scope.scope_id], archive, authorize=authorize)
         async with open_builtin_contexts(target_config) as target:
             with pytest.raises(RuntimeError, match="interrupted"):
-                await PortableBundleService(target.database, projection_rebuilder=fail_projection).restore(archive)
-        with pytest.raises(TopicMemoryStorageInvariantError):
+                await PortableBundleService(
+                    target.database,
+                    projection_rebuilder=fail_projection,
+                    source_decoder=target.repositories.sources.decode_source,
+                ).restore(archive)
+        with pytest.raises(BundleRecoveryRequiredError):
             async with open_builtin_contexts(target_config):
                 pass
         async with open_builtin_contexts(target_config, _archive_recovery=True) as target:
@@ -201,6 +211,181 @@ def test_sqlite_portable_archive_restores_revisions_lineage_and_handoff_receipts
     asyncio.run(scenario())
 
 
+def test_archive_recovers_canonical_default_scope_into_a_fresh_deployment(
+    tmp_path: Path, target_config: BuiltinConfig
+) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive = tmp_path / "default.pcb"
+        async with open_builtin_runtime(BuiltinConfig()) as source:
+            assert source.scopes is not None
+            default = await source.scopes.default_scope()
+            assert default is not None
+            capture = CaptureSource(
+                source_id="default-evidence", content="Restore the original default scope.", metadata={}
+            )
+            await source.sources.for_scope(default.scope_id).capture(capture)
+            expected = await source.records.for_scope(default.scope_id).get_source("content", capture.source_id)
+            assert source.archive is not None
+            exported = await source.archive.export([default.scope_id], archive, authorize=authorize)
+        async with open_builtin_runtime(target_config, _archive_recovery=True) as target:
+            assert target.scopes is not None
+            assert await target.scopes.default_scope() is None
+            assert target.archive is not None
+            assert (await target.archive.restore(archive)).projections_ready
+            assert (await target.archive.restore(archive)).inserted == 0
+        async with open_builtin_runtime(target_config) as target:
+            assert target.scopes is not None
+            restored = await target.scopes.default_scope()
+            assert restored is not None
+            assert restored.scope_id == default.scope_id
+            assert (
+                await target.records.for_scope(restored.scope_id).get_source("content", capture.source_id) == expected
+            )
+            assert target.archive is not None
+            reexported = await target.archive.export([restored.scope_id], tmp_path / "again.pcb", authorize=authorize)
+            assert reexported.total_digest == exported.total_digest
+
+    asyncio.run(scenario())
+
+
+def test_archive_maintenance_runtime_does_not_start_background_processing() -> None:
+    class NeverLaunch:
+        async def start(self, assignment):
+            message = "Maintenance must not launch workers"
+            raise AssertionError(message)
+
+    async def scenario() -> None:
+        binding = ArtifactProcessingBinding(
+            binding_name="archive-maintenance", artifact_family="skill", launcher=NeverLaunch()
+        )
+        async with open_builtin_runtime(
+            BuiltinConfig(), _archive_recovery=True, artifact_processing_bindings=(binding,)
+        ) as runtime:
+            assert runtime.artifact_processing_supervisor is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("family", ["atomic-memory", "experience"])
+def test_interrupted_archive_restore_blocks_contexts_runtime_and_workers(
+    tmp_path: Path, family: str, target_config: BuiltinConfig
+) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def interrupted(_scopes: tuple[str, ...]) -> None:
+        message = "interrupted projection rebuild"
+        raise RuntimeError(message)
+
+    async def scenario() -> None:
+        archive = tmp_path / "interrupted.pcb"
+        content: dict[str, JsonValue] = (
+            {"kind": "rule", "text": "Retain recovery evidence."}
+            if family == "atomic-memory"
+            else {"situation": "Recovery", "action": "Retry", "outcome": "Ready", "lesson": "Verify projections."}
+        )
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Incomplete recovery", summary="Do not serve", idempotency_key="incomplete")
+            )
+            artifact = await source.records.create_artifact(scope.scope_id, family, ArtifactWrite(content=content))
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        async with open_builtin_contexts(target_config) as target:
+            with pytest.raises(RuntimeError, match="interrupted projection rebuild"):
+                await PortableBundleService(
+                    target.database,
+                    projection_rebuilder=interrupted,
+                    source_decoder=target.repositories.sources.decode_source,
+                ).restore(archive)
+        for opener in (open_builtin_contexts, open_builtin_runtime):
+            with pytest.raises(RuntimeError, match="portable restore projections are incomplete"):
+                async with opener(target_config):
+                    pass
+        for recovery in (False, True):
+            with pytest.raises(BundleRecoveryRequiredError):
+                async with open_builtin_contexts(target_config, _topic_memory_worker=True, _archive_recovery=recovery):
+                    pass
+        async with open_builtin_contexts(target_config, _archive_recovery=True) as target:
+            assert (await target.portability.restore(archive)).projections_ready
+        async with open_builtin_runtime(target_config) as target:
+            restored = await target.records.for_scope(scope.scope_id).get_artifact(family, artifact.artifact_id)
+            assert restored.artifact_id == artifact.artifact_id
+            if family == "atomic-memory":
+                assert target.atomic_memory is not None
+                found = await target.atomic_memory.for_scope(scope.scope_id).search("recovery evidence")
+                assert found.hits
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("damage", ["payload", "identity", "definition", "capability_override"])
+def test_archive_rejects_unreadable_native_sources_before_writing(tmp_path: Path, monkeypatch, legacy, damage) -> None:
+    from typer.testing import CliRunner
+
+    from powercontext.cli.app import create_cli
+    from powercontext.cli.archive import archive_app
+
+    async def scenario() -> Path:
+        archive = tmp_path / "native.pcb"
+
+        async def authorize(_scopes: tuple[str, ...]) -> None:
+            pass
+
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Native source", summary="Read contract", idempotency_key="native-source")
+            )
+            context = await source.get(scope.scope_id)
+            await context.sources.capture(ContentCapture(source_id="evidence", content="Original captured evidence."))
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+
+        def rewrite(records):
+            record = next(item for item in records if item["record_type"] == "source")
+            envelope = json.loads(base64.b64decode(record["payload"]["payload"]["base64"]))
+            value = dict(envelope["value"])
+            if damage in {"payload", "capability_override"}:
+                value = {}
+            elif damage == "identity":
+                value["name"] = "different-source-id"
+            else:
+                value["definition_version"] = "unsupported"
+            payload = value if legacy else {**envelope, "value": value}
+            record["payload"]["payload"] = {"base64": base64.b64encode(json.dumps(payload).encode()).decode()}
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            service = target.portability
+            supported_source_types = None
+            if damage == "capability_override":
+                service = PortableBundleService(
+                    target.database,
+                    supported_source_types=(),
+                    source_decoder=target.repositories.sources.decode_source,
+                )
+                supported_source_types = ("content",)
+            async with target.database.transaction() as connection:
+                before = (await connection.execute(select(SCOPES_TABLE))).all()
+            for operation in (service.validate, service.restore):
+                with pytest.raises(BundleFormatError, match="Source"):
+                    await operation(archive, supported_source_types=supported_source_types)
+            async with target.database.transaction() as connection:
+                assert (await connection.execute(select(SCOPES_TABLE))).all() == before
+                assert (await connection.execute(select(SOURCES_TABLE))).all() == []
+        return archive
+
+    archive = asyncio.run(scenario())
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "unused-target"))
+    result = CliRunner().invoke(create_cli([archive_app]), ["archive", "restore", str(archive), "--dry-run"])
+    assert result.exit_code == 2, result.output
+    assert "Source" in result.output
+    assert not (tmp_path / "unused-target" / "powercontext.db").exists()
+
+
 def test_archive_restores_tagged_memory_vector_search_and_survives_restart(
     tmp_path: Path, target_config: BuiltinConfig
 ) -> None:
@@ -251,8 +436,10 @@ def test_archive_restores_package_files_and_topic_search_after_restart(
     async def scenario() -> None:
         package_dir = tmp_path / "portable"
         package_dir.mkdir()
-        (package_dir / "SKILL.md").write_text("---\nname: portable\ndescription: Portable guide\n---\nRead guide.md.\n")
-        (package_dir / "guide.md").write_text("Exact portable instructions.\n")
+        (package_dir / "SKILL.md").write_text(
+            "---\nname: portable\ndescription: Portable guide\n---\nRead guide.md.\n", encoding="utf-8", newline="\n"
+        )
+        (package_dir / "guide.md").write_text("Exact portable instructions.\n", encoding="utf-8", newline="\n")
         package = capture_skill_directory(package_dir)
         archive = tmp_path / "families.pcb"
         source_config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'source.db'}"))
@@ -531,7 +718,19 @@ def test_archive_snapshot_survives_concurrent_mysql_capture(tmp_path: Path, targ
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("damage", ["missing_definition", "fingerprint", "identity", "native"])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_definition",
+        "fingerprint",
+        "identity",
+        "native",
+        "envelope",
+        "observation_payload",
+        "undeclared_projection",
+        "nonstandard_json",
+    ],
+)
 def test_restore_rejects_invalid_remote_source_dependencies_before_writing(tmp_path: Path, damage: str) -> None:
 
     async def scenario() -> None:
@@ -566,6 +765,19 @@ def test_restore_rejects_invalid_remote_source_dependencies_before_writing(tmp_p
                 envelope["value"]["definition_fingerprint"] = "sha256:" + "0" * 64
             elif damage == "identity":
                 record["identity"]["source_id"] = "another"
+            elif damage == "envelope":
+                envelope["unexpected"] = "not part of the stored Source envelope"
+            elif damage in {"observation_payload", "undeclared_projection", "nonstandard_json"}:
+                missing_body = dict(envelope["value"]["payload"])
+                missing_body.pop("body")
+                changes = {
+                    "observation_payload": {"payload": missing_body},
+                    "undeclared_projection": {
+                        "projections": [{"key": {"name": "undeclared", "version": "1"}, "value": {}}]
+                    },
+                    "nonstandard_json": {"payload": {**envelope["value"]["payload"], "nonstandard": float("nan")}},
+                }
+                envelope["value"].update(changes[damage])
             else:
                 envelope["representation"] = "native"
                 envelope["value"] = envelope["value"]["payload"]
@@ -1137,6 +1349,154 @@ def test_archive_rejects_invalid_merge_records_before_writing(tmp_path: Path, da
                     await connection.scalar(select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == scope_id))
                     is None
                 )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("damage", ["long_identity", "large_integer", "missing_replacement", "self_replacement"])
+def test_archive_rejects_unusable_artifact_and_scope_rows_before_writing(tmp_path: Path, damage: str) -> None:
+    async def scenario() -> None:
+        archive = tmp_path / "unusable.pcb"
+
+        async def authorize(_scopes: tuple[str, ...]) -> None:
+            pass
+
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Storage bounds", summary="Portable values", idempotency_key="storage-bounds")
+            )
+            await source.records.create_artifact(
+                scope.scope_id, "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Portable evidence."})
+            )
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+
+        def rewrite(records):
+            if damage == "long_identity":
+                for record in records:
+                    if record["record_type"] in {"artifact_revision", "artifact_head", "artifact_lineage_source"}:
+                        record["identity"]["artifact_id"] = "a" * (MAX_ARTIFACT_ID_LENGTH + 1)
+            elif damage == "large_integer":
+                next(record for record in records if record["record_type"] == "scope")["payload"]["version"] = 1 << 31
+            else:
+                head = next(record for record in records if record["record_type"] == "artifact_head")
+                replacement = "missing" if damage == "missing_replacement" else head["identity"]["artifact_id"]
+                head["payload"].update(lifecycle_state="deprecated", replacement_artifact_id=replacement)
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError):
+                    await operation(archive)
+            async with target.database.transaction() as connection:
+                assert (
+                    await connection.scalar(
+                        select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == scope.scope_id)
+                    )
+                    is None
+                )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("encoding", ["base64", "timestamp", "offset_timestamp"])
+def test_archive_rejects_wire_values_that_cannot_roundtrip(tmp_path: Path, encoding: str) -> None:
+    async def scenario() -> None:
+        archive = tmp_path / "canonical.pcb"
+
+        async def authorize(_scopes: tuple[str, ...]) -> None:
+            pass
+
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Canonical", summary="Stable retries", idempotency_key="canonical")
+            )
+            context = await source.get(scope.scope_id)
+            await context.sources.capture(ContentCapture(source_id="one", content="Canonical evidence."))
+            await source.profiles.put_policy(scope.scope_id, generation_enabled=True, expected_version=0)
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+
+        def rewrite(records):
+            if encoding != "base64":
+                policy = next(item for item in records if item["record_type"] == "profile_policy")
+                timestamp = policy["payload"]["updated_at"]
+                policy["payload"]["updated_at"] = (
+                    timestamp.replace("T", " ") if encoding == "timestamp" else timestamp + "Z"
+                )
+            else:
+                source = next(item for item in records if item["record_type"] == "source")
+                payload = base64.b64decode(source["payload"]["payload"]["base64"])
+                while len(payload) % 3 == 0:
+                    payload += b" "
+                encoded = base64.b64encode(payload).decode()
+                alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                offset = len(encoded.rstrip("=")) - 1
+                changed = encoded[:offset] + alphabet[alphabet.index(encoded[offset]) | 1] + encoded[offset + 1 :]
+                assert base64.b64decode(changed, validate=True) == payload
+                source["payload"]["payload"] = {"base64": changed}
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match="canonical"):
+                    await operation(archive)
+            async with target.database.transaction() as connection:
+                assert (
+                    await connection.scalar(
+                        select(SCOPES_TABLE.c.scope_id).where(SCOPES_TABLE.c.scope_id == scope.scope_id)
+                    )
+                    is None
+                )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("damage", ["cycle", "external_digest"])
+def test_archive_validates_scope_relationships_before_writing(tmp_path: Path, damage: str) -> None:
+    async def scenario() -> None:
+        archive = tmp_path / "scopes.pcb"
+
+        async def authorize(_scopes: tuple[str, ...]) -> None:
+            pass
+
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            parent = await source.scopes.create(
+                ScopeDraft(
+                    title="Parent",
+                    summary="Scope relationships",
+                    idempotency_key="parent",
+                    external_references=(ScopeExternalReference(kind="repository", value="example"),),
+                )
+            )
+            child = await source.scopes.create(
+                ScopeDraft(
+                    title="Child",
+                    summary="Scope relationships",
+                    parent_scope_id=parent.scope_id,
+                    idempotency_key="child",
+                )
+            )
+            await source.portability.export([parent.scope_id, child.scope_id], archive, authorize=authorize)
+
+        def rewrite(records):
+            if damage == "cycle":
+                parent_record = next(
+                    item
+                    for item in records
+                    if item["record_type"] == "scope" and item["identity"]["scope_id"] == parent.scope_id
+                )
+                parent_record["payload"]["parent_scope_id"] = child.scope_id
+            else:
+                reference = next(item for item in records if item["record_type"] == "scope_external_reference")
+                reference["payload"]["value_digest"] = "0" * 64
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError):
+                    await operation(archive)
 
     asyncio.run(scenario())
 

@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import stat
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, TypeVar, assert_never
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 import typer
 from sqlalchemy.engine import make_url
@@ -33,13 +35,16 @@ from powercontext.builtin.persistence.candidates import CandidateRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.seekdb import SeekDBConfig, SeekDBProfile
+from powercontext.builtin.persistence.sources import SourceRepository
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.portability import (
+    BundleCompatibilityError,
     BundleConflictError,
     BundleFormatError,
     BundleInspection,
     BundleProgress,
     BundleReceipt,
+    BundleRecoveryRequiredError,
     BundleValidation,
     PortableBundleService,
 )
@@ -50,6 +55,7 @@ from powercontext.paths import default_scheduler_path
 from powercontext.server.configuration import server_settings_context
 
 HELP_OPTION_NAMES = ("-h", "--help")
+_SQLITE_TARGET_INSPECTION_ERROR = "cannot inspect configured SQLite target"
 _ResultT = TypeVar("_ResultT", BundleInspection, BundleValidation, BundleReceipt)
 
 archive_app = typer.Typer(
@@ -182,18 +188,39 @@ async def _validate_with_database(database: AsyncDatabase, source: Path, /) -> B
         supported_artifact_families=artifacts.families,
         artifact_content_decoder=artifacts.decode_content,
         candidate_decoder=CandidateRepository(BUILTIN_CANDIDATE_PROPOSAL_TYPES).decode_candidate,
+        source_decoder=SourceRepository(BUILTIN_SOURCE_REGISTRY).decode_source,
     )
     return await archive.validate(source, progress=_emit_progress)
 
 
 def _database_file_exists(value: str, /) -> bool:
-    url = make_url(value)
-    arguments, options = url.get_dialect()().create_connect_args(url)
-    filename = str(arguments[0])
-    if options.get("uri") and filename.startswith("file:"):
-        uri = urlsplit(filename.replace("\t", "%09").replace("\n", "%0A").replace("\r", "%0D"))
-        filename = unquote(uri.path).partition("\0")[0]
-    return Path(filename).is_file()
+    authority = ""
+    try:
+        url = make_url(value)
+        arguments, options = url.get_dialect()().create_connect_args(url)
+        filename = str(arguments[0])
+        if options.get("uri") and filename.startswith("file:"):
+            uri = urlsplit(filename.replace("\t", "%09").replace("\n", "%0A").replace("\r", "%0D"))
+            authority = uri.netloc
+            filename = url2pathname(uri.path).partition("\0")[0]
+    except (OSError, ValueError) as error:
+        raise BundleFormatError(_SQLITE_TARGET_INSPECTION_ERROR) from error
+    if authority not in {"", "localhost"} or not filename:
+        raise BundleFormatError(_SQLITE_TARGET_INSPECTION_ERROR)
+    target = Path(filename)
+    for candidate in (target, *target.parents):
+        try:
+            mode = candidate.stat().st_mode
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as error:
+            raise BundleFormatError(_SQLITE_TARGET_INSPECTION_ERROR) from error
+        if candidate == target and stat.S_ISREG(mode):
+            return True
+        if candidate != target and stat.S_ISDIR(mode):
+            return False
+        raise BundleFormatError(_SQLITE_TARGET_INSPECTION_ERROR)
+    raise BundleFormatError(_SQLITE_TARGET_INSPECTION_ERROR)
 
 
 def _emit_progress(value: BundleProgress, /) -> None:
@@ -211,11 +238,17 @@ def _emit_archive_result(
 
     try:
         _emit(asyncio.run(_run_archive(operation, env_file=env_file, recovery=recovery)))
+    except BundleCompatibilityError as error:
+        typer.echo(f"error: archive target is incompatible: {error}", err=True)
+        raise typer.Exit(code=3) from error
     except BundleFormatError as error:
         typer.echo(f"error: archive validation failed: {error}", err=True)
         raise typer.Exit(code=2) from error
     except BundleConflictError as error:
         typer.echo(f"error: archive restore conflict: {error}", err=True)
+        raise typer.Exit(code=3) from error
+    except BundleRecoveryRequiredError as error:
+        typer.echo(f"error: archive recovery required: {error}", err=True)
         raise typer.Exit(code=3) from error
 
 

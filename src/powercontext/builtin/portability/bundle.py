@@ -24,6 +24,7 @@ are deployment details and are not portable state.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -32,6 +33,7 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -43,7 +45,20 @@ from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ValidationError
-from sqlalchemy import DateTime, PrimaryKeyConstraint, UniqueConstraint, and_, insert, or_, select, tuple_, update
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+    UniqueConstraint,
+    and_,
+    insert,
+    or_,
+    select,
+    tuple_,
+    update,
+)
 from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -61,7 +76,11 @@ from powercontext.builtin.artifacts.experience.recurrence import (
 from powercontext.builtin.artifacts.skill.package import SkillPackageError, capture_skill_archive
 from powercontext.builtin.persistence.candidates import decode_candidate_proposal_envelope
 from powercontext.builtin.persistence.database import AsyncDatabase
-from powercontext.builtin.persistence.errors import InvalidStoredPayloadError
+from powercontext.builtin.persistence.errors import (
+    IdentityMismatchError,
+    InvalidStoredPayloadError,
+    RepositoryNotFoundError,
+)
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HANDLES_TABLE,
     ARTIFACT_HEADS_TABLE,
@@ -88,6 +107,11 @@ from powercontext.builtin.persistence.tables import (
     SOURCES_TABLE,
     TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE,
 )
+from powercontext.builtin.sources.observation_validation import (
+    validate_source_definition_manifest,
+    validate_source_observation,
+)
+from powercontext.errors import SourceError
 from powercontext.sources import SourceDefinitionManifest, SourceObservation
 
 FORMAT_VERSION = 1
@@ -165,6 +189,17 @@ class BundleFormatError(ValueError):
 
 class BundleConflictError(ValueError):
     """A target immutable identity exists with different canonical content."""
+
+
+class BundleCompatibilityError(BundleFormatError):
+    """The target does not support the bundle's otherwise valid requirements."""
+
+
+class BundleRecoveryRequiredError(RuntimeError):
+    """A committed restore needs its projections rebuilt before normal startup."""
+
+    def __init__(self) -> None:
+        super().__init__("portable restore projections are incomplete; finish archive restore before serving requests")
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,11 +477,13 @@ class PortableBundleService:
         supported_artifact_families: Iterable[str] | None = None,
         artifact_content_decoder: Callable[[str, bytes], object] | None = None,
         candidate_decoder: Callable[[Mapping[str, Any]], object] | None = None,
+        source_decoder: Callable[[Mapping[str, Any]], object] | None = None,
     ) -> None:
         self._database = database
         self._projection_rebuilder = projection_rebuilder
         self._artifact_content_decoder = artifact_content_decoder
         self._candidate_decoder = candidate_decoder
+        self._source_decoder = source_decoder
         self._supported_source_types = None if supported_source_types is None else frozenset(supported_source_types)
         self._supported_artifact_families = (
             None if supported_artifact_families is None else frozenset(supported_artifact_families)
@@ -479,8 +516,8 @@ class PortableBundleService:
         archive_path = _temporary_path(output.parent, suffix=".pcb")
         try:
             with records_path.open("wb") as stream:
-                async with self._database.transaction() as connection:
-                    await _establish_export_snapshot(connection)
+                async with self._database.transaction(consistent_snapshot=True) as connection:
+                    await _validate_export_destination(connection, output)
                     await _validate_selected_scopes(connection, selected)
                     count, records_by_type, digest = await self._stream_export(
                         connection, selected, stream, progress=progress
@@ -545,7 +582,7 @@ class PortableBundleService:
             else tuple(sorted(required_families - self._supported_artifact_families))
         )
         already_present, conflicts = await self._target_compatibility(
-            source, total=inspection.record_count, progress=progress
+            source, supported_source_types=configured, total=inspection.record_count, progress=progress
         )
         return BundleValidation(
             bundle_id=inspection.bundle_id,
@@ -598,7 +635,7 @@ class PortableBundleService:
         if validation.conflicts:
             raise BundleConflictError(f"target contains {validation.conflicts} conflicting record identities")
         if not validation.compatible:
-            raise BundleFormatError("target is not compatible with bundle requirements")
+            raise BundleCompatibilityError("target is not compatible with bundle requirements")
         try:
             with _staged_records(source) as staged:
                 async with self._database.transaction() as connection:
@@ -691,6 +728,7 @@ class PortableBundleService:
         source: Path,
         /,
         *,
+        supported_source_types: frozenset[str] | None,
         total: int,
         progress: ProgressObserver | None,
     ) -> tuple[int, int]:
@@ -705,7 +743,7 @@ class PortableBundleService:
                 }
             )
             for processed, record in enumerate(_iter_records(source), start=1):
-                self._validate_target_content(record)
+                self._validate_target_content(record, supported_source_types=supported_source_types)
                 table = _SPECS[record.record_type].table
                 if table.name not in existing_tables:
                     _report_progress(progress, "target", processed, total)
@@ -729,7 +767,10 @@ class PortableBundleService:
                 _report_progress(progress, "target", processed, total)
         return already_present, conflicts
 
-    def _validate_target_content(self, record: _Record, /) -> None:
+    def _validate_target_content(self, record: _Record, /, *, supported_source_types: frozenset[str] | None) -> None:
+        if record.record_type == "source":
+            self._validate_source(record, supported_source_types=supported_source_types)
+            return
         if record.record_type == "candidate_version":
             if self._candidate_decoder is None:
                 raise BundleFormatError("target cannot validate Candidate proposals")
@@ -743,6 +784,26 @@ class PortableBundleService:
             self._artifact_content_decoder(family, cast(bytes, _database_value(record.payload["content"])))
         except InvalidStoredPayloadError as error:
             raise BundleFormatError("Artifact content does not match the target family decoder") from error
+
+    def _validate_source(self, record: _Record, /, *, supported_source_types: frozenset[str] | None) -> None:
+        if (
+            _source_observation(record) is None
+            and supported_source_types is not None
+            and record.identity["source_type"] not in supported_source_types
+        ):
+            return
+        if self._source_decoder is None:
+            raise BundleFormatError("target cannot validate Source payloads")
+        try:
+            self._source_decoder(_row_values(record))
+        except (
+            InvalidStoredPayloadError,
+            IdentityMismatchError,
+            RepositoryNotFoundError,
+            SourceError,
+            ValueError,
+        ) as error:
+            raise BundleFormatError("Source payload does not match the target Source decoder") from error
 
     async def _write_records(
         self,
@@ -892,7 +953,7 @@ def _source_observation(record: _Record) -> SourceObservation | None:
         return None  # Legacy native payload.
     try:
         observation = SourceObservation.model_validate_json(_canonical_json(value))
-    except ValidationError as error:
+    except ValueError as error:
         raise BundleFormatError("invalid Source observation") from error
     if (observation.source_type, observation.name) != (record.identity["source_type"], record.identity["source_id"]):
         raise BundleFormatError("Source observation identity mismatch")
@@ -904,7 +965,8 @@ def _source_definition(record: _Record) -> SourceDefinitionManifest:
         manifest = SourceDefinitionManifest.model_validate_json(
             cast(bytes, _database_value(record.payload["manifest"]))
         )
-    except ValidationError as error:
+        validate_source_definition_manifest(manifest)
+    except (SourceError, ValueError) as error:
         raise BundleFormatError("invalid Source definition manifest") from error
     if (manifest.name, manifest.version, manifest.fingerprint) != (
         record.identity["definition_name"],
@@ -928,21 +990,19 @@ def _record_from_row(record_type: RecordType, row: Mapping[str, Any]) -> _Record
     return _Record(record_type=record_type, identity=identity, payload=payload, digest=_digest(canonical))
 
 
-async def _establish_export_snapshot(connection: AsyncConnection, /) -> None:
-    """Pin all export reads to one database snapshot before enumeration."""
-
-    if connection.dialect.name == "mysql":
-        # Replace AsyncDatabase's empty transaction before any reads. SET
-        # TRANSACTION applies only to the next transaction, so pooled sessions
-        # retain their configured isolation after export.
-        await connection.exec_driver_sql("ROLLBACK")
-        await connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-        await connection.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT")
-    elif connection.dialect.name == "sqlite":
-        # SQLAlchemy's SQLite transaction begins lazily.  Pin the snapshot
-        # before the first table is enumerated so later SELECTs cannot observe
-        # a writer that committed midway through the export.
-        await connection.exec_driver_sql("BEGIN")
+async def _validate_export_destination(connection: AsyncConnection, output: Path, /) -> None:
+    if connection.dialect.name != "sqlite":
+        return
+    destination = await asyncio.to_thread(output.resolve)
+    for row in await connection.exec_driver_sql("PRAGMA database_list"):
+        if not row[2]:
+            continue
+        database = await asyncio.to_thread(Path(row[2]).resolve)
+        reserved_names = {database.name.casefold() + suffix for suffix in ("", "-wal", "-shm", "-journal")}
+        if destination.name.casefold() in reserved_names and await asyncio.to_thread(
+            destination.parent.samefile, database.parent
+        ):
+            raise BundleFormatError("export destination overlaps the source database or its journal")
 
 
 def _record_document(record: _Record) -> dict[str, Any]:
@@ -988,7 +1048,17 @@ def _parse_bundle(
             with archive.open(_MANIFEST_NAME) as stream:
                 manifest = json.loads(stream.read(_MAX_MANIFEST_BYTES + 1), parse_constant=_reject_json_constant)
             _validate_manifest(manifest)
-    except (OSError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+    except (
+        OSError,
+        EOFError,
+        ValueError,
+        RecursionError,
+        NotImplementedError,
+        zipfile.BadZipFile,
+        zlib.error,
+    ) as error:
+        if isinstance(error, BundleFormatError):
+            raise
         raise BundleFormatError("cannot read portable bundle") from error
     count = 0
     counts: Counter[str] = Counter()
@@ -1091,7 +1161,17 @@ def _iter_records(source: Path, /) -> Iterator[_Record]:
                 if count > _MAX_RECORDS:
                     raise BundleFormatError("record count exceeds limit")
                 yield _parse_record(json.loads(line, parse_constant=_reject_json_constant))
-    except (OSError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+    except (
+        OSError,
+        EOFError,
+        ValueError,
+        RecursionError,
+        NotImplementedError,
+        zipfile.BadZipFile,
+        zlib.error,
+    ) as error:
+        if isinstance(error, BundleFormatError):
+            raise
         raise BundleFormatError("cannot read portable bundle") from error
 
 
@@ -1102,6 +1182,7 @@ def _validate_container(archive: zipfile.ZipFile) -> None:
         raise BundleFormatError("bundle must contain only manifest.json and records.ndjson")
     if any(
         item.is_dir()
+        or item.flag_bits & 1
         or item.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
         or item.compress_size > _MAX_ARCHIVE_BYTES
         for item in items
@@ -1129,7 +1210,7 @@ def _validate_manifest(manifest: object) -> None:  # noqa: C901 - manifest field
     }
     if set(manifest) != required:
         raise BundleFormatError("manifest has unknown or missing fields")
-    if manifest["format_version"] != FORMAT_VERSION:
+    if type(manifest["format_version"]) is not int or manifest["format_version"] != FORMAT_VERSION:
         raise BundleFormatError("unsupported bundle format version")
     if (
         not isinstance(manifest["bundle_id"], str)
@@ -1182,7 +1263,12 @@ def _parse_record(value: object) -> _Record:
     if set(value) != {"record_type", "schema_version", "identity", "payload", "digest"}:
         raise BundleFormatError("record has unknown or missing fields")
     record_type = value.get("record_type")
-    if record_type not in _SPECS or value.get("schema_version") != _SPECS[cast(RecordType, record_type)].schema_version:
+    if (
+        not isinstance(record_type, str)
+        or record_type not in _SPECS
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != _SPECS[cast(RecordType, record_type)].schema_version
+    ):
         raise BundleFormatError("unsupported record type or schema")
     identity = value.get("identity")
     payload = value.get("payload")
@@ -1217,6 +1303,19 @@ def _parse_record(value: object) -> _Record:
 def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one versioned schema contract.
     identity = record.identity
     payload = record.payload
+    for field, value in {**identity, **payload}.items():
+        column_type = _SPECS[record.record_type].table.c[field].type
+        if (
+            isinstance(value, str)
+            and isinstance(column_type, String)
+            and column_type.length is not None
+            and len(value) > column_type.length
+        ):
+            raise BundleFormatError("record string exceeds its portable storage limit")
+        if isinstance(value, int) and not isinstance(value, bool) and isinstance(column_type, Integer):
+            bits = 63 if isinstance(column_type, BigInteger) else 31
+            if not -(1 << bits) <= value < (1 << bits):
+                raise BundleFormatError("record integer exceeds its portable storage limit")
     if any(isinstance(value, str) and (not value or value != value.strip()) for value in identity.values()):
         raise BundleFormatError("record identity contains an invalid string")
     positive_identity_fields = {"revision", "version"}
@@ -1247,9 +1346,11 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             if not isinstance(value, dict) or set(value) != {"base64"} or not isinstance(encoded, str):
                 raise BundleFormatError("record payload has an invalid binary field")
             try:
-                base64.b64decode(encoded, validate=True)
+                decoded = base64.b64decode(encoded, validate=True)
             except ValueError as error:
                 raise BundleFormatError("record payload has an invalid binary field") from error
+            if base64.b64encode(decoded).decode("ascii") != encoded:
+                raise BundleFormatError("record payload has a non-canonical binary field")
 
     kind = record.record_type
     if kind == "scope":
@@ -1260,6 +1361,8 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             raise BundleFormatError("scope cannot reference itself")
     elif kind == "scope_external_reference":
         strings("kind", "value", "value_digest")
+        if payload["value_digest"] != hashlib.sha256(payload["value"].encode()).hexdigest():
+            raise BundleFormatError("scope external reference has invalid value digest")
     elif kind == "scope_creation_request":
         strings("request_digest", "scope_id")
     elif kind == "source_journal_head":
@@ -1312,7 +1415,11 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
         integers("revision", positive=True)
         integers("governance_generation")
         if payload["lifecycle_state"] not in {"active", "deprecated", "retired"} or (
-            payload["replacement_artifact_id"] is not None and payload["lifecycle_state"] != "deprecated"
+            payload["replacement_artifact_id"] is not None
+            and (
+                payload["lifecycle_state"] != "deprecated"
+                or payload["replacement_artifact_id"] == identity["artifact_id"]
+            )
         ):
             raise BundleFormatError("artifact head has invalid governance state")
         if payload["merged_into_id"] is not None and (
@@ -1460,9 +1567,11 @@ def _recurrence_value(record: _Record, /) -> RecurrenceMatch | RecurrenceObserva
 
 def _validate_datetime_text(value: object, /) -> None:
     try:
-        datetime.fromisoformat(cast(str, value))
+        parsed = datetime.fromisoformat(cast(str, value))
     except ValueError as error:
         raise BundleFormatError("record payload has an invalid datetime field") from error
+    if parsed.tzinfo is not None or parsed.isoformat() != value:
+        raise BundleFormatError("record payload has a non-canonical datetime field")
 
 
 async def _validate_selected_scopes(connection: AsyncConnection, scopes: tuple[str, ...], /) -> None:
@@ -1507,7 +1616,9 @@ def _validate_record_safe(record: _Record, /) -> None:
         encoded = cast(dict[str, object], value).get("base64") if isinstance(value, dict) else None
         if isinstance(encoded, str):
             try:
-                decoded = json.loads(base64.b64decode(encoded, validate=True))
+                decoded = json.loads(base64.b64decode(encoded, validate=True), parse_constant=_reject_json_constant)
+            except BundleFormatError:
+                raise
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 continue
             _validate_safe_value(decoded, field)
@@ -1561,6 +1672,7 @@ def _validate_dependencies(
         for record in _iter_records(source):
             _validate_record_dependencies(record, contains)
             _validate_candidate_record(record, index, candidate_decoder)
+            _validate_observation_record(record, index)
             _validate_skill_package_dependency(record, packages)
             if record.record_type == "source":
                 if int(record.payload["journal_position"]) > heads.get(str(record.identity["scope_id"]), -1):
@@ -1569,6 +1681,26 @@ def _validate_dependencies(
                     required_sources.add(str(record.identity["source_type"]))
             required_families.update(_required_artifact_families((record,)))
     return required_sources, required_families
+
+
+def _validate_observation_record(record: _Record, index: sqlite3.Connection, /) -> None:
+    if record.record_type != "source":
+        return
+    observation = _source_observation(record)
+    if observation is None:
+        return
+    identity = {"definition_name": observation.source_type, "definition_version": observation.definition_version}
+    document = index.execute(
+        "SELECT document FROM identities WHERE record_type = 'source_definition' AND identity = ?",
+        (_identity_key(identity),),
+    ).fetchone()
+    if document is None:
+        raise BundleFormatError("observation references missing Source definition")
+    manifest = _source_definition(_parse_record(json.loads(document[0])))
+    try:
+        validate_source_observation(observation, manifest)
+    except (SourceError, ValueError) as error:
+        raise BundleFormatError("Source observation does not match its definition manifest") from error
 
 
 def _validate_candidate_record(
@@ -1780,6 +1912,10 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
     elif record.record_type == "artifact_head":
         if not contains("artifact_revision", {**identity, "revision": payload["revision"]}):
             raise BundleFormatError("artifact head references missing revision")
+        if payload["replacement_artifact_id"] is not None and not contains(
+            "artifact_head", {**identity, "artifact_id": payload["replacement_artifact_id"]}
+        ):
+            raise BundleFormatError("artifact head references missing replacement")
         if payload["merged_into_id"] is not None and not contains(
             "artifact_head", {**identity, "artifact_id": payload["merged_into_id"]}
         ):
@@ -1859,7 +1995,10 @@ def _contains_memory_entry_target(
 def _dependency_metadata(source: Path, /) -> tuple[dict[str, int], dict[tuple[str, str], tuple[str, int, int, int]]]:
     heads: dict[str, int] = {}
     packages: dict[tuple[str, str], tuple[str, int, int, int]] = {}
+    scopes: list[_Record] = []
     for record in _iter_records(source):
+        if record.record_type == "scope":
+            scopes.append(record)
         if record.record_type == "source_journal_head":
             heads[str(record.identity["scope_id"])] = int(record.payload["position"])
         if record.record_type != "skill_package":
@@ -1885,6 +2024,7 @@ def _dependency_metadata(source: Path, /) -> tuple[dict[str, int], dict[tuple[st
             snapshot.reference.uncompressed_size,
             snapshot.reference.archive_size,
         )
+    _ordered_scope_records(scopes)
     return heads, packages
 
 
@@ -1977,7 +2117,7 @@ def _identity_index(source: Path, /) -> Iterator[sqlite3.Connection]:
                         record.record_type,
                         _identity_key(record.identity),
                         _canonical_json(_record_document(record))
-                        if record.record_type == "candidate_version"
+                        if record.record_type in {"candidate_version", "source_definition"}
                         else None,
                     ),
                 )

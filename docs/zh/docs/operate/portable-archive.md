@@ -13,6 +13,22 @@ SQLite、SeekDB 或 OceanBase 配置。恢复前应停止 PowerContext 写入进
 逻辑 snapshot。MySQL 模式的后端会为导出事务使用 `REPEATABLE READ`，即使部署默认采用
 `READ COMMITTED`；后续事务仍使用部署的默认隔离级别。
 
+## 选择恢复格式
+
+需要完整数据库、部署本地状态或时间点恢复时，应使用部署原生备份。`.pcb` 解决的是更窄的需求：在受支持的后端之间迁移
+选定的完整 scope，保留原始 identity、revision、evidence 和重试语义，但不复制访问绑定、宿主本地选择、调度状态和派生索引。
+SQLite 数据库副本不能直接作为 OceanBase 数据库使用；回放后端的 SQL dump 也不会执行这些应用层的范围选择和投影重建。
+schema migration 负责升级现有部署的表结构，并不替代这种 scope 迁移操作。
+
+逻辑 record schema 因此是显式的可移植协议，而非每个存储列的另一份副本。它保留权威领域字段，映射到各后端，并排除部署
+专有数据。领域模型变化时，仍需检查映射及其往返行为；checksum 无法发现生产端遗漏导出的字段。读取端拒绝未知的 record
+schema version，不会为新增的权威状态静默补默认值。
+
+导入策略独立于 checksum 算法：不存在的 identity 会插入，canonical 内容相同则跳过，已有 identity 的内容不同则报告冲突，
+不覆盖原数据。逐条 SHA-256 digest 是当前用于比较和流校验的指纹表示；直接比较 canonical record 字节也能实现同一策略。
+总 digest 覆盖 record 流，ZIP 校验可发现压缩数据损坏。这些检查不提供生产者身份认证，不证明导出内容相对源数据库完整，
+也不替代 Source/Artifact 解码与依赖校验。
+
 ## 前提条件
 
 从创建本地数据的同一个 PowerContext revision 安装 CLI。归档命令使用
@@ -46,6 +62,7 @@ powercontext archive inspect ./backups/payments.pcb
 `export` 会输出 JSON，其中包括 bundle ID、record 数和 checksum。`inspect` 不打开目标数据库，只校验 ZIP 结构、
 单 record digest、总 digest、record 数和所选 scope。若外部备份系统需要独立校验记录，请把输出的 checksum 一并保存。
 导出在发布文件前还会检查格式、资源限制和依赖完整性。验证失败时，输出路径上的旧备份保持不变。
+输出路径不能是源 SQLite 数据库或对应的 `-wal`、`-shm`、`-journal` 文件；导出会拒绝这些路径，不会用归档替换正在使用的存储。同目录中的这些保留文件名不区分大小写，在大小写敏感的文件系统上也一样。
 
 ## 在恢复前验证
 
@@ -56,7 +73,8 @@ powercontext archive restore ./backups/payments.pcb --dry-run
 ```
 
 dry-run 不会写入领域数据。它会校验 checksum、必需的 Source 和 Artifact 依赖，以及已配置 Runtime 是否支持归档中的
-source type 和 Artifact family。归档无效时返回退出码 `2`，不兼容或目标冲突时返回 `3`；错误信息不打印 record body。成功报告
+source type 和 Artifact family。归档无效或无法检查本地 SQLite 文件名时返回退出码 `2`，不兼容或目标冲突时返回 `3`；
+错误信息不打印 record body。成功报告
 包含 `already_present`、`conflicts`、所需和不支持的 Source type/Artifact family，以及目标是否支持 projection rebuild。
 可用 `--env-file ./target.env` 检查另一个部署。
 
@@ -64,10 +82,15 @@ Candidate version 和 decision head 使用正常读取路径的完整解码器�
 以及 family 自有的 proposal 协议和可选的 Dream audit envelope。格式错误或不支持的 Candidate 会在写入领域数据前被拒绝。
 已有 SQLite 目标以只读方式检查，支持带 `uri=true` 的 `file:` URI 文件名。
 目标不存在时，dry-run 不会创建数据库文件或父目录。
+这包括 Windows 的绝对 `file:///C:/...` 路径及经过百分号编码的文件名。不支持的 URI authority、无法读取的目标、目录目标
+或非目录的父路径会使验证失败，不会被当成空数据库。
 
-原生 Source 需要目标环境安装对应的 Python adapter。远程 worker 已物化的 `SourceObservation` 自带捕获内容和投影，
-读取时不需要加载该 adapter。归档只携带所选 scope 实际引用的 Source Definition manifest，并在恢复前校验 observation
+原生 Source 需要目标环境安装对应的 Python adapter。验证会在写入前使用正常读取路径的已注册 Source 解码器，检查 payload
+结构与索引 identity 是否一致，也覆盖受支持的 legacy payload。远程 worker 已物化的 `SourceObservation` 自带捕获内容和投影，
+其存储 envelope 也使用同一解码器验证，但不需要加载 worker adapter。归档只携带所选 scope 实际引用的 Source Definition
+manifest，并在恢复前校验 observation
 的身份和定义指纹。缺失定义或与目标定义冲突会阻止恢复；未引用的全局定义不会随包导出。
+Observation 的 payload 和每个 projection 还必须通过正常写入路径所使用的 manifest schema 校验。恢复不会请求远程 schema。
 
 要执行写恢复，必须显式确认：
 
@@ -116,14 +139,20 @@ Atomic Memory 迁移后，归档保留迁移后的 Atomic Memory identity、不�
 时，恢复绝不会覆盖它：命令以退出码 `3` 结束，并回滚本次写 transaction。解决目标数据冲突，或选择一个干净的目标后，
 再次运行同一个恢复命令。
 
+restore 命令会以维护模式打开 Runtime，不预先创建新的默认 scope。因此，包含规范默认 scope 的归档可以在干净的目标中恢复
+原始 identity 和创建幂等键；下次正常启动时，默认 scope 初始化会复用该创建 identity。默认选择绑定仍属于部署本地状态，
+恢复不会覆盖现有部署的选择，也不会覆盖冲突的 scope。
+维护 Runtime 不会启动后台 Artifact 处理 supervisor，即使目标部署配置了后台处理。完成恢复后，再启动正常部署以继续后台工作。
+
 如果命令在完成前中断，不能宣称恢复已成功。权威 record 会在 transaction 中写入；失败的写入不会留下看似成功的部分
 恢复。先确认上一次命令已经停止，再对同一目标重新运行同一个归档。
 
 目标数据库会按 `bundle_id` 保存 durable receipt。`authoritative_restored` 表示逻辑数据已经提交但搜索尚未重建完成；
 `ready` 表示 projection rebuild 已完成。若重建失败，重新恢复同一 bundle 会跳过相同记录，只有验证完成后才把 receipt
 推进为 `ready`。
-有未完成的恢复回执时，restore 命令允许重新打开投影尚未完成的 Topic Memory；正常 Server 启动仍会拒绝不完整投影。
-请使用相同的目标 embedding 配置重试，完成恢复后再提供服务。
+只要存在 `projections_ready=false` 的回执，正常 Runtime/Server 启动与 worker 启动都会被拒绝，即使归档仅包含 Atomic Memory
+或 Experience。显式 restore 路径可以重新打开目标及未完成的 Topic Memory 投影，以继续恢复。请使用相同的目标 embedding
+配置重跑同一归档，完成后再提供服务。恢复未完成时，export 返回退出码 `3`，要求先完成恢复。
 
 恢复会在目标写事务开始前将记录存入临时磁盘索引，请为归档副本及解压后的记录预留临时磁盘空间。
 已有 MySQL 模式数据库可能需要在 Runtime 启动时将可移植时间戳从 `DATETIME` 升级为 `DATETIME(6)`；
@@ -153,6 +182,8 @@ version 时，reader 会在目标写入前拒绝。跨 PowerContext 大版本升
 `artifact_head`、`artifact_lineage_artifact` 和 `candidate_head` 要求 record schema version `2`。
 reader 会拒绝这些记录不完整的 schema version `1` 表示，而不是补上默认合并状态或 Candidate 类型。
 归档不满足兼容检查时，请用当前二进制从源数据库重新导出。
+二进制字段使用 canonical Base64；时间戳使用受支持数据库 profile 输出的 canonical、无时区 ISO 文本。恢复会在写入前拒绝
+替代编码、携带时区偏移的时间戳及超出存储范围的值，不会接受读回后 digest 改变、再次恢复却产生冲突的表示。
 
 ## 部署原生备份
 

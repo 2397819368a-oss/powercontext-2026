@@ -15,6 +15,28 @@ PowerContext writers before restore. Export uses one database transaction as its
 MySQL-mode backends use `REPEATABLE READ` for the export transaction even when the deployment defaults to
 `READ COMMITTED`; later transactions retain the deployment default.
 
+## Choosing the recovery format
+
+Use a deployment-native backup when you need the complete database, deployment-local state, or point-in-time recovery.
+A `.pcb` bundle addresses a narrower requirement: transfer selected complete scopes between supported backends while
+preserving their exact identities, revisions, evidence and retry behavior, without copying access bindings, host-local
+selection, scheduler state or derived indexes. A SQLite database copy is not an OceanBase database, and replaying a
+backend's SQL dump does not perform these application-level selections and projection rebuilds. Schema migrations
+upgrade a deployment's schema; they do not replace this scope-transfer operation.
+
+The logical record schema is therefore an explicit portability contract, not a second copy of every storage column.
+It retains authoritative domain fields and maps them to each backend while excluding deployment-specific data.
+Changing a domain model requires checking this mapping and its round-trip behavior; a checksum cannot discover a
+field that a producer failed to export. Unknown record schema versions are rejected instead of silently supplying
+defaults for new authoritative state.
+
+Import policy is independent of the checksum algorithm: an absent identity is inserted, identical canonical content is
+skipped, and different content at an existing identity causes a conflict without overwriting it. Per-record SHA-256
+digests are the chosen fingerprints for this comparison and for stream verification; comparing canonical record bytes
+would implement the same policy. The total digest covers the record stream, while ZIP checks detect damaged compressed
+data. These checks do not authenticate the producer, establish completeness against the source database, or replace
+Source/Artifact decoding and dependency validation.
+
 ## Prerequisites
 
 Install the CLI from the same PowerContext revision that created the local data. The archive command uses the persistent
@@ -52,6 +74,9 @@ per-record digests, total digest, record counts, and selected scopes without ope
 reported checksum with the backup inventory if an external backup system needs an independent verification record.
 Before publishing the file, export checks its format, resource limits, and dependencies. If validation fails, an
 existing backup at the output path remains unchanged.
+The destination must not be the source SQLite database or one of its `-wal`, `-shm`, or `-journal` files; export rejects
+these paths rather than replacing live storage with an archive. These sibling filenames are reserved regardless of
+letter case, including on case-sensitive filesystems.
 
 ## Validate before a restore
 
@@ -63,7 +88,8 @@ powercontext archive restore ./backups/payments.pcb --dry-run
 
 Dry-run performs no domain writes. It verifies checksums, required source and Artifact dependencies, and whether the
 configured Runtime can restore the archive's source types and Artifact families. A validation failure exits with code
-`2` for an invalid bundle, or `3` for unsupported requirements or target conflicts, and reports only a content-free
+`2` for an invalid bundle or an uninspectable SQLite filename, or `3` for unsupported requirements or target conflicts,
+and reports only a content-free
 reason; record bodies are not printed. A successful report includes
 `already_present`, `conflicts`, required and unsupported Source types and Artifact families, and whether the target has
 a projection rebuilder. Candidate versions and decision heads use the same complete decoder as normal reads. Validation
@@ -71,12 +97,19 @@ checks their family consistency, evidence, reasons, lifecycle state and family-o
 audit envelopes; malformed or unsupported Candidates are rejected before any domain write. Run against a different
 deployment with `--env-file ./target.env`. Existing SQLite targets, including `file:` URI filenames with `uri=true`,
 are inspected read-only. A missing SQLite target is validated without creating its database file or parent directory.
+This includes absolute `file:///C:/...` paths on Windows and percent-encoded filenames. Unsupported URI authorities,
+unreadable targets, directory targets and non-directory parent paths fail validation rather than being treated as an
+empty database.
 
-Native Sources require their Python adapter on the target. Worker-materialized `SourceObservation` records carry
-their captured payload and projections, so they can be read without loading that adapter. The bundle includes only
-the definition manifests referenced by the selected scopes and verifies observation identities and definition
+Native Sources require their Python adapter on the target. Before writing records, validation uses the same registered
+Source decoder as normal reads to check both payload shape and indexed identity, including supported legacy payloads.
+Worker-materialized `SourceObservation` records carry their captured payload and projections. The same decoder
+validates their storage envelope without loading the worker adapter. The bundle includes only the definition
+manifests referenced by the selected scopes and verifies observation identities and definition
 fingerprints before restore. Missing definitions and conflicting target definitions prevent restoration; unreferenced
 global definitions are not exported.
+Observation payloads and supplied projections must also satisfy the same manifest schemas checked during normal
+ingestion. Restore does not fetch remote schema references.
 
 To perform the write, repeat the command with explicit confirmation:
 
@@ -126,6 +159,13 @@ payload for an existing immutable identity never overwrites it: restore exits wi
 transaction rolled back. Resolve the conflicting target data or choose a clean destination, then run the same restore
 command again.
 
+The restore command opens its maintenance Runtime without bootstrapping a new default scope. This lets an archive
+containing the canonical default scope restore its original identity and creation key into a fresh target. On the next
+normal startup, default-scope bootstrap reuses that creation identity when present. Default selection bindings remain
+deployment-local; restoring an archive does not overwrite an existing deployment's selection or conflicting scope.
+The maintenance Runtime does not start background Artifact processing supervisors, even when processing is configured
+for the target deployment. Restart the normal deployment after recovery to resume background work.
+
 If the command is interrupted before completion, do not claim recovery succeeded. Authoritative records are
 transactionally applied, so a failed write does not leave a successful-looking partial restore. Re-run the same archive
 against the same destination after the previous command has stopped.
@@ -133,9 +173,11 @@ against the same destination after the previous command has stopped.
 The target database stores a durable receipt keyed by `bundle_id`. `authoritative_restored` means the logical rows
 committed but search rebuild has not completed; `ready` means projection rebuild completed. If projection rebuild
 fails, re-run the same restore: identical rows are skipped and the receipt advances to `ready` only after verification.
-The restore command can reopen unfinished Topic Memory projections when a pending restore receipt exists. Normal
-Server startup still rejects incomplete projections; finish the restore before serving requests. Use the same target
-embedding configuration when retrying.
+While any receipt has `projections_ready=false`, normal Runtime/Server startup and worker startup refuse to serve,
+including when the archive contains only Atomic Memory or Experience. The explicit restore path may reopen the target
+and unfinished Topic Memory projections to complete recovery. Re-run the same restore before serving requests, using
+the same target embedding configuration. Export from an unfinished recovery exits with code `3` and requires recovery
+to finish first.
 
 Restore stages records in a temporary disk index before starting the target write transaction. Reserve temporary
 disk space for both the archive copy and its expanded records. Existing MySQL-mode deployments may require an
@@ -167,6 +209,9 @@ binary available until a restore drill succeeds when upgrading across a PowerCon
 `artifact_head`, `artifact_lineage_artifact` and `candidate_head` require record schema version `2`. Incomplete schema
 version `1` representations of these records are rejected rather than assigning default merge state or Candidate kind.
 Create a fresh bundle from the source database with the current binary when a bundle fails these compatibility checks.
+Binary fields use canonical Base64, and timestamp fields use the canonical timezone-naive ISO text emitted by the
+supported database profiles. Alternative encodings, offset-bearing timestamps and out-of-range storage values are
+rejected before writes rather than accepted with digests that would change on readback or conflict on retry.
 
 ## Deployment-native backups
 
