@@ -272,12 +272,10 @@ def test_scope_set_default_forwards_the_exact_scope_id(monkeypatch: pytest.Monke
 def test_scope_binding_set_prints_the_bound_key(monkeypatch: pytest.MonkeyPatch) -> None:
     client, output = _invoke(
         monkeypatch,
-        ScopeBinding.model_validate(
-            {
-                "key": {"integration": "opencode", "kind": "workspace", "external_id": "abc"},
-                "scope_id": "scp_bound",
-            }
-        ),
+        ScopeBinding.model_validate({
+            "key": {"integration": "opencode", "kind": "workspace", "external_id": "abc"},
+            "scope_id": "scp_bound",
+        }),
         ["scope", "binding", "set", "scp_bound", "--kind", "workspace", "--external-id", "abc"],
     )
     request = client.calls[0]
