@@ -131,14 +131,14 @@ boundary flushing fail open; explicit durable writes require interactive confirm
 Set `POWERCONTEXT_SCOPE_ID` to an existing ID returned by `create_scope` before running scoped content commands.
 
 ```text
-powercontext setup <host>
-powercontext setup select --host codex --host dsh
+powercontext setup [agents...]
+powercontext setup codex dsh
+powercontext config agent codex dsh --server-url https://memory.example
 powercontext config init --output .env
 powercontext config show --env-file .env
 powercontext config validate --env-file .env
 powercontext doctor
-powercontext doctor <host>
-powercontext doctor integrations
+powercontext doctor codex dsh
 powercontext server run
 powercontext server run --env-file .env
 powercontext ready
@@ -165,15 +165,14 @@ The `config` group creates, redacts, and validates an explicit environment file.
 current directory; pass `--env-file` to select another file or `--no-env-file` to disable discovery. See
 [Configuration](../operate/configuration.md) for precedence and credential-handling rules.
 
-Use `codex`, `claude-code`, `dsh`, `hermes`, `openclaw`, `opencode`, `pi`, or `workbuddy` for `<host>`.
-The first-class catalog used by `setup select` and `doctor integrations` contains every listed host except WorkBuddy.
-WorkBuddy remains available through the explicit `setup workbuddy` and `doctor workbuddy` commands.
+Use `codex`, `claude-code`, `dsh`, `hermes`, `kimi-code`, `openclaw`, `opencode`, `pi`, `workbuddy`, or `zcode` for agents.
+`powercontext setup` offers interactive selection; explicit agent names support non-interactive and multi-agent setup.
+Setup installs, configures, activates where supported, and runs doctor. Failures remain isolated per agent; completed installation is reported even when diagnostics fail.
 
-`powercontext doctor` checks the package and Server without requiring an integration. `powercontext doctor integrations`
-prints a read-only matrix for every first-class host; a missing CLI is `missing` and does not fail the command.
-Each `powercontext doctor <host>` command still fails when that host CLI is missing. The matrix preserves every
-host-specific integration check, including OpenCode's separate `plugin` and `skill` results. DSH checks that
-`dump-config` lists `powercontext-dsh`; Pi checks that the CLI lists the PowerContext package.
+`powercontext config agent [agents...]` updates installed connections without reinstalling or enabling plugins.
+`powercontext doctor [agents...]` checks the selected agents, or saved connections when none are selected.
+With no saved connections, doctor checks the package and Server. Selected agents with a missing required CLI fail their own checks.
+Doctor preserves host-specific checks, including OpenCode's separate `plugin` and `skill` results. DSH checks its native registration; Pi checks its registered package.
 
 The unified HTTP review routes are `/v1/candidates/list`, `get`, `history`, `revise`, `approve`, and `reject` (all POST).
 `candidate_kind=artifact|tag` distinguishes proposals. Old Artifact Candidate routes are removed; callers must upgrade together.
