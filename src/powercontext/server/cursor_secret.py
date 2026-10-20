@@ -144,8 +144,12 @@ def _windows_creation_lock(lock_path: Path) -> Iterator[None]:
     lock_unlock = cast(int, msvcrt_members["LK_UNLCK"])
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        if os.fstat(descriptor).st_size == 0:
-            os.write(descriptor, b"\0")
+        # Take the lock without seeding the file first. `_locking` accepts a range
+        # past the end of the file, and writing a marker before the lock is held is
+        # itself a race: a starter that read the size before another starter locked
+        # byte 0 would write into that byte, Windows rejects the write with errno 13,
+        # and the error escapes the retry loop below, so the second starter never
+        # starts even though the persisted key is valid.
         deadline = time.monotonic() + _KEY_LOCK_TIMEOUT_SECONDS
         while True:
             try:

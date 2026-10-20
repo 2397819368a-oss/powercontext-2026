@@ -18,6 +18,8 @@ import os
 import stat
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -25,7 +27,7 @@ from pydantic import SecretStr
 
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.server.cursor_secret import resolve_cursor_secret
+from powercontext.server.cursor_secret import _creation_lock, resolve_cursor_secret
 
 # Starter A reads the key (missing) and pauses after that read; starter B then
 # runs to completion. A real second process is used because the window under
@@ -68,6 +70,30 @@ if mode == "a":
 else:
     ready.write_text("1")
     print(load(), flush=True)
+"""
+
+# The holder locks byte 0 of an otherwise empty lock file and keeps that lock
+# until the test releases it. A second process is required because Windows
+# byte-range locks are enforced between processes, not within one.
+_LOCK_HOLDER_SCRIPT = """
+import msvcrt
+import os
+import sys
+import time
+from pathlib import Path
+
+lock_path = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+release = Path(sys.argv[3])
+
+descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+os.lseek(descriptor, 0, os.SEEK_SET)
+msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+ready.write_text("1")
+deadline = time.monotonic() + 30
+while not release.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+os.close(descriptor)
 """
 
 
@@ -270,3 +296,48 @@ def test_starters_that_race_on_a_missing_key_agree_on_the_persisted_one(tmp_path
     keys = {first_out.strip().splitlines()[-1], second_out.strip().splitlines()[-1]}
     assert len(keys) == 1, "starters published different keys; one of them lost cursors signed with it"
     assert key_path.read_bytes().hex() in keys
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only Windows rejects a write into a locked byte range")
+def test_lock_byte_is_not_seeded_while_another_starter_holds_it(tmp_path) -> None:
+    key_path = tmp_path / ".powercontext.db.cursor-key"
+    lock_path = key_path.with_name(f"{key_path.name}.lock")
+    ready = tmp_path / "holder-ready"
+    release = tmp_path / "holder-release"
+    script = tmp_path / "lock-holder.py"
+    script.write_text(_LOCK_HOLDER_SCRIPT, encoding="utf-8")
+
+    holder = subprocess.Popen(
+        [sys.executable, str(script), str(lock_path), str(ready), str(release)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "the helper process never took the lock"
+
+        # Entering the critical section while another starter holds byte 0 is the
+        # window under test: seeding the file first writes into a byte Windows has
+        # locked, and that error escapes before the retry loop.
+        timer = threading.Timer(1.0, release.write_text, args=("1",))
+        timer.start()
+        started = time.monotonic()
+        try:
+            with _creation_lock(key_path):
+                pass
+        finally:
+            timer.cancel()
+            release.write_text("1", encoding="utf-8")
+        # A lock that excludes nothing would let this return immediately while the
+        # holder still owns byte 0, so the wait itself is part of the contract.
+        assert time.monotonic() - started >= 0.5
+        _, holder_err = holder.communicate(timeout=60)
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.communicate()
+
+    assert holder.returncode == 0, holder_err
