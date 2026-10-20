@@ -842,14 +842,15 @@ def _install_kimi_plugin(tmp_path: Path, plugin_url: str, *, token: str | None) 
 
 def _kimi_installation(home: Path) -> dict[str, object]:
     files: dict[str, object] = {}
-    scope_script = json.dumps(
-        str(home.resolve() / "plugins/managed/powercontext/scripts/scope.mjs"), ensure_ascii=False
-    )
     for path in sorted((home / "plugins").rglob("*")):
         if path.is_file():
             text = path.read_text(encoding="utf-8")
-            text = text.replace(scope_script, '"<installed-scope-script>"')
-            files[path.relative_to(home).as_posix()] = json.loads(text) if path.suffix == ".json" else text
+            if path.suffix == ".json":
+                files[path.relative_to(home).as_posix()] = json.loads(text)
+            else:
+                # The guidance names the installed Scope script by its path inside this test's directories.
+                text = text.replace(str(home.resolve()), "<home>").replace(str(home), "<home>")
+                files[path.relative_to(home).as_posix()] = text
     for record in files["plugins/installed.json"]["plugins"]:  # type: ignore[index]
         # Each installation records its own time, and its source and root inside this test's directories.
         for name in ("installedAt", "updatedAt", "originalSource"):
