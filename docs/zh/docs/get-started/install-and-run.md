@@ -174,10 +174,9 @@ powercontext server run
 ## 使用 OceanBase
 
 连接已有 OceanBase **MySQL 兼容模式的用户租户**。PowerContext 在该租户内创建数据库，
-不负责创建 OceanBase 实例、租户或账户。确认网络可达，并安装 Server extra：
+不负责创建 OceanBase 实例、租户或账户。确认网络可达，按上文步骤安装 Server，然后配置连接：
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
 export POWERCONTEXT_SERVER_DATABASE_KIND=oceanbase
 # 凭据应保存在密钥管理服务或受保护的环境文件中。
 export POWERCONTEXT_SERVER_DATABASE_URL='mysql+aoceanbase://user%40tenant:encoded-password@host:2881/?charset=utf8mb4'

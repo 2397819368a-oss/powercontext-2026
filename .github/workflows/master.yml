@@ -178,9 +178,11 @@ jobs:
         timeout-minutes: 5
         env:
           POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB: "1"
+          PYTHONUNBUFFERED: "1"
         run: |
           uv run --locked --extra seekdb --extra code python -m pytest \
-            tests/e2e/test_database_bootstrap.py -k seekdb -q -rs \
+            tests/e2e/test_database_bootstrap.py -k seekdb -vv -rs \
+            -o faulthandler_timeout=60 --durations=20 \
             --junitxml=.powercontext/database-bootstrap-ci/seekdb.xml
           uv run --locked --extra seekdb --extra code python - <<'PYCODE'
           from xml.etree import ElementTree

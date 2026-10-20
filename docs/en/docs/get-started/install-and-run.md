@@ -189,10 +189,10 @@ not automatically migrate data, send retention reminders, compare databases, or 
 ## Use OceanBase
 
 Connect to an existing OceanBase **MySQL-compatible user tenant**. PowerContext creates a database inside that tenant;
-it does not provision an OceanBase instance, tenant, or account. Ensure network access and install the Server extra:
+it does not provision an OceanBase instance, tenant, or account. Ensure network access and complete the Server
+installation steps above, then configure the connection:
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
 export POWERCONTEXT_SERVER_DATABASE_KIND=oceanbase
 # Store credentials in your secret manager or a protected environment file.
 export POWERCONTEXT_SERVER_DATABASE_URL='mysql+aoceanbase://user%40tenant:encoded-password@host:2881/?charset=utf8mb4'
