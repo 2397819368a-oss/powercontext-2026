@@ -19,7 +19,7 @@ import subprocess
 import sys
 from importlib.metadata import version
 from pathlib import Path
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Self
 from unittest.mock import Mock
 
@@ -631,6 +631,27 @@ def test_cli_exposes_installed_role_commands() -> None:
     assert all(command in result.output for command in ("capabilities", "candidate", "stats", "service", "server"))
     assert "builtin" not in result.output
     assert "client" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "missing"),
+    [
+        ("setup", "powercontext.cli.system:setup_app", "click"),
+        ("doctor", "powercontext.cli.system:doctor_app", "click"),
+        ("server", "powercontext.server.cli:app", "missing_server_dependency"),
+        ("custom", "third_party.commands:app", "missing_plugin_dependency"),
+    ],
+)
+def test_cli_reports_broken_command_providers(monkeypatch, name: str, value: str, missing: str) -> None:
+    error = ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+    provider = SimpleNamespace(name=name, value=value, load=Mock(side_effect=error))
+    monkeypatch.setattr("powercontext.cli.app.entry_points", lambda **_kwargs: [provider])
+
+    with pytest.raises(
+        RuntimeError, match=f"Cannot load CLI command provider '{name}': missing module '{missing}'"
+    ) as exc:
+        create_cli()
+    assert exc.value.__cause__ is error
 
 
 def test_server_identity_reset_requires_offline_confirmation_and_rotates(tmp_path) -> None:

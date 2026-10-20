@@ -379,7 +379,7 @@ jobs:
             --no-index \
             --find-links "$BUNDLE_ROOT/wheelhouse" \
             "$cli_wheel[cli]"
-          build/cli-smoke-venv/bin/powercontext skill remote-sync --help
+          build/cli-smoke-venv/bin/python -I scripts/ci_role_smoke.py cli
 
           plugin_root="$BUNDLE_ROOT/integrations/plugins/powercontext"
           (
