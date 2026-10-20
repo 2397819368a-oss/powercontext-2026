@@ -32,7 +32,7 @@ limitations under the License.
     <div class="table-responsive"><table class="table table-vcenter">
       <thead><tr><th>{{ t.review_resource }}</th><th>{{ t.review_version }}</th><th>{{ t.review_reason }}</th><th>{{ t.review_status }}</th></tr></thead>
       <tbody>{% for item in section.candidates %}<tr>
-        <td><a href="{{ link('review', candidate_id=item.candidate_id, candidate_kind=item.candidate_kind) }}">{{ item.family if item.candidate_kind == 'artifact' else 'Tag' }} · {{ item.candidate_id }}</a></td>
+        <td><a href="{{ link('review', candidate_id=item.candidate_id, candidate_kind=item.candidate_kind, evidence=none, view=none) }}">{{ item.family if item.candidate_kind == 'artifact' else 'Tag' }} · {{ item.candidate_id }}</a></td>
         <td>{{ item.version }}</td><td>{{ item.reason or '' }}</td><td>{{ t['review_' ~ item.status] }}</td>
       </tr>{% else %}<tr><td colspan="4">{{ t.review_empty }}</td></tr>{% endfor %}</tbody>
     </table></div>
@@ -49,10 +49,10 @@ limitations under the License.
     {% if detail.get('baseline_error') %}<p>{{ t.review_target_unavailable }}</p>{% else %}<pre class="overflow-auto">{{ detail.diff }}</pre>{% endif %}
     <details class="mb-3"><summary>{{ t.review_content }}</summary><pre>{{ detail.proposal }}</pre></details>
     <h4>{{ t.review_evidence }}</h4>
-    {% for evidence in detail.evidence %}<details class="mb-3"><summary><code>{{ evidence.reference }}</code></summary>
-      {% if evidence.get('error') %}<p>{{ t.review_unavailable }}</p>{% else %}<pre>{{ evidence.content }}</pre>{% endif %}
+    {% for evidence in detail.evidence %}<details class="mb-3" {% if evidence.selected %}open{% else %}hx-get="{{ link('review/inspect', candidate_id=candidate.candidate_id, evidence=loop.index0) }}" hx-trigger="toggle[target.open] once" hx-target="this" hx-select="unset" hx-swap="outerHTML" hx-sync="this:replace" hx-boost="false"{% endif %}><summary><code>{{ evidence.reference }}</code></summary>
+      {% if evidence.get('error') %}<p>{{ t.review_unavailable }}</p>{% elif evidence.selected %}<pre>{{ evidence.content }}</pre>{% endif %}
     </details>{% endfor %}
-    {% if detail.history %}<details class="mb-3"><summary>{{ t.review_history }}</summary>{% for entry in detail.history %}<p>{{ t.review_version }} {{ entry.version }} · {{ t['review_' ~ entry.status] }} · {{ entry.decision_reason or entry.reason }}</p>{% endfor %}</details>{% endif %}
+    <details class="mb-3" {% if detail.history %}open{% else %}hx-get="{{ link('review/inspect', candidate_id=candidate.candidate_id, view='history') }}" hx-trigger="toggle[target.open] once" hx-target="this" hx-select="unset" hx-swap="outerHTML" hx-sync="this:replace" hx-boost="false"{% endif %}><summary>{{ t.review_history }}</summary>{% for entry in detail.history %}<p>{{ t.review_version }} {{ entry.version }} · {{ t['review_' ~ entry.status] }} · {{ entry.decision_reason or entry.reason }}</p>{% endfor %}</details>
     {% if candidate.status == 'pending' %}
     {% set permissions = candidate.get('permissions') %}
     <form method="post" action="/dashboard/review/decision" class="mb-3" hx-boost="false">

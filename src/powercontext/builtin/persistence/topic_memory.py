@@ -361,8 +361,9 @@ class TopicMemoryRepository:
     ) -> tuple[TopicMemoryCurrentItem, ...]:
         """Return an exclusive, bounded current-head page in stable publication order."""
 
-        if not 1 <= limit <= 100:
-            raise InvalidRepositoryArgumentError("limit", "must be between 1 and 100")
+        # Public readers cap pages at 100; one extra row determines whether a cursor is needed.
+        if not 1 <= limit <= 101:
+            raise InvalidRepositoryArgumentError("limit", "must be between 1 and 101")
         await self._check_retrieval_shape(connection)
         statement = (
             select(
@@ -522,10 +523,12 @@ class TopicMemoryRepository:
         artifacts = None
         if artifact_request is not None:
             try:
-                artifacts = tuple([
-                    cast(TopicMemory, await self.artifacts.get(connection, scope_id, hit.artifact_ref))
-                    for hit in outcome.hits
-                ])
+                artifacts = cast(
+                    tuple[TopicMemory, ...],
+                    await self.artifacts.get_many(
+                        connection, scope_id, tuple(hit.artifact_ref for hit in outcome.hits)
+                    ),
+                )
             except RepositoryNotFoundError as error:
                 raise ArtifactSearchContractError(TopicMemory.family, "selected exact Artifact is missing") from error
         return TopicMemorySearchResult(

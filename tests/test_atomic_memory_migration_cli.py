@@ -170,6 +170,69 @@ def test_apply_and_rebuild_retain_writable_sqlite_initialization(tmp_path, monke
         assert "pc_atomic_memory_states" not in tables
 
 
+def test_rebuild_upgrades_old_revision_schema_without_backfilling_history(tmp_path, monkeypatch, maintenance_cli):
+    from powercontext.builtin.records import ArtifactWrite
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+
+    database = tmp_path / "old-revisions.db"
+    database_config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")
+    config = BuiltinConfig(database=database_config)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", database_config.url)
+
+    async def seed():
+        async with open_builtin_contexts(config) as contexts:
+            await contexts.get("project")
+            created = await contexts.records.create_artifact(
+                "project", "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Retain exact history."})
+            )
+            memory = contexts.atomic_memory.for_scope("project")
+            return await memory.get(created.artifact_id), await memory.search("exact history", mode="text")
+
+    original, baseline_search = asyncio.run(seed())
+    metadata_columns = ("created_at", "created_by", "restored_from_revision", "rollback_reason")
+    with closing(sqlite3.connect(database)) as connection:
+        # Reproduce storage written before revision metadata, with a projection needing repair.
+        for column in metadata_columns:
+            connection.execute(f"ALTER TABLE pc_artifacts DROP COLUMN {column}")
+        connection.execute("DELETE FROM pc_atomic_memory_current")
+        connection.commit()
+
+    runner = CliRunner()
+    unconfirmed = runner.invoke(maintenance_cli, ["server", "atomic-memory-rebuild-projection"])
+    assert unconfirmed.exit_code == 2, unconfirmed.output
+    assert "--maintenance-confirmed" in unstyle(unconfirmed.output)
+    for action in ("plan", "verify"):
+        inspected = runner.invoke(maintenance_cli, ["server", "atomic-memory-migrate", "--action", action])
+        assert inspected.exit_code == 0, inspected.output
+    with closing(sqlite3.connect(database)) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(pc_artifacts)")}
+        assert not columns.intersection(metadata_columns)
+
+    # Maintenance must work before ordinary startup, including a repeated run.
+    for _ in range(2):
+        rebuilt = runner.invoke(
+            maintenance_cli, ["server", "atomic-memory-rebuild-projection", "--maintenance-confirmed"]
+        )
+        assert rebuilt.exit_code == 0, rebuilt.exception or rebuilt.output
+        report = json.loads(rebuilt.output)
+        assert report["ready"] is True
+        assert report["counts"]["rebuilt_rows"] == 1
+    with closing(sqlite3.connect(database)) as connection:
+        metadata = connection.execute(
+            "SELECT created_at, created_by, restored_from_revision, rollback_reason "
+            "FROM pc_artifacts WHERE family = 'atomic-memory'"
+        ).fetchall()
+        assert metadata == [(None, None, None, None)]
+
+    async def read_and_search():
+        async with open_builtin_contexts(config) as contexts:
+            memory = contexts.atomic_memory.for_scope("project")
+            assert await memory.get(original.ref.artifact_id, revision=1) == original
+            assert await memory.search("exact history", mode="text") == baseline_search
+
+    asyncio.run(read_and_search())
+
+
 @pytest.mark.parametrize("action", ["plan", "verify"])
 def test_inspection_rejects_unreleased_atomic_state_table_without_writes(
     tmp_path, monkeypatch, maintenance_cli, action

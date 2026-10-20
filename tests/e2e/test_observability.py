@@ -925,7 +925,7 @@ def test_memory_read_stage_spans_are_bounded_and_nested(monkeypatch, tmp_path) -
     assert no_match_query not in exported
 
 
-def test_scope_lock_stage_span_reports_contention_and_closes_at_acquisition(tmp_path) -> None:
+def test_scope_lock_stage_span_reports_contention_and_closes_at_acquisition(monkeypatch, tmp_path) -> None:
     exporter = InMemorySpanExporter()
     provider = TracerProvider(sampler=ALWAYS_ON, shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -949,13 +949,25 @@ def test_scope_lock_stage_span_reports_contention_and_closes_at_acquisition(tmp_
             async with runtime._scope_operation(scope_id):
                 lock = runtime._lock(scope_id)
                 await lock.acquire()
-                contending = asyncio.create_task(
-                    sources.capture(CaptureSource(source_id="second", content="Second fact.", metadata={}))
-                )
-                await asyncio.sleep(0.05)
-                assert not contending.done()
-                lock.release()
-                await contending
+                acquisition_started = asyncio.Event()
+                acquire = lock.acquire
+
+                async def observe_acquire() -> bool:
+                    acquisition_started.set()
+                    return await acquire()
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(lock, "acquire", observe_acquire)
+                    contending = asyncio.create_task(
+                        sources.capture(CaptureSource(source_id="second", content="Second fact.", metadata={}))
+                    )
+                    try:
+                        # Scope/context preparation can await before the write reaches this lock.
+                        await asyncio.wait_for(acquisition_started.wait(), timeout=10)
+                        assert not contending.done()
+                    finally:
+                        lock.release()
+                        await asyncio.wait_for(contending, timeout=10)
 
             with pytest.raises(SourceConflictError):
                 await sources.capture(CaptureSource(source_id="first", content="Conflicting fact.", metadata={}))

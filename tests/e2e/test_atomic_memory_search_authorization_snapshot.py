@@ -240,10 +240,10 @@ def test_artifact_get_rechecks_access_after_route_authorization(tmp_path, monkey
             if revision is not None:
                 path += f"/revisions/{revision}"
             authorized, resume = asyncio.Event(), asyncio.Event()
-            require = AccessControlService.require
+            check = AccessControlService.check
 
             async def pause_route(self, principal, *args, **kwargs):
-                result = await require(self, principal, *args, **kwargs)
+                result = await check(self, principal, *args, **kwargs)
                 if principal == VIEWER and not authorized.is_set():
                     authorized.set()
                     await resume.wait()
@@ -253,7 +253,7 @@ def test_artifact_get_rechecks_access_after_route_authorization(tmp_path, monkey
                 transport=httpx.ASGITransport(app=app), base_url="http://testserver"
             ) as client:
                 with monkeypatch.context() as patch:
-                    patch.setattr(AccessControlService, "require", pause_route)
+                    patch.setattr(AccessControlService, "check", pause_route)
                     pending = asyncio.create_task(client.get(path, headers={"Authorization": "Bearer viewer"}))
                     try:
                         await asyncio.wait_for(authorized.wait(), timeout=20)

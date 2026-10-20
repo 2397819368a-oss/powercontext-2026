@@ -29,6 +29,8 @@ INSTALL_PAGES = (
     "README_JP.md",
     "docs/en/docs/get-started/quickstart.md",
     "docs/zh/docs/get-started/quickstart.md",
+    "docs/en/docs/get-started/manual-start.md",
+    "docs/zh/docs/get-started/manual-start.md",
     "docs/en/docs/get-started/install-and-run.md",
     "docs/zh/docs/get-started/install-and-run.md",
     "integrations/dsh/plugins/powercontext/README.md",
@@ -85,7 +87,7 @@ def test_release_updates_installation_references_and_preserves_history(release_r
             content = (release_repo / relative).read_text(encoding="utf-8")
             assert set(re.findall(r"powercontext\[[^\]\n]+\]==([^\s\"`]+)", content)) == {version}, relative
             assert set(re.findall(r"powercontext-v([^\s\"`]+)", content)) == {version}, relative
-            if relative.startswith(("README", "docs/")):
+            if relative.startswith(("README", "docs/")) and not relative.endswith("/manual-start.md"):
                 assert f"PowerContext {version}" in content, relative
             if re.search(r"(?:a|b|rc)[0-9]+$", version):
                 assert "stable release" not in content, relative

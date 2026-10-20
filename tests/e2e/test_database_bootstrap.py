@@ -24,6 +24,7 @@ resource cleanup is registered, and cleanup failures never replace test failures
 from __future__ import annotations
 
 import asyncio
+import gzip
 import os
 import subprocess
 import sys
@@ -48,7 +49,7 @@ from powercontext.builtin.persistence.bootstrap import (
 )
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.oceanbase.profile import _register_official_dialect
-from powercontext.builtin.persistence.seekdb import LegacySeekDBDatabaseError, SeekDBConfig, SeekDBProfile
+from powercontext.builtin.persistence.seekdb import SeekDBConfig, SeekDBProfile
 
 _METADATA = MetaData()
 _RECORDS = Table(
@@ -71,6 +72,47 @@ async def assert_record(profile, name: str) -> None:
     async with profile.database.transaction() as connection:
         assert await connection.scalar(select(_RECORDS.c.value).where(_RECORDS.c.id == 1)) == "preserved"
         assert (await connection.exec_driver_sql("SELECT DATABASE()")).scalar_one() == name
+
+
+def run_seekdb_scenario(directory: Path, filename: str) -> None:
+    scenario = Path(__file__).resolve().parents[1] / "fixtures" / filename
+    output = ""
+    failed = True
+    try:
+        result = subprocess.run(
+            [sys.executable, "-u", str(scenario), str(directory)],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        output = result.stdout + result.stderr
+        failed = result.returncode != 0
+        assert not failed, output
+    except subprocess.TimeoutExpired as error:
+        # TimeoutExpired retains bytes even when subprocess.run uses text=True.
+        output = (error.stdout or b"").decode(errors="replace") + (error.stderr or b"").decode(errors="replace")
+        pytest.fail(f"{filename} exceeded 90 seconds\n{output}")
+    finally:
+        if diagnostic_root := os.environ.get("POWERCONTEXT_TEST_BOOTSTRAP_DIAGNOSTICS"):
+            try:
+                destination = Path(diagnostic_root) / scenario.stem
+                destination.mkdir(parents=True, exist_ok=True)
+                (destination / "scenario.log").write_text(output, encoding="utf-8")
+                if failed:
+                    # Retain bounded native log tails before short_tmp_path removes storage.
+                    native_logs = directory / "seekdb" / "log"
+                    for path in native_logs.glob("*"):
+                        if path.is_file() and path.name.endswith((".log", ".log.wf")):
+                            with (
+                                path.open("rb") as source,
+                                gzip.open(destination / f"{path.name}.tail.gz", "wb") as target,
+                            ):
+                                source.seek(max(0, path.stat().st_size - 1024 * 1024))
+                                target.write(source.read())
+            except OSError as error:
+                print(f"seekdb diagnostics unavailable: {type(error).__name__}", file=sys.stderr)
 
 
 @pytest.mark.skipif(not _SEEKDB, reason="set POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB=1")
@@ -150,46 +192,15 @@ def test_seekdb_inspection_reuses_an_existing_database_without_provisioning(shor
 @pytest.mark.skipif(not _SEEKDB, reason="set POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB=1")
 def test_seekdb_legacy_choice_preserves_old_data_and_separates_new_database(short_tmp_path: Path) -> None:
     pytest.importorskip("pylibseekdb")
-
-    async def scenario() -> None:
-        path = short_tmp_path / "seekdb"
-        old = SeekDBConfig(path=path, database="test")
-        async with SeekDBProfile.open(old, tables=(_RECORDS,)) as profile:
-            await insert_record(profile)
-        with pytest.raises(LegacySeekDBDatabaseError):
-            async with SeekDBProfile.open(SeekDBConfig(path=path), tables=(_RECORDS,)):
-                pytest.fail("Implicit database switch must be rejected")
-        async with SeekDBProfile.open(old, tables=(_RECORDS,)) as profile:
-            await assert_record(profile, "test")
-        async with (
-            SeekDBProfile.open(SeekDBConfig(path=path, database="powercontext"), tables=(_RECORDS,)) as profile,
-            profile.database.transaction() as connection,
-        ):
-            assert (await connection.execute(select(_RECORDS))).all() == []
-        async with SeekDBProfile.open(old, tables=(_RECORDS,)) as profile:
-            await assert_record(profile, "test")
-
-    asyncio.run(scenario())
+    run_seekdb_scenario(short_tmp_path, "seekdb_legacy_choice.py")
 
 
 @pytest.mark.skipif(not _SEEKDB, reason="set POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB=1")
 def test_seekdb_legacy_migration_cli_preserves_json_with_sql_echo(short_tmp_path: Path) -> None:
     pytest.importorskip("pylibseekdb")
-    scenario = Path(__file__).resolve().parents[1] / "fixtures" / "seekdb_legacy_migration_cli.py"
     # One child owns the engine throughout. The process deadline also bounds
     # native startup and shutdown, which asyncio cancellation cannot interrupt.
-    try:
-        result = subprocess.run(
-            [sys.executable, "-u", str(scenario), str(short_tmp_path)],
-            cwd=short_tmp_path,
-            capture_output=True,
-            text=True,
-            timeout=90,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        pytest.fail(f"seekdb CLI scenario exceeded 90 seconds\nstdout: {error.stdout!r}\nstderr: {error.stderr!r}")
-    assert result.returncode == 0, (result.stdout, result.stderr)
+    run_seekdb_scenario(short_tmp_path, "seekdb_legacy_migration_cli.py")
 
 
 @pytest.mark.skipif(not _SEEKDB, reason="set POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB=1")
