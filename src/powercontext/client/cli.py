@@ -23,10 +23,12 @@ import hashlib
 import json
 import os
 import socket
+import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from shutil import which
 from typing import Annotated, Never, TypeAlias
 from uuid import uuid4
 
@@ -352,10 +354,34 @@ _BINDING_KIND_WORKSPACE = "workspace"
 _DEFAULT_BINDING_INTEGRATION = "opencode"
 
 
-def _workspace_binding_external_id(cwd: Path) -> str:
-    # Must match the agent plugins' workspace binding key derivation: an absolute,
-    # lexically normalized path without symlink resolution.
-    return hashlib.sha256(os.path.abspath(cwd).encode("utf-8")).hexdigest()
+def _workspace_binding_external_id(cwd: Path, integration: str) -> str:
+    if integration in {"codex", "claude-code"}:
+        # These hosts bind the canonical repository root, including when invoked from a subdirectory.
+        root = cwd
+        executable = which("git")
+        if executable is not None:
+            try:
+                result = subprocess.run(  # noqa: S603 - fixed Git arguments, without a shell.
+                    [executable, "rev-parse", "--show-toplevel"],
+                    cwd=cwd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=2.0,
+                )
+                if result.stdout.strip():
+                    root = Path(result.stdout.strip())
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return hashlib.sha256(os.fsencode(root.resolve(strict=False))).hexdigest()
+    if integration in {"hermes", "kimi-code"}:
+        return hashlib.sha256(os.fsencode(cwd.resolve(strict=False))).hexdigest()
+    if integration in {"opencode", "pi"}:
+        # Node hosts use path.resolve without resolving symlinks.
+        return hashlib.sha256(os.path.abspath(cwd).encode("utf-8")).hexdigest()
+    raise typer.BadParameter(  # noqa: TRY003 - user-facing CLI validation.
+        "Unsupported workspace integration; use an explicit binding key instead.", param_hint="--integration"
+    )
 
 
 def _binding_key(integration: str, kind: str, external_id: str) -> ScopeBindingKey:
@@ -433,10 +459,21 @@ def update_scope(
     summary: Annotated[str, typer.Option(help="Replacement one-line description.")],
     expected_version: Annotated[int, typer.Option(min=1, help="Current version read from `scope get`.")],
 ) -> None:
-    """Replace mutable Scope metadata behind an explicit optimistic-lock version."""
+    """Update title and summary, preserving relationships behind an explicit optimistic-lock version."""
 
-    request = UpdateScopeRequest(expected_version=expected_version, title=title, summary=summary)
-    asyncio.run(_execute(context, lambda client: client.update_scope(scope_id, request)))
+    async def operation(client: PowerContextClient) -> ScopeDescriptor:
+        current = await client.get_scope(scope_id)
+        request = UpdateScopeRequest(
+            expected_version=expected_version,
+            title=title,
+            summary=summary,
+            parent_scope_id=current.parent_scope_id,
+            context_references=current.context_references,
+            external_references=current.external_references,
+        )
+        return await client.update_scope(scope_id, request)
+
+    asyncio.run(_execute(context, operation))
 
 
 @scope_app.command("default")
@@ -475,7 +512,9 @@ def resolve_scope(
     if session_id is not None and session_id.strip():
         binding_keys.append(_binding_key(integration, _BINDING_KIND_SESSION, session_id.strip()))
     workspace = cwd if cwd is not None else Path.cwd()
-    binding_keys.append(_binding_key(integration, _BINDING_KIND_WORKSPACE, _workspace_binding_external_id(workspace)))
+    binding_keys.append(
+        _binding_key(integration, _BINDING_KIND_WORKSPACE, _workspace_binding_external_id(workspace, integration))
+    )
     request = ResolveScopeBindingRequest(
         explicit_scope_id=scope_id,
         binding_keys=binding_keys,

@@ -14,7 +14,9 @@
 
 import hashlib
 import os
+import subprocess
 from pathlib import Path
+from shutil import which
 from types import TracebackType
 from typing import Self
 
@@ -248,7 +250,7 @@ def test_scope_update_forwards_the_expected_version(monkeypatch: pytest.MonkeyPa
             "2",
         ],
     )
-    call = client.calls[0]
+    call = client.calls[-1]
     assert call == ("scp_moved", UpdateScopeRequest(expected_version=2, title="Renamed", summary="updated summary"))
     assert "scp_moved" in output
 
@@ -313,3 +315,114 @@ def test_scope_binding_clear_reports_a_cleared_binding(monkeypatch: pytest.Monke
         ["scope", "binding", "clear", "--kind", "session", "--external-id", "ses_1"],
     )
     assert "Binding cleared." in output
+
+
+@pytest.mark.parametrize("current_version", [1, 2])
+def test_scope_update_preserves_relationships(monkeypatch: pytest.MonkeyPatch, current_version: int) -> None:
+    descriptor = _descriptor(
+        version=current_version,
+        parent_scope_id="scp_parent",
+        context_references=["scp_related"],
+        external_references=[{"kind": "git", "value": "example/repo"}],
+    )
+    client, _ = _invoke(
+        monkeypatch,
+        descriptor,
+        [
+            "scope",
+            "update",
+            "scp_test",
+            "--title",
+            "Renamed",
+            "--summary",
+            "Updated",
+            "--expected-version",
+            "1",
+        ],
+    )
+    call = client.calls[-1]
+    assert isinstance(call, tuple)
+    _, request = call
+    assert isinstance(request, UpdateScopeRequest)
+    assert request.expected_version == 1
+    assert request.parent_scope_id == descriptor.parent_scope_id
+    assert request.context_references == descriptor.context_references
+    assert request.external_references == descriptor.external_references
+
+
+@pytest.mark.parametrize("use_symlink", [False, True])
+def test_codex_scope_resolve_uses_canonical_repository_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    use_symlink: bool,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    executable = which("git")
+    assert executable is not None
+    subprocess.run([executable, "init", str(repo)], check=True, capture_output=True)
+    workspace = repo / "src"
+    workspace.mkdir()
+    if use_symlink:
+        link = tmp_path / "link"
+        try:
+            link.symlink_to(workspace, target_is_directory=True)
+        except OSError:
+            pytest.skip("Host cannot create directory symlinks")
+        workspace = link
+    client, _ = _invoke(
+        monkeypatch,
+        _descriptor(),
+        [
+            "scope",
+            "resolve",
+            "--integration",
+            "codex",
+            "--cwd",
+            str(workspace),
+            "--no-allow-default",
+        ],
+    )
+    request = client.calls[0]
+    assert isinstance(request, ResolveScopeBindingRequest)
+    assert request.binding_keys[0].external_id == hashlib.sha256(os.fsencode(repo.resolve())).hexdigest()
+
+
+@pytest.mark.parametrize("integration", ["opencode", "pi", "hermes", "kimi-code", "codex", "claude-code"])
+def test_scope_resolve_non_git_symlink_matches_host_rules(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    integration: str,
+) -> None:
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(directory, target_is_directory=True)
+    except OSError:
+        pytest.skip("Host cannot create directory symlinks")
+    client, _ = _invoke(
+        monkeypatch,
+        _descriptor(),
+        [
+            "scope",
+            "resolve",
+            "--integration",
+            integration,
+            "--cwd",
+            str(link),
+        ],
+    )
+    request = client.calls[0]
+    assert isinstance(request, ResolveScopeBindingRequest)
+    expected = os.path.abspath(link) if integration in {"opencode", "pi"} else str(directory.resolve())
+    assert request.binding_keys[0].external_id == hashlib.sha256(os.fsencode(expected)).hexdigest()
+
+
+def test_scope_resolve_rejects_unknown_workspace_rules(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _recording_type(_descriptor())()
+    monkeypatch.setattr(client_cli, "PowerContextClient", lambda *_args, **_kwargs: client)
+    result = CliRunner().invoke(create_cli([]), ["scope", "resolve", "--integration", "unknown-host"])
+    assert result.exit_code != 0
+    assert "Unsupported workspace integration" in unstyle(result.output)
+    assert client.calls == []
