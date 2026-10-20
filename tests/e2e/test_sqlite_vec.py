@@ -103,7 +103,8 @@ def test_sqlite_vec_supports_vector_and_hybrid_search(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_sqlite_vector_completeness_uses_a_fixed_sql_budget(tmp_path) -> None:
+@pytest.mark.parametrize("size", [3, 100])
+def test_sqlite_vector_completeness_uses_a_fixed_sql_budget(tmp_path, size: int) -> None:
     async def scenario() -> None:
         config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'sql-budget.db'}")
         async with open_builtin_contexts(
@@ -112,12 +113,12 @@ def test_sqlite_vector_completeness_uses_a_fixed_sql_budget(tmp_path) -> None:
             await contexts.get("project")
             memory = contexts.atomic_memory.for_scope("project")
             await contexts.records.create_atomic_memories(
-                "project", tuple({"kind": "fact", "text": f"Alpha record {index}."} for index in range(100))
+                "project", tuple({"kind": "fact", "text": f"Alpha record {index}."} for index in range(size))
             )
             with _sql_counter() as statements:
-                result = await memory.search("alpha", mode="vector")
-            assert result.hits
-            assert len(statements) < 40
+                result = await memory.search("alpha", mode="vector", limit=5)
+            assert len(result.hits) == min(size, 5)
+            assert len(statements) <= 6
 
     asyncio.run(scenario())
 

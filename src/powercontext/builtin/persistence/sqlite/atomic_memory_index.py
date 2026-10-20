@@ -366,15 +366,14 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
         parameters: dict[str, object],
         limit: int | None,
     ) -> tuple[AtomicMemoryIndexHit, ...]:
-        """Run exact native KNN, expanding boundary ties without scanning current bodies."""
+        """Use native KNN, with one exact fallback when boundary ties affect Top-K."""
         exact_sql = atomic_memory_vector_sql(
             eligibility,
             "sqlite",
             bounded=limit is not None,
             threshold=isinstance(request, AtomicMemoryRelatedRequest),
         )
-        # vec0's native k ceiling is 4096. Expand only boundary ties until
-        # every tied candidate is available for the Artifact-ID tie break.
+        # vec0's native k ceiling is 4096. One extra neighbor detects boundary ties.
         knn = isinstance(request, AtomicMemorySearchRequest) and limit is not None and limit < 4096
         neighbor_limit = (limit or 0) + 1
         if knn:
@@ -382,14 +381,9 @@ class SQLiteAtomicMemoryIndex(RelationalAtomicMemoryIndex):
         sql = self._knn_sql(request, eligibility) if knn else exact_sql
         rows = tuple((await connection.execute(text(sql), parameters)).mappings())
         if knn and limit is not None:
-            while len(rows) == neighbor_limit and rows[limit - 1]["distance"] == rows[-1]["distance"]:
-                if neighbor_limit == 4096:
-                    rows = tuple((await connection.execute(text(exact_sql), parameters)).mappings())
-                    break
-                neighbor_limit = min(4096, neighbor_limit * 2)
-                parameters["neighbor_limit"] = neighbor_limit
-                rows = tuple((await connection.execute(text(sql), parameters)).mappings())
-            # vec0 orders only by distance; apply the ID tie break after collecting boundary ties.
+            if len(rows) == neighbor_limit and rows[limit - 1]["distance"] == rows[-1]["distance"]:
+                # Avoid repeatedly scanning vectors when a large tie group needs the ID tie break.
+                rows = tuple((await connection.execute(text(exact_sql), parameters)).mappings())
             rows = tuple(sorted(rows, key=lambda row: (row["distance"], row["artifact_id"])))[:limit]
         return atomic_memory_channel_hits(rows, vector=True)
 
