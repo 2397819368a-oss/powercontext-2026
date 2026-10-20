@@ -202,7 +202,7 @@ class AtomicMemoryIndex(Protocol):
 async def validate_atomic_memory_vectors(connection: AsyncConnection, index: AtomicMemoryIndex) -> None:
     """Audit vector deployment readiness at startup, outside ordinary bounded search."""
     profile = index.capabilities.embedding_profile
-    if profile is None:
+    if profile is None or index.table not in index.tables:
         return
     table = index.table
     invalid = [
