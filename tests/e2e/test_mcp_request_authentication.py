@@ -17,9 +17,10 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Generator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Self
 
@@ -27,6 +28,8 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 from sse_starlette.sse import AppStatus
 from starlette.middleware import Middleware
 
@@ -40,18 +43,23 @@ from powercontext.server.authentication import (
     ProviderReadiness,
 )
 from powercontext.server.authz import (
+    AccessAuditContext,
     AccessBinding,
     AccessBindingState,
     AccessControlService,
     AccessRole,
     BuiltinAuthorizationProvider,
+    CreateBinding,
     GroupRef,
     PrincipalRef,
     ResourceRef,
 )
+from powercontext.server.authz.composition import open_builtin_access_control
 from powercontext.server.authz.repository import ACCESS_TABLES, RelationalAccessRepository
+from powercontext.server.factory import create_server_app
 from powercontext.server.mcp import mount_mcp
 from powercontext.server.middleware import AuthenticationMiddleware
+from powercontext.server.settings import AccessControlConfig, ServerSettings
 
 ALICE = PrincipalRef(type="user", id="alice")
 BOB = PrincipalRef(type="user", id="bob")
@@ -110,6 +118,7 @@ async def _http_client(app: FastAPI, *, over_tcp: bool) -> AsyncIterator[httpx.A
         listener.bind(("127.0.0.1", 0))
         server = uvicorn.Server(uvicorn.Config(app, lifespan="off", access_log=False, log_level="warning"))
         task = asyncio.create_task(server.serve(sockets=[listener]))
+        previous_exit_status = AppStatus.should_exit
         try:
             async with asyncio.timeout(10):
                 while not server.started:
@@ -124,7 +133,10 @@ async def _http_client(app: FastAPI, *, over_tcp: bool) -> AsyncIterator[httpx.A
                 yield client
         finally:
             server.should_exit = True
-            await asyncio.wait_for(task, timeout=10)
+            try:
+                await asyncio.wait_for(task, timeout=10)
+            finally:
+                AppStatus.should_exit = previous_exit_status
 
 
 @pytest.mark.parametrize("over_tcp", [False, True], ids=["asgi", "tcp"])
@@ -242,6 +254,24 @@ def test_mcp_authorization_and_audit_use_each_http_requests_identity(over_tcp: b
                 )
                 assert rejected.status_code == 401
 
+                # An old session ID cannot substitute for missing or revoked credentials.
+                del authentication.identities["Bearer alice-token"]
+                for authorization in (None, "Bearer alice-token"):
+                    rejected_headers = {key: value for key, value in headers.items() if key != "Authorization"}
+                    if authorization is not None:
+                        rejected_headers["Authorization"] = authorization
+                    rejected_call = await client.post(
+                        "/mcp/",
+                        headers=rejected_headers,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": "revoked",
+                            "method": "tools/call",
+                            "params": {"name": "list_memory_entries", "arguments": {"scope_id": "alice-scope"}},
+                        },
+                    )
+                    assert rejected_call.status_code == 401
+
             decisions = list(
                 {
                     event.request_id: event
@@ -261,5 +291,100 @@ def test_mcp_authorization_and_audit_use_each_http_requests_identity(over_tcp: b
             assert decisions[-1].principal == ALICE and decisions[-1].allowed is False
             assert decisions[-1].actor == CURRENT_ACTOR
             assert decisions[-1].matched_subject is None
+
+    asyncio.run(scenario())
+
+
+class _SwitchableAuth(httpx.Auth):
+    principal_name = "alice"
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        request.headers["Authorization"] = f"Bearer {self.principal_name}-token"
+        yield request
+
+
+def test_mcp_client_writes_reconnects_and_preserves_memory_after_server_restart(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
+        authentication = _AuthenticationProvider()
+        authentication.identities["Bearer alice-token"] = AuthenticationResult(subject=ALICE)
+        auth = _SwitchableAuth()
+
+        async with open_builtin_access_control(database, bootstrap_administrators=(ALICE,)) as access:
+
+            def server_app() -> FastAPI:
+                return create_server_app(
+                    settings=ServerSettings(database=database, access=AccessControlConfig(mode="enforced")),
+                    scheduler_path=tmp_path / "scheduler.db",
+                    access_control=access,
+                    authentication_provider=authentication,
+                )
+
+            app = server_app()
+            async with app.router.lifespan_context(app), _http_client(app, over_tcp=True) as http_client:
+                url = str(http_client.base_url.join("/mcp/"))
+                async with Client(StreamableHttpTransport(url, auth=auth)) as client:
+                    tools = {tool.name for tool in await client.list_tools()}
+                    assert {"create_scope", "remember_memory", "list_memory_entries"} <= tools
+                    scope = await client.call_tool(
+                        "create_scope",
+                        {
+                            "title": "MCP reconnect",
+                            "summary": "Persistent authenticated writes",
+                            "idempotency_key": "reconnect",
+                        },
+                    )
+                    assert scope.structured_content is not None
+                    scope_id = scope.structured_content["scope_id"]
+                    await access.create_binding(
+                        ALICE,
+                        CreateBinding(
+                            subject=BOB,
+                            resource=ResourceRef.scope(scope_id),
+                            role=AccessRole.SCOPE_VIEWER,
+                            idempotency_key="bob-viewer",
+                        ),
+                        context=AccessAuditContext(transport="test", operation="seed"),
+                    )
+                    await client.call_tool(
+                        "remember_memory", {"scope_id": scope_id, "kind": "fact", "text": "first write"}
+                    )
+
+                    # Change credentials on the same SDK connection after Alice initialized it.
+                    auth.principal_name = "bob"
+                    denied = await client.call_tool(
+                        "remember_memory",
+                        {"scope_id": scope_id, "kind": "fact", "text": "unauthorized write"},
+                        raise_on_error=False,
+                    )
+                    assert denied.is_error
+                    assert "403" in denied.content[0].text
+                    readable = await client.call_tool("list_memory_entries", {"scope_id": scope_id})
+                    assert readable.structured_content is not None
+                    assert [entry["text"] for entry in readable.structured_content["entries"]] == ["first write"]
+
+                    auth.principal_name = "alice"
+                    await client.call_tool(
+                        "remember_memory", {"scope_id": scope_id, "kind": "fact", "text": "write after denied request"}
+                    )
+
+                # A fresh SDK connection sees committed writes, including after a failed request.
+                auth.principal_name = "bob"
+                async with Client(StreamableHttpTransport(url, auth=auth)) as reconnected:
+                    saved = await reconnected.call_tool("list_memory_entries", {"scope_id": scope_id})
+                    assert saved.structured_content is not None
+                    assert {entry["text"] for entry in saved.structured_content["entries"]} == {
+                        "first write",
+                        "write after denied request",
+                    }
+
+            restarted = server_app()
+            async with (
+                restarted.router.lifespan_context(restarted),
+                _http_client(restarted, over_tcp=True) as http_client,
+                Client(StreamableHttpTransport(str(http_client.base_url.join("/mcp/")), auth=auth)) as client,
+            ):
+                restored = await client.call_tool("list_memory_entries", {"scope_id": scope_id})
+                assert restored.structured_content == saved.structured_content
 
     asyncio.run(scenario())
