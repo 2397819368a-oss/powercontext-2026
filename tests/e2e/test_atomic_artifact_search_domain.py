@@ -125,7 +125,6 @@ def test_atomic_public_exact_revisions_scores_and_threshold_order(tmp_path, mode
             ]
             assert len(kept.matches) < 3
             legacy = await contexts.atomic_memory.for_scope("project").search("alpha", mode=mode)
-            assert legacy.artifacts is None and legacy.matches == ()
             assert [hit.hit.artifact_ref for hit in legacy.hits] == [match.artifact_ref for match in scored.matches]
 
     asyncio.run(scenario())

@@ -129,6 +129,17 @@ Content-Type: application/json
 需要完整 Artifact 结果、显式文本/向量/混合模式、准入、评分阈值或通道原分时，使用[检索 Artifact](search-artifacts.md)。
 Topic 的融合参数见[融合算法与参数](search-fusion.md)。专用入口保留原来的摘要响应和 `0`–`100` 评分。
 
+显式向量或混合检索在空 Scope 中也使用配置的 query embedding provider；模型错误及回退行为由请求模式决定。
+SQLite 对标题/摘要和详情两个向量通道计算精确最近主题。先检查有界的精确邻居前缀；
+取得足够的合格不同 Topic 或已穷尽时即返回，否则用一次完整精确查询替换前缀。
+最坏延迟会随资格范围内的 chunk 数增长。距离完全相等时，
+边界 Topic 的入选和等距最佳 chunk 的选择不保证遵循全局身份或 ordinal 顺序；这可能改变融合候选和得分，
+最终融合得分并列时的排序规则仍然适用。
+seekdb/OceanBase 的标题/摘要使用近似检索；详情按各 Topic 当前 chunk 的最小距离排序，
+再截取候选和读取正文。该路径扫描资格范围内的 chunk，不保证固定时延；标题通道仍是 ANN，
+需要测量实际部署的融合召回率与尾时延。启动保留已有 detail HNSW，新库不创建 detail 图。
+详情查询不使用该图；旧库中的已有图仍产生数据库维护成本。
+
 ## 读取精确详情
 
 不要根据标题自行拼接最新版本。把搜索结果中的 `artifact`（`family`、`artifact_id`、`revision`）原样传给

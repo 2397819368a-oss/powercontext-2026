@@ -30,6 +30,10 @@ powercontext server run
 pi
 ```
 
+If an older PowerContext package at another path has Pi resource filters, setup stops before changing the host.
+Move that package entry to the managed path reported in the error, keeping its filters, then rerun setup.
+Refreshes at the managed path preserve existing filters.
+
 ## Understand what the package does
 
 Before Pi starts an agent turn, the package calls `POST /v1/context/prepare` once with an 8000-byte default budget.

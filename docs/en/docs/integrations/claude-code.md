@@ -33,14 +33,13 @@ set +a
 powercontext setup claude-code --server-url "$POWERCONTEXT_CLAUDE_SERVER_URL"
 ```
 
-Before changing Claude Code settings, setup reports the settings entry, plugin cache, persistent data location,
-required permissions, and exact rollback commands. It then registers or refreshes the Marketplace, updates or installs
-the plugin at user scope, and verifies the enabled plugin through Claude Code's JSON output.
+Setup registers or refreshes the Marketplace, then installs or updates the plugin at user scope. Updates preserve
+explicit plugin disablement. The result reports the installed version, plugin cache, and persistent data location.
 
-Claude Code owns the Marketplace registry, versioned plugin cache, and plugin data directory. Claude 2.1.133 does not
-accept configuration flags on `plugin install`, so setup atomically merges `server_url` and `capture_prompts` into
-the user-level `pluginConfigs` after installation while preserving unrelated settings; on failure it restores the
-pre-install snapshot. PowerContext resolves these locations from `CLAUDE_CONFIG_DIR` or Claude Code's default
+Claude Code owns the Marketplace registry, versioned plugin cache, and plugin data directory. After installation,
+setup merges `server_url` and `capture_prompts` into the user-level `pluginConfigs`, preserving unrelated settings
+and omitted capture preferences. If connection configuration fails, its local changes are restored; the completed
+native installation remains. PowerContext resolves these locations from `CLAUDE_CONFIG_DIR` or Claude Code's default
 configuration directory.
 
 For a local checkout, pass its directory:
@@ -81,6 +80,11 @@ For each user prompt, the Hook:
 2. calls `POST /v1/context/prepare` at most once;
 3. strictly validates `powercontext.prepared-context.v1` and injects it unchanged through `additionalContext`;
 4. independently captures the prompt as ordinary Content Source evidence.
+
+Recall bounds its query before the request is built: a prompt of at most 8,192 characters and 8,192 UTF-8 bytes is sent
+as submitted, while a longer prompt recalls from its most recent text, cut to the last 8,192 characters and then to the
+last 8,192 bytes. A long prompt therefore narrows the query instead of failing the recall. Capture is independent and
+keeps its own limit.
 
 Bootstrap context is a separate, opt-in `SessionStart` path. Enable it before launching Claude Code:
 

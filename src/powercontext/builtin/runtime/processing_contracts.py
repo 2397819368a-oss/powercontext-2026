@@ -34,6 +34,23 @@ class ArtifactProcessingWorkerOutcome(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactProcessingModelUsageDelta:
+    """Bounded loss counters returned by one completed child Worker."""
+
+    dropped_records: int = 0
+    write_failures: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.dropped_records) is not int
+            or type(self.write_failures) is not int
+            or self.dropped_records < 0
+            or self.write_failures < 0
+        ):
+            raise ValueError("model usage delta counters must be nonnegative integers")  # noqa: TRY003
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactProcessingWorkAssignment:
     """One accepted Scope invocation, independent of its processor's inputs."""
 
@@ -82,6 +99,7 @@ class ArtifactProcessingWorkerFailure:
     traceback: str
     block: ArtifactProcessingBlock | None = None
     cancelled: bool = False
+    model_usage: ArtifactProcessingModelUsageDelta | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +109,8 @@ class ArtifactProcessingWorkerCompletion:
     outcome: ArtifactProcessingWorkerOutcome = ArtifactProcessingWorkerOutcome.SUCCEEDED
     held_count: int = 0
     hold_codes: tuple[str, ...] = ()
+    model_usage: ArtifactProcessingModelUsageDelta | None = None
+    noop: bool = False
 
 
 class ArtifactProcessingWorkerHandle(Protocol):
@@ -139,6 +159,7 @@ def processing_error_code(exception_type: type[BaseException] | str, error_code:
 __all__ = [
     "ArtifactProcessingBlock",
     "ArtifactProcessingBlockedError",
+    "ArtifactProcessingModelUsageDelta",
     "ArtifactProcessingWorkAssignment",
     "ArtifactProcessingWorkerCompletion",
     "ArtifactProcessingWorkerFailure",

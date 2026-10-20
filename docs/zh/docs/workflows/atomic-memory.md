@@ -88,8 +88,11 @@ Atomic Memory 将每条事实、偏好或决策保存为独立的 `atomic-memory
 
 `mode` 可选 `text`、`vector`、`hybrid`，默认 `text`。向量和混合模式要求可用且匹配的 Embedding profile。
 搜索只返回 active 记忆，`hits[].memory` 包含正文、精确 Artifact 引用和状态版本；还返回 `score`、
-`matched_by`。引用结果时保留 `memory.artifact`。普通向量搜索在资格过滤后计算精确 L2，再排序和限制条数；
-当前路径不使用 ANN，不能据此推断生产后端性能或验收结果。
+`matched_by`。引用结果时保留 `memory.artifact`。seekdb 和 OceanBase 的普通向量搜索使用原生近似最近邻检索，
+Scope、kind、tag 的资格条件位于候选查询内部，在限制条数前执行。ANN 可能遗漏精确最近邻，需要针对部署的
+Embedding 模型和过滤选择率测量召回与延迟。SQLite 的有界检索使用按 Scope 分区的 sqlite-vec 原生精确 KNN。
+正常启动时核查向量部署是否完整；普通 Top-K 选择可用向量并校验选中结果，不在每次请求中审计整个候选集合。
+生成使用的完整阈值枚举和精确恢复探测仍拒绝资格范围内不完整的向量；完整枚举在所有后端上保持精确。
 
 需要完整 Artifact 结果和高级检索参数时，使用 `POST /v1/scopes/S/artifacts/atomic-memory/search`。
 统一入口要求 `scope.read`，默认文本检索，支持 `filters`、准入、RRF 排名常数与权重、`min_score` 和可选评分元数据。

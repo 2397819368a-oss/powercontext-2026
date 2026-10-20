@@ -606,3 +606,44 @@ def test_statistics_selection_reports_the_same_scope_rows_as_scoped_overviews() 
             assert batched[scope_id] == scoped[scope_id].by_scope[0]
 
     asyncio.run(scenario())
+
+
+# Measured on the default text-recall path; slack of one statement above the observed value.
+_PREPARE_STATEMENT_CEILING = 48
+
+
+def test_prepare_context_statement_count_does_not_grow_with_memory_count() -> None:
+    """Recall must not cost one authority read per candidate; see issue #2075."""
+
+    async def counted(memory_count: int) -> int:
+        statements: list[str] = []
+
+        def record(_conn, _cursor, statement, *_args) -> None:
+            statements.append(statement)
+
+        event.listen(Engine, "before_cursor_execute", record)
+        try:
+            async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+                scope_id = await _create_scope(runtime, f"recall-fanout-{memory_count}")
+                assert runtime.atomic_memory is not None
+                await runtime.atomic_memory.for_scope(scope_id).create(
+                    tuple(
+                        AtomicMemoryContent(kind="fact", text=f"Contract decision {entry} binds the gateway to mTLS.")
+                        for entry in range(memory_count)
+                    )
+                )
+                statements.clear()
+                prepared = await runtime.context.for_scope(scope_id).prepare(
+                    PrepareContextRequest(query="contract gateway")
+                )
+        finally:
+            event.remove(Engine, "before_cursor_execute", record)
+
+        assert prepared.status == "ready"
+        return len(statements)
+
+    pool = asyncio.run(counted(8))
+    beyond = asyncio.run(counted(40))
+
+    assert pool == beyond
+    assert beyond <= _PREPARE_STATEMENT_CEILING

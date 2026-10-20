@@ -65,18 +65,14 @@ Set `POWERCONTEXT_OPENCODE_CAPTURE_PROMPTS=false` when prompts must not be persi
 
 ### Recover a failed refresh
 
-If setup reports `recovery failed`, keep the reported backups. Setup refuses further installation writes while a
-`.powercontext-install-*` path or a `.powercontext-project-context.*.bak` path remains; a missing active Skill is
-not treated as a fresh installation in this state.
+If setup reports that it could not restore a target, keep the backup path named in the error. Restore that backup
+to the reported target before retrying. Setup refuses to treat a missing target with a retained backup as a fresh
+installation.
 
-Restore the failed file destinations named in the error from the installation backup directory; file backups use their
-original filenames. If `skills/powercontext-project-context` is absent, restore its retained Skill directory to that
-location. If an active Skill or multiple backups exist, compare and reconcile their contents before choosing a version;
-setup does not choose or merge them automatically. Preserve personal files and notes outside managed regions.
-
-Only after restoring or reconciling the contents, move remaining recovery paths out of the OpenCode config directory
-and rerun the setup command, then run the checks below. Removing backups just to bypass the check can discard user notes.
-These safeguards cover caught filesystem failures; they do not guarantee recovery from process crashes or concurrent setups.
+If an active Skill or multiple backups exist, compare and reconcile their contents before choosing a version.
+Preserve personal files and notes outside managed regions; deleting backups just to bypass the check can discard
+them. After recovery, rerun setup and the checks below. Recovery covers caught filesystem failures; it does not
+guarantee recovery from process crashes or concurrent setups.
 
 ### Check the plugin
 

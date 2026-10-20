@@ -141,7 +141,12 @@ from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.decision_observations import DecisionObservationRepository
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError, StoredPayloadConflictError
-from powercontext.builtin.persistence.experience_index import ExperienceIndex, NoExperienceIndex
+from powercontext.builtin.persistence.experience_index import (
+    ExperienceIndex,
+    NoExperienceIndex,
+    experience_search_hits,
+    skill_search_hits,
+)
 from powercontext.builtin.persistence.external_skills import ExternalSkillRepository
 from powercontext.builtin.persistence.family_management import (
     AtomicMemoryManagementWriter,
@@ -508,6 +513,7 @@ class RelationalContexts:
         handoff_verification_keys: tuple[bytes, ...] = (),
         topic_memory_write_timeout_seconds: float = 30.0,
         topic_memory_write_concurrency: int = 4,
+        model_usage_observer: Callable[[int, int, int, int], None] | None = None,
         model_usage_queue_capacity: int = 256,
         model_usage_write_timeout_seconds: float = 1.0,
         model_usage_flush_timeout_seconds: float = 0.5,
@@ -598,6 +604,7 @@ class RelationalContexts:
         self._model_usage = _ModelUsageRecorder(
             database,
             self.repositories.statistics,
+            observer=model_usage_observer,
             queue_capacity=model_usage_queue_capacity,
             write_timeout_seconds=model_usage_write_timeout_seconds,
             flush_timeout_seconds=model_usage_flush_timeout_seconds,
@@ -967,7 +974,10 @@ class RelationalContexts:
             raise ValueError("Experience search limit must be positive")  # noqa: TRY003
         scope = validate_scope_id(scope_id)
         async with self.database.transaction() as connection:
-            return await self.experience_index.search(connection, scope, query, limit, admission=admission)
+            rows = await self.experience_index.search(
+                connection, scope, "experience", query, limit, admission=admission
+            )
+            return experience_search_hits(rows, query, limit, scope, admission=admission)
 
     async def get_topic_memory(
         self,
@@ -1088,7 +1098,8 @@ class RelationalContexts:
             raise ValueError("Skill search limit must be positive")  # noqa: TRY003
         scope = validate_scope_id(scope_id)
         async with self.database.transaction() as connection:
-            return await self.experience_index.search_skills(connection, scope, query, limit)
+            rows = await self.experience_index.search(connection, scope, "skill", query, limit)
+            return skill_search_hits(rows, query, limit)
 
     async def get_skill_governance(
         self,

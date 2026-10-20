@@ -37,10 +37,10 @@ description: 选择插件、MCP、Skills、Agent Host 或 Python 框架接入。
 需要交互选择多个宿主时，可运行：
 
 ```bash
-powercontext setup select
+powercontext setup
 ```
 
-使用与 Server 相同的 ref。ZCode 使用独立的 `powercontext setup zcode` 命令，不在该选择器中；完整支持情况见各 Agent 文档。
+使用与 Server 相同的 ref。`powercontext setup codex dsh` 会安装、配置并诊断两个 Agent。更新已安装连接时使用 `powercontext config agent codex dsh`，不会重新安装或启用插件；原生要求见各 Agent 文档。
 
 ## Python Agent 框架
 
