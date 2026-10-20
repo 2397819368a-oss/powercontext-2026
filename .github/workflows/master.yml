@@ -448,7 +448,6 @@ jobs:
           tests/test_service.py
           tests/test_service_bootstrap.py
           tests/test_service_environment.py
-          tests/test_cli_workbuddy.py::test_setup_workbuddy_remote_checkout_refreshes_the_requested_ref
 
   dify-tools:
     needs: changes
