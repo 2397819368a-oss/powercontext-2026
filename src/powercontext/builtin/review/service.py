@@ -1031,8 +1031,8 @@ class ReviewService:
             raise InvalidCandidateError("evidence", f"must not exceed {MAX_CANDIDATE_EVIDENCE} exact references")
         try:
             source_rows = await self._sources.require_for_generation(connection, self._scope_id, sources)
-            for artifact in artifacts:
-                await self._artifacts.get(connection, self._scope_id, artifact)
+            # Existence check only: the loaded revisions are intentionally unused.
+            await self._artifacts.get_many(connection, self._scope_id, artifacts)
         except RepositoryNotFoundError as error:
             raise InvalidCandidateError("evidence", "reference is not available in this scope") from error
         if self._evidence is not None:

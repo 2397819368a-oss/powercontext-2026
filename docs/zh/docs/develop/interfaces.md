@@ -116,14 +116,14 @@ Pi transcript。召回、采集和边界 flush 都会正常降级；显式持久
 运行带 Scope 的内容命令前，将 `POWERCONTEXT_SCOPE_ID` 设置为 `create_scope` 返回的已有 ID。
 
 ```text
-powercontext setup <host>
-powercontext setup select --host codex --host dsh
+powercontext setup [agents...]
+powercontext setup codex dsh
+powercontext config agent codex dsh --server-url https://memory.example
 powercontext config init --output .env
 powercontext config show --env-file .env
 powercontext config validate --env-file .env
 powercontext doctor
-powercontext doctor <host>
-powercontext doctor integrations
+powercontext doctor codex dsh
 powercontext server run
 powercontext server run --env-file .env
 powercontext ready
@@ -149,14 +149,14 @@ powercontext external-skill import --scope-id "$POWERCONTEXT_SCOPE_ID" --fingerp
 `config` 命令组用于生成、脱敏显示和校验显式环境文件。CLI 不会隐式搜索该文件；使用 `config show`、
 `config validate` 或 `server run` 时需要通过 `--env-file` 传入。配置优先级和凭据处理规则见[配置](../operate/configuration.md)。
 
-`<host>` 可以是 `codex`、`claude-code`、`dsh`、`hermes`、`openclaw`、`opencode`、`pi` 或
-`workbuddy`。`setup select` 和 `doctor integrations` 使用的一级宿主目录包含上述除 WorkBuddy 外的所有宿主；
-WorkBuddy 仍可通过显式的 `setup workbuddy` 和 `doctor workbuddy` 命令使用。
+Agent 可以是 `codex`、`claude-code`、`dsh`、`hermes`、`kimi-code`、`openclaw`、`opencode`、`pi`、`workbuddy` 或 `zcode`。
+`powercontext setup` 提供交互选择；显式 Agent 名称支持非交互和多 Agent 安装。
+Setup 会安装、配置、按宿主能力启用插件并运行 doctor。各 Agent 的失败互相隔离；诊断失败时仍会报告已完成的安装。
 
-`powercontext doctor` 检查安装包和 Server，不要求任何集成。`powercontext doctor integrations` 打印全部一级宿主的只读矩阵；
-CLI 不在 PATH 上时该行是 `missing`，不会让整条命令失败。各个 `powercontext doctor <host>` 命令在对应 CLI
-缺失时仍会失败。矩阵保留每个宿主专有的全部集成检查，包括 OpenCode 独立的 `plugin` 与 `skill` 结果。
-DSH 检查 `dump-config` 是否列出 `powercontext-dsh`；Pi 检查 CLI 是否列出 PowerContext package。
+`powercontext config agent [agents...]` 更新已安装连接，不会重新安装或启用插件。
+`powercontext doctor [agents...]` 检查选中的 Agent；未指定时检查已保存的连接。
+没有已保存连接时，doctor 检查安装包和 Server。选中的 Agent 缺少必需 CLI 时，其检查失败。
+Doctor 保留宿主专有检查，包括 OpenCode 独立的 `plugin` 与 `skill` 结果。DSH 检查原生注册；Pi 检查已注册的 package。
 
 Candidate 的统一 HTTP 路径为 `/v1/candidates/list`、`get`、`history`、`revise`、`approve`、`reject`（均为 POST）。
 通过 `candidate_kind=artifact|tag` 区分类型；旧 Artifact Candidate 路径直接移除，调用方必须同步升级。

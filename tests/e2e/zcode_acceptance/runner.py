@@ -345,8 +345,8 @@ class AcceptanceRun:
         completed = self.process([
             sys.executable,
             "-c",
-            "from powercontext.cli.zcode import install_zcode_plugin; "
-            'import sys; install_zcode_plugin(source=sys.argv[1], ref="master", server_url=sys.argv[2])',
+            "from powercontext.cli.installation import setup; "
+            'import sys; setup("zcode", source=sys.argv[1], ref="master", server_url=sys.argv[2])',
             str(REPOSITORY),
             self.base_url,
         ])

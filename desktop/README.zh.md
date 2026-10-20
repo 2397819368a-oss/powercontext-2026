@@ -69,7 +69,7 @@ pnpm --dir desktop desktop:dev
 }
 ```
 
-Desktop 在每次诊断前检查固定路径和摘要，然后只允许 `service status --json` 或 `doctor integrations --json`。收到符合格式的诊断响应后，尝试读取实际 CLI 版本用于显示；版本查询失败时显示“未知”，不阻止有效诊断结果。版本查询最长 15 秒，服务检查最长 20 秒，集成检查最长 60 秒；每次进程调用的 stdout/stderr 合计最多 256 KiB。窗口隐藏，进程及其后代归属于本次专属 Windows Job，结束或超时后清理。界面只显示允许的状态字段，不显示任意 detail、路径或原始输出。合法 JSON 配合退出码 1 仍可显示不健康结果。
+Desktop 在每次诊断前检查固定路径和摘要，然后只允许 `service status --json` 或 `doctor codex claude-code dsh openclaw opencode pi hermes workbuddy kimi-code zcode --json`。收到符合格式的诊断响应后，尝试读取实际 CLI 版本用于显示；版本查询失败时显示“未知”，不阻止有效诊断结果。版本查询最长 15 秒，服务检查最长 20 秒，集成检查最长 60 秒；每次进程调用的 stdout/stderr 合计最多 256 KiB。窗口隐藏，进程及其后代归属于本次专属 Windows Job，结束或超时后清理。界面只显示允许的状态字段，不显示任意 detail、路径或原始输出。合法 JSON 配合退出码 1 仍可显示不健康结果。
 
 未配置或未通过核验时，本机诊断不可用，独立远程业务仍可使用。进程树清理和隔离真实 CLI 测试已通过；安装后交互与完整 S2 资格仍待验收。
 
