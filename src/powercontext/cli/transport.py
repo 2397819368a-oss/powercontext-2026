@@ -38,8 +38,8 @@ from powercontext.client.transport_policy import (
 from powercontext.transport import is_loopback_host
 
 if TYPE_CHECKING:
+    from powercontext.cli.authorization import SetupAuthorizationStatus
     from powercontext.cli.dsh_runtime import DshTarget
-    from powercontext.cli.system import Diagnostic
 
 
 setup_environment_file: ContextVar[Path | None] = ContextVar("setup_environment_file", default=None)
@@ -124,6 +124,14 @@ def prepare_setup_transport(
             "protected in transit. TLS verification and Server authentication remain unchanged.",
             err=True,
         )
+    if host == "kimi-code":
+        from powercontext.cli.kimi_code import _endpoint
+
+        endpoint = _endpoint(endpoint)
+    if host == "zcode":
+        from powercontext.cli.zcode import _endpoint
+
+        endpoint = _endpoint(endpoint)
     if host == "dsh":
         from powercontext.cli.dsh_transport import validate_dsh_setup_transport
 
@@ -181,6 +189,17 @@ def _explicit_setup_endpoint(host: str, server_url: str) -> str:
     return endpoint
 
 
+def _saved_setup_endpoints(host: str, native_endpoint: str | None) -> list[tuple[str, str]]:
+    """Read saved endpoint fallbacks, using the supplied native URL for DSH."""
+    saved = load_client_settings(host).get("server_url")
+    native = native_endpoint if host == "dsh" else existing_native_endpoint(host)
+    return [
+        (name, normalize_client_url(value).removesuffix("/mcp").rstrip("/"))
+        for name, value in (("saved client settings", saved), ("native host settings", native))
+        if value
+    ]
+
+
 def resolve_setup_endpoint(
     host: str,
     *,
@@ -190,8 +209,8 @@ def resolve_setup_endpoint(
 ) -> str:
     """Choose one endpoint, rejecting ambiguous explicit settings before installation.
 
-    A command-line URL is an explicit choice. Otherwise URL declarations must agree;
-    the local listening port is only a fallback when no client endpoint exists.
+    New URL declarations supersede saved installation settings but must agree with
+    active runtime overrides. Saved endpoints and the local port are fallbacks.
     """
     if server_url is not None:
         return _explicit_setup_endpoint(host, server_url)
@@ -204,11 +223,8 @@ def resolve_setup_endpoint(
         for name in keys
         if values.get(name)
     ]
-    saved = load_client_settings(host).get("server_url")
-    native = native_endpoint if host == "dsh" else existing_native_endpoint(host)
-    for name, value in (("saved client settings", saved), ("native host settings", native)):
-        if value:
-            candidates.append((name, normalize_client_url(value).removesuffix("/mcp").rstrip("/")))
+    if not candidates:
+        candidates = _saved_setup_endpoints(host, native_endpoint)
     if len({value for _, value in candidates}) > 1:
         names = ", ".join(dict.fromkeys(name for name, _ in candidates))
         raise ValueError(  # noqa: TRY003
@@ -252,88 +268,34 @@ def existing_native_endpoint(host: str) -> str | None:
     return None
 
 
-def save_setup_transport(settings: SetupTransport) -> None:
-    """Save endpoint-bound consent, rolling back paired native writes on failure."""
+def configure_connection(
+    settings: SetupTransport, *, dsh_target: DshTarget | None = None, writes: dict[Path, bytes] | None = None
+) -> SetupAuthorizationStatus:
+    """Publish the native endpoint, shared settings, and credentials as one connection."""
+    from powercontext.cli.authorization import authorization_updates
+    from powercontext.cli.installation import publish
 
-    from powercontext.cli.system import SetupError, _write_bytes_atomically
+    credentials, state = authorization_updates(settings)
+    publish(writes={**(writes or {}), **setup_transport_updates(settings, dsh_target=dsh_target), **credentials})
+    return state
+
+
+def setup_transport_updates(settings: SetupTransport, *, dsh_target: DshTarget | None = None) -> dict[Path, bytes]:
+    """Prepare the shared nonsecret Client settings for publication."""
+    from powercontext.cli.system import SetupError
 
     path = client_config_file()
-    completed: list[tuple[Path, bytes | None]] = []
     try:
         config: Any = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"version": 1, "hosts": {}}
         if not isinstance(config, dict) or config.get("version") != 1 or not isinstance(config.get("hosts"), dict):
-            raise ValueError("Client configuration must have version 1 and a hosts object")  # noqa: TRY003, TRY301
+            raise ValueError  # noqa: TRY301 - normalize invalid persisted configuration.
         entry = config["hosts"].setdefault(settings.host, {})
         if not isinstance(entry, dict):
-            raise ValueError("Client host configuration must be an object")  # noqa: TRY003, TRY004, TRY301
+            raise ValueError  # noqa: TRY301, TRY004 - normalize invalid persisted configuration.
         entry.update(server_url=settings.server_url, allow_insecure_http=settings.allow_insecure_http)
-        updates: list[tuple[Path, dict[str, Any]]] = []
-        if settings.host == "hermes":
-            native_path = hermes_config_file()
-            native = json.loads(native_path.read_text(encoding="utf-8")) if native_path.exists() else {}
-            if not isinstance(native, dict):
-                raise ValueError("Hermes client configuration must be an object")  # noqa: TRY003, TRY301
-            native.update(base_url=settings.server_url, allow_insecure_http=settings.allow_insecure_http)
-            updates.append((native_path, native))
-        updates.append((path, config))
-        # Validate every destination before writing either half of a native/shared pair.
-        writes = [
-            (destination, destination.read_bytes() if destination.exists() else None, payload)
-            for destination, payload in updates
-        ]
-        for destination, snapshot, payload in writes:
-            _write_bytes_atomically(destination, (json.dumps(payload, indent=2) + "\n").encode())
-            completed.append((destination, snapshot))
+        if dsh_target is not None:
+            entry.update(profile=dsh_target.profile, dsh_command=dsh_target.command)
+        updates: dict[Path, bytes] = {path: (json.dumps(config, ensure_ascii=False, indent=2) + "\n").encode()}
     except (OSError, ValueError) as error:
-        for destination, snapshot in reversed(completed):
-            try:
-                if snapshot is None:
-                    destination.unlink(missing_ok=True)
-                else:
-                    _write_bytes_atomically(destination, snapshot)
-            except OSError:
-                typer.echo(
-                    f"WARNING: could not restore {destination}; check its configuration before restarting.", err=True
-                )
         raise SetupError(f"Could not save PowerContext Client settings at {path}") from error  # noqa: TRY003
-
-
-def hermes_config_file() -> Path:
-    """Locate the same native configuration file used by the Hermes provider."""
-
-    override = os.environ.get("POWERCONTEXT_HERMES_CONFIG")
-    if override:
-        return Path(override)
-    return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "powercontext" / "config.json"
-
-
-def transport_diagnostic(host: str, *, dsh_target: DshTarget | None = None) -> Diagnostic:
-    """Report explicitly insecure transport as degraded rather than silently green."""
-
-    from powercontext.cli.native_transport import resolve_host_transport
-    from powercontext.cli.system import Diagnostic, DiagnosticStatus
-
-    try:
-        endpoint, allowed = resolve_host_transport(host, **({"dsh_target": dsh_target} if dsh_target else {}))
-    except ValueError as error:
-        return Diagnostic(status=DiagnosticStatus.FAILED, detail=str(error))
-    if is_remote_http(endpoint):
-        return Diagnostic(
-            status=DiagnosticStatus.DEGRADED if allowed else DiagnosticStatus.FAILED,
-            detail=(
-                f"{endpoint}: insecure HTTP explicitly enabled; credentials and content are unencrypted"
-                if allowed
-                else f"{endpoint}: remote HTTP blocked; use HTTPS or explicitly allow insecure HTTP"
-            ),
-        )
-    return Diagnostic(status=DiagnosticStatus.OK, detail=endpoint)
-
-
-def add_transport_diagnostic(
-    diagnostics: dict[str, Diagnostic], host: str, *, dsh_target: DshTarget | None = None
-) -> None:
-    """Append policy problems without changing healthy installation reports."""
-
-    diagnostic = transport_diagnostic(host, **({"dsh_target": dsh_target} if dsh_target else {}))
-    if not diagnostic.ok:
-        diagnostics["transport"] = diagnostic
+    return updates

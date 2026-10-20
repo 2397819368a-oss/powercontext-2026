@@ -62,7 +62,7 @@ curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1
 
 默认安装无需 Git 或宿主选择界面，可以无人值守执行。`--host` 可以重复，用于显式安装集成；这时需要 Git 和
 各宿主自己的前置条件。`--no-hosts` 显式表达默认行为，不能与 `--host` 同时使用。安装后需要交互选择宿主时，运行
-`powercontext setup select --ref "powercontext-v$(powercontext --version)"`。
+`powercontext setup --ref "powercontext-v$(powercontext --version)"`。
 
 已安装的 CLI 提供准确版本，形成 `powercontext-vVERSION`。宿主安装不再次解析 `latest`，也不默认使用 `master`。
 宿主安装失败时，保留已安装的 Runtime，脚本返回非零状态，并提示按该 tag 重试 setup；各适配器提供其已有的宿主结果。
@@ -99,7 +99,7 @@ Windows 仍为试验性；入口的显式 `--service` 同时同意登录自启�
 
 `doctor --env-file` 复用严格的 Python 环境加载器，结束后恢复进程设置。Server 文件选择其监听地址，不受 SSH 转发
 所用 Client URL 或调用者旧配置影响；Client-only 文件选择 Client URL，显式诊断 `--server-url` 优先。
-Shell 不执行文件内容。宿主安装使用 `setup --env-file PATH select`，并绑定实际安装版本对应的 tag。
+Shell 不执行文件内容。宿主安装使用 `setup --env-file PATH HOST...`，并绑定实际安装版本对应的 tag。
 
 所选发行版必须提供新增 CLI 选项；旧版缺少时，报告失败阶段并保留 Runtime。发布需要协调包含这些选项的包与网站。
 任何文件修改（包括 Scope ID）或升级后，使用原文件重新执行 `service install --env-file`。

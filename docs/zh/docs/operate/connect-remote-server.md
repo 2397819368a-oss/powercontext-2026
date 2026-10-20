@@ -8,24 +8,12 @@ description: 配置客户端地址，并在需要时明确允许非环回明文 
 远程部署推荐使用 HTTPS。IPv4/IPv6 环回 HTTP（包括 `localhost`）默认可用；PowerContext 自己发起的其他 HTTP
 连接需要显式同意。内网 IP、VPN 地址仍是非环回地址，处于内网不等于 HTTP 已加密。
 
-## 安装 Client CLI
-
-在运行 Agent 的机器上使用安装脚本。它会按需补齐 uv 和 Python，安装最新稳定版 CLI 和 Client，不安装本地 Server 依赖：
-
-```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --profile client
-```
-
-Windows PowerShell、指定版本和镜像选项见[安装和运行](../get-started/install-and-run.md)。
-先执行打印的 PATH 命令，再在客户端环境设置 `POWERCONTEXT_CLIENT_SERVER_URL`，需要认证时还要设置
-`POWERCONTEXT_CLIENT_API_TOKEN`。运行 `powercontext ready` 检查远程 Server。本地 Server 配置向导需要 `local` 安装模式。
-
 ## 使用引导安装
 
 PowerContext 工具与插件应使用同一份 source/ref。在运行 Agent 的机器上执行：
 
 ```bash
-powercontext setup claude-code --source oceanbase/powercontext --ref "powercontext-v$(powercontext --version)" \
+powercontext setup claude-code --source oceanbase/powercontext --ref master \
   --server-url http://192.0.2.10:8000
 ```
 
@@ -39,7 +27,7 @@ powercontext setup claude-code --server-url http://192.0.2.10:8000 --allow-insec
 ```
 
 `claude-code` 可替换为 `codex`、`dsh`、`openclaw`、`opencode`、`pi`、`hermes` 或 `workbuddy`。
-`setup select --host ...` 也支持这两个选项，覆盖其目录中的 Agent；WorkBuddy 使用独立 setup 命令。
+`setup codex dsh` 和 `config agent codex dsh` 也支持这两个选项，分别用于多 Agent 安装和已安装连接配置。
 拒绝或未提供同意时，在安装操作前退出。风险警告写入 stderr，不污染 stdout 的 JSON。
 安装成功后保存地址及同意状态，新会话无需重复手贴这两项配置；鉴权凭据仍需单独配置。
 

@@ -34,6 +34,23 @@ class ArtifactProcessingWorkerOutcome(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactProcessingModelUsageDelta:
+    """Bounded loss counters returned by one completed child Worker."""
+
+    dropped_records: int = 0
+    write_failures: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.dropped_records) is not int
+            or type(self.write_failures) is not int
+            or self.dropped_records < 0
+            or self.write_failures < 0
+        ):
+            raise ValueError("model usage delta counters must be nonnegative integers")  # noqa: TRY003
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactProcessingWorkAssignment:
     """One accepted Scope invocation, independent of its processor's inputs."""
 
@@ -46,13 +63,43 @@ class ArtifactProcessingWorkAssignment:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactProcessingBlock:
+    """A domain-owned durable rejection, independent of invocation generation.
+
+    Details contain operational counters only, never input or provider data.
+    The opaque key identifies the progress frontier within one ProcessingKey.
+    """
+
+    key: str
+    stage: str
+    error_code: str
+    details: tuple[tuple[str, int], ...] = ()
+
+
+class ArtifactProcessingBlockedError(RuntimeError):
+    """A Worker encountered a durable rejection after the admission check."""
+
+    def __init__(self, block: ArtifactProcessingBlock) -> None:
+        super().__init__(block.error_code)
+        self.block = block
+        self.stage = block.stage
+        self.error_code = block.error_code
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactProcessingWorkerFailure:
-    """Sanitized metadata safe to return across a child process boundary."""
+    """Sanitized metadata safe to return across a child process boundary.
+
+    The child records cancellation independently of the diagnostic exception type.
+    """
 
     stage: str
     error_code: str
     exception_type: str
     traceback: str
+    block: ArtifactProcessingBlock | None = None
+    cancelled: bool = False
+    model_usage: ArtifactProcessingModelUsageDelta | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +109,7 @@ class ArtifactProcessingWorkerCompletion:
     outcome: ArtifactProcessingWorkerOutcome = ArtifactProcessingWorkerOutcome.SUCCEEDED
     held_count: int = 0
     hold_codes: tuple[str, ...] = ()
+    model_usage: ArtifactProcessingModelUsageDelta | None = None
 
 
 class ArtifactProcessingWorkerHandle(Protocol):
@@ -81,7 +129,34 @@ class ArtifactProcessingWorkerLauncher(Protocol):
 WorkerEntrypoint = Callable[[ArtifactProcessingWorkAssignment], ArtifactProcessingWorkerCompletion | None]
 
 
+def processing_error_code(exception_type: type[BaseException] | str, error_code: str = "") -> str:
+    """Expose only known categories, never exception messages or custom codes."""
+
+    inference_codes = {
+        "InferenceConfigurationError": "model_configuration_error",
+        "PydanticAIConfigurationError": "model_configuration_error",
+        "InferenceTimeoutError": "model_timeout",
+        "InferenceUnavailableError": "model_unavailable",
+        "InvalidInferenceOutputError": "invalid_model_output",
+    }
+    names = (exception_type,) if isinstance(exception_type, str) else (base.__name__ for base in exception_type.__mro__)
+    for name in names:
+        if name in inference_codes:
+            return inference_codes[name]
+    if error_code in {
+        *inference_codes.values(),
+        "worker_crash",
+        "invalid_worker_result",
+        "missing_durable_acknowledgement",
+    }:
+        return error_code
+    return "processing_failed"
+
+
 __all__ = [
+    "ArtifactProcessingBlock",
+    "ArtifactProcessingBlockedError",
+    "ArtifactProcessingModelUsageDelta",
     "ArtifactProcessingWorkAssignment",
     "ArtifactProcessingWorkerCompletion",
     "ArtifactProcessingWorkerFailure",
@@ -89,4 +164,5 @@ __all__ = [
     "ArtifactProcessingWorkerLauncher",
     "ArtifactProcessingWorkerOutcome",
     "WorkerEntrypoint",
+    "processing_error_code",
 ]

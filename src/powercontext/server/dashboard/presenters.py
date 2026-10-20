@@ -17,6 +17,15 @@
 import json
 from typing import Any
 
+from powercontext.server.dashboard.errors import ReadError
+
+
+def set_scope(ctx, descriptor):
+    if descriptor is None:
+        raise ReadError(404, "not_found")
+    ctx["scope_descriptor"] = {name: descriptor[name] for name in ("scope_id", "title", "summary", "parent_scope_id")}
+    ctx["data"].update(title=descriptor["title"], summary=descriptor["summary"])
+
 
 def source_view(source: dict[str, Any] | None) -> dict[str, Any] | None:
     if source is None:
@@ -29,7 +38,16 @@ def source_view(source: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def memory_view(response: dict[str, Any]) -> list[dict[str, Any]]:
-    return [{**entry, **entry["citation"]} for entry in response["entries"]]
+    """Keep the independent Artifact identity of each Atomic Memory record."""
+
+    return [
+        {
+            **item,
+            **item["artifact"],
+            "note_key": f"atomic-memory/{item['artifact']['artifact_id']}@{item['artifact']['revision']}",
+        }
+        for item in response["items"]
+    ]
 
 
 def usage_view(usage: dict[str, Any], recall: dict[str, Any]) -> dict[str, Any]:

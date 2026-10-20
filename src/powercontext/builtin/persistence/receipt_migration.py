@@ -22,13 +22,14 @@ from collections.abc import Awaitable, Callable
 from sqlalchemy import delete, insert, select, tuple_
 
 from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 from powercontext.builtin.persistence.sources import SourceRepository, _lock_journal_head
 from powercontext.builtin.persistence.tables import RECEIPT_MIGRATION_REVIEW_TABLE, SOURCES_TABLE
 from powercontext.builtin.sources.content import ContentSource
 from powercontext.sources import SourceRef
 
 
-async def migrate_handoff_receipts(
+async def migrate_handoff_receipts(  # noqa: C901 - Keep receipt classification and attestation together.
     database: AsyncDatabase,
     sources: SourceRepository,
     committed_identity_lookup: Callable[[str, str], Awaitable[object | None]],
@@ -37,7 +38,7 @@ async def migrate_handoff_receipts(
 ) -> tuple[int, int]:
     """Return attested/unresolved counts; keep unresolved identities in the review table.
 
-    Page identities only and load one payload at a time. Never infer provenance
+    Page identities and stream one payload at a time. Never infer provenance
     from content or from a pre-write identity reservation. Identity-store errors
     abort startup instead of being treated as missing evidence. Repeated runs can
     resolve previously missing committed receipt records.
@@ -61,25 +62,44 @@ async def migrate_handoff_receipts(
             ).all()
         if not rows:
             return attested, unresolved
-        for scope_id, source_id in rows:
-            after = (scope_id, source_id)
-            ref = SourceRef(source_type="content", source_id=source_id)
+        cleanup = []
+        candidates = []
+        seen = set()
+        async with database.transaction() as connection:
+            statement = (
+                select(SOURCES_TABLE)
+                .where(
+                    SOURCES_TABLE.c.source_type == "content",
+                    tuple_(SOURCES_TABLE.c.scope_id, SOURCES_TABLE.c.source_id).in_(rows),
+                )
+                .order_by(SOURCES_TABLE.c.scope_id, SOURCES_TABLE.c.source_id)
+            )
+            async with connection.stream(statement.execution_options(yield_per=1)) as result:
+                async for row in result.mappings():
+                    identity = (row["scope_id"], row["source_id"])
+                    seen.add(identity)
+                    source = sources._decode_row(row).value
+                    if isinstance(source, ContentSource):
+                        if source.handoff_receipt:
+                            cleanup.append(identity)
+                        elif _is_receipt_candidate(source):
+                            candidates.append(identity)
+        missing = set(rows) - seen
+        if missing:
+            scope_id, source_id = min(missing)
+            raise RepositoryNotFoundError("source", (scope_id, SourceRef(source_type="content", source_id=source_id)))
+        if cleanup:
             async with database.transaction() as connection:
-                stored = await sources.get(connection, scope_id, ref)
-            source = stored.value
-            if not isinstance(source, ContentSource):
-                continue
-            if source.handoff_receipt:
-                async with database.transaction() as connection:
-                    await connection.execute(
-                        delete(RECEIPT_MIGRATION_REVIEW_TABLE).where(
-                            RECEIPT_MIGRATION_REVIEW_TABLE.c.scope_id == scope_id,
-                            RECEIPT_MIGRATION_REVIEW_TABLE.c.source_id == source_id,
-                        )
+                await connection.execute(
+                    delete(RECEIPT_MIGRATION_REVIEW_TABLE).where(
+                        tuple_(
+                            RECEIPT_MIGRATION_REVIEW_TABLE.c.scope_id, RECEIPT_MIGRATION_REVIEW_TABLE.c.source_id
+                        ).in_(cleanup)
                     )
-                continue
-            if not _is_receipt_candidate(source):
-                continue
+                )
+        after = tuple(rows[-1])
+        for scope_id, source_id in candidates:
+            ref = SourceRef(source_type="content", source_id=source_id)
             identity = await committed_identity_lookup(scope_id, source_id)
             async with database.transaction() as connection:
                 # Serialize concurrent startup migrations using the existing

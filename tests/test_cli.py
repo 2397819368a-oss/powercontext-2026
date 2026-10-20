@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import json
 import os
 import subprocess
@@ -28,6 +29,7 @@ from pydantic import ValidationError
 from typer.testing import CliRunner
 
 import powercontext.client.cli as client_cli
+from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.cli.app import create_cli
 from powercontext.client import ServerResponseError
 from powercontext.client.receiver_service import ReceiverServiceInstallation
@@ -36,6 +38,7 @@ from powercontext.client.skill_receiver import ReceiverSyncResult, RemoteSkillRe
 from powercontext.http import (
     ArtifactPage,
     ArtifactReference,
+    CandidateHistory,
     EnrollRemoteSkillTargetRequest,
     ExperienceArtifact,
     ExperienceProposal,
@@ -58,7 +61,7 @@ from powercontext.http import (
     RemoteSkillPublication,
     RemoteSkillTarget,
     RemoteSkillTargetCredential,
-    ReviseArtifactCandidateRequest,
+    ReviseCandidateRequest,
     RevokeRemoteSkillTargetRequest,
     ScopedStats,
     SkillArtifact,
@@ -68,6 +71,7 @@ from powercontext.http import (
     UnpublishRemoteSkillRequest,
 )
 from powercontext.server.cli import app as server_app
+from powercontext.server.identity import open_server_identity_repository
 
 
 def _empty_inventory() -> dict[str, object]:
@@ -629,6 +633,60 @@ def test_cli_exposes_installed_role_commands() -> None:
     assert "client" not in result.output
 
 
+def test_server_identity_reset_requires_offline_confirmation_and_rotates(tmp_path) -> None:
+    database = tmp_path / "runtime.db"
+    environment = tmp_path / "server.env"
+    environment.write_text(f"POWERCONTEXT_SERVER_DATABASE_URL=sqlite+aiosqlite:///{database}\n")
+    cli = create_cli([server_app])
+
+    refused = CliRunner().invoke(cli, ["server", "identity-reset", "--env-file", str(environment)])
+    assert refused.exit_code == 2
+    assert not database.exists()
+
+    first = CliRunner().invoke(
+        cli,
+        ["server", "identity-reset", "--env-file", str(environment), "--maintenance-confirmed"],
+    )
+    second = CliRunner().invoke(
+        cli,
+        ["server", "identity-reset", "--env-file", str(environment), "--maintenance-confirmed"],
+    )
+
+    assert first.exit_code == second.exit_code == 0
+    assert first.output.strip() != second.output.strip()
+
+    async def readback() -> str:
+        async with open_server_identity_repository(SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")) as repository:
+            return await repository.load_or_create()
+
+    assert asyncio.run(readback()) == second.output.strip()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "sqlite+aiosqlite:///:memory:",
+        "sqlite+aiosqlite:///file:deployment?mode=memory&cache=shared&uri=1",
+        "sqlite+aiosqlite:///file:?uri=true",
+        "sqlite+aiosqlite:///file:?cache=shared&uri=true",
+        "sqlite+aiosqlite:///file:%00tail?uri=true",
+        "sqlite+aiosqlite:///file:deployment?mode=memory%2500tail&uri=true",
+        "sqlite+aiosqlite:///file:deployment?vfs=memdb&uri=true",
+    ],
+)
+def test_server_identity_reset_rejects_nonpersistent_sqlite(tmp_path, url: str) -> None:
+    environment = tmp_path / "server.env"
+    environment.write_text(f"POWERCONTEXT_SERVER_DATABASE_URL={url}\n")
+
+    result = CliRunner().invoke(
+        create_cli([server_app]),
+        ["server", "identity-reset", "--env-file", str(environment), "--maintenance-confirmed"],
+    )
+
+    assert result.exit_code == 2
+    assert "identity reset requires a persistent database" in result.output
+
+
 def test_service_command_provider_requires_the_complete_server_role() -> None:
     script = """
 import builtins
@@ -706,8 +764,8 @@ def test_server_command_layers_partial_cli_overrides_over_environment_settings(
     run_server = Mock()
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
     monkeypatch.setenv("POWERCONTEXT_SERVER_ALLOW_UNAUTHENTICATED_NON_LOOPBACK", "true")
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
@@ -746,8 +804,8 @@ def test_server_command_layers_process_environment_over_env_file(
 
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
 
     result = CliRunner().invoke(
         create_cli([server_app]),
@@ -837,8 +895,8 @@ def test_server_command_uses_discovered_models_for_inference_notice(
         monkeypatch.delenv(name, raising=False)
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", Mock())
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
 
     result = CliRunner().invoke(create_cli([server_app]), ["server", "run"])
 
@@ -1013,14 +1071,15 @@ def test_server_command_rejects_an_unauthenticated_non_loopback_host_override(
     run_server = Mock()
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
     monkeypatch.delenv("POWERCONTEXT_SERVER_AUTH_ENABLED", raising=False)
     monkeypatch.delenv("POWERCONTEXT_SERVER_AUTH_TOKEN", raising=False)
 
     result = CliRunner().invoke(
         create_cli([server_app]),
-        ["server", "run", "--host", "0.0.0.0"],  # noqa: S104 - exercises the non-loopback guard.
+        # --no-env-file: a repo-root .env must not supply the credentials this guard rejects.
+        ["server", "run", "--host", "0.0.0.0", "--no-env-file"],  # noqa: S104 - exercises the non-loopback guard.
     )
 
     assert result.exit_code == 2  # typer.BadParameter, not an unhandled traceback.
@@ -1038,12 +1097,13 @@ def test_server_command_reports_a_friendly_error_when_auth_lacks_a_token(
     run_server = Mock()
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
     monkeypatch.setenv("POWERCONTEXT_SERVER_ACCESS_MODE", "enforced")
     monkeypatch.delenv("POWERCONTEXT_SERVER_AUTH_TOKEN", raising=False)
 
-    result = CliRunner().invoke(create_cli([server_app]), ["server", "run"])
+    # --no-env-file: a repo-root .env must not supply the token this guard rejects.
+    result = CliRunner().invoke(create_cli([server_app]), ["server", "run", "--no-env-file"])
 
     assert result.exit_code == 2  # typer.BadParameter, not an unhandled traceback.
     run_server.assert_not_called()
@@ -1061,8 +1121,8 @@ def test_server_command_lets_a_loopback_override_repair_an_unsafe_environment_ho
     run_server = Mock()
     tracing = Mock()
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
     monkeypatch.setenv("POWERCONTEXT_SERVER_HTTP_HOST", "0.0.0.0")  # noqa: S104 - unsafe env value the CLI repairs.
 
     result = CliRunner().invoke(
@@ -1081,8 +1141,8 @@ def test_server_command_does_not_load_client_settings(monkeypatch: pytest.Monkey
     monkeypatch.setenv("POWERCONTEXT_CLIENT_SERVER_URL", "not-a-url")
     monkeypatch.setenv("POWERCONTEXT_SERVER_ACCESS_MODE", "disabled")
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
-    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config, **_kwargs: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config, **_kwargs: tracing)
 
     result = CliRunner().invoke(create_cli([server_app]), ["server", "run", "--no-env-file"])
 
@@ -1364,7 +1424,7 @@ def test_client_candidate_revision_commands_build_typed_proposals(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    received: list[ReviseArtifactCandidateRequest] = []
+    received: list[ReviseCandidateRequest] = []
 
     class RevisingClient:
         async def __aenter__(self) -> Self:
@@ -1373,9 +1433,9 @@ def test_client_candidate_revision_commands_build_typed_proposals(
         async def __aexit__(self, *_args) -> None:
             return None
 
-        async def revise_artifact_candidate(
+        async def revise_candidate(
             self,
-            request: ReviseArtifactCandidateRequest,
+            request: ReviseCandidateRequest,
         ) -> GeneratedCandidateResponse:
             received.append(request)
             return GeneratedCandidateResponse(status=GeneratedCandidateStatus.NO_OP, candidate=None)
@@ -1443,6 +1503,7 @@ def test_client_candidate_revision_commands_build_typed_proposals(
     assert isinstance(skill.proposal, SkillProposal)
     assert skill.proposal.instructions == "Run both backend acceptance scenarios."
     assert [item.root for item in skill.proposal.validation] == ["SQLite passes.", "OceanBase passes."]
+    assert skill.artifact_refs is not None
     assert skill.target == skill.artifact_refs[0]
 
 
@@ -1572,3 +1633,52 @@ def test_client_skill_export_uses_configured_authentication(
     assert received_tokens == ["secret-token"]
     assert "Exported skill-123@1 for codex" in result.output
     assert (destination / "SKILL.md").is_file()
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_candidate_history_cli_prints_returned_versions(monkeypatch, json_output, empty):
+    history = CandidateHistory.model_validate({
+        "versions": []
+        if empty
+        else [
+            {
+                "candidate_id": "candidate-history",
+                "version": version,
+                "candidate_kind": "artifact",
+                "family": "experience",
+                "status": "pending" if version == 1 else "rejected",
+                "proposal": {
+                    "situation": "Retry",
+                    "action": "Check key",
+                    "outcome": "No duplicate",
+                    "lesson": f"Lesson {version}",
+                },
+                "source_refs": [],
+                "artifact_refs": [],
+                "target": None,
+                "reason": "Review correction",
+                "result_artifact": None,
+                "decision_reason": None if version == 1 else "Insufficient evidence",
+            }
+            for version in (1, 2)
+        ]
+    })
+
+    class HistoryClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get_candidate_history(self, request):
+            assert request.scope_id == "project"
+            assert request.candidate_id == "candidate-history"
+            return history
+
+    monkeypatch.setattr(client_cli, "PowerContextClient", lambda *_args, **_kwargs: HistoryClient())
+    arguments = ["candidate", "history", "candidate-history", "--scope-id", "project"]
+    result = CliRunner().invoke(create_cli([]), (["--json"] if json_output else []) + arguments)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == history.model_dump(mode="json")

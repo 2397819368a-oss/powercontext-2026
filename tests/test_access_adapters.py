@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import httpx
@@ -29,9 +31,12 @@ from powercontext.server.authz import (
     AccessBinding,
     AccessBindingState,
     AccessControlService,
+    AccessDecision,
+    AccessDeniedError,
     AccessProviderCapabilities,
     AccessRequest,
     AccessRole,
+    AccessSubjectRef,
     AccessUnavailableError,
     AuthZenAuthorizationProvider,
     BuiltinAuthorizationProvider,
@@ -45,6 +50,7 @@ from powercontext.server.authz import (
 )
 from powercontext.server.authz.composition import open_casbin_access_control
 from powercontext.server.authz.repository import ACCESS_TABLES, RelationalAccessRepository
+from powercontext.server.authz.service import DecisionState
 
 ADMIN = PrincipalRef(type="service", id="admin")
 ALICE = PrincipalRef(type="user", id="alice", description="Alice")
@@ -110,6 +116,98 @@ def test_casbin_composition_has_writable_relationships_and_owner_enforcement() -
             )
             assert (await service.require(BOB, AccessAction.ARTIFACT_READ, experience, context=AUDIT)).allowed
             assert not (await service.check(BOB, AccessAction.ARTIFACT_WRITE, experience, context=AUDIT)).allowed
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("provider_class", [BuiltinAuthorizationProvider, CasbinAuthorizationProvider])
+def test_transaction_binding_preserves_custom_repository_policy(provider_class) -> None:
+    class ReadOnlyScopeRepository(RelationalAccessRepository):
+        async def decision_snapshot(
+            self,
+            subjects: Sequence[AccessSubjectRef],
+            *,
+            now: datetime,
+            artifact_resources: Sequence[ResourceRef] = (),
+            owned_by: PrincipalRef | None = None,
+        ) -> DecisionState:
+            state = await super().decision_snapshot(
+                subjects,
+                now=now,
+                artifact_resources=artifact_resources,
+                owned_by=owned_by,
+            )
+            return replace(
+                state,
+                bindings=tuple(
+                    binding for binding in state.bindings if binding.role is not AccessRole.SCOPE_CONTRIBUTOR
+                ),
+            )
+
+    async def scenario() -> None:
+        async with SQLiteProfile.open(SQLiteConfig(), tables=ACCESS_TABLES) as profile:
+            repository = RelationalAccessRepository(profile.database)
+            await _seed_admin(repository)
+            scope = ResourceRef.scope("scope-a")
+            setup = AccessControlService(
+                BuiltinAuthorizationProvider(repository), relationships=repository, audit=repository
+            )
+            for role in (AccessRole.SCOPE_VIEWER, AccessRole.SCOPE_CONTRIBUTOR):
+                await setup.create_binding(
+                    ADMIN,
+                    CreateBinding(subject=BOB, resource=scope, role=role, idempotency_key=role.value),
+                    context=AUDIT,
+                )
+
+            service = AccessControlService(
+                provider_class(ReadOnlyScopeRepository(profile.database)),
+                relationships=repository,
+                audit=repository,
+            )
+            assert (await service.require(BOB, AccessAction.SCOPE_READ, scope, context=AUDIT)).allowed
+            with pytest.raises(AccessDeniedError):
+                await service.require(BOB, AccessAction.SCOPE_CONTRIBUTE, scope, context=AUDIT)
+            assert any(
+                binding.role is AccessRole.SCOPE_CONTRIBUTOR
+                for binding in await repository.active_bindings((BOB,), now=datetime.now(UTC))
+            )
+
+            async with profile.database.transaction() as connection:
+                bound = service.with_connection(connection)
+                assert (await bound.require(BOB, AccessAction.SCOPE_READ, scope, context=AUDIT)).allowed
+                with pytest.raises(AccessDeniedError):
+                    await bound.require(BOB, AccessAction.SCOPE_CONTRIBUTE, scope, context=AUDIT)
+
+    asyncio.run(scenario())
+
+
+def test_transaction_binding_preserves_builtin_subclass_denials() -> None:
+    class DenyArtifactWrite(BuiltinAuthorizationProvider):
+        async def check_batch(self, requests, /):
+            decisions = await super().check_batch(requests)
+            return tuple(
+                AccessDecision(False, "custom-denial", decision.policy_revision)
+                if request.action is AccessAction.ARTIFACT_WRITE
+                else decision
+                for request, decision in zip(requests, decisions, strict=True)
+            )
+
+    async def scenario() -> None:
+        async with SQLiteProfile.open(SQLiteConfig(), tables=ACCESS_TABLES) as profile:
+            repository = RelationalAccessRepository(profile.database)
+            await _seed_admin(repository)
+            memory = ResourceRef.artifact("scope-a", family="atomic-memory", artifact_id="memory-a")
+            service = AccessControlService(DenyArtifactWrite(repository), relationships=repository, audit=repository)
+            await service.establish_artifact_owner(memory, ALICE, idempotency_key="owner-memory", context=AUDIT)
+            assert (await service.require(ALICE, AccessAction.ARTIFACT_READ, memory, context=AUDIT)).allowed
+            assert not (await service.check(ALICE, AccessAction.ARTIFACT_WRITE, memory, context=AUDIT)).allowed
+
+            async with profile.database.transaction() as connection:
+                bound = service.with_connection(connection)
+                assert bound.provider is service.provider
+                assert (await bound.require(ALICE, AccessAction.ARTIFACT_READ, memory, context=AUDIT)).allowed
+                with pytest.raises(AccessDeniedError):
+                    await bound.require(ALICE, AccessAction.ARTIFACT_WRITE, memory, context=AUDIT)
 
     asyncio.run(scenario())
 

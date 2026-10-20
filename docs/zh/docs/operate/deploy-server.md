@@ -14,7 +14,7 @@ Windows 支持为 `experimental`。
 
 ## 运行持久个人 Server
 
-个人 macOS/Linux 推荐安装当前用户服务；注册保持显式操作：
+安装并启动可选的当前用户服务：
 
 ```bash
 powercontext service install
@@ -38,8 +38,6 @@ loopback Server。
 chmod 600 /path/to/powercontext.env
 powercontext config validate --env-file /path/to/powercontext.env
 powercontext service install --env-file /path/to/powercontext.env
-powercontext service status
-powercontext doctor --env-file /path/to/powercontext.env
 ```
 
 安装成功后的摘要会显示实际使用的环境文件路径。若启用了 Bearer 鉴权，请从该文件中的
@@ -55,9 +53,11 @@ icacls $env:USERPROFILE\powercontext.env /inheritance:r /grant:r "${env:USERNAME
 
 原生定义只记录环境文件的绝对路径和不含内容的文件 identity metadata；在 Windows 上还记录当前用户的 owner SID，
 launcher 每次启动都会重新校验它。不复制 credential 或调用者的 shell environment。
-升级 PowerContext 或修改环境文件（包括共享文件中的 Agent Scope ID）后，使用原路径重新执行 `service install --env-file`。
-省略 `--env-file` 不会复用已注册文件。`service status` 检查 manager 和存活状态，`doctor --env-file` 还检查就绪状态。
-需要停止 Server 的升级，先使用 `service uninstall`，该命令保留数据。以下命令会删除注册，但保留 Server 数据和日志：
+升级 PowerContext 或修改环境文件后应重新执行 `service install`。显式执行 `service stop` 后，可以在新版环境中运行
+`service install`；如果原服务使用环境文件，请继续传入同一个 `--env-file`。即使旧 Python 程序已删除，也可以更新注册，
+服务仍保持停止并禁止自动启动。确认可以恢复服务后，再执行 `service start`。尚未验证完成的数据库迁移仍会阻止更新注册。
+
+以下命令会删除注册，但保留 Server 数据和日志：
 
 ```bash
 powercontext service uninstall
@@ -166,6 +166,9 @@ Cookie，最长八小时；HTTPS 下设置 Secure。反向代理应正确传递�
 静态 token 的所有持有者具有同一个管理员身份。Dashboard 不支持多成员 RBAC，也不提供账号、SSO、邀请和授权管理。
 注入 Authentication Provider 或 AccessControlService 的部署必须关闭 Dashboard；不兼容的启用配置会在启动时被拒绝。
 关闭 Dashboard 不影响团队的 API 和 MCP。个人启用步骤见[安装和运行](../get-started/install-and-run.md)。
+
+共享静态 token 不会强制人工审核，也不会阻止 Agent 批准自己的 Candidate。需要分离提交和审批时，应使用不同的已认证
+Principal，并仅向审核者授予审核权限。参见[分离 Agent 提交与审核](../workflows/review-candidates.md#分离-agent-提交与审核)。
 
 ## 检查部署
 

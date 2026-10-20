@@ -61,7 +61,7 @@ Usage: bash install.sh [--version VERSION] [--index-url URL] [--host HOST]... [-
   -h, --help         Show this help.
 
 Agent integration setup runs only for explicitly selected --host values.
-After installation, run powercontext setup select --ref "powercontext-v$(powercontext --version)".
+After installation, run powercontext setup --ref "powercontext-v$(powercontext --version)".
 Personal macOS/Linux use: --configure --service --env-file /path/to/powercontext.env.
 For unattended service setup, omit --configure and provide an existing protected file.
 
@@ -92,7 +92,7 @@ parse_args() {
                     --profile) PROFILE=$2 ;;
                     --region) REGION=$2 ;;
                     --index-url) INDEX_URL=$2 ;;
-                    --host) HOSTS+=(--host "$2") ;;
+                    --host) HOSTS+=("$2") ;;
                     --env-file) ENV_FILE=$2 ;;
                 esac
                 shift 2
@@ -396,7 +396,7 @@ main() {
     if [[ ${#HOSTS[@]} -gt 0 ]]; then
         local setup_args=(setup)
         [[ -z "$ENV_FILE" ]] || setup_args+=(--env-file "$ENV_FILE")
-        "$tool_bin/powercontext" "${setup_args[@]}" select --source oceanbase/powercontext \
+        "$tool_bin/powercontext" "${setup_args[@]}" --source oceanbase/powercontext \
             --ref "powercontext-v$VERSION" ${HOSTS[@]+"${HOSTS[@]}"} || setup_status=$?
     fi
     if [[ "$PROFILE" == local ]]; then

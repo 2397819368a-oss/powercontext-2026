@@ -27,14 +27,12 @@ from typing import Any
 import pytest
 from pydantic import AnyHttpUrl, SecretStr, ValidationError
 
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
     BuiltinConfig,
     InferenceConfig,
-    RememberMemoryRequest,
     RuntimeConfig,
-    SearchMemoryRequest,
     open_builtin_runtime,
 )
 from powercontext.builtin.scope import ScopeDraft
@@ -226,6 +224,75 @@ def test_anthropic_custom_endpoint_uses_standard_environment_api_key(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "authorization",
+    ["Bearer gateway-token", "Basic Z2F0ZXdheTpnd2F5LXRva2Vu"],
+)
+def test_anthropic_custom_endpoint_with_authorization_header_omits_api_key_header(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    authorization: str,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    async def scenario() -> None:
+        with _model_server() as (server, base_url):
+            config = BuiltinConfig(
+                database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}"),
+                inference=InferenceConfig(
+                    generation_model="anthropic:tiny-generator",
+                    generation_base_url=AnyHttpUrl(base_url.removesuffix("/v1")),
+                    generation_headers={
+                        "Authorization": SecretStr(authorization),
+                        "hll-appid": SecretStr("ios-lma-svc"),
+                    },
+                ),
+            )
+
+            async with open_builtin_runtime(config) as runtime:
+                readiness = await runtime.readiness()
+
+            assert readiness.checks["inference.generation"] == "ready"
+            assert server.requests
+            request = server.requests[0]
+            assert request["path"] == "/v1/messages"
+            assert "x-api-key" not in request["headers"]
+            assert request["headers"]["authorization"] == authorization
+            assert request["headers"]["hll-appid"] == "ios-lma-svc"
+
+    asyncio.run(scenario())
+
+
+def test_anthropic_custom_endpoint_with_bearer_header_keeps_environment_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-standard-key")
+
+    async def scenario() -> None:
+        with _model_server() as (server, base_url):
+            config = BuiltinConfig(
+                database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}"),
+                inference=InferenceConfig(
+                    generation_model="anthropic:tiny-generator",
+                    generation_base_url=AnyHttpUrl(base_url.removesuffix("/v1")),
+                    generation_headers={"Authorization": SecretStr("Bearer gateway-token")},
+                ),
+            )
+
+            async with open_builtin_runtime(config) as runtime:
+                readiness = await runtime.readiness()
+
+            assert readiness.checks["inference.generation"] == "ready"
+            assert server.requests
+            request = server.requests[0]
+            assert request["path"] == "/v1/messages"
+            assert request["headers"]["x-api-key"] == "anthropic-standard-key"
+            assert request["headers"]["authorization"] == "Bearer gateway-token"
+
+    asyncio.run(scenario())
+
+
 def test_generation_embedding_and_llm_rerank_models_receive_their_own_settings(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -268,16 +335,13 @@ def test_generation_embedding_and_llm_rerank_models_receive_their_own_settings(
                         idempotency_key="custom-inference",
                     )
                 )
-                memory = runtime.memory.for_scope(scope.scope_id)
-                await memory.remember(
-                    RememberMemoryRequest(
-                        entries=(
-                            MemoryEntryInput(kind="fact", text="Deployment uses the blue environment."),
-                            MemoryEntryInput(kind="fact", text="Deployment rollback uses the green environment."),
-                        )
-                    )
-                )
-                search = await memory.search(SearchMemoryRequest(query="deployment environment", mode="fts", limit=1))
+                assert runtime.atomic_memory is not None
+                memory = runtime.atomic_memory.for_scope(scope.scope_id)
+                await memory.create((
+                    AtomicMemoryContent(kind="fact", text="Deployment uses the blue environment."),
+                    AtomicMemoryContent(kind="fact", text="Deployment rollback uses the green environment."),
+                ))
+                search = await memory.search("deployment environment", mode="text", limit=1)
                 # Check readiness after the real model clients have completed their first requests.
                 readiness = await runtime.readiness()
 
@@ -344,9 +408,10 @@ def test_embedding_requests_omit_dimensions_when_sending_is_disabled(tmp_path: P
                         idempotency_key="omit-dimensions",
                     )
                 )
-                await runtime.memory.for_scope(scope.scope_id).remember(
-                    RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="bge-m3 stores 1024 values."),))
-                )
+                assert runtime.atomic_memory is not None
+                await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                    AtomicMemoryContent(kind="fact", text="bge-m3 stores 1024 values."),
+                ))
 
         assert embedding_server.requests
         for embedding_request in embedding_server.requests:

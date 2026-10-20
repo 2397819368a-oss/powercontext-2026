@@ -17,7 +17,7 @@ container platform or an administrator-owned service manager.
 
 ## Run a persistent personal Server
 
-For supported personal macOS/Linux use, install the recommended current-user service. Registration is explicit:
+Install and start the optional current-user service:
 
 ```bash
 powercontext service install
@@ -41,8 +41,6 @@ For an explicit Server configuration, protect the environment file before instal
 chmod 600 /path/to/powercontext.env
 powercontext config validate --env-file /path/to/powercontext.env
 powercontext service install --env-file /path/to/powercontext.env
-powercontext service status
-powercontext doctor --env-file /path/to/powercontext.env
 ```
 
 The successful installation summary prints the environment file actually used. If Bearer authentication is enabled,
@@ -61,9 +59,11 @@ owner first.
 The native definition stores only the absolute file path and non-content file identity metadata. On Windows this
 includes the current user's owner SID, which is revalidated whenever the launcher starts. It does not copy
 credentials or the caller's shell environment. Re-run `service install` after upgrading PowerContext or changing the
-environment file, including edits to Agent Scope IDs in a shared file. Always repeat `--env-file` with the original path;
-omitting it does not reuse a registered file. `service status` observes manager state and liveness; `doctor --env-file`
-also checks readiness. For upgrades requiring a stopped Server, first use `service uninstall`, which preserves data.
+environment file. After an explicit `service stop`, run `service install` from the new environment, passing the same
+`--env-file` when one is configured. This updates the registration even if the old Python executable has been removed,
+while keeping the service stopped and automatic activation suppressed. Run `service start` when it is safe to resume.
+An unverified database migration continues to block registration updates.
+
 Remove the registration without deleting Server data or logs with:
 
 ```bash
@@ -180,6 +180,10 @@ provide accounts, SSO, invitations, or grant management. Deployments injecting a
 AccessControlService must disable the Dashboard; an incompatible enabled configuration is rejected at startup.
 Disabling it does not affect team API or MCP access. For personal setup, see
 [Install and run](../get-started/install-and-run.md).
+
+A shared static token does not enforce human review or prevent an Agent from approving its own Candidate. For separate
+submission and approval, use distinct authenticated Principals and grant review permission only to the reviewer.
+See [Separate Agent submission from review](../workflows/review-candidates.md#separate-agent-submission-from-review).
 
 ## Check the deployment
 

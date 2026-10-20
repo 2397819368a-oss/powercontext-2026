@@ -57,14 +57,15 @@ the website lists stable releases only. `make docs-test` also runs this check as
 | --- | --- |
 | `openapi/powercontext.yaml` | `info.version`, the prepared release version. |
 | `src/powercontext/http/_generated/` | `API_VERSION` in `operations.py` and `info.version` in `schema.py`, regenerated through `make api-generate`. |
-| `docs/en/docs/get-started/install-and-run.md`, `docs/zh/docs/get-started/install-and-run.md` | Explicit version examples, package/tag pins, and Python Client installation. |
+| `README.md`, `README_CN.md`, `README_JP.md` | Current release prose, pinned package installation commands, and matching Agent integration tag. |
+| `docs/en/docs/get-started/quickstart.md`, `docs/zh/docs/get-started/quickstart.md` | Current release and matching installation/tag instructions. |
+| `docs/en/docs/get-started/manual-start.md`, `docs/zh/docs/get-started/manual-start.md` | CLI/Server and Python Client installation pins, and the matching Agent integration tag. |
+| `docs/en/docs/get-started/install-and-run.md`, `docs/zh/docs/get-started/install-and-run.md` | Page description, current release prose, package/tag pins, upgrade target, and Python Client installation. |
 | `integrations/dsh/plugins/powercontext/README.md` | Server installation pin and the matching `setup dsh --ref` tag. |
 
 The installation guides also contain historical migration versions. Those references are preserved. When adding
 another current-release installation example, include it in the version tooling's managed paths and patterns so
 the next release updates and checks it.
-
-README and Quick Start install the latest stable release through the scripts and derive integration tags from the installed CLI. Release bumps preserve these instructions and the independent uv bootstrap version.
 
 ### Derived from another source
 
@@ -72,6 +73,8 @@ README and Quick Start install the latest stable release through the scripts and
 | --- | --- |
 | Python wheel/sdist version and installed `powercontext --version` | `pyproject.toml` declares `dynamic = ["version"]`; Hatch VCS reads Git metadata. Use the intended release tag for the final build. |
 | Runtime package metadata | Reads the installed Python distribution version; there is no separate static runtime version to bump. |
+| Desktop API bindings | Regenerate OpenAPI types and contract digests with `pnpm --dir desktop generate`, then run `pnpm --dir desktop generate:check`. The Desktop application has its own package version. |
+| Dify tool contract | Regenerate with `uv run python integrations/dify/generate_contract.py`, then run the same command with `--check` to verify its API version and schemas. |
 | Docker and Bub harness build version | Build inputs pass `POWERCONTEXT_VERSION` from the selected package/Git version. Do not add a fixed release number to Dockerfiles. |
 | Website documentation and API references | Generated from documentation and API sources. Do not edit `website/content/docs/`, `website/.generated/`, or `website/out/`. |
 | Dependency lockfiles | Regenerate with the owning package manager when dependency or independently versioned package metadata changes. A main release bump alone does not require replacing versions in locks. |
@@ -95,7 +98,7 @@ PowerContext release number.
 | WorkBuddy integration | Its hooks and transport scripts carry User-Agent strings; there is no plugin manifest version to align with the Server. |
 | Skill Receiver | `RECEIVER_VERSION` in `src/powercontext/client/skill_receiver.py` supplies the default receiver identity version reported during enrollment, reconciliation, and receipts. It is independent of the Server version. |
 | Python integrations | `integrations/{bub,langchain,langgraph,opendal,pydantic-ai}/pyproject.toml` contain separate distribution versions. Dependency constraints express compatibility, not the current main release. |
-| Evaluation and harness packages | `evaluation/pyproject.toml`, `evaluation/web/package.json`, and `e2e/bub/pyproject.toml` have their own package versions. |
+| Evaluation and harness packages | `evaluation/pyproject.toml`, `evaluation/coding/swebench_pro/web/package.json`, and `e2e/bub/pyproject.toml` have their own package versions. |
 | Protocols and dependencies | Agent Plugins schema versions, persisted format versions, OpenAPI specification version, API paths, host minimum versions, and third-party dependencies change only with their own contracts. |
 
 Installing an Agent integration from the matching `powercontext-v…` repository tag selects the matching source

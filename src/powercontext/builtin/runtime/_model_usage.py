@@ -19,6 +19,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from collections.abc import Callable
+from contextlib import suppress
+from contextvars import Context
 from dataclasses import dataclass
 from datetime import date
 
@@ -83,6 +86,7 @@ class _ModelUsageRecorder:
         queue_capacity: int = 256,
         write_timeout_seconds: float = 1.0,
         flush_timeout_seconds: float = 0.5,
+        observer: Callable[[int, int, int, int], None] | None = None,
     ) -> None:
         if queue_capacity < 1 or write_timeout_seconds <= 0 or flush_timeout_seconds <= 0:
             raise ValueError("model usage capacity and timeouts must be positive")  # noqa: TRY003
@@ -98,6 +102,15 @@ class _ModelUsageRecorder:
         self._advanced = asyncio.Event()
         self._consumer: asyncio.Task[None] | None = None
         self._closed = False
+        self._observer = observer
+        self._dropped = 0
+        self._write_failures = 0
+        self._report()
+
+    def _report(self) -> None:
+        if self._observer is not None:
+            with suppress(Exception):
+                self._observer(len(self._pending), self._capacity, self._dropped, self._write_failures)
 
     def offer(
         self,
@@ -115,6 +128,8 @@ class _ModelUsageRecorder:
             if usage.requests == 0:
                 return
             if len(self._pending) >= self._capacity:
+                self._dropped += 1
+                self._report()
                 log_safely(_LOGGER, logging.WARNING, "Model usage queue full; record dropped")
                 return
             record = _snapshot(scope_id, purpose, operation, usage, usage_date)
@@ -122,12 +137,23 @@ class _ModelUsageRecorder:
                 # Get the loop before constructing the coroutine so a sync caller
                 # outside a loop cannot leave an unawaited coroutine behind.
                 loop = asyncio.get_running_loop()
-                self._consumer = loop.create_task(self._consume(), name="powercontext-model-usage")
+                # This is a runtime-owned worker, not a child of the request that
+                # happened to submit its first record. A clean context prevents
+                # request cancellation scopes and request-local state from leaking
+                # into the consumer and cancelling an in-flight database cleanup.
+                self._consumer = loop.create_task(
+                    self._consume(),
+                    name="powercontext-model-usage",
+                    context=Context(),
+                )
                 self._consumer.add_done_callback(self._consumer_finished)
             self._offered += 1
             self._pending.append((self._offered, record))
             self._ready.set()
+            self._report()
         except Exception:
+            self._dropped += 1
+            self._report()
             # Never log usage payloads, identifiers, SQL or driver error text.
             log_safely(_LOGGER, logging.WARNING, "Model usage record could not be queued")
 
@@ -166,7 +192,9 @@ class _ModelUsageRecorder:
         except TimeoutError:
             log_safely(_LOGGER, logging.WARNING, "Model usage shutdown dropped queued records")
         finally:
+            self._dropped += len(self._pending)
             self._pending.clear()
+            self._report()
             self._ready.set()
         # No task cancellation is sent into SQLite. Its native deadline stops VM
         # work; cleanup is still owned by the consumer if the OS itself stalls.
@@ -184,12 +212,15 @@ class _ModelUsageRecorder:
                     await self._ready.wait()
                     continue
                 sequence, record = self._pending.popleft()
+                self._report()
                 try:
                     # The record is already accepted, so it must survive whoever
                     # cancels this consumer: nothing else will ever retry it, and
                     # `_settle` reports it as settled either way.
                     await asyncio.shield(self._write(record))
                 except Exception:
+                    self._write_failures += 1
+                    self._report()
                     log_safely(_LOGGER, logging.WARNING, "Model usage write failed; record will not be retried")
                 finally:
                     self._settle(sequence)
@@ -222,6 +253,11 @@ class _ModelUsageRecorder:
         # evidence that a slice is not what this record needs: handing the repeat
         # the same slice reaches the same wall and drops a record that still owns
         # most of its budget. The budget, not the slice, is what bounds the total.
+        # On SQLite a retry after an interrupted body can hold the shared
+        # connection guard for the record's entire remaining budget, delaying a
+        # competing business write by up to the full write_timeout_seconds
+        # (at most 30 seconds) plus transaction settlement/cleanup. The guard is
+        # released between attempts; the first-attempt slice is not a retry cap.
         first_attempt = True
         while True:
             remaining = deadline - loop.time()
@@ -229,7 +265,7 @@ class _ModelUsageRecorder:
                 raise TimeoutError
             allowance = attempt_timeout if first_attempt else remaining
             try:
-                async with self._database._model_usage_transaction(min(remaining, allowance)) as connection:
+                async with self._database.statistics_transaction(min(remaining, allowance)) as connection:
                     # Lock the Scope row on MySQL so delete cannot race the
                     # increment. SQLite ignores FOR UPDATE; its real snapshot
                     # makes a competing delete fail the write upgrade instead.

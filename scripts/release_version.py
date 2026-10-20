@@ -34,17 +34,26 @@ INSTALL_REFERENCES = (r"powercontext\[[^\]\n]+\]==", r"powercontext-v")
 # independent plugin versions and third-party dependencies must retain their meaning.
 REFERENCE_PREFIXES = {
     "openapi/powercontext.yaml": (r"^  version: ",),
+    "README.md": (*INSTALL_REFERENCES, r"PowerContext "),
+    "README_CN.md": (*INSTALL_REFERENCES, r"PowerContext "),
+    "README_JP.md": (*INSTALL_REFERENCES, r"PowerContext "),
+    "docs/en/docs/get-started/quickstart.md": (*INSTALL_REFERENCES, r"PowerContext "),
+    "docs/zh/docs/get-started/quickstart.md": (*INSTALL_REFERENCES, r"PowerContext "),
+    "docs/en/docs/get-started/manual-start.md": INSTALL_REFERENCES,
+    "docs/zh/docs/get-started/manual-start.md": INSTALL_REFERENCES,
     "docs/en/docs/get-started/install-and-run.md": (
         *INSTALL_REFERENCES,
         r"PowerContext ",
         r"package `",
         r"--version ",
+        r"^To upgrade to ",
     ),
     "docs/zh/docs/get-started/install-and-run.md": (
         *INSTALL_REFERENCES,
         r"PowerContext ",
         r"Python 包版本为 `",
         r"--version ",
+        r"^升级到 ",
     ),
     "integrations/dsh/plugins/powercontext/README.md": INSTALL_REFERENCES,
 }
@@ -108,7 +117,7 @@ def main() -> int:
         return 2
 
     for path, content in updates.items():
-        relative_path = path.relative_to(ROOT)
+        relative_path = path.relative_to(ROOT).as_posix()
         if args.write:
             path.write_text(content, encoding="utf-8")
             print(f"Updated {relative_path}")

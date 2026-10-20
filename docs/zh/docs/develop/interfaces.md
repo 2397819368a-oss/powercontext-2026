@@ -116,14 +116,14 @@ Pi transcript。召回、采集和边界 flush 都会正常降级；显式持久
 运行带 Scope 的内容命令前，将 `POWERCONTEXT_SCOPE_ID` 设置为 `create_scope` 返回的已有 ID。
 
 ```text
-powercontext setup <host>
-powercontext setup select --host codex --host dsh
+powercontext setup [agents...]
+powercontext setup codex dsh
+powercontext config agent codex dsh --server-url https://memory.example
 powercontext config init --output .env
 powercontext config show --env-file .env
 powercontext config validate --env-file .env
 powercontext doctor
-powercontext doctor <host>
-powercontext doctor integrations
+powercontext doctor codex dsh
 powercontext server run
 powercontext server run --env-file .env
 powercontext ready
@@ -149,14 +149,22 @@ powercontext external-skill import --scope-id "$POWERCONTEXT_SCOPE_ID" --fingerp
 `config` 命令组用于生成、脱敏显示和校验显式环境文件。CLI 不会隐式搜索该文件；使用 `config show`、
 `config validate` 或 `server run` 时需要通过 `--env-file` 传入。配置优先级和凭据处理规则见[配置](../operate/configuration.md)。
 
-`<host>` 可以是 `codex`、`claude-code`、`dsh`、`hermes`、`openclaw`、`opencode`、`pi` 或
-`workbuddy`。`setup select` 和 `doctor integrations` 使用的一级宿主目录包含上述除 WorkBuddy 外的所有宿主；
-WorkBuddy 仍可通过显式的 `setup workbuddy` 和 `doctor workbuddy` 命令使用。
+Agent 可以是 `codex`、`claude-code`、`dsh`、`hermes`、`kimi-code`、`openclaw`、`opencode`、`pi`、`workbuddy` 或 `zcode`。
+`powercontext setup` 提供交互选择；显式 Agent 名称支持非交互和多 Agent 安装。
+Setup 会安装、配置、按宿主能力启用插件并运行 doctor。各 Agent 的失败互相隔离；诊断失败时仍会报告已完成的安装。
 
-`powercontext doctor` 检查安装包和 Server，不要求任何集成。`powercontext doctor integrations` 打印全部一级宿主的只读矩阵；
-CLI 不在 PATH 上时该行是 `missing`，不会让整条命令失败。各个 `powercontext doctor <host>` 命令在对应 CLI
-缺失时仍会失败。矩阵保留每个宿主专有的全部集成检查，包括 OpenCode 独立的 `plugin` 与 `skill` 结果。
-DSH 检查 `dump-config` 是否列出 `powercontext-dsh`；Pi 检查 CLI 是否列出 PowerContext package。
+`powercontext config agent [agents...]` 更新已安装连接，不会重新安装或启用插件。
+`powercontext doctor [agents...]` 检查选中的 Agent；未指定时检查已保存的连接。
+没有已保存连接时，doctor 检查安装包和 Server。选中的 Agent 缺少必需 CLI 时，其检查失败。
+Doctor 保留宿主专有检查，包括 OpenCode 独立的 `plugin` 与 `skill` 结果。DSH 检查原生注册；Pi 检查已注册的 package。
+
+Candidate 的统一 HTTP 路径为 `/v1/candidates/list`、`get`、`history`、`revise`、`approve`、`reject`（均为 POST）。
+通过 `candidate_kind=artifact|tag` 区分类型；旧 Artifact Candidate 路径直接移除，调用方必须同步升级。
+Artifact 批准返回真实版本引用，Tag 批准返回标签集和 ETag，不生成正文版本。
+
+MCP 继续暴露审核决策操作。启用权限控制时，Server 要求 `scope.review`，但不禁止有权限的提案人批准自己的 Candidate。
+MCP 工具注解供宿主执行确认策略，不强制人工确认。权限模式与审核者分离方式见
+[审核权限](../workflows/review-candidates.md#审核权限)。
 
 `candidate` 命令组提供面向人工的 Review Inbox。列出、检查、修订、批准和拒绝的操作步骤见
 [审核 Candidate](../workflows/review-candidates.md)。
@@ -169,8 +177,9 @@ Generation 和 revision 命令通过可重复的 `--source-ref TYPE/ID` 与
 ## Python Client SDK
 
 `PowerContextClient` 是面向 Server-owned deployment 的 typed asynchronous HTTP client。其 request 和 response model
-从 `powercontext.http` 导出。Mutation response 包含 exact citation，后续修订、停用或读取某个不可变 entry version 时需传回
-该 citation。可运行的 Client 流程见[HTTP API 生命周期教程](api-quickstart.md)。
+从 `powercontext.http` 导出。记忆写入响应的 `records` 返回真实 ArtifactRef、正文和当前状态；后续内容编辑使用内容 ETag，
+生命周期操作使用接口要求的内容和状态版本。精确历史通过 Atomic Memory 的 Artifact revision 读取。
+可运行的 Client 流程见[HTTP API 生命周期教程](api-quickstart.md)，详细操作见[原子记忆](../workflows/atomic-memory.md)。
 
 Client 还提供 `generate_experience`、`propose_experience`、`get_experience`、`generate_skill`、
 `propose_skill`、`get_skill`、`scan_external_skills`、`list_external_skills`、
@@ -187,7 +196,7 @@ Skill generation 还必须声明 provenance 形态：
 - `usage`：引用精确 target Skill 和有界 usage Source。
 
 这些 generation operation 需要配置 `POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL`。已经拥有完整类型化内容和
-精确证据的人或 integration 仍可使用低阶 `propose_*` operation。两条路径都不能自行批准 Candidate。
+精确证据的人或 integration 仍可使用低阶 `propose_*` operation。两条路径返回的都是 pending 内容，批准需要单独调用审核操作。
 Experience 经 Review 批准后，确定性的 `searchable_text` 会写入现有通用 Artifact head 并进入 backend 可重建 FTS
 索引，从而可在同一 scope 内被 `PreparedContext` 召回。pending/rejected Candidate、所有 managed Skill 和历史
 Experience Revision 仍不会进入 PreparedContext。
@@ -263,7 +272,7 @@ Discovery 不进入 Review。显式调用 `import_external_skill` 并提供精�
 Scalar API reference，在 `/openapi.json` 提供 OpenAPI 文档，在 `/health/ready` 提供就绪检查，在
 `/v1/capabilities` 提供能力信息，并默认在 `/mcp` 提供 Streamable HTTP MCP。启用 Bearer authentication 后，
 Scalar reference 仍可公开访问，但其中描述的 operation 继续遵守各自的认证要求。HTTP 是完整应用契约，MCP 是
-面向 Agent 的 Source 采集、Memory 维护、工作连续性、scope Handoff Report 查询和 Candidate Review 精选子集。五个
+面向 Agent 的 Source 采集、Memory 维护、工作连续性、scope Handoff Report 查询和 Candidate Review 精选子集。六个
 Candidate Review operation 通过 HTTP 和 MCP 使用相同的 validation、`expected_version` 并发校验和 approval transaction。Experience/Skill generation、
 exact read、external Registry operation 和低阶 proposal operation 仍只通过 HTTP 提供。
 所有检查通过时 readiness 为 HTTP 200 的 `ready`；只有已配置的推理检查失败时为 HTTP 200 的 `degraded`；

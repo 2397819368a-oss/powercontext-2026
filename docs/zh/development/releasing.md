@@ -54,13 +54,14 @@ beta 和 RC 跳过网站条目检查。`make docs-test` 也会通过网站测试
 | --- | --- |
 | `openapi/powercontext.yaml` | `info.version`，作为待发布版本。 |
 | `src/powercontext/http/_generated/` | `operations.py` 的 `API_VERSION` 和 `schema.py` 的 `info.version`，通过 `make api-generate` 重新生成。 |
-| `docs/en/docs/get-started/install-and-run.md`、`docs/zh/docs/get-started/install-and-run.md` | 显式版本示例、包版本和 tag，以及 Python Client 安装命令。 |
+| `README.md`、`README_CN.md`、`README_JP.md` | 当前版本介绍、固定包版本的安装命令及配套 Agent 集成 tag。 |
+| `docs/en/docs/get-started/quickstart.md`、`docs/zh/docs/get-started/quickstart.md` | 当前版本介绍及匹配的安装命令、tag。 |
+| `docs/en/docs/get-started/manual-start.md`、`docs/zh/docs/get-started/manual-start.md` | CLI/Server 和 Python Client 安装版本及配套 Agent 集成 tag。 |
+| `docs/en/docs/get-started/install-and-run.md`、`docs/zh/docs/get-started/install-and-run.md` | 页面描述、当前版本介绍、包版本和 tag、升级目标及 Python Client 安装命令。 |
 | `integrations/dsh/plugins/powercontext/README.md` | Server 安装版本及对应的 `setup dsh --ref` tag。 |
 
 安装指南也包含历史迁移版本，这些引用会保留。新增表示当前发布版本的安装示例时，应同时将其纳入版本工具的
 管理路径及匹配规则，使下次发布可以自动更新和检查。
-
-README 和快速开始通过脚本安装最新稳定版，并从实际安装的 CLI 派生集成 tag。版本更新保留这些说明及独立的 uv 引导版本。
 
 ### 从其他来源派生的版本
 
@@ -68,6 +69,8 @@ README 和快速开始通过脚本安装最新稳定版，并从实际安装的 
 | --- | --- |
 | Python wheel/sdist 版本及安装后的 `powercontext --version` | `pyproject.toml` 声明 `dynamic = ["version"]`，Hatch VCS 读取 Git 元数据。最终产物应从目标发布 tag 构建。 |
 | Runtime 包元数据 | 读取已安装 Python 发行包的版本，没有另一份需要手工更新的 Runtime 静态版本。 |
+| Desktop API 绑定 | 运行 `pnpm --dir desktop generate` 重新生成 OpenAPI 类型和契约摘要，再用 `pnpm --dir desktop generate:check` 检查。Desktop 应用本身使用独立包版本。 |
+| Dify 工具契约 | 运行 `uv run python integrations/dify/generate_contract.py` 重新生成，再为同一命令添加 `--check`，检查 API 版本及 Schema。 |
 | Docker 和 Bub harness 的构建版本 | 构建输入通过 `POWERCONTEXT_VERSION` 传递选定的包或 Git 版本，不应在 Dockerfile 中加入固定发布版本。 |
 | 网站文档与 API 参考 | 从文档和 API 源文件生成，不编辑 `website/content/docs/`、`website/.generated/` 或 `website/out/`。 |
 | 依赖锁文件 | 依赖或独立包元数据变化时，由对应包管理器重新生成。仅修改主发布版本，不需要替换锁文件中的版本。 |
@@ -91,7 +94,7 @@ OpenAPI 版本描述待发布的 API 契约，不覆盖 Hatch VCS。打 tag 前�
 | WorkBuddy 集成 | Hook 和传输脚本包含 User-Agent 字符串，没有需要与 Server 对齐的插件 manifest 版本。 |
 | Skill Receiver | `src/powercontext/client/skill_receiver.py` 中的 `RECEIVER_VERSION` 提供注册、协调及回执上报时默认使用的 Receiver 身份版本，独立于 Server 版本。 |
 | Python 集成包 | `integrations/{bub,langchain,langgraph,opendal,pydantic-ai}/pyproject.toml` 有各自的发行版本；依赖范围表示兼容性，不是当前主发布版本。 |
-| 评测及 harness 包 | `evaluation/pyproject.toml`、`evaluation/web/package.json`、`e2e/bub/pyproject.toml` 有各自的包版本。 |
+| 评测及 harness 包 | `evaluation/pyproject.toml`、`evaluation/coding/swebench_pro/web/package.json`、`e2e/bub/pyproject.toml` 有各自的包版本。 |
 | 协议及依赖 | Agent Plugins schema 版本、持久化格式版本、OpenAPI 规范版本、API 路径、宿主最低版本及第三方依赖仅随自身契约更新。 |
 
 通过匹配的 `powercontext-v…` 仓库 tag 安装 Agent 集成，可以选中配套的源码修订，不要求每个插件 manifest 的

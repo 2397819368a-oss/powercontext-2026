@@ -1,11 +1,89 @@
 {
-  "openapi_sha256": "790df0d51dd4ca600b34b77a4b6cce8b064305cbc65666e2813f96b23f3fd9fa",
-  "api_version": "1.2.0",
+  "api_version": "1.4.0",
   "operations": {
+    "list_atomic_memories": {
+      "method": "POST",
+      "path": "/v1/atomic-memory/list",
+      "request": {
+        "$ref": "#/components/schemas/ListAtomicMemoryRequest"
+      },
+      "parameters": [],
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ListAtomicMemoryResponse"
+        }
+      }
+    },
+    "change_atomic_memory_lifecycle": {
+      "method": "POST",
+      "path": "/v1/atomic-memory/lifecycle",
+      "request": {
+        "$ref": "#/components/schemas/AtomicMemoryLifecycleRequest"
+      },
+      "parameters": [],
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/AtomicMemoryMutationResponse"
+        }
+      }
+    },
+    "get_atomic_memory_state": {
+      "method": "GET",
+      "path": "/v1/scopes/{scope_id}/artifacts/atomic-memory/{artifact_id}/state",
+      "request": null,
+      "parameters": [
+        {
+          "name": "scope_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        {
+          "name": "artifact_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        {
+          "name": "If-None-Match",
+          "in": "header",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/AtomicMemoryStateResponse"
+        }
+      }
+    },
     "get_scope": {
       "method": "GET",
       "path": "/v1/scopes/{scope_id}",
       "request": null,
+      "parameters": [
+        {
+          "name": "scope_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": ".*\\S.*"
+          }
+        }
+      ],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/ScopeDescriptor"
@@ -18,6 +96,7 @@
       "request": {
         "$ref": "#/components/schemas/ResolveScopeBindingRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/ScopeDescriptor"
@@ -30,6 +109,7 @@
       "request": {
         "$ref": "#/components/schemas/CaptureContentSourceRequest"
       },
+      "parameters": [],
       "responses": {
         "202": {
           "$ref": "#/components/schemas/CaptureContentSourceResponse"
@@ -42,6 +122,7 @@
       "request": {
         "$ref": "#/components/schemas/PrepareContextRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/PreparedContext"
@@ -54,6 +135,7 @@
       "request": {
         "$ref": "#/components/schemas/ActivateHandoffRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/HandoffActivation"
@@ -66,6 +148,7 @@
       "request": {
         "$ref": "#/components/schemas/PrepareHandoffRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/HandoffDraft"
@@ -78,6 +161,7 @@
       "request": {
         "$ref": "#/components/schemas/FinalizeHandoffRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/PreparedHandoff"
@@ -90,6 +174,7 @@
       "request": {
         "$ref": "#/components/schemas/CommitHandoffRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/CommittedHandoff"
@@ -102,6 +187,7 @@
       "request": {
         "$ref": "#/components/schemas/ContinueHandoffRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/HandoffResolution"
@@ -114,6 +200,7 @@
       "request": {
         "$ref": "#/components/schemas/RememberMemoryRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/MemoryMutationResponse"
@@ -126,6 +213,7 @@
       "request": {
         "$ref": "#/components/schemas/SearchMemoryRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/SearchMemoryResponse"
@@ -138,6 +226,7 @@
       "request": {
         "$ref": "#/components/schemas/ListMemoryEntriesRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/ListMemoryEntriesResponse"
@@ -150,9 +239,10 @@
       "request": {
         "$ref": "#/components/schemas/GetMemoryEntryRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
-          "$ref": "#/components/schemas/MemoryEntry"
+          "$ref": "#/components/schemas/GetMemoryEntryResponse"
         }
       }
     },
@@ -162,6 +252,7 @@
       "request": {
         "$ref": "#/components/schemas/ReviseMemoryEntryRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/MemoryMutationResponse"
@@ -174,6 +265,7 @@
       "request": {
         "$ref": "#/components/schemas/RetireMemoryEntryRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/MemoryMutationResponse"
@@ -186,6 +278,7 @@
       "request": {
         "$ref": "#/components/schemas/GenerateExperienceRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/GeneratedCandidateResponse"
@@ -198,6 +291,7 @@
       "request": {
         "$ref": "#/components/schemas/GetExperienceRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/ExperienceArtifact"
@@ -210,6 +304,7 @@
       "request": {
         "$ref": "#/components/schemas/GenerateSkillRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/GeneratedCandidateResponse"
@@ -222,33 +317,201 @@
       "request": {
         "$ref": "#/components/schemas/GetSkillRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
           "$ref": "#/components/schemas/SkillArtifact"
         }
       }
     },
-    "list_artifact_candidates": {
+    "list_candidates": {
       "method": "POST",
-      "path": "/v1/artifact-candidates/list",
+      "path": "/v1/candidates/list",
       "request": {
-        "$ref": "#/components/schemas/ListArtifactCandidatesRequest"
+        "$ref": "#/components/schemas/ListCandidatesRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
-          "$ref": "#/components/schemas/ArtifactCandidatePage"
+          "$ref": "#/components/schemas/CandidatePage"
         }
       }
     },
-    "get_artifact_candidate": {
+    "get_candidate": {
       "method": "POST",
-      "path": "/v1/artifact-candidates/get",
+      "path": "/v1/candidates/get",
       "request": {
-        "$ref": "#/components/schemas/GetArtifactCandidateRequest"
+        "$ref": "#/components/schemas/GetCandidateRequest"
       },
+      "parameters": [],
       "responses": {
         "200": {
-          "$ref": "#/components/schemas/ArtifactCandidate"
+          "$ref": "#/components/schemas/Candidate"
+        }
+      }
+    },
+    "get_artifact": {
+      "method": "GET",
+      "path": "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}",
+      "request": null,
+      "parameters": [
+        {
+          "name": "scope_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": ".*\\S.*"
+          }
+        },
+        {
+          "name": "family",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ArtifactReadFamily"
+          }
+        },
+        {
+          "name": "artifact_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]+$"
+          }
+        },
+        {
+          "name": "If-None-Match",
+          "in": "header",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ArtifactRevision"
+        }
+      }
+    },
+    "replace_artifact": {
+      "method": "PUT",
+      "path": "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}",
+      "request": {
+        "$ref": "#/components/schemas/ReplaceArtifactRequest"
+      },
+      "parameters": [
+        {
+          "name": "scope_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": ".*\\S.*"
+          }
+        },
+        {
+          "name": "family",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "memory",
+              "atomic-memory",
+              "experience",
+              "skill",
+              "handoff",
+              "prompt",
+              "topic-memory",
+              "profile"
+            ]
+          }
+        },
+        {
+          "name": "artifact_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]+$"
+          }
+        },
+        {
+          "name": "If-Match",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ArtifactRevision"
+        }
+      }
+    },
+    "get_artifact_revision": {
+      "method": "GET",
+      "path": "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions/{revision}",
+      "request": null,
+      "parameters": [
+        {
+          "name": "scope_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": ".*\\S.*"
+          }
+        },
+        {
+          "name": "family",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ArtifactReadFamily"
+          }
+        },
+        {
+          "name": "artifact_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]+$"
+          }
+        },
+        {
+          "name": "revision",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ArtifactRevision"
         }
       }
     }
@@ -257,6 +520,7 @@
     "pc_search": "search_memory",
     "pc_memory_list": "list_memory_entries",
     "pc_memory_get": "get_memory_entry",
+    "pc_memory_state": "get_atomic_memory_state",
     "pc_remember": "remember_memory",
     "pc_memory_revise": "revise_memory_entry",
     "pc_memory_retire": "retire_memory_entry",
@@ -271,25 +535,27 @@
     "pc_experience_get": "get_experience",
     "pc_skill_generate": "generate_skill",
     "pc_skill_get": "get_skill",
-    "pc_review_list": "list_artifact_candidates",
-    "pc_review_get": "get_artifact_candidate"
+    "pc_review_list": "list_candidates",
+    "pc_review_get": "get_candidate"
   },
   "json_parameters": {
     "search_memory": [],
-    "list_memory_entries": [],
-    "get_memory_entry": [
-      "citation"
+    "list_memory_entries": [
+      "cursor",
+      "states"
     ],
+    "get_memory_entry": [
+      "artifact"
+    ],
+    "get_atomic_memory_state": [],
     "remember_memory": [
       "reason"
     ],
     "revise_memory_entry": [
-      "citation",
-      "reason"
+      "artifact"
     ],
     "retire_memory_entry": [
-      "citation",
-      "reason"
+      "artifact"
     ],
     "prepare_context": [],
     "capture_content_source": [
@@ -297,9 +563,11 @@
     ],
     "activate_handoff": [
       "boundary_source",
+      "rollover_reasons",
       "evidence"
     ],
     "prepare_handoff": [
+      "rollover_reasons",
       "evidence"
     ],
     "finalize_handoff": [
@@ -330,14 +598,268 @@
     "get_skill": [
       "artifact"
     ],
-    "list_artifact_candidates": [
+    "list_candidates": [
       "family",
-      "cursor"
+      "cursor",
+      "candidate_kind"
     ],
-    "get_artifact_candidate": []
+    "get_candidate": []
+  },
+  "tool_requests": {
+    "get_memory_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_id",
+        "artifact"
+      ],
+      "properties": {
+        "scope_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": ".*\\S.*"
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "family",
+            "artifact_id",
+            "revision"
+          ],
+          "properties": {
+            "family": {
+              "type": "string",
+              "enum": [
+                "atomic-memory"
+              ]
+            },
+            "artifact_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[\\x21-\\x7E]+$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "revise_memory_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_id",
+        "artifact",
+        "if_match",
+        "kind",
+        "text"
+      ],
+      "properties": {
+        "scope_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": ".*\\S.*"
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "family",
+            "artifact_id",
+            "revision"
+          ],
+          "properties": {
+            "family": {
+              "type": "string",
+              "enum": [
+                "atomic-memory"
+              ]
+            },
+            "artifact_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[\\x21-\\x7E]+$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "if_match": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Memory text is NFC-normalized and trimmed before enforcing an 8192 UTF-8 byte limit."
+        }
+      }
+    },
+    "retire_memory_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_id",
+        "artifact",
+        "state_version"
+      ],
+      "properties": {
+        "scope_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": ".*\\S.*"
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "family",
+            "artifact_id",
+            "revision"
+          ],
+          "properties": {
+            "family": {
+              "type": "string",
+              "enum": [
+                "atomic-memory"
+              ]
+            },
+            "artifact_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[\\x21-\\x7E]+$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "state_version": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "list_memory_entries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_id"
+      ],
+      "properties": {
+        "tag_filter": {
+          "$ref": "#/components/schemas/TagFilter"
+        },
+        "scope_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": ".*\\S.*"
+        },
+        "include_inactive": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include all four Atomic Memory lifecycle states."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/AtomicMemoryState"
+          }
+        }
+      }
+    },
+    "get_atomic_memory_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "scope_id",
+        "artifact_id"
+      ]
+    }
   },
   "components": {
     "schemas": {
+      "AccessPrincipal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "id"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "user",
+              "service"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "ActivateHandoffRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -362,6 +884,15 @@
             "maxLength": 8192,
             "pattern": ".*\\S.*"
           },
+          "rollover_reasons": {
+            "type": "array",
+            "maxItems": 6,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/HandoffRolloverReason"
+            },
+            "default": []
+          },
           "evidence": {
             "type": "array",
             "maxItems": 32,
@@ -378,10 +909,399 @@
           }
         }
       },
-      "ArtifactCandidate": {
+      "ArtifactReadFamily": {
+        "type": "string",
+        "enum": [
+          "memory",
+          "atomic-memory",
+          "experience",
+          "skill",
+          "handoff",
+          "profile",
+          "prompt",
+          "topic-memory"
+        ]
+      },
+      "ArtifactReference": {
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "family",
+          "artifact_id",
+          "revision"
+        ],
+        "properties": {
+          "family": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]+$"
+          },
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]+$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "ArtifactRevision": {
+        "type": "object",
+        "required": [
+          "scope_id",
+          "family",
+          "artifact_id",
+          "revision",
+          "content",
+          "sources",
+          "artifacts",
+          "content_digest"
+        ],
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": ".*\\S.*"
+          },
+          "family": {
+            "$ref": "#/components/schemas/ArtifactReadFamily"
+          },
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]+$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceTypeReference"
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArtifactReference"
+            }
+          },
+          "content_digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "description": "When this revision was committed. Absent for revisions stored before this field existed."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AccessPrincipal"
+                  }
+                ],
+                "description": "Principal that committed a rollback. Ordinary revisions omit it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "restored_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Historical revision restored by this rollback."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024,
+                "description": "Reason recorded for a rollback."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ArtifactTagTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "family",
+          "artifact_id"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "artifact"
+            ]
+          },
+          "family": {
+            "$ref": "#/components/schemas/TaggableArtifactFamily"
+          },
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "AtomicMemoryContentSchema": {
+        "type": "string",
+        "enum": [
+          "powercontext.atomic-memory.v1"
+        ]
+      },
+      "AtomicMemoryInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact",
+          "state_version"
+        ],
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactReference"
+          },
+          "state_version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "AtomicMemoryLifecycleRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope_id",
+          "target",
+          "state"
+        ],
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": ".*\\S.*"
+          },
+          "target": {
+            "$ref": "#/components/schemas/AtomicMemoryInput"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AtomicMemoryLifecycleState"
+          }
+        }
+      },
+      "AtomicMemoryLifecycleState": {
+        "type": "string",
+        "enum": [
+          "forgotten"
+        ]
+      },
+      "AtomicMemoryMutationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "changed",
+          "records"
+        ],
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AtomicMemoryRecord"
+            }
+          }
+        }
+      },
+      "AtomicMemoryRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact",
+          "kind",
+          "text",
+          "state",
+          "state_version",
+          "merged_into_id"
+        ],
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactReference"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/AtomicMemoryState"
+          },
+          "state_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "merged_into_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "AtomicMemorySearchHit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memory",
+          "score",
+          "matched_by"
+        ],
+        "properties": {
+          "memory": {
+            "$ref": "#/components/schemas/AtomicMemoryRecord"
+          },
+          "score": {
+            "type": "number",
+            "description": "Raw RRF score. Hybrid mode applies the deployment's normalized relative FTS/vector weights."
+          },
+          "matched_by": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "text",
+                "vector"
+              ]
+            }
+          }
+        }
+      },
+      "AtomicMemorySearchMode": {
+        "type": "string",
+        "enum": [
+          "text",
+          "vector",
+          "hybrid"
+        ]
+      },
+      "AtomicMemoryState": {
+        "type": "string",
+        "enum": [
+          "active",
+          "forgotten",
+          "merged",
+          "retired"
+        ]
+      },
+      "AtomicMemoryStateResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact",
+          "state",
+          "state_version",
+          "merged_into_id"
+        ],
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/ArtifactReference"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AtomicMemoryState"
+          },
+          "state_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "merged_into_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "AtomicMemoryWriteContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "schema": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AtomicMemoryContentSchema"
+              }
+            ],
+            "default": "powercontext.atomic-memory.v1"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Memory text is NFC-normalized and trimmed before enforcing an 8192 UTF-8 byte limit."
+          }
+        }
+      },
+      "Candidate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_kind",
           "candidate_id",
           "version",
           "family",
@@ -395,14 +1315,15 @@
           "decision_reason"
         ],
         "properties": {
-          "memory_citations": {
-            "type": "array",
-            "maxItems": 32,
-            "default": [],
-            "description": "Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            "items": {
-              "$ref": "#/components/schemas/MemoryCitation"
-            }
+          "audit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CandidateAudit"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "permissions": {
             "anyOf": [
@@ -445,6 +1366,21 @@
               },
               {
                 "$ref": "#/components/schemas/ProfileCandidateProposal"
+              },
+              {
+                "$ref": "#/components/schemas/AtomicMemoryWriteContent"
+              },
+              {
+                "$ref": "#/components/schemas/TopicMemoryDreamProposal"
+              },
+              {
+                "$ref": "#/components/schemas/HandoffContent"
+              },
+              {
+                "$ref": "#/components/schemas/PromptContent"
+              },
+              {
+                "$ref": "#/components/schemas/CatalogChangeProposal"
               }
             ]
           },
@@ -507,10 +1443,127 @@
                 "type": "null"
               }
             ]
+          },
+          "candidate_kind": {
+            "type": "string",
+            "enum": [
+              "artifact",
+              "tag"
+            ]
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogTagResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "dream",
+                  "manual"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dream_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
-      "ArtifactCandidatePage": {
+      "CandidateAudit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "origin",
+          "operation",
+          "dream_run_id",
+          "spec_version",
+          "proposal_digest",
+          "evidence_manifest_ref",
+          "validation_policy_digest",
+          "proposal_fingerprint"
+        ],
+        "properties": {
+          "origin": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dream_run_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "spec_version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "proposal_digest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_manifest_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "validation_policy_digest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "proposal_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "CandidateFamily": {
+        "type": "string",
+        "enum": [
+          "experience",
+          "skill",
+          "profile",
+          "atomic-memory",
+          "topic-memory",
+          "handoff",
+          "prompt"
+        ]
+      },
+      "CandidatePage": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -521,7 +1574,7 @@
           "candidates": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ArtifactCandidate"
+              "$ref": "#/components/schemas/Candidate"
             }
           },
           "next_cursor": {
@@ -535,41 +1588,6 @@
             ]
           }
         }
-      },
-      "ArtifactReference": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "family",
-          "artifact_id",
-          "revision"
-        ],
-        "properties": {
-          "family": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[\\x21-\\x7E]+$"
-          },
-          "artifact_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[\\x21-\\x7E]+$"
-          },
-          "revision": {
-            "type": "integer",
-            "minimum": 1
-          }
-        }
-      },
-      "CandidateFamily": {
-        "type": "string",
-        "enum": [
-          "experience",
-          "skill",
-          "profile"
-        ]
       },
       "CandidatePermissions": {
         "type": "object",
@@ -629,7 +1647,8 @@
             "anyOf": [
               {
                 "type": "object",
-                "additionalProperties": true
+                "additionalProperties": true,
+                "description": "Caller metadata. The reserved kind value `working_note` is rejected; use the dedicated Working Note capture operation instead."
               },
               {
                 "type": "null"
@@ -664,6 +1683,84 @@
         "enum": [
           "accepted"
         ]
+      },
+      "CatalogChangeProposal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "expected_etag",
+          "basis_ref",
+          "before_tags",
+          "after_tags"
+        ],
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/TagTarget"
+          },
+          "expected_etag": {
+            "type": "string",
+            "minLength": 1
+          },
+          "basis_ref": {
+            "$ref": "#/components/schemas/ArtifactReference"
+          },
+          "before_tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "maxItems": 32
+          },
+          "after_tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "maxItems": 32
+          }
+        }
+      },
+      "CatalogTagResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope_id",
+          "target",
+          "tags",
+          "tag_digest",
+          "etag"
+        ],
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target": {
+            "$ref": "#/components/schemas/TagTarget"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "maxItems": 32
+          },
+          "tag_digest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "etag": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       },
       "CommitHandoffRequest": {
         "type": "object",
@@ -886,15 +1983,6 @@
           "artifact_refs"
         ],
         "properties": {
-          "memory_citations": {
-            "type": "array",
-            "maxItems": 32,
-            "default": [],
-            "description": "Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            "items": {
-              "$ref": "#/components/schemas/MemoryCitation"
-            }
-          },
           "artifact": {
             "$ref": "#/components/schemas/ArtifactReference"
           },
@@ -1178,7 +2266,7 @@
           "candidate": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ArtifactCandidate"
+                "$ref": "#/components/schemas/Candidate"
               },
               {
                 "type": "null"
@@ -1194,7 +2282,7 @@
           "no_op"
         ]
       },
-      "GetArtifactCandidateRequest": {
+      "GetCandidateRequest": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -1239,8 +2327,23 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "scope_id",
-          "citation"
+          "scope_id"
+        ],
+        "x-powercontext-exclusive-fields": [
+          "citation",
+          "target"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "citation"
+            ]
+          },
+          {
+            "required": [
+              "target"
+            ]
+          }
         ],
         "properties": {
           "scope_id": {
@@ -1250,9 +2353,17 @@
             "pattern": ".*\\S.*"
           },
           "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
+            "type": "object",
+            "description": "Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."
+          },
+          "target": {
+            "$ref": "#/components/schemas/LegacyMemoryTarget"
           }
-        }
+        },
+        "description": "Supply a legacy logical target mapped to current Atomic Memory. A supplied citation is rejected as unsupported."
+      },
+      "GetMemoryEntryResponse": {
+        "$ref": "#/components/schemas/AtomicMemoryRecord"
       },
       "GetSkillRequest": {
         "type": "object",
@@ -1343,17 +2454,13 @@
           },
           {
             "$ref": "#/components/schemas/HandoffArtifactCitation"
-          },
-          {
-            "$ref": "#/components/schemas/HandoffMemoryCitation"
           }
         ],
         "discriminator": {
           "propertyName": "kind",
           "mapping": {
             "source": "#/components/schemas/HandoffSourceCitation",
-            "artifact": "#/components/schemas/HandoffArtifactCitation",
-            "memory": "#/components/schemas/HandoffMemoryCitation"
+            "artifact": "#/components/schemas/HandoffArtifactCitation"
           }
         }
       },
@@ -1616,25 +2723,6 @@
           }
         }
       },
-      "HandoffMemoryCitation": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "kind",
-          "memory_citation"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "memory"
-            ]
-          },
-          "memory_citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
-          }
-        }
-      },
       "HandoffOmission": {
         "type": "object",
         "additionalProperties": false,
@@ -1749,6 +2837,17 @@
           "resolved"
         ]
       },
+      "HandoffRolloverReason": {
+        "type": "string",
+        "enum": [
+          "user_requested",
+          "host_context_budget",
+          "host_compaction",
+          "context_quality",
+          "delegation",
+          "manual_checkpoint"
+        ]
+      },
       "HandoffSchema": {
         "type": "string",
         "enum": [
@@ -1806,7 +2905,96 @@
           }
         }
       },
-      "ListArtifactCandidatesRequest": {
+      "LegacyMemoryTarget": {
+        "$ref": "#/components/schemas/MemoryEntryTagTarget"
+      },
+      "ListAtomicMemoryRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope_id"
+        ],
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": ".*\\S.*"
+          },
+          "states": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AtomicMemoryState"
+            }
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 16
+          },
+          "tag_match": {
+            "$ref": "#/components/schemas/TagMatch"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ListAtomicMemoryResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AtomicMemoryRecord"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ListCandidatesRequest": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -1854,6 +3042,20 @@
             "minimum": 1,
             "maximum": 100,
             "default": 50
+          },
+          "candidate_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "artifact",
+                  "tag"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -1876,7 +3078,24 @@
           "include_inactive": {
             "type": "boolean",
             "default": false,
-            "description": "Include inactive entries from the current Memory head for explicit audit."
+            "description": "Include all four Atomic Memory lifecycle states."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -1887,126 +3106,74 @@
           "entries"
         ],
         "properties": {
-          "memory": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AtomicMemoryRecord"
+            }
+          },
+          "next_cursor": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ArtifactReference"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ]
-          },
-          "entries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/MemoryEntry"
-            }
           }
         }
       },
-      "MemoryCitation": {
+      "MemoryEntryTagTarget": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "memory_ref",
-          "entry_id",
-          "entry_version_id"
+          "type",
+          "family",
+          "artifact_id",
+          "entry_id"
         ],
         "properties": {
-          "memory_ref": {
-            "$ref": "#/components/schemas/ArtifactReference"
+          "type": {
+            "type": "string",
+            "enum": [
+              "memory_entry"
+            ]
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "memory"
+            ]
+          },
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
           },
           "entry_id": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[\\x21-\\x7E]+$"
-          },
-          "entry_version_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[\\x21-\\x7E]+$"
+            "maxLength": 128
           }
         }
-      },
-      "MemoryEntry": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "citation",
-          "version",
-          "kind",
-          "text",
-          "state",
-          "source_refs",
-          "artifact_refs"
-        ],
-        "properties": {
-          "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
-          },
-          "version": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "kind": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          },
-          "state": {
-            "$ref": "#/components/schemas/MemoryEntryState"
-          },
-          "source_refs": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SourceReference"
-            }
-          },
-          "artifact_refs": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ArtifactReference"
-            }
-          }
-        }
-      },
-      "MemoryEntryState": {
-        "type": "string",
-        "enum": [
-          "active",
-          "inactive"
-        ]
-      },
-      "MemoryMatchedBy": {
-        "type": "string",
-        "enum": [
-          "fts",
-          "vector"
-        ]
       },
       "MemoryMutationResponse": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "memory"
+          "changed",
+          "records"
         ],
         "properties": {
-          "memory": {
-            "$ref": "#/components/schemas/ArtifactReference"
+          "changed": {
+            "type": "boolean"
           },
-          "entry": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MemoryEntry"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AtomicMemoryRecord"
+            }
           }
         }
       },
@@ -2014,14 +3181,6 @@
         "type": "string",
         "enum": [
           "auto",
-          "fts",
-          "vector",
-          "hybrid"
-        ]
-      },
-      "MemoryUsedSearchMode": {
-        "type": "string",
-        "enum": [
           "fts",
           "vector",
           "hybrid"
@@ -2060,6 +3219,13 @@
           },
           "assembly": {
             "$ref": "#/components/schemas/ContextAssembly"
+          },
+          "bootstrap_receipt_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[\\x21-\\x7E]+$",
+            "description": "Optional exact receipt for the last successfully injected bootstrap package. Only fully delivered Atomic Memory revisions from an injected same-Scope receipt are removed before candidate limiting and sufficiency assessment; Artifacts whose bootstrap bodies were truncated remain eligible."
           }
         }
       },
@@ -2083,6 +3249,15 @@
             "minLength": 1,
             "maxLength": 8192,
             "pattern": ".*\\S.*"
+          },
+          "rollover_reasons": {
+            "type": "array",
+            "maxItems": 6,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/HandoffRolloverReason"
+            },
+            "default": []
           },
           "evidence": {
             "type": "array",
@@ -2198,7 +3373,6 @@
         "required": [
           "schema",
           "content",
-          "source_window",
           "generator_id",
           "generator_version",
           "created_at"
@@ -2215,7 +3389,44 @@
             "minLength": 1
           },
           "source_window": {
-            "$ref": "#/components/schemas/ProfileSourceWindow"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileSourceWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dream_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileDreamPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "generator_id": {
             "type": "string",
@@ -2228,6 +3439,26 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ProfileDreamPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "format_version",
+          "generation_enabled"
+        ],
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "enum": [
+              1
+            ],
+            "default": 1
+          },
+          "generation_enabled": {
+            "type": "boolean"
           }
         }
       },
@@ -2246,6 +3477,84 @@
           "through": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "ProfileWriteContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "restored_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "PromptContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "mode",
+          "instructions",
+          "demonstrations"
+        ],
+        "description": "Canonical content is limited to 256 KiB. Auto requires empty instructions and demonstrations; Custom requires non-blank trimmed NFC instructions. Demonstrations must match the registered operation types.",
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "powercontext.prompt.v1"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "custom"
+            ]
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 32768
+          },
+          "demonstrations": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/PromptDemonstration"
+            }
+          }
+        }
+      },
+      "PromptDemonstration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "input",
+          "expected_output"
+        ],
+        "description": "A typed input/output pair limited to 64 KiB of canonical JSON.",
+        "properties": {
+          "input": {
+            "description": "Complete JSON input matching the registered Prompt Definition."
+          },
+          "expected_output": {
+            "description": "Desired JSON output matching the registered Prompt Definition."
           }
         }
       },
@@ -2307,6 +3616,330 @@
           "acceptance_check"
         ]
       },
+      "ReplaceArtifactRequest": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ReplaceAtomicMemoryArtifactRequest"
+          },
+          {
+            "$ref": "#/components/schemas/ReplaceTopicMemoryArtifactRequest"
+          },
+          {
+            "$ref": "#/components/schemas/ReplaceMemoryArtifactRequest"
+          },
+          {
+            "$ref": "#/components/schemas/ReplaceExperienceArtifactRequest"
+          },
+          {
+            "$ref": "#/components/schemas/ReplaceSkillArtifactRequest"
+          },
+          {
+            "$ref": "#/components/schemas/ReplaceHandoffArtifactRequest"
+          },
+          {
+            "$ref": "#/components/schemas/ReplacePromptArtifactRequest"
+          },
+          {
+            "$ref": "#/components/schemas/ReplaceProfileArtifactRequest"
+          }
+        ]
+      },
+      "ReplaceAtomicMemoryArtifactRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/AtomicMemoryWriteContent"
+          }
+        }
+      },
+      "ReplaceExperienceArtifactRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/ExperienceProposal"
+          },
+          "restored_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": ".*\\S.*"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ReplaceHandoffArtifactRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/HandoffContent"
+          },
+          "restored_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": ".*\\S.*"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ReplaceMemoryArtifactContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ReplaceMemoryArtifactEntry"
+            }
+          }
+        }
+      },
+      "ReplaceMemoryArtifactEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "entry_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[\\x21-\\x7E]+$",
+                "description": "Existing logical entry to revise. Omit to append a new entry."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": ".*\\S.*",
+            "description": "Open application-defined kind; the Server preserves the supplied value."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192,
+            "pattern": ".*\\S.*"
+          }
+        }
+      },
+      "ReplaceMemoryArtifactRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/ReplaceMemoryArtifactContent"
+          }
+        }
+      },
+      "ReplaceProfileArtifactRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/ProfileWriteContent"
+          },
+          "restored_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Historical Profile revision restored by this replacement. Must match content.restored_from_revision when both are set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": ".*\\S.*",
+                "description": "Required when restored_from_revision or content.restored_from_revision is set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ReplacePromptArtifactRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/PromptContent"
+          },
+          "restored_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": ".*\\S.*"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ReplaceSkillArtifactRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/SkillProposal"
+          },
+          "restored_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": ".*\\S.*"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ReplaceTopicMemoryArtifactRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/TopicMemoryWriteContent"
+          },
+          "restored_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": ".*\\S.*"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "ResolveScopeBindingRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -2352,7 +3985,8 @@
             "pattern": ".*\\S.*"
           },
           "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
+            "type": "object",
+            "description": "Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."
           },
           "reason": {
             "anyOf": [
@@ -2384,7 +4018,8 @@
             "pattern": ".*\\S.*"
           },
           "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
+            "type": "object",
+            "description": "Legacy exact Memory entry citation. Requests that supply it are rejected as unsupported."
           },
           "kind": {
             "type": "string",
@@ -2526,35 +4161,6 @@
           }
         }
       },
-      "SearchMemoryHit": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "citation",
-          "text",
-          "score",
-          "matched_by"
-        ],
-        "properties": {
-          "citation": {
-            "$ref": "#/components/schemas/MemoryCitation"
-          },
-          "text": {
-            "type": "string"
-          },
-          "score": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "matched_by": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/MemoryMatchedBy"
-            }
-          }
-        }
-      },
       "SearchMemoryRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -2597,33 +4203,17 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "mode",
           "hits"
         ],
         "properties": {
-          "memory": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ArtifactReference"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "mode": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MemoryUsedSearchMode"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/AtomicMemorySearchMode"
           },
           "hits": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/SearchMemoryHit"
+              "$ref": "#/components/schemas/AtomicMemorySearchHit"
             }
           }
         }
@@ -2638,15 +4228,6 @@
           "artifact_refs"
         ],
         "properties": {
-          "memory_citations": {
-            "type": "array",
-            "maxItems": 32,
-            "default": [],
-            "description": "Exact Memory entry provenance; non-empty only for Experience. Counted toward the combined evidence bound.",
-            "items": {
-              "$ref": "#/components/schemas/MemoryCitation"
-            }
-          },
           "artifact": {
             "$ref": "#/components/schemas/ArtifactReference"
           },
@@ -2823,6 +4404,26 @@
           }
         }
       },
+      "SourceTypeReference": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_type",
+          "source_id"
+        ],
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "description": "Stable Source type, including dynamically registered Source names."
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Source identity as accepted at ingestion, including Unicode and interior spaces."
+          }
+        }
+      },
       "TagFilter": {
         "type": "object",
         "additionalProperties": false,
@@ -2856,6 +4457,92 @@
           "all",
           "any"
         ]
+      },
+      "TagTarget": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ArtifactTagTarget"
+          },
+          {
+            "$ref": "#/components/schemas/MemoryEntryTagTarget"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "artifact": "#/components/schemas/ArtifactTagTarget",
+            "memory_entry": "#/components/schemas/MemoryEntryTagTarget"
+          }
+        }
+      },
+      "TaggableArtifactFamily": {
+        "type": "string",
+        "description": "All readable Artifact families support logical tags on persisted Artifacts.",
+        "enum": [
+          "memory",
+          "atomic-memory",
+          "experience",
+          "skill",
+          "handoff",
+          "profile",
+          "prompt",
+          "topic-memory"
+        ]
+      },
+      "TopicMemoryDreamProposal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "summary",
+          "detail"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 125000
+          }
+        }
+      },
+      "TopicMemoryWriteContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "summary",
+          "detail"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": ".*\\S.*"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "pattern": ".*\\S.*"
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 125000,
+            "pattern": ".*\\S.*"
+          }
+        }
       }
     }
   }

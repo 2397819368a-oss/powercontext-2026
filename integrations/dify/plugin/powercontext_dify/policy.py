@@ -14,5 +14,15 @@
 
 """Model-facing parameter policy shared by declarations and SDK validation."""
 
-HIDDEN_PARAMETERS = frozenset({"scope_id", "tag_filter", "expected_revision", "max_bytes", "include_code", "assembly"})
+HIDDEN_PARAMETERS = frozenset(
+    {
+        "scope_id",
+        "tag_filter",
+        "expected_revision",
+        "max_bytes",
+        "include_code",
+        "assembly",
+        "bootstrap_receipt_id",
+    }
+)
 MEMORY_KINDS = ("decision", "constraint", "current-state", "task-outcome", "next-step", "agent-note")

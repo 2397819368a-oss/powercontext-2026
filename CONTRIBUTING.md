@@ -96,7 +96,9 @@ make unit-test
 ```
 
 Use `make e2e-test` for cross-component behavior, `make contract-test` for OpenAPI changes, and
-`make docs-test` for documentation changes. `make test` runs the complete pytest suite.
+`make docs-test` for documentation changes. `make test` runs the complete pytest suite. These pytest targets
+spread tests across one worker per CPU with pytest-xdist; pass `PYTEST_WORKERS=0` to run them in a single process,
+for example when debugging with `pdb`.
 
 Before raising a pull request you should also run tox when a change may affect supported Python versions.
 This requires you to have the relevant Python versions installed. The same version matrix runs in CI.

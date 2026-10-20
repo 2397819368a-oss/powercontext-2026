@@ -25,8 +25,10 @@ from integration_manifest import (
     DOCUMENTATION_PATHS,
     MANIFEST_PATH,
     IntegrationAvailability,
+    IntegrationKind,
     IntegrationManifest,
     evidence_path_errors,
+    integration_directory_errors,
     load_integration_manifest,
     release_tag_errors,
     render_integration_capability_reference,
@@ -34,16 +36,17 @@ from integration_manifest import (
 )
 from pydantic import ValidationError
 
-from powercontext.cli.system import setup_app
-
 
 def test_manifest_matches_setup_catalog_evidence_and_actual_tool_surfaces() -> None:
     manifest = load_integration_manifest()
 
     agent_hosts = {integration.id for integration in manifest.integrations if integration.kind == "agent_host"}
-    setup_targets = {command.name for command in setup_app.registered_commands if command.name != "select"}
+    from powercontext.cli.installation import installers
+
+    setup_targets = set(installers())
 
     assert agent_hosts == setup_targets
+    assert integration_directory_errors(manifest) == ()
     assert evidence_path_errors(manifest) == ()
     assert release_tag_errors(manifest) == ()
     assert tool_surface_errors(manifest) == ()
@@ -75,42 +78,46 @@ def test_codex_full_profile_includes_managed_and_external_skill_operations() -> 
     )
 
 
-@pytest.mark.parametrize("missing_operation", [False, True])
-def test_tool_surface_probe_handles_long_descriptions_without_borrowing_operations(
-    tmp_path: Path,
-    missing_operation: bool,
-) -> None:
-    source_root = MANIFEST_PATH.parent.parent
-    source = source_root / "integrations/dsh/plugins/powercontext/src/tools.ts"
-    target = tmp_path / source.relative_to(source_root)
-    target.parent.mkdir(parents=True)
-    content = source.read_text(encoding="utf-8").replace(
-        "name: 'pc_skill_generate',",
-        "name: 'pc_skill_generate',\n      /* " + "long guidance " * 200 + " */",
-    )
-    if missing_operation:
-        content = content.replace("run(runtime, exec, 'generate_skill',", "unbound(runtime, exec, 'generate_skill',")
-    target.write_text(content, encoding="utf-8")
+def test_dsh_mcp_surface_matches_the_server_operation_catalog() -> None:
     manifest = load_integration_manifest()
-    toolset = next(item for item in manifest.toolsets if item.id == "dsh-tools")
+    toolset = next(item for item in manifest.toolsets if item.id == "dsh-mcp")
+    assert toolset.probe == "dsh_mcp"
+    assert all(tool.id.startswith("mcp__powercontext__") for tool in toolset.tools)
     isolated = manifest.model_copy(update={"toolsets": (toolset,), "integrations": ()})
-    errors = tool_surface_errors(isolated, tmp_path)
-    if missing_operation:
-        assert errors == (
-            "dsh-tools: tool surface drift (missing ['pc_skill_generate:generate_skill']; unexpected [])",
-        )
-    else:
-        assert errors == ()
+    assert tool_surface_errors(isolated) == ()
 
 
-def test_dify_declares_the_dsh_tool_surface_without_host_lifecycle_claims() -> None:
+def test_dify_declares_http_tools_without_host_lifecycle_claims() -> None:
     manifest = load_integration_manifest()
     toolsets = {item.id: item for item in manifest.toolsets}
-    assert {tool.id for tool in toolsets["dify-tools"].tools} == {tool.id for tool in toolsets["dsh-tools"].tools}
+    assert toolsets["dify-tools"].probe == "dify_tools"
+    assert {"pc_search:search_memory", "pc_skill_generate:generate_skill"} <= {
+        tool.id for tool in toolsets["dify-tools"].tools
+    }
     dify = next(item for item in manifest.integrations if item.id == "dify")
     assert dify.availability is IntegrationAvailability.EXPERIMENTAL
     assert dify.profiles == ()
     assert not {"acknowledge", "work_contract", "external_skill"} & set(dify.capabilities)
+
+
+@pytest.mark.parametrize("change", ["missing", "typo"])
+def test_dsh_probe_detects_plugin_catalog_drift(tmp_path: Path, change: str) -> None:
+    source_root = MANIFEST_PATH.parent.parent
+    plugin = tmp_path / "integrations/dsh/plugins/powercontext/src"
+    plugin.mkdir(parents=True)
+    shutil.copy(source_root / "integrations/dsh/plugins/powercontext/src/mcp.ts", plugin)
+    path = source_root / "integrations/dsh/plugins/powercontext/src/mcp-operations.generated.ts"
+    catalog = path.read_text(encoding="utf-8")
+    entry = '  "search_memory": {\n    "readOnly": true\n  },\n'
+    assert entry in catalog
+    replacement = "" if change == "missing" else entry.replace('"search_memory"', '"search_memories"')
+    (plugin / path.name).write_text(catalog.replace(entry, replacement), encoding="utf-8")
+    manifest = load_integration_manifest()
+    toolset = next(item for item in manifest.toolsets if item.id == "dsh-mcp")
+    isolated = manifest.model_copy(update={"toolsets": (toolset,), "integrations": ()})
+    errors = tool_surface_errors(isolated, tmp_path)
+    assert len(errors) == 1
+    assert "mcp__powercontext__search_memory" in errors[0]
 
 
 @pytest.mark.parametrize("change", ["missing", "operation"])
@@ -126,7 +133,7 @@ def test_dify_probe_checks_provider_entries_and_their_operation_bindings(tmp_pat
     else:
         entry = plugin / "tools/pc_skill_generate.py"
         entry.write_text(
-            entry.read_text(encoding="utf-8").replace('"generate_skill"', '"approve_artifact_candidate"'),
+            entry.read_text(encoding="utf-8").replace('"generate_skill"', '"approve_candidate"'),
             encoding="utf-8",
         )
     manifest = load_integration_manifest()
@@ -136,7 +143,7 @@ def test_dify_probe_checks_provider_entries_and_their_operation_bindings(tmp_pat
     assert len(errors) == 1
     assert "pc_skill_generate:generate_skill" in errors[0]
     if change == "operation":
-        assert "pc_skill_generate:approve_artifact_candidate" in errors[0]
+        assert "pc_skill_generate:approve_candidate" in errors[0]
 
 
 def test_manifest_defines_each_availability_state() -> None:
@@ -353,3 +360,126 @@ def test_released_entries_need_a_resolvable_tag() -> None:
     manifest = IntegrationManifest.model_validate(payload)
 
     assert release_tag_errors(manifest) == ("codex: release tag does not resolve: not-a-powercontext-release",)
+
+
+@pytest.fixture
+def integration_tree(tmp_path: Path) -> Path:
+    """A real filesystem fixture with the manifest's directory and evidence contract."""
+    manifest = load_integration_manifest()
+    for integration in manifest.integrations:
+        (tmp_path / "integrations" / integration.id).mkdir(parents=True)
+        for paths in integration.evidence.model_dump().values():
+            for pointer in paths:
+                path = tmp_path / pointer
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("evidence\n", encoding="utf-8")
+    for name in manifest.directory_exclusions:
+        (tmp_path / "integrations" / name).mkdir(parents=True)
+    return tmp_path
+
+
+def test_directory_gate_reports_both_directions_without_writing(integration_tree: Path) -> None:
+    manifest = load_integration_manifest()
+    assert integration_directory_errors(manifest, integration_tree) == ()
+    (integration_tree / "integrations/newhost").mkdir()
+    destination = integration_tree / "codex-evidence"
+    assert destination.resolve().is_relative_to(integration_tree.resolve())
+    (integration_tree / "integrations/codex").rename(destination)
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in integration_tree.rglob("*") if path.is_file()
+    }
+
+    assert integration_directory_errors(manifest, integration_tree) == (
+        "integrations/newhost/: present but undeclared",
+        "integrations/codex/: declared but absent",
+    )
+    assert before == {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in integration_tree.rglob("*") if path.is_file()
+    }
+
+
+def test_removing_a_declaration_does_not_hide_its_directory(integration_tree: Path) -> None:
+    manifest = load_integration_manifest()
+    manifest = manifest.model_copy(
+        update={"integrations": tuple(item for item in manifest.integrations if item.id != "pi")}
+    )
+    assert integration_directory_errors(manifest, integration_tree) == ("integrations/pi/: present but undeclared",)
+
+
+def test_stale_directory_exclusion_is_reported(integration_tree: Path) -> None:
+    manifest = load_integration_manifest()
+    (integration_tree / "integrations/minimax").rmdir()
+    assert integration_directory_errors(manifest, integration_tree) == ("integrations/minimax/: excluded but absent",)
+
+
+@pytest.mark.parametrize("locale", ["en", "zh"])
+def test_each_documentation_locale_is_required(integration_tree: Path, locale: str) -> None:
+    pointer = f"docs/{locale}/docs/integrations/codex.md"
+    (integration_tree / pointer).unlink()
+    assert integration_directory_errors(load_integration_manifest(), integration_tree) == (
+        f"codex: missing {locale} integration documentation: {pointer}",
+    )
+
+
+@pytest.mark.parametrize("kind", list(IntegrationKind))
+def test_unsupported_directory_uses_rationale_without_claiming_documentation_evidence(
+    integration_tree: Path, kind: IntegrationKind
+) -> None:
+    payload = load_integration_manifest().model_dump(mode="json")
+    payload["integrations"].append({
+        "id": "unsupported-adapter",
+        "kind": kind,
+        "availability": "unsupported",
+        "rationale": "docs/unsupported-adapter-rationale.md",
+    })
+    directory = integration_tree / "integrations/unsupported-adapter"
+    directory.mkdir()
+    rationale = integration_tree / "docs/unsupported-adapter-rationale.md"
+    rationale.write_text("This adapter is not supported.\n", encoding="utf-8")
+    for locale in ("en", "zh"):
+        page = integration_tree / f"docs/{locale}/docs/integrations/unsupported-adapter.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text("Unsupported; see the local rationale.\n", encoding="utf-8")
+
+    manifest = IntegrationManifest.model_validate(payload)
+    assert integration_directory_errors(manifest, integration_tree) == ()
+    assert evidence_path_errors(manifest, integration_tree) == ()
+    if kind.value not in payload["documentation_waivers"]:
+        for locale in ("en", "zh"):
+            pointer = f"docs/{locale}/docs/integrations/unsupported-adapter.md"
+            page = integration_tree / pointer
+            page.unlink()
+            assert integration_directory_errors(manifest, integration_tree) == (
+                f"unsupported-adapter: missing {locale} integration documentation: {pointer}",
+            )
+            page.write_text("Unsupported.\n", encoding="utf-8")
+    rationale.unlink()
+    assert evidence_path_errors(manifest, integration_tree)
+    payload["integrations"][-1]["evidence"] = {"documentation": ["docs/en/docs/integrations/unsupported-adapter.md"]}
+    with pytest.raises(ValidationError, match="unsupported integrations cannot claim current support"):
+        IntegrationManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize("category", ["implementation", "documentation", "tests"])
+def test_missing_declared_evidence_is_reported(integration_tree: Path, category: str) -> None:
+    manifest = load_integration_manifest()
+    pointer = getattr(manifest.integrations[0].evidence, category)[0]
+    (integration_tree / pointer).unlink()
+    assert f"codex: missing {category} evidence: {pointer}" in evidence_path_errors(manifest, integration_tree)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("directory_exclusions", {"minimax": "  "}),
+        ("directory_exclusions", {"../other": "outside"}),
+        ("directory_exclusions", {"codex": "already declared"}),
+        ("documentation_waivers", {"evaluation_harness": "\n"}),
+        ("documentation_waivers", {"unknown_kind": "not a declared kind"}),
+    ],
+)
+def test_exclusions_and_waivers_require_unambiguous_rationales(field: str, value: dict[str, str]) -> None:
+    payload = load_integration_manifest().model_dump(mode="json")
+    payload[field] = value
+    with pytest.raises(ValidationError):
+        IntegrationManifest.model_validate(payload)

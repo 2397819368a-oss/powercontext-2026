@@ -82,6 +82,30 @@ def test_custom_selection_freezes_exact_revision_and_keeps_scope_identity() -> N
     assert definition.resolve("scope-b", original).scope_id == "scope-b"
 
 
+def test_custom_handoff_prompt_retains_rollover_requirements() -> None:
+    definition = PromptRegistry(builtin_prompt_definitions()).get("handoff.generate")
+    prompt = Prompt(
+        artifact_id="handoff.generate",
+        revision=1,
+        content=_content(instructions="Summarize the supplied evidence."),
+    )
+
+    resolved = definition.resolve("scope-a", prompt)
+
+    assert "fresh-session checkpoint" in resolved.compiled_instructions
+    assert "do not depend on the old transcript" in resolved.compiled_instructions
+    assert "first safe action explicit" in resolved.compiled_instructions
+
+
+def test_auto_handoff_prompt_marks_rollover_reasons_as_advisory() -> None:
+    definition = PromptRegistry(builtin_prompt_definitions()).get("handoff.generate")
+
+    resolved = definition.resolve("scope-a", None)
+
+    assert "advisory preparation context only" in resolved.compiled_instructions
+    assert "do not claim they are committed Handoff content" in resolved.compiled_instructions
+
+
 def test_demonstrations_validate_without_inserting_defaults() -> None:
     registry = PromptRegistry(builtin_prompt_definitions(), supported=frozenset({"memory.extract"}))
     content = _with_demonstration({

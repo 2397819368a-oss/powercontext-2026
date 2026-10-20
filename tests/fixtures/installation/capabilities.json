@@ -39,7 +39,7 @@
         "--no-hosts"
       ],
       "missing_commands": [
-        "setup select"
+        "setup"
       ],
       "expected": {
         "exit_code": 0,

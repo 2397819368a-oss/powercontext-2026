@@ -47,7 +47,7 @@ Usage: powershell -ExecutionPolicy Bypass -File install.ps1 [options]
   -h, --help         Show this help.
 
 Agent integration setup runs only for explicitly selected --host values.
-After installation, run powercontext setup select --ref "powercontext-v$(powercontext --version)".
+After installation, run powercontext setup --ref "powercontext-v$(powercontext --version)".
 Unattended service setup requires an existing protected environment file.
 Windows service setup is experimental; --service enables login auto-start explicitly.
 
@@ -234,7 +234,7 @@ try {
                     '--profile' { $RuntimeProfile = $args[$Index] }
                     '--region' { $Region = $args[$Index] }
                     '--index-url' { $IndexUrl = $args[$Index] }
-                    '--host' { $Hosts += @('--host', $args[$Index]) }
+                    '--host' { $Hosts += @($args[$Index]) }
                     '--env-file' { $EnvFile = $args[$Index] }
                 }
             }
@@ -369,7 +369,7 @@ try {
     if ($Hosts.Count) {
         $SetupArgs = @('setup')
         if ($EnvFile) { $SetupArgs += @('--env-file', $EnvFile) }
-        & $Cli @SetupArgs select --source oceanbase/powercontext --ref "powercontext-v$Version" @Hosts
+        & $Cli @SetupArgs --source oceanbase/powercontext --ref "powercontext-v$Version" @Hosts
         $SetupStatus = $LASTEXITCODE
     }
     if ($RuntimeProfile -eq 'local') {

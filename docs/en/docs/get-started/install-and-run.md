@@ -1,6 +1,6 @@
 ---
 title: Install and run
-description: Install the latest PowerContext release with Bash or PowerShell, configure mirrors, and run the Server.
+description: Install PowerContext 1.4.0 and run the local Server.
 ---
 
 # Install and run
@@ -97,26 +97,26 @@ powercontext doctor --env-file /path/to/powercontext.env
 file selects its Client URL. `--server-url` can explicitly override the diagnostic target. Generated next-step instructions
 cover Scope creation and Agent acceptance; a running service does not establish an Agent workflow.
 
-## Choose a version
+## Installer version selection
 
 The default `--version latest` installs or upgrades to the newest stable release available from the selected index
 and compatible with the chosen Python. It excludes prereleases. `--version` accepts an exact release, including an
 explicit prerelease such as `1.3.0rc1`; it never substitutes a different version if that release is unavailable.
 
-For example, install PowerContext 1.2.0 with its Codex integration:
+For example, install PowerContext 1.4.0 with its Codex integration:
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1.2.0 --host codex
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1.4.0 --host codex
 ```
 
-This selects package `1.2.0` and Git tag `powercontext-v1.2.0`. With `latest`, the installer reads the installed CLI's
+This selects package `1.4.0` and Git tag `powercontext-v1.4.0`. With `latest`, the installer reads the installed CLI's
 version and uses its matching tag; it never uses the moving `master` branch for host setup. To add an integration later:
 
 ```bash
 powercontext setup codex --ref "powercontext-v$(powercontext --version)"
 ```
 
-Use `powercontext setup select --ref "powercontext-v$(powercontext --version)"` for an interactive host picker.
+Use `powercontext setup --ref "powercontext-v$(powercontext --version)"` for an interactive host picker.
 
 In PowerShell, the same double-quoted expression works. An integration failure leaves the installed Runtime usable
 and exits with an error and a retry instruction. Installation success does not establish Server readiness or host
@@ -161,24 +161,38 @@ To inspect the installer or pass several options in PowerShell, save it first:
 
 ```powershell
 irm https://powercontext.oceanbase.io/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -File .\install.ps1 --region cn --version 1.2.0
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --region cn --version 1.4.0
 ```
 
 Cached reinstallation with `UV_OFFLINE=1` can work when uv, compatible Python, and all required packages are already
 present. This is not an offline distribution bundle; missing downloads fail explicitly.
 
-## Manual package or source installation
+## Choose a version
 
-If you already manage Python 3.11+ and [uv](https://docs.astral.sh/uv/), you can install the package directly:
+These instructions use PowerContext 1.4.0. Keep the package and Agent integration on
+the same version: package `1.4.0` and Git tag `powercontext-v1.4.0`.
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
+powercontext setup codex --ref powercontext-v1.4.0
 ```
 
-For a source installation of the same version (requires Git):
+Check the [capability matrix](../integrations/capabilities.md) for host support and maintenance status.
+Capabilities marked `experimental` remain experimental in this release.
+
+## Install the application
+
+You need Python 3.11 or newer, Git, and [`uv`](https://docs.astral.sh/uv/) on macOS, Linux, or Windows. Then install
+PowerContext from PyPI:
 
 ```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.2.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
+```
+
+For a source installation of the same version:
+
+```bash
+uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.4.0"
 ```
 
 The Git command does not leave a repository checkout for you to manage. Git uses its normal credential configuration,
@@ -191,16 +205,9 @@ Follow the [guide for each integration](../integrations/index.md) for Agent inst
 
 ## Run the local Server
 
-On personal macOS/Linux, install the native current-user service:
-
 ```bash
-powercontext service install
-powercontext service status
-powercontext doctor
+powercontext server run
 ```
-
-Use `powercontext server run` for development, debugging, temporary use, and platforms without a supported native manager.
-Stop an existing foreground instance before installing the service. Service installation remains an explicit operation.
 
 Without environment variables or an environment file, the Server:
 
@@ -210,8 +217,7 @@ Without environment variables or an environment file, the Server:
 - creates a persistent SQLite database in the operating system's user data directory;
 - supports explicit Memory operations without an inference provider.
 
-The service manager owns startup and restart. Reinstall its definition after relevant upgrades or configuration changes.
-A foreground `server run` stops cleanly on `Ctrl-C`. Both entry points reopen the same configured database.
+`Ctrl-C` performs a clean shutdown. Restarting the command reopens the same database.
 
 The Dashboard is an optional content viewer for personal use and demonstrations. It is disabled by default and needs
 no separate frontend installation or model configuration. To enable it locally without a token, save these settings
@@ -230,9 +236,7 @@ also offers this choice when enabling Dashboard locally.
 ```bash
 chmod 600 /path/to/powercontext.env
 powercontext config validate --env-file /path/to/powercontext.env
-powercontext service install --env-file /path/to/powercontext.env
-powercontext service status
-powercontext doctor --env-file /path/to/powercontext.env
+powercontext server run --env-file /path/to/powercontext.env
 ```
 
 Open `http://127.0.0.1:8000/dashboard/home`, using the actual port if you change it. With authentication disabled, the
@@ -263,7 +267,7 @@ Embedded seekDB is available on Linux and macOS when a compatible `pylibseekdb` 
 support this embedded backend. Install or replace the tool with the optional seekDB extra:
 
 ```bash
-uv tool install --force "powercontext[cli,server,seekdb]==1.2.0"
+uv tool install --force "powercontext[cli,server,seekdb]==1.4.0"
 ```
 
 When switching from SQLite, remove `POWERCONTEXT_SERVER_DATABASE_URL` from the Server process environment. An explicit
@@ -315,18 +319,25 @@ Before upgrading an existing deployment, back up its database and configuration.
 tag-table constraints during Server startup to support Topic Memory tags. Stop the old Server instances and start
 one upgraded instance first so the schema upgrade completes before other instances connect. Databases from before
 1.0.0 also need the [Artifact processing migration](../operate/artifact-processing-migration.md) if it has not already
-been completed. Upgrade the Server, clients, and Agent integrations together.
+been completed. Existing collection-based Memory databases also require the [offline Atomic Memory migration](../operate/atomic-memory-migration.md)
+for existing collection databases. Complete any required Artifact processing migration first, stop all writers, then
+apply and verify the Atomic Memory migration. Start the new service only after verification returns `ready: true`.
+Upgrade the Server, clients, and Agent integrations together.
 The Dashboard must be explicitly enabled; static Bearer authentication is optional for local use. See
 [Deploy the Server](../operate/deploy-server.md). Remote plaintext HTTP connections require explicit client consent;
 see [Connect to a remote Server](../operate/connect-remote-server.md).
 
-For a registered personal service, use `powercontext service uninstall` to stop it while preserving data. After
-the package update, repeat `service install --env-file` with the original path.
+Review the [Dream coordinated upgrade requirements](../workflows/review-dream-revisions.md#coordinated-upgrade)
+before upgrading an existing database. The unified Candidate routes replace `/v1/artifact-candidates/*` with
+`/v1/candidates/*` without aliases, and Dream Clients require contract 2. Existing Dream storage needs an explicit
+migration after unfinished runs have drained. The current unified migration bundle reports `server_ready=false`;
+it does not provide a complete production Server upgrade path. Atomic Memory verification alone does not establish
+that readiness. Do not bypass `migration_required` or `migration_framework_not_ready`.
 
-To upgrade to the latest stable version, rerun the installer. To keep an exact release, add `--version`:
+To upgrade to 1.4.0:
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
+uv tool install --force "powercontext[cli,server]==1.4.0"
 ```
 
 To replace the installed tool with another Git ref:
@@ -335,9 +346,8 @@ To replace the installed tool with another Git ref:
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@<ref>"
 ```
 
-Update each installed host using its [integration guide](../integrations/index.md) and the same ref. After updating,
-rerun `powercontext service install --env-file /path/to/powercontext.env` with the original file, check `service status`
-and `doctor --env-file`, then open a new host session. Existing SQLite data remains in the user data directory unless `POWERCONTEXT_HOME` or the database URL
+Update each installed host using its [integration guide](../integrations/index.md) and the same ref. Restart the Server and open a new host session
+after updating. Existing SQLite data remains in the user data directory unless `POWERCONTEXT_HOME` or the database URL
 changes.
 
 ## Install a Python role
@@ -345,7 +355,7 @@ changes.
 An application that imports the async Client SDK should add it to that application's environment:
 
 ```bash
-uv add "powercontext[client]==1.2.0"
+uv add "powercontext[client]==1.4.0"
 ```
 
 Use `builtin` for in-process Python composition, `server` for the service, `client` for the Python SDK, or `cli` for

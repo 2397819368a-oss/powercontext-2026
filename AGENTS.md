@@ -23,6 +23,18 @@ Use an available skill only when it matches the current task, and read its `SKIL
 
 Target Python 3.11+. Use PEP 8 naming: modules and functions in `snake_case`, classes in `PascalCase`, constants in `UPPER_SNAKE_CASE`. Ruff enforces formatting and linting with a 120-character line length; run `uv run prek run -a` before committing if you do not use the installed hooks. Keep comments focused on non-obvious intent rather than restating code.
 
+## Observability Changes
+
+Before adding or changing operational logs, metrics, or spans, read the developer guide:
+[English](docs/en/development/observability.md) / [中文](docs/zh/development/observability.md).
+The operational field contract is documented in [Logs, metrics, and tracing](docs/en/docs/operate/observability.md).
+
+- Use the owning boundary's stable operation, unit, outcome, and error vocabulary. Emit operational logs through `log_safely`; logging failure must not change business results or suppress cancellation.
+- Reuse bound request/trace/worker identity. Do not invent request IDs for scheduled work or put execution identities in metric labels.
+- Register new structured fields in the appropriate allowlist, document their meaning and units in both locales, and verify their JSON/console output. Arbitrary extras are not a supported output contract.
+- Exclude content, queries, prompts, model responses, vectors, credentials, and sensitive paths. Review exception values before including a traceback; do not dump provider or database errors indiscriminately.
+- Keep logging configuration owned by the Server or embedding application. Preserve unconfigured SDK behavior; verify process-boundary claims with real spawned workers.
+
 ## Design and Implementation
 
 - Start from the current contract and relevant RFC. Change public APIs only as required by the task and avoid unrelated refactors. Do not weaken behavior tests to accommodate an implementation shortcut.

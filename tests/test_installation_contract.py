@@ -70,8 +70,15 @@ def main():
         env_file = args[args.index("--env-file") + 1]
         Path(os.environ["CONTRACT_DOCTOR_RESULT"]).write_text(json.dumps({"env_file": env_file}))
         return int(os.environ.get("CONTRACT_DOCTOR_EXIT", "0"))
-    elif args and args[0] == "setup" and "select" in args:
-        hosts = [args[i + 1] for i, arg in enumerate(args) if arg == "--host"]
+    elif args and args[0] == "setup":
+        hosts = []
+        index = 1
+        while index < len(args):
+            if args[index].startswith("--"):
+                index += 2
+            else:
+                hosts.append(args[index])
+                index += 1
         ref = args[args.index("--ref") + 1]
         selected = {"hosts": hosts, "ref": ref}
         if "--env-file" in args:

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -24,15 +25,25 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactAddress, ArtifactRef
+from powercontext.artifacts.fusion import RrfParameters
+from powercontext.artifacts.search import ArtifactSearchContractError, ArtifactSearchMatch
 from powercontext.builtin.artifacts.memory import EmbeddingProfile
 from powercontext.builtin.artifacts.memory.canonical import canonical_embedding
-from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor, analyze_fts_query, analyze_text
+from powercontext.builtin.artifacts.search import (
+    DEFAULT_RECALL_CHANNEL_WEIGHTS,
+    AdmissionCounts,
+    AdmissionFloor,
+    RecallChannelWeights,
+    analyze_fts_query,
+    analyze_text,
+)
 from powercontext.builtin.artifacts.topic_memory import (
     MAX_TOPIC_MEMORY_CHANNEL_CANDIDATES,
     MAX_TOPIC_MEMORY_QUERY_LENGTH,
     MAX_TOPIC_MEMORY_QUERY_TERMS,
     MAX_TOPIC_MEMORY_SEARCH_LIMIT,
     PublishedTopicMemory,
+    TopicArtifactSearchRequest,
     TopicMemory,
     TopicMemoryBrowseCursor,
     TopicMemoryCapabilityError,
@@ -48,8 +59,9 @@ from powercontext.builtin.artifacts.topic_memory import (
     chunk_topic_memory_detail,
 )
 from powercontext.builtin.artifacts.topic_memory.fusion import _fuse_topic_memory_rankings
+from powercontext.builtin.artifacts.topic_memory.search import topic_fusion_parameters, validate_topic_weights
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
-from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentError
+from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentError, RepositoryNotFoundError
 from powercontext.builtin.persistence.supervision import database_utc_now
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
@@ -76,9 +88,11 @@ class TopicMemoryRepository:
         *,
         artifacts: ArtifactRepository | None = None,
         index: TopicMemoryIndex | None = None,
+        recall_channel_weights: RecallChannelWeights = DEFAULT_RECALL_CHANNEL_WEIGHTS,
     ) -> None:
         self.artifacts = ArtifactRepository((TopicMemory,)) if artifacts is None else artifacts
         self.index = NoTopicMemoryIndex() if index is None else index
+        self.recall_channel_weights = recall_channel_weights
 
     async def initialize(self, connection: AsyncConnection, /, *, configure_retrieval_shape: bool = True) -> None:
         """Initialize indexes and reject incomplete historical Topic projections.
@@ -347,8 +361,9 @@ class TopicMemoryRepository:
     ) -> tuple[TopicMemoryCurrentItem, ...]:
         """Return an exclusive, bounded current-head page in stable publication order."""
 
-        if not 1 <= limit <= 100:
-            raise InvalidRepositoryArgumentError("limit", "must be between 1 and 100")
+        # Public readers cap pages at 100; one extra row determines whether a cursor is needed.
+        if not 1 <= limit <= 101:
+            raise InvalidRepositoryArgumentError("limit", "must be between 1 and 101")
         await self._check_retrieval_shape(connection)
         statement = (
             select(
@@ -379,6 +394,8 @@ class TopicMemoryRepository:
             .where(
                 TOPIC_MEMORY_ACTIVE_TOPICS_TABLE.c.scope_id == scope_id,
                 TOPIC_MEMORY_ACTIVE_TOPICS_TABLE.c.family == TopicMemory.family,
+                ARTIFACT_HEADS_TABLE.c.merged_into_id.is_(None),
+                ARTIFACT_HEADS_TABLE.c.lifecycle_state != "retired",
             )
         )
         if tag_filter is not None:
@@ -445,6 +462,7 @@ class TopicMemoryRepository:
         query_vector: tuple[float, ...] | None = None,
         embedding_profile: EmbeddingProfile | None = None,
         admission: AdmissionFloor | None = None,
+        artifact_request: TopicArtifactSearchRequest | None = None,
     ) -> TopicMemorySearchResult:
         """Search current complete projections and fuse two or four logical channels.
 
@@ -463,20 +481,24 @@ class TopicMemoryRepository:
                 "query",
                 f"must contain at most {MAX_TOPIC_MEMORY_QUERY_LENGTH} characters",
             )
-        analyzed = analyze_text(query)
         used_mode = self._select_mode(mode, query_vector, embedding_profile)
-        query_terms = tuple(sorted(set(analyzed.split())))
-        if used_mode in {"fts", "hybrid"} and len(query_terms) > MAX_TOPIC_MEMORY_QUERY_TERMS:
-            raise InvalidRepositoryArgumentError(
-                "query",
-                f"must contain at most {MAX_TOPIC_MEMORY_QUERY_TERMS} distinct Analyzer terms",
-            )
+        if artifact_request is not None:
+            admission = artifact_request.admission.as_floor()
+        fusion = self._search_fusion_parameters(used_mode, artifact_request)
+        query_terms: tuple[str, ...] = ()
+        if used_mode in {"fts", "hybrid"}:
+            if len(set(analyze_text(query).split())) > MAX_TOPIC_MEMORY_QUERY_TERMS:
+                raise InvalidRepositoryArgumentError(
+                    "query",
+                    f"must contain at most {MAX_TOPIC_MEMORY_QUERY_TERMS} distinct Analyzer terms",
+                )
+            query_terms = tuple(sorted(set(analyze_fts_query(query).split())))
         query_vector = self._canonical_query_vector(used_mode, query_vector)
         await self._check_retrieval_shape(connection)
-        analyzed = analyze_fts_query(query)
-        query_terms = tuple(sorted(set(analyzed.split())))
-        if not analyzed and used_mode == "fts":
-            return TopicMemorySearchResult(mode=used_mode, hits=())
+        if not query_terms and used_mode == "fts":
+            return TopicMemorySearchResult(
+                mode=used_mode, hits=(), artifacts=() if artifact_request is not None else None
+            )
         request = TopicMemorySearchRequest(
             query=query,
             analyzed_query=" ".join(query_terms),
@@ -488,10 +510,37 @@ class TopicMemoryRepository:
         )
         channels = await self.index.search(connection, scope_id, request)
         await self._check_retrieval_shape(connection)
-        outcome = _fuse_topic_memory_rankings(query, channels, limit, mode=used_mode, admission=admission)
+        outcome = _fuse_topic_memory_rankings(
+            query,
+            channels,
+            limit,
+            mode=used_mode,
+            admission=admission,
+            fusion=fusion,
+            min_score=None if artifact_request is None else artifact_request.min_score,
+            include_scores=artifact_request is not None and artifact_request.include_scores,
+        )
+        artifacts = None
+        if artifact_request is not None:
+            try:
+                artifacts = cast(
+                    tuple[TopicMemory, ...],
+                    await self.artifacts.get_many(
+                        connection, scope_id, tuple(hit.artifact_ref for hit in outcome.hits)
+                    ),
+                )
+            except RepositoryNotFoundError as error:
+                raise ArtifactSearchContractError(TopicMemory.family, "selected exact Artifact is missing") from error
         return TopicMemorySearchResult(
             mode=used_mode,
             hits=outcome.hits,
+            artifacts=artifacts,
+            matches=tuple(
+                ArtifactSearchMatch(hit.artifact_ref, cast(float, hit.retrieval_score), hit.channel_scores)
+                for hit in outcome.hits
+            )
+            if artifact_request is not None
+            else (),
             admission=AdmissionCounts(
                 family=TopicMemory.family,
                 scope_id=scope_id,
@@ -748,6 +797,29 @@ class TopicMemoryRepository:
         if selected not in {"fts", "vector", "hybrid"}:
             raise TopicMemoryCapabilityError(selected)
         return selected
+
+    def _search_fusion_parameters(
+        self,
+        mode: TopicMemoryUsedSearchMode,
+        request: TopicArtifactSearchRequest | None,
+    ) -> RrfParameters | None:
+        """Use an explicit request policy or the deployment's hybrid default."""
+
+        if request is not None and request.fusion is not None:
+            params = topic_fusion_parameters(request.fusion)
+        elif mode == "hybrid":
+            params = RrfParameters(
+                weights={
+                    "topic_fts": self.recall_channel_weights.fts,
+                    "detail_fts": self.recall_channel_weights.fts,
+                    "topic_vector": self.recall_channel_weights.vector,
+                    "detail_vector": self.recall_channel_weights.vector,
+                }
+            )
+        else:
+            return None
+        validate_topic_weights(mode, params)
+        return params
 
     def _canonical_query_vector(
         self,

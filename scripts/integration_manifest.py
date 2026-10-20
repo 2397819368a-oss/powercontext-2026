@@ -83,8 +83,12 @@ class ToolSurfaceProbe(StrEnum):
     SERVER_MCP = "server_mcp"
     JSON_PROMPT_HOOK = "json_prompt_hook"
     ZCODE_PROMPT_HOOK = "zcode_prompt_hook"
-    DSH_TOOLS = "dsh_tools"
+    KIMI_CODE_MCP = "kimi_code_mcp"
+    KIMI_CODE_PROMPT_HOOK = "kimi_code_prompt_hook"
+    KIMI_CODE_SCOPE = "kimi_code_scope"
     DIFY_TOOLS = "dify_tools"
+    DSH_MCP = "dsh_mcp"
+    DSH_LIFECYCLE = "dsh_lifecycle"
     DSH_COMMANDS = "dsh_commands"
     HERMES_OPERATIONS = "hermes_operations"
     HERMES_COMMANDS = "hermes_commands"
@@ -231,6 +235,8 @@ class IntegrationManifest(BaseModel):
     availability_definitions: dict[IntegrationAvailability, AvailabilityDefinition]
     toolsets: tuple[IntegrationToolset, ...] = ()
     integrations: tuple[IntegrationDeclaration, ...] = Field(min_length=1)
+    directory_exclusions: dict[str, str] = Field(default_factory=dict)
+    documentation_waivers: dict[IntegrationKind, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_declarations(self) -> IntegrationManifest:
@@ -249,6 +255,13 @@ class IntegrationManifest(BaseModel):
             raise ValueError("toolset ids must be unique")
         if len({integration.id for integration in self.integrations}) != len(self.integrations):
             raise ValueError("integration ids must be unique")
+        for directory, rationale in self.directory_exclusions.items():
+            if not re.fullmatch(r"[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?", directory) or not rationale.strip():
+                raise ValueError("directory exclusions need a directory name and a non-empty rationale")
+        if set(self.directory_exclusions) & {integration.id for integration in self.integrations}:
+            raise ValueError("an integration cannot be both declared and excluded")
+        if any(not rationale.strip() for rationale in self.documentation_waivers.values()):
+            raise ValueError("documentation waivers need a non-empty rationale")
         used_toolsets: set[str] = set()
         for integration in self.integrations:
             unknown = set(integration.toolsets) - toolsets.keys()
@@ -332,6 +345,34 @@ DOCUMENTATION_PATHS = {
 def load_integration_manifest(path: Path = MANIFEST_PATH) -> IntegrationManifest:
     with path.open("rb") as handle:
         return IntegrationManifest.model_validate(tomllib.load(handle))
+
+
+def integration_directory_errors(
+    manifest: IntegrationManifest, repository_root: Path = REPOSITORY_ROOT
+) -> tuple[str, ...]:
+    """Check both directions of directory coverage, including localized documentation."""
+    root = repository_root / "integrations"
+    if not root.is_dir():
+        return ("missing integrations/ directory",)
+    present = {path.name for path in root.iterdir() if path.is_dir()}
+    declared = {integration.id for integration in manifest.integrations}
+    excluded = set(manifest.directory_exclusions)
+    errors = [f"integrations/{name}/: present but undeclared" for name in sorted(present - declared - excluded)]
+    errors.extend(f"integrations/{name}/: declared but absent" for name in sorted(declared - present))
+    errors.extend(f"integrations/{name}/: excluded but absent" for name in sorted(excluded - present))
+    for integration in manifest.integrations:
+        if integration.kind in manifest.documentation_waivers:
+            continue
+        for locale in ("en", "zh"):
+            pointer = f"docs/{locale}/docs/integrations/{integration.id}.md"
+            if not (repository_root / pointer).is_file():
+                errors.append(f"{integration.id}: missing {locale} integration documentation: {pointer}")
+            elif (
+                integration.availability is not IntegrationAvailability.UNSUPPORTED
+                and pointer not in integration.evidence.documentation
+            ):
+                errors.append(f"{integration.id}: undocumented {locale} evidence: {pointer}")
+    return tuple(errors)
 
 
 def evidence_path_errors(manifest: IntegrationManifest, repository_root: Path = REPOSITORY_ROOT) -> tuple[str, ...]:
@@ -429,17 +470,62 @@ def tool_surface_errors(manifest: IntegrationManifest, repository_root: Path = R
 
 def _probe_toolset(probe: ToolSurfaceProbe, root: Path) -> set[str]:
     if probe is ToolSurfaceProbe.SERVER_MCP:
-        from powercontext.server.mcp import _MCP_OPERATION_IDS
+        from mcp_catalog import server_mcp_tools
 
-        return set(_MCP_OPERATION_IDS)
+        return {tool.name for tool in server_mcp_tools()}
     if probe is ToolSurfaceProbe.JSON_PROMPT_HOOK:
         return _prompt_hook_ids(root)
+    if probe is ToolSurfaceProbe.KIMI_CODE_SCOPE:
+        script = _read(root, "integrations/kimi-code/plugins/powercontext/scripts/scope.mjs")
+        if not all(
+            marker in script
+            for marker in ("['resolve', 'bind', 'unbind'].includes(action)", "/v1/scope-bindings/clear", "resolveScope")
+        ):
+            raise ValueError("missing Kimi workspace binding commands")
+        return {"kimi-code:scope:resolve", "kimi-code:scope:bind", "kimi-code:scope:unbind"}
+    if probe in {ToolSurfaceProbe.KIMI_CODE_MCP, ToolSurfaceProbe.KIMI_CODE_PROMPT_HOOK}:
+        plugin = root / "integrations/kimi-code/plugins/powercontext"
+        manifest = json.loads((plugin / "kimi.plugin.json").read_text(encoding="utf-8"))
+        if probe is ToolSurfaceProbe.KIMI_CODE_MCP:
+            entry = manifest["mcpServers"]["powercontext"]
+            if entry.get("url") != "http://127.0.0.1:8000/mcp":
+                raise ValueError("missing Kimi HTTP MCP endpoint")
+            return set(entry["enabledTools"])
+        script = (plugin / "hooks/user_prompt_submit.mjs").read_text(encoding="utf-8")
+        expected = {"event": "UserPromptSubmit", "command": "node ./hooks/user_prompt_submit.mjs", "timeout": 5}
+        if manifest.get("hooks") != [expected] or not all(
+            marker in script for marker in ("/v1/context/prepare", "/v1/sources/content", "message")
+        ):
+            raise ValueError("missing Kimi prompt capture or context output")
+        return {"kimi-code:UserPromptSubmit"}
     if probe is ToolSurfaceProbe.ZCODE_PROMPT_HOOK:
         return _zcode_prompt_hook_ids(root)
-    if probe is ToolSurfaceProbe.DSH_TOOLS:
-        return _typescript_operation_tools(root / "integrations/dsh/plugins/powercontext/src/tools.ts", "pcTool")
     if probe is ToolSurfaceProbe.DIFY_TOOLS:
         return _dify_operation_tools(root)
+    if probe is ToolSurfaceProbe.DSH_MCP:
+        source = _read(root, "integrations/dsh/plugins/powercontext/src/mcp.ts")
+        if "@deepseek-ai/dsh-mcp-client" not in source or "mcpEndpoint" not in source:
+            raise ValueError("DSH MCP bridge is incomplete")
+        catalog = _read(root, "integrations/dsh/plugins/powercontext/src/mcp-operations.generated.ts")
+        match = re.search(r"export const MCP_OPERATIONS = (\{[\s\S]*?\}) as const", catalog)
+        if match is None:
+            raise ValueError("DSH MCP catalog is missing")
+        operations = json.loads(match[1])
+        if not isinstance(operations, dict) or not operations:
+            raise ValueError("DSH MCP catalog is empty")
+        return {f"mcp__powercontext__{operation}" for operation in operations}
+    if probe is ToolSurfaceProbe.DSH_LIFECYCLE:
+        index = _read(root, "integrations/dsh/plugins/powercontext/src/index.ts")
+        recall = _read(root, "integrations/dsh/plugins/powercontext/src/recall.ts")
+        capture = _read(root, "integrations/dsh/plugins/powercontext/src/capture.ts")
+        required = ("agent/pre-step", "runRecallPreStep", "prepare_context")
+        capture_required = ("captureUserPrompt", "flushThrough", "flush_memory")
+        return (
+            {"agent:pre-step"}
+            if all(marker in index or marker in recall for marker in required)
+            and all(marker in capture for marker in capture_required)
+            else set()
+        )
     if probe is ToolSurfaceProbe.OPENCODE_TOOLS:
         return _typescript_operation_tools(
             root / "integrations/opencode/plugins/powercontext/src/index.ts", "operationTool"
@@ -655,6 +741,7 @@ def _is_complete_hook(integration_id: str, event: str, scripts: set[Path]) -> bo
         ("codex", "SessionStart"): "session_binding.py",
         ("codex", "PreToolUse"): "bind_tools.py",
         ("codex", "Stop"): "token_savings.py",
+        ("claude-code", "SessionStart"): "session_start.py",
     }.get((integration_id, event))
     return expected_script is not None and any(
         script.is_file() and script.name == expected_script for script in scripts
@@ -946,6 +1033,7 @@ __all__ = [
     "capabilities_from_toolsets",
     "derived_profiles",
     "evidence_path_errors",
+    "integration_directory_errors",
     "load_integration_manifest",
     "release_tag_errors",
     "render_integration_capability_reference",

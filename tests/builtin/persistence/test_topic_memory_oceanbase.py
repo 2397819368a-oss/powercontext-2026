@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.schema import CreateTable
 
 from powercontext.builtin.artifacts.memory import EmbeddingProfile
+from powercontext.builtin.artifacts.search import AdmissionFloor
 from powercontext.builtin.artifacts.topic_memory import (
     TopicMemoryContent,
     TopicMemoryDraft,
@@ -88,6 +89,30 @@ def test_oceanbase_topic_schema_compiles_native_text_and_vector_storage() -> Non
     assert "UNIQUE (scope_id, artifact_id, chunk_ordinal)" in vector_chunks
 
 
+@pytest.mark.parametrize("mode", ["fts", "hybrid"])
+@pytest.mark.parametrize("floor", [4, 2**63, 10**100])
+def test_oceanbase_impossible_topic_lexical_floor_returns_empty_before_database_binding(mode, floor) -> None:
+    async def scenario() -> None:
+        connection = AsyncMock(spec=AsyncConnection)
+        # This checks the adapter's input handling without claiming native OceanBase execution.
+        connection.scalar.side_effect = AssertionError("an impossible lexical floor needs no SQL query")
+        connection.execute.side_effect = AssertionError("an impossible lexical floor needs no SQL query")
+        result = await OceanBaseTopicMemoryFTSIndex().search(
+            cast(AsyncConnection, connection),
+            "scope-a",
+            TopicMemorySearchRequest(
+                query="alpha beta gamma",
+                analyzed_query="alpha beta gamma",
+                candidate_limit=20,
+                mode=mode,
+                admission=AdmissionFloor(lexical_min_matched_terms=floor),
+            ),
+        )
+        assert result.topic_fts == result.detail_fts == ()
+
+    asyncio.run(scenario())
+
+
 def test_oceanbase_fts_initializes_and_queries_both_current_projection_channels() -> None:
     async def scenario() -> None:
         connection = AsyncMock(spec=AsyncConnection)
@@ -119,8 +144,10 @@ def test_oceanbase_fts_initializes_and_queries_both_current_projection_channels(
             "ON pc_topic_memory_active_chunks (searchable_text) WITH PARSER SPACE",
         ]
         assert "MATCH (pc_topic_memory_active_topics.searchable_text) AGAINST" in query_statements[0]
+        assert " AS raw_score" in query_statements[0]
         assert "pc_topic_memory_active_topics.scope_id" in query_statements[0]
         assert "MATCH (pc_topic_memory_active_chunks.searchable_text) AGAINST" in query_statements[1]
+        assert " AS raw_score" in query_statements[1]
         assert "pc_topic_memory_active_chunks.scope_id" in query_statements[1]
         assert "row_number() OVER" in query_statements[1]
         assert "anon_1.topic_rank" in query_statements[1]

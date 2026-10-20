@@ -70,7 +70,7 @@ curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1
 Installation runs unattended by default, without Git or a host picker. `--host` is repeatable and opts into integration
 setup; selected hosts require Git and their own prerequisites. `--no-hosts` explicitly states the default and cannot
 be combined with `--host`. For an interactive picker after installation, run
-`powercontext setup select --ref "powercontext-v$(powercontext --version)"`.
+`powercontext setup --ref "powercontext-v$(powercontext --version)"`.
 
 The installed CLI supplies the exact version for `powercontext-vVERSION`. Host setup never resolves `latest` again
 and never defaults to `master`. If a host installation fails, the Runtime remains installed and the script returns
@@ -113,7 +113,7 @@ must pass and `doctor --env-file` must report healthy readiness. Degraded readin
 `doctor --env-file` uses the strict Python environment loader and restores process settings afterwards. Server files
 select the configured listener, independently of Client URLs used for SSH forwarding or stale caller defaults.
 Client-only files select their Client URL; an explicit diagnostic `--server-url` takes priority. Shell does not source
-the file or interpret its contents. Host setup receives `setup --env-file PATH select` at the installed release tag.
+the file or interpret its contents. Host setup receives `setup --env-file PATH HOST...` at the installed release tag.
 
 The installed release must provide the added CLI options; an older release reports the failed stage and leaves the
 Runtime installed. Distribution publication must coordinate the package containing these options with the website.

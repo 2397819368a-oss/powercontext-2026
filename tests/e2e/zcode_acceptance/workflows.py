@@ -29,42 +29,53 @@ def memory_and_handoff(run: AcceptanceRun) -> None:
         memory_text = "Synthetic acceptance decisions require current evidence."
         revised_text = "Synthetic acceptance decisions require current evidence and explicit authorization."
         start = len(run.wire.records)
+
+        def memory_target():
+            reference = run.wire.result("remember_memory", start)["records"][0]["artifact"]
+            return {"scope_id": scope, "family": reference["family"], "artifact_id": reference["artifact_id"]}
+
         run.invoke(
             f"In scope {scope}, explicitly remember this decision: {memory_text} "
-            f"Then revise that entry with its exact returned citation to: {revised_text} "
-            "Finally attempt exactly one revision with the original stale citation; on rejection stop retrying "
+            f"Read its current Artifact and replace its complete kind/text with the exact returned ETag to: {revised_text} "
+            "Finally attempt exactly one replacement with that original stale ETag; on rejection stop retrying "
             "and list the entries. Use native MCP tools only.",
             write=True,
             actions=[
                 ("remember_memory", {"scope_id": scope, "kind": "decision", "text": memory_text}),
+                ("get_artifact", memory_target),
                 (
-                    "revise_memory_entry",
+                    "replace_artifact",
                     lambda: {
-                        "scope_id": scope,
-                        "citation": run.wire.result("remember_memory", start)["entry"]["citation"],
-                        "kind": "decision",
-                        "text": revised_text,
+                        **memory_target(),
+                        "If-Match": run.wire.result("get_artifact", start)["etag"],
+                        "content": {"kind": "decision", "text": revised_text},
                     },
                 ),
                 (
-                    "revise_memory_entry",
+                    "replace_artifact",
                     lambda: {
-                        "scope_id": scope,
-                        "citation": run.wire.result("remember_memory", start)["entry"]["citation"],
-                        "kind": "decision",
-                        "text": "This stale write must never replace the accepted revision.",
+                        **memory_target(),
+                        "If-Match": run.wire.result("get_artifact", start)["etag"],
+                        "content": {
+                            "kind": "decision",
+                            "text": "This stale write must never replace the accepted revision.",
+                        },
                     },
                 ),
                 ("list_memory_entries", {"scope_id": scope}),
             ],
         )
         saved = run.wire.result("remember_memory", start)
-        revisions = run.wire.calls("revise_memory_entry", start)
+        revisions = run.wire.calls("replace_artifact", start)
         assert len(revisions) == 2 and not revisions[0]["response"]["result"].get("isError")
-        assert revisions[1]["response"]["result"].get("isError"), "stale_memory_citation_was_not_rejected"
+        assert revisions[1]["response"]["result"].get("isError"), "stale_memory_content_etag_was_not_rejected"
         entries = run.wire.result("list_memory_entries", start)["entries"]
-        entry = next(item for item in entries if item["citation"]["entry_id"] == saved["entry"]["citation"]["entry_id"])
-        assert entry["text"] == revised_text and entry["version"] == 2
+        entry = next(
+            item
+            for item in entries
+            if item["artifact"]["artifact_id"] == saved["records"][0]["artifact"]["artifact_id"]
+        )
+        assert entry["text"] == revised_text and entry["artifact"]["revision"] == 2
 
         start = len(run.wire.records)
         current = {
@@ -195,9 +206,9 @@ def memory_and_handoff(run: AcceptanceRun) -> None:
             run.evidence(
                 "memory-handoff-outcome",
                 {
-                    "memory_citation": entry["citation"],
-                    "memory_version": entry["version"],
-                    "stale_citation_rejected": True,
+                    "memory_artifact": entry["artifact"],
+                    "memory_revision": entry["artifact"]["revision"],
+                    "stale_content_etag_rejected": True,
                     "prepared_nulls_preserved": True,
                     "temporary_selected_revision": None,
                     "committed_revision": revision,
@@ -238,19 +249,19 @@ def candidate_review(run: AcceptanceRun) -> None:
             },
         )
         identity = {"scope_id": scope, "candidate_id": candidate["candidate_id"]}
-        before = run.post("/v1/artifact-candidates/get", identity)
+        before = run.post("/v1/candidates/get", identity)
         start = len(run.wire.records)
         run.invoke(
             f"Inspect candidate {candidate['candidate_id']} in scope {scope} using "
-            "get_artifact_candidate and list_artifact_candidates. This is read-only; do not approve or revise.",
-            actions=[("get_artifact_candidate", identity), ("list_artifact_candidates", {"scope_id": scope})],
+            "get_candidate and list_candidates. This is read-only; do not approve or revise.",
+            actions=[("get_candidate", identity), ("list_candidates", {"scope_id": scope})],
         )
-        assert run.wire.result("get_artifact_candidate", start) == before
-        assert run.wire.result("list_artifact_candidates", start)["candidates"]
-        assert run.post("/v1/artifact-candidates/get", identity) == before, "inspection_modified_candidate"
+        assert run.wire.result("get_candidate", start) == before
+        assert run.wire.result("list_candidates", start)["candidates"]
+        assert run.post("/v1/candidates/get", identity) == before, "inspection_modified_candidate"
         revised_proposal = {**proposal, "lesson": "Re-read a changed candidate before any new approval."}
         revised = run.post(
-            "/v1/artifact-candidates/revise",
+            "/v1/candidates/revise",
             {
                 **identity,
                 "expected_version": before["version"],
@@ -262,29 +273,29 @@ def candidate_review(run: AcceptanceRun) -> None:
         start = len(run.wire.records)
         run.invoke(
             f"Attempt exactly once to approve candidate {candidate['candidate_id']} in scope {scope} "
-            f"using expected_version {before['version']}. If it conflicts, re-read with get_artifact_candidate "
+            f"using expected_version {before['version']}. If it conflicts, re-read with get_candidate "
             "and stop. This authorization does not apply to the new version; do not approve it.",
             write=True,
             actions=[
-                ("approve_artifact_candidate", {**identity, "expected_version": before["version"]}),
-                ("get_artifact_candidate", identity),
+                ("approve_candidate", {**identity, "expected_version": before["version"]}),
+                ("get_candidate", identity),
             ],
         )
-        rejects = run.wire.calls("approve_artifact_candidate", start)
+        rejects = run.wire.calls("approve_candidate", start)
         assert len(rejects) == 1 and rejects[0]["response"]["result"].get("isError"), "stale_approval_not_rejected"
-        reread = run.wire.result("get_artifact_candidate", start)
+        reread = run.wire.result("get_candidate", start)
         assert reread == revised and reread["result_artifact"] is None
         start = len(run.wire.records)
         run.invoke(
             f"This is a separate explicit approval of the re-read candidate {candidate['candidate_id']} "
-            f"in scope {scope}, expected_version {revised['version']}. Call approve_artifact_candidate once "
+            f"in scope {scope}, expected_version {revised['version']}. Call approve_candidate once "
             "and report its real result.",
             write=True,
-            actions=[("approve_artifact_candidate", {**identity, "expected_version": revised["version"]})],
+            actions=[("approve_candidate", {**identity, "expected_version": revised["version"]})],
         )
-        approved = run.wire.result("approve_artifact_candidate", start)
+        approved = run.wire.result("approve_candidate", start)
         assert approved["result_artifact"] and approved["result_artifact"]["family"] == "experience"
-        assert run.post("/v1/artifact-candidates/get", identity) == approved
+        assert run.post("/v1/candidates/get", identity) == approved
         experience = run.post("/v1/experience/get", {"scope_id": scope, "artifact": approved["result_artifact"]})
         assert all(experience["content"][key] == value for key, value in revised_proposal.items())
         evidence.append(

@@ -115,4 +115,4 @@ def test_doctor_rejects_file_option_for_integration_diagnostics(tmp_path):
     environment.write_text("POWERCONTEXT_SERVER_HTTP_PORT=8000\n")
     result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "--env-file", str(environment), "codex"])
     assert result.exit_code == 2
-    assert "without a subcommand" in result.output
+    assert "without an Agent selection" in result.output

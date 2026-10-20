@@ -1,6 +1,6 @@
 ---
 title: 安装和运行
-description: 使用 Bash 或 PowerShell 安装最新版 PowerContext，配置镜像并运行 Server。
+description: 安装 PowerContext 1.4.0，并运行本地 Server。
 ---
 
 # 安装和运行
@@ -87,25 +87,25 @@ powercontext doctor --env-file /path/to/powercontext.env
 `doctor --env-file` 以文件为准，覆盖调用者 shell 的默认配置。Server 文件选择其监听地址，Client-only 文件选择 Client URL；
 显式 `--server-url` 可以覆盖诊断目标。生成的后续步骤仍负责引导 Scope 创建和 Agent 验收；服务运行不代表 Agent 工作流已完成。
 
-## 选择版本
+## 选择脚本安装版本
 
 默认 `--version latest` 安装或升级到所选包源中与当前 Python 兼容的最新稳定版，排除预发布版本。
 `--version` 也支持指定准确版本，包括 `1.3.0rc1` 这样的显式预发布版本；源中没有指定版本时会报错，不会换成其他版本。
 
-例如，安装 PowerContext 1.2.0 及其 Codex 集成：
+例如，安装 PowerContext 1.4.0 及其 Codex 集成：
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1.2.0 --host codex
+curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --version 1.4.0 --host codex
 ```
 
-Python 包版本为 `1.2.0`，对应 Git tag 为 `powercontext-v1.2.0`。使用 `latest` 时，安装器读取实际安装的 CLI 版本，
+Python 包版本为 `1.4.0`，对应 Git tag 为 `powercontext-v1.4.0`。使用 `latest` 时，安装器读取实际安装的 CLI 版本，
 并使用对应的 tag 安装集成，不会使用会移动的 `master` 分支。稍后添加集成时可以执行：
 
 ```bash
 powercontext setup codex --ref "powercontext-v$(powercontext --version)"
 ```
 
-需要交互选择宿主时，运行 `powercontext setup select --ref "powercontext-v$(powercontext --version)"`。
+需要交互选择宿主时，运行 `powercontext setup --ref "powercontext-v$(powercontext --version)"`。
 
 PowerShell 也支持这里的双引号表达式。集成安装失败时，已安装的 Runtime 会保留，脚本返回错误并给出重试提示。
 安装成功不代表 Server 就绪或宿主工作流可用；仍需执行下文检查及集成文档中的验证。
@@ -143,23 +143,37 @@ curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --index-url
 
 ```powershell
 irm https://powercontext.oceanbase.io/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -File .\install.ps1 --region cn --version 1.2.0
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --region cn --version 1.4.0
 ```
 
 已有 uv、兼容 Python 和完整依赖缓存时，可以使用 `UV_OFFLINE=1` 重装。这不等于离线发行包；缺少下载内容时会明确报错。
 
-## 手动安装包或源码
+## 选择版本
 
-已自行管理 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/) 时，可以直接安装包：
+本页使用 PowerContext 1.4.0。包与 Agent 集成保持版本一致：
+Python 包版本为 `1.4.0`，对应 Git tag 为 `powercontext-v1.4.0`。
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.2.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
+powercontext setup codex --ref powercontext-v1.4.0
 ```
 
-如需从源码安装同一版本（需要 Git）：
+宿主支持范围和维护状态见[能力矩阵](../integrations/capabilities.md)。
+标为 `experimental` 的能力在此版本中仍属于试验性能力。
+
+## 安装应用
+
+需要在 macOS、Linux 或 Windows 上准备 Python 3.11 或更新版本、Git 和
+[`uv`](https://docs.astral.sh/uv/)，然后从 PyPI 安装 PowerContext：
 
 ```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.2.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
+```
+
+如需从源码安装同一版本：
+
+```bash
+uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.4.0"
 ```
 
 Git 安装命令不会留下需要自行管理的仓库工作副本。Git 会沿用本机的凭据配置，包括 credential helper 和 SSH 设置。
@@ -171,16 +185,9 @@ Agent 的安装、连接参数和验证步骤见[各自的集成文档](../integ
 
 ## 运行本地 Server
 
-个人 macOS/Linux 推荐安装原生当前用户服务：
-
 ```bash
-powercontext service install
-powercontext service status
-powercontext doctor
+powercontext server run
 ```
-
-开发、调试、临时使用或没有可用原生 manager 的平台使用 `powercontext server run`。已有前台实例时，先停止再安装服务。
-服务安装始终是显式操作。
 
 没有环境变量或环境文件时，Server 会：
 
@@ -190,8 +197,7 @@ powercontext doctor
 - 在操作系统的用户数据目录中创建持久化 SQLite 数据库；
 - 无需推理服务即可支持显式 Memory 操作。
 
-原生服务管理器负责启动和重启；升级或修改配置后重新注册。前台 `server run` 可以通过 `Ctrl-C` 正常关闭。
-两种入口都会打开同一个已配置数据库。
+按 `Ctrl-C` 可正常关闭。再次运行该命令会打开同一个数据库。
 
 Dashboard 是个人使用和演示的可选内容查看器，默认关闭。它不需要单独安装前端或配置模型。
 本地免 token 启用时，在环境文件中设置以下值：
@@ -208,9 +214,7 @@ POWERCONTEXT_SERVER_ACCESS_MODE=disabled
 ```bash
 chmod 600 /path/to/powercontext.env
 powercontext config validate --env-file /path/to/powercontext.env
-powercontext service install --env-file /path/to/powercontext.env
-powercontext service status
-powercontext doctor --env-file /path/to/powercontext.env
+powercontext server run --env-file /path/to/powercontext.env
 ```
 
 打开 `http://127.0.0.1:8000/dashboard/home`，更改端口后使用实际端口。未启用认证时可直接进入页面；
@@ -236,7 +240,7 @@ powercontext doctor --env-file /path/to/powercontext.env
 后端。安装或替换工具时加入可选的 seekDB extra：
 
 ```bash
-uv tool install --force "powercontext[cli,server,seekdb]==1.2.0"
+uv tool install --force "powercontext[cli,server,seekdb]==1.4.0"
 ```
 
 从 SQLite 切换时，需要从 Server 进程环境中删除 `POWERCONTEXT_SERVER_DATABASE_URL`；seekDB 不接受显式的
@@ -284,17 +288,22 @@ Agent 诊断见[各自的集成文档](../integrations/index.md)；Server 状态
 升级已有部署前，先备份数据库和配置。1.1.0 会在 Server 启动时升级旧标签表约束，以支持 Topic Memory 标签。
 先停止旧 Server 实例，再启动一个升级后的实例，待结构升级完成后再启动其他实例。对于 1.0.0 之前的数据库，
 如果尚未完成[Artifact 处理迁移](../operate/artifact-processing-migration.md)，还需要先执行该迁移。
+升级到 1.4.0 时，已有集合式 Memory 数据库还需完成[Atomic Memory 离线迁移](../operate/atomic-memory-migration.md)。
+先完成所需的 Artifact 处理迁移，再停止所有写入进程，执行 Atomic Memory 迁移并验证 `ready: true` 后启动新服务。
 Server、客户端和 Agent 集成需一起升级。Dashboard 需要显式启用，本地使用可选择静态 Bearer 认证，
 见[部署 Server](../operate/deploy-server.md)；远程明文 HTTP 连接需要客户端明确同意，
 见[连接远程 Server](../operate/connect-remote-server.md)。
 
-个人服务可以通过 `powercontext service uninstall` 停止，数据会保留。包升级后，使用原配置路径重新执行
-`service install --env-file`。
+升级已有数据库前，请先检查 [Dream 协调升级要求](../workflows/review-dream-revisions.md#协调升级)。
+统一 Candidate 路由将 `/v1/artifact-candidates/*` 替换为 `/v1/candidates/*`，不提供别名，Dream 客户端要求契约 2。
+已有 Dream 存储需排空未完成任务后显式迁移。当前统一迁移包仍报告 `server_ready=false`，尚不构成完整的生产
+Server 升级路径；Atomic Memory 验证通过也不代表整体迁移就绪。不要绕过 `migration_required` 或
+`migration_framework_not_ready`。
 
-重新运行安装器可升级到最新稳定版；需要保持指定版本时，加上 `--version`：
+升级到 1.4.0：
 
 ```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
+uv tool install --force "powercontext[cli,server]==1.4.0"
 ```
 
 使用其他 Git ref 替换现有工具：
@@ -303,8 +312,7 @@ curl -fsSL https://powercontext.oceanbase.io/install.sh | bash
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@<ref>"
 ```
 
-按[各自的集成文档](../integrations/index.md)更新已安装宿主，并使用同一个 ref。更新后使用原来的文件重新执行 `powercontext service install --env-file /path/to/powercontext.env`，
-检查 `service status` 和 `doctor --env-file`，再开启新的宿主会话。只要没有修改
+按[各自的集成文档](../integrations/index.md)更新已安装宿主，并使用同一个 ref。更新后重启 Server，再开启新的宿主会话。只要没有修改
 `POWERCONTEXT_HOME` 或数据库 URL，现有 SQLite 数据会继续保留。
 
 ## 为 Python 项目安装角色
@@ -312,7 +320,7 @@ uv tool install --force "powercontext[cli,server] @ git+https://github.com/ocean
 如果应用需要导入异步 Client SDK，应把它加入该应用自己的环境：
 
 ```bash
-uv add "powercontext[client]==1.2.0"
+uv add "powercontext[client]==1.4.0"
 ```
 
 进程内 Python 组合使用 `builtin`，服务使用 `server`，Python SDK 使用 `client`，基于 Server 的命令行使用

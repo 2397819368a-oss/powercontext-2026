@@ -9,26 +9,12 @@ Remote deployments should use HTTPS. IPv4/IPv6 loopback HTTP (including `localho
 PowerContext-owned clients reject other HTTP URLs unless you explicitly opt in. Private IP addresses and VPN
 addresses are still non-loopback: a private network does not itself encrypt HTTP.
 
-## Install the Client CLI
-
-Use the installation script on the machine running your Agent. It provisions uv and Python if needed, and installs
-the latest stable CLI and Client without local Server dependencies:
-
-```bash
-curl -fsSL https://powercontext.oceanbase.io/install.sh | bash -s -- --profile client
-```
-
-For Windows PowerShell, exact versions, and mirrors, see [Install and run](../get-started/install-and-run.md).
-Apply the printed PATH command, then set `POWERCONTEXT_CLIENT_SERVER_URL` and, when required,
-`POWERCONTEXT_CLIENT_API_TOKEN` in the client environment. Use `powercontext ready` to check the remote Server.
-The local Server configuration wizard requires the `local` installation profile.
-
 ## Guided setup
 
 Use the same source/ref for the installed PowerContext tool and the integration. On the machine that runs your agent:
 
 ```bash
-powercontext setup claude-code --source oceanbase/powercontext --ref "powercontext-v$(powercontext --version)" \
+powercontext setup claude-code --source oceanbase/powercontext --ref master \
   --server-url http://192.0.2.10:8000
 ```
 
@@ -43,7 +29,7 @@ powercontext setup claude-code --server-url http://192.0.2.10:8000 --allow-insec
 ```
 
 Replace `claude-code` with `codex`, `dsh`, `openclaw`, `opencode`, `pi`, `hermes`, or `workbuddy`.
-The same options work with `setup select --host ...` for its catalog hosts; WorkBuddy uses its dedicated command.
+The same options work with `setup codex dsh` for multiple agents and `config agent codex dsh` for installed connections.
 A declined or missing consent fails before installation starts. A warning is written to stderr, leaving JSON stdout
 parseable. Successful installation saves the endpoint and consent for new sessions; it does not save credentials.
 
