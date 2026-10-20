@@ -505,7 +505,6 @@ class SQLiteTopicMemoryVectorIndex:
                 profile_fingerprint=self._fingerprint,
             )
         )
-        # SQLite before 3.35 supports lastrowid, but not INSERT ... RETURNING.
         topic_id = inserted.lastrowid
         await connection.execute(
             _INSERT_TOPIC_VECTOR_SQL,

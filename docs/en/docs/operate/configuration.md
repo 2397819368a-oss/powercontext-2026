@@ -79,6 +79,11 @@ Without an override, the default is:
 The default SQLite database is `powercontext.db` in this directory. Built-in background processors persist
 intents and scheduling checkpoints in the same database. Existing installations require [offline migration](artifact-processing-migration.md).
 
+The built-in SQLite backend requires Python's linked SQLite library (`sqlite3.sqlite_version`) to be **3.38.0 or newer**,
+with FTS5, JSON functions, and loadable sqlite-vec for vector search. This retains the backend minimum specified in
+[the Memory design](../../rfcs/0014_memory_layer_design.md#sqlite-adapter), including native vector `IN` filtering.
+Older libraries are rejected before database initialization or accepting writes.
+
 ## Server
 
 Server settings use the `POWERCONTEXT_SERVER_` prefix.

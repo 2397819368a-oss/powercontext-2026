@@ -70,6 +70,11 @@ export POWERCONTEXT_HOME=/srv/powercontext
 默认 SQLite 数据库是该目录下的 `powercontext.db`。后台处理器的意图与调度检查点保存在同一数据库中。
 已有部署须先完成[停机迁移](artifact-processing-migration.md)。
 
+内置 SQLite 后端要求 Python 链接的 SQLite 库（`sqlite3.sqlite_version`）为 **3.38.0 或更新版本**，
+启用 FTS5、JSON 函数，并为向量检索加载 sqlite-vec。这沿用
+[Memory 设计](../../rfcs/0014_memory_layer_design.md#sqlite-adapter)约定的后端下限，包括原生向量 `IN` 过滤能力。
+旧版本会在初始化数据库或接受写入之前被拒绝。
+
 ## Server
 
 Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
