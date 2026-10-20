@@ -52,8 +52,8 @@ Prompt capture is enabled by default; see [Control prompt capture](#control-prom
 `mcp_full_profile`. Full coverage requires every capability-bearing tool in the Codex integration's `server-mcp`
 manifest, including Memory maintenance, Scope management and Handoff operations. Missing tools produce a degraded
 result and are listed by name; discovery does not prove model readiness, Hook execution or write authorization.
-Both `setup codex` and `setup select --host codex` can succeed with basic Memory support while `doctor` reports
-incomplete full coverage. Authentication and basic connection failures still fail installation.
+Setup reports installation completion separately from diagnostics. Basic Memory support can remain usable while `doctor` reports
+incomplete full coverage. Authentication and basic connection failures still produce a failed result.
 
 ## Understand automatic recall, Memory, and Handoff
 

@@ -245,6 +245,9 @@ class _VectorMemoryIndex:
     async def initialize(self, connection: AsyncConnection, /):
         pass
 
+    async def validate_current(self, connection: AsyncConnection, /):
+        pass
+
     async def replace(self, connection: AsyncConnection, scope_id: str, projection: AtomicMemoryProjection, /):
         pass
 
