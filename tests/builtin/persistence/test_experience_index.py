@@ -465,22 +465,17 @@ def test_skill_threshold_uses_same_score_and_admission_contract() -> None:
     assert hits[0].channel_scores["text"].raw == -1
 
 
-def test_oceanbase_search_selects_match_raw_and_preserves_candidate_window() -> None:
+def test_oceanbase_search_preserves_match_raw_score() -> None:
     rows = [_experience_row("one", 2.0, "oceanbase_match")]
-    connection = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(mappings=lambda: rows)))
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="mysql"),
+        execute=AsyncMock(return_value=SimpleNamespace(mappings=lambda: rows)),
+    )
     outcome = asyncio.run(
         OceanBaseExperienceFTSIndex().search(
             cast(AsyncConnection, connection), "project", "client", 8, require_scores=True
         )
     )
-    statement = connection.execute.await_args.args[0]
-    compiled = statement.compile(dialect=mysql.dialect())
-    sql = str(compiled)
-
-    assert "AS raw_score" in sql
-    assert "MATCH (pc_artifact_heads.searchable_text) AGAINST" in sql
-    assert "ORDER BY MATCH" in sql
-    assert " DESC, pc_artifact_heads.artifact_id, pc_artifact_heads.revision" in sql
-    assert 32 in compiled.params.values()
     assert outcome.hits[0].channel_scores is not None
     assert outcome.hits[0].channel_scores["text"].metric == "oceanbase_match"
+    assert outcome.hits[0].channel_scores["text"].raw == 2.0

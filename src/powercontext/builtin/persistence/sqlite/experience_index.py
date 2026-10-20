@@ -28,7 +28,7 @@ from powercontext.builtin.artifacts.experience import (
     experience_searchable_text,
 )
 from powercontext.builtin.artifacts.memory import CapabilityNotSupportedError
-from powercontext.builtin.artifacts.search import AdmissionFloor, fts_match_query
+from powercontext.builtin.artifacts.search import AdmissionFloor
 from powercontext.builtin.artifacts.skill import Skill, SkillPackageSnapshot, SkillSearchHit, skill_searchable_text
 from powercontext.builtin.persistence.experience_index import (
     ensure_artifact_head_searchable_text,
@@ -38,6 +38,7 @@ from powercontext.builtin.persistence.experience_index import (
     remove_experience_projection,
     replace_experience_projection,
     replace_skill_projection,
+    search_approved_artifact_rows,
     skill_search_hits,
 )
 
@@ -82,29 +83,6 @@ _INSERT_FTS_SQL = text(
     """
     INSERT INTO pc_artifact_fts (scope_id, family, artifact_id, revision, searchable_text)
     VALUES (:scope_id, :family, :artifact_id, :revision, :searchable_text)
-    """
-)
-_SEARCH_FTS_SQL = text(
-    """
-    SELECT f.artifact_id, f.revision, f.searchable_text, a.content,
-           bm25(pc_artifact_fts) AS raw_score, 'sqlite_bm25' AS score_metric
-    FROM pc_artifact_fts AS f
-    JOIN pc_artifacts AS a
-      ON a.scope_id = f.scope_id
-     AND a.family = f.family
-     AND a.artifact_id = f.artifact_id
-     AND a.revision = f.revision
-    JOIN pc_artifact_heads AS h
-      ON h.scope_id = f.scope_id
-     AND h.family = f.family
-     AND h.artifact_id = f.artifact_id
-     AND h.revision = f.revision
-    WHERE pc_artifact_fts MATCH :query
-      AND f.scope_id = :scope_id
-      AND f.family = :family
-      AND h.lifecycle_state = 'active'
-    ORDER BY bm25(pc_artifact_fts), f.artifact_id, f.revision
-    LIMIT :candidate_limit
     """
 )
 
@@ -158,20 +136,9 @@ class SQLiteExperienceFTSIndex:
         min_score: float | None = None,
         require_scores: bool = False,
     ) -> ExperienceSearchOutcome:
-        match_query = fts_match_query(query)
-        if match_query is None:
-            return ExperienceSearchOutcome()
-        rows = (
-            await connection.execute(
-                _SEARCH_FTS_SQL,
-                {
-                    "query": match_query,
-                    "scope_id": scope_id,
-                    "family": Experience.family,
-                    "candidate_limit": limit * 4,
-                },
-            )
-        ).mappings()
+        rows = await search_approved_artifact_rows(
+            connection, scope_id, Experience.family, query, limit, admission=admission
+        )
         return experience_search_hits(
             rows, query, limit, scope_id, admission=admission, min_score=min_score, require_scores=require_scores
         )
@@ -219,20 +186,9 @@ class SQLiteExperienceFTSIndex:
         min_score: float | None = None,
         require_scores: bool = False,
     ) -> tuple[SkillSearchHit, ...]:
-        match_query = fts_match_query(query)
-        if match_query is None:
-            return ()
-        rows = (
-            await connection.execute(
-                _SEARCH_FTS_SQL,
-                {
-                    "query": match_query,
-                    "scope_id": scope_id,
-                    "family": Skill.family,
-                    "candidate_limit": limit * 4,
-                },
-            )
-        ).mappings()
+        rows = await search_approved_artifact_rows(
+            connection, scope_id, Skill.family, query, limit, admission=admission
+        )
         return skill_search_hits(
             rows, query, limit, admission=admission, min_score=min_score, require_scores=require_scores
         )

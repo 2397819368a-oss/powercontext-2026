@@ -425,9 +425,11 @@ Chunk policy:
 6. Exact get always returns the complete Detail.
 
 The concrete chunk length, tail threshold, and overlap ratio are internal constants associated with a policy version,
-not public configuration. The implementation also enforces a hard per-Topic chunk count so the vector channel's
-worst-case neighbor scan remains within the backend limit; adversarial Markdown falls back to bounded overlapping
-windows. Changing the Chunk policy requires rebuilding the corresponding retrieval projections.
+not public configuration. A hard per-Topic chunk count bounds chunk projection writes and storage per Topic; adversarial
+Markdown falls back to bounded overlapping windows. This budget does not guarantee Topic-level Top-K completeness
+within a backend's raw neighbor limit or bound the total retrieval work. Backend retrieval behavior and cost boundaries
+are described in the [Topic Memory workflow](../docs/workflows/topic-memory.md#search-current-topics).
+Changing the Chunk policy requires rebuilding the corresponding retrieval projections.
 
 Each retrieval channel first collapses by Topic. When multiple Detail chunks from one Topic match, only the best
 position is retained for the snippet. The two or four channels enabled for the current deployment are fused by RRF

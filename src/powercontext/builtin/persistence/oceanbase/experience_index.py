@@ -16,13 +16,13 @@
 
 from __future__ import annotations
 
-from sqlalchemy import literal, select, text
+from sqlalchemy import select, text
 from sqlalchemy.dialects.mysql import match
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.artifacts.experience import Experience, ExperienceSearchOutcome
 from powercontext.builtin.artifacts.memory import CapabilityNotSupportedError
-from powercontext.builtin.artifacts.search import AdmissionFloor, analyze_fts_query
+from powercontext.builtin.artifacts.search import AdmissionFloor
 from powercontext.builtin.artifacts.skill import Skill, SkillPackageSnapshot, SkillSearchHit
 from powercontext.builtin.persistence.experience_index import (
     ensure_artifact_head_searchable_text,
@@ -32,9 +32,10 @@ from powercontext.builtin.persistence.experience_index import (
     remove_experience_projection,
     replace_experience_projection,
     replace_skill_projection,
+    search_approved_artifact_rows,
     skill_search_hits,
 )
-from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 
 _OCEANBASE_FTS_INDEX_NAME = "ix_pc_artifact_heads_fts"
 _OCEANBASE_CREATE_FTS_SQL = f"""
@@ -94,36 +95,9 @@ class OceanBaseExperienceFTSIndex:
         min_score: float | None = None,
         require_scores: bool = False,
     ) -> ExperienceSearchOutcome:
-        analyzed = analyze_fts_query(query)
-        if not analyzed:
-            return ExperienceSearchOutcome()
-        score = match(ARTIFACT_HEADS_TABLE.c.searchable_text, against=analyzed)
-        rows = (
-            await connection.execute(
-                select(
-                    ARTIFACT_HEADS_TABLE.c.artifact_id,
-                    ARTIFACT_HEADS_TABLE.c.revision,
-                    ARTIFACTS_TABLE.c.content,
-                    score.label("raw_score"),
-                    literal("oceanbase_match").label("score_metric"),
-                )
-                .join(
-                    ARTIFACTS_TABLE,
-                    (ARTIFACTS_TABLE.c.scope_id == ARTIFACT_HEADS_TABLE.c.scope_id)
-                    & (ARTIFACTS_TABLE.c.family == ARTIFACT_HEADS_TABLE.c.family)
-                    & (ARTIFACTS_TABLE.c.artifact_id == ARTIFACT_HEADS_TABLE.c.artifact_id)
-                    & (ARTIFACTS_TABLE.c.revision == ARTIFACT_HEADS_TABLE.c.revision),
-                )
-                .where(
-                    ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
-                    ARTIFACT_HEADS_TABLE.c.family == Experience.family,
-                    ARTIFACT_HEADS_TABLE.c.lifecycle_state == "active",
-                    score,
-                )
-                .order_by(score.desc(), ARTIFACT_HEADS_TABLE.c.artifact_id, ARTIFACT_HEADS_TABLE.c.revision)
-                .limit(limit * 4)
-            )
-        ).mappings()
+        rows = await search_approved_artifact_rows(
+            connection, scope_id, Experience.family, query, limit, admission=admission
+        )
         return experience_search_hits(
             rows, query, limit, scope_id, admission=admission, min_score=min_score, require_scores=require_scores
         )
@@ -150,37 +124,9 @@ class OceanBaseExperienceFTSIndex:
         min_score: float | None = None,
         require_scores: bool = False,
     ) -> tuple[SkillSearchHit, ...]:
-        analyzed = analyze_fts_query(query)
-        if not analyzed:
-            return ()
-        score = match(ARTIFACT_HEADS_TABLE.c.searchable_text, against=analyzed)
-        rows = (
-            await connection.execute(
-                select(
-                    ARTIFACT_HEADS_TABLE.c.artifact_id,
-                    ARTIFACT_HEADS_TABLE.c.revision,
-                    ARTIFACT_HEADS_TABLE.c.searchable_text,
-                    ARTIFACTS_TABLE.c.content,
-                    score.label("raw_score"),
-                    literal("oceanbase_match").label("score_metric"),
-                )
-                .join(
-                    ARTIFACTS_TABLE,
-                    (ARTIFACTS_TABLE.c.scope_id == ARTIFACT_HEADS_TABLE.c.scope_id)
-                    & (ARTIFACTS_TABLE.c.family == ARTIFACT_HEADS_TABLE.c.family)
-                    & (ARTIFACTS_TABLE.c.artifact_id == ARTIFACT_HEADS_TABLE.c.artifact_id)
-                    & (ARTIFACTS_TABLE.c.revision == ARTIFACT_HEADS_TABLE.c.revision),
-                )
-                .where(
-                    ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
-                    ARTIFACT_HEADS_TABLE.c.family == Skill.family,
-                    ARTIFACT_HEADS_TABLE.c.lifecycle_state == "active",
-                    score,
-                )
-                .order_by(score.desc(), ARTIFACT_HEADS_TABLE.c.artifact_id, ARTIFACT_HEADS_TABLE.c.revision)
-                .limit(limit * 4)
-            )
-        ).mappings()
+        rows = await search_approved_artifact_rows(
+            connection, scope_id, Skill.family, query, limit, admission=admission
+        )
         return skill_search_hits(
             rows, query, limit, admission=admission, min_score=min_score, require_scores=require_scores
         )

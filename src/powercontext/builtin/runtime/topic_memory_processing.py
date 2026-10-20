@@ -83,7 +83,9 @@ from powercontext.builtin.artifacts.topic_memory.relatedness import (
 from powercontext.builtin.artifacts.topic_memory.search import bounded_topic_memory_query
 from powercontext.builtin.inference import (
     EmbeddingModel,
+    EmbeddingResult,
     GenerationResult,
+    InvalidInferenceOutputError,
     StructuredGenerator,
     TokenEstimator,
     character_token_estimator,
@@ -478,6 +480,9 @@ class TopicMemoryProcessor:
         )
         self._publisher = publisher
         self._embedding_model = embedding_model
+        self._document_vectors: ContextVar[dict[tuple[str, str], tuple[float, ...]] | None] = ContextVar(
+            "topic_memory_document_vectors", default=None
+        )
         self._usage_reporter = usage_reporter
         self._history_max = history_max_candidates
         self._history_threshold = history_rrf_threshold
@@ -521,6 +526,7 @@ class TopicMemoryProcessor:
             fence=assignment.fence,
         )
         token = self._work_budget.set(budget)
+        vector_token = self._document_vectors.set({})
         self._used_stages.clear()
         try:
             await budget.begin()
@@ -544,6 +550,7 @@ class TopicMemoryProcessor:
         except RevisionConflictError:
             return ArtifactProcessingWorkerCompletion(ArtifactProcessingWorkerOutcome.HEAD_CONFLICT)
         finally:
+            self._document_vectors.reset(vector_token)
             self._work_budget.reset(token)
         return ArtifactProcessingWorkerCompletion()
 
@@ -575,13 +582,24 @@ class TopicMemoryProcessor:
         self._local_tokens += tokens
 
     async def _embed(self, texts: tuple[str, ...]):
-        if self._embedding_model is None:
+        model = self._embedding_model
+        if model is None:
             raise TopicMemoryGenerationError("embedding_unavailable")
+        cached = self._document_vectors.get()
+        if cached is None:
+            cached = {}
+        profile = model.profile.model_dump_json()
+        pending = tuple(dict.fromkeys(text for text in texts if (profile, text) not in cached))
         # At most one provider request per text (the adapter may batch them).
-        await self._reserve(
-            requests=max(1, len(texts)), tokens=max(1, sum(self._stages.estimator.estimate(text) for text in texts))
-        )
-        return await self._embedding_model.embed(texts)
+        if pending:
+            await self._reserve(
+                requests=len(pending), tokens=max(1, sum(self._stages.estimator.estimate(text) for text in pending))
+            )
+            result = await model.embed(pending)
+            if len(result.vectors) != len(pending):
+                raise InvalidInferenceOutputError("topic-memory.index", "requires one vector per input")
+            cached.update(((profile, text), vector) for text, vector in zip(pending, result.vectors, strict=True))
+        return EmbeddingResult(vectors=tuple(cached[profile, text] for text in texts))
 
     async def _embed_query(self, texts: tuple[str, ...]):
         if self._embedding_model is None:
@@ -821,10 +839,12 @@ class TopicMemoryProcessor:
         )[: self._history_max]
         id_by_key = {key: f"candidate-{index:04d}" for index, key in enumerate(ordered_keys, start=1)}
         candidates: dict[str, PublishedTopicMemory] = {}
-        async with self._database.transaction() as connection:
-            for key in ordered_keys:
-                ref = ranked[key][2].artifact_ref
-                candidates[id_by_key[key]] = await self._topics.get_exact(connection, scope_id, ref)
+        if ordered_keys:
+            async with self._database.transaction(consistent_snapshot=True) as connection:
+                publications = await self._topics.get_exact_many(
+                    connection, scope_id, tuple(ranked[key][2].artifact_ref for key in ordered_keys)
+                )
+            candidates = {id_by_key[key]: value for key, value in zip(ordered_keys, publications, strict=True)}
         projected = tuple(
             TopicMemoryProbeCandidates(
                 probe_id=f"probe-{index:04d}",
@@ -864,7 +884,7 @@ class TopicMemoryProcessor:
                 embedded = await self._embed_query((query if semantic_query is None else semantic_query,))
             query_vector = embedded.vectors[0]
             profile = self._embedding_model.profile
-        async with self._database.transaction() as connection:
+        async with self._database.transaction(consistent_snapshot=True) as connection:
             result = await self._topics.search(
                 connection,
                 scope_id,
@@ -1009,7 +1029,7 @@ class TopicMemoryProcessor:
                 or f"{proposal.content.title}\n{proposal.content.summary}"[:MAX_TOPIC_MEMORY_QUERY_LENGTH].strip()
             )
             mode: TopicMemorySearchMode = "fts" if vector is None else "hybrid" if signature else "vector"
-            async with self._database.transaction() as connection:
+            async with self._database.transaction(consistent_snapshot=True) as connection:
                 result = await self._topics.search(
                     connection,
                     scope_id,
@@ -1019,16 +1039,19 @@ class TopicMemoryProcessor:
                     query_vector=vector,
                     embedding_profile=profile,
                 )
-                ids: set[str] = set()
-                for hit in result.hits:
-                    candidate_id = next(
-                        (key for key, value in candidates.items() if value.topic.as_ref() == hit.artifact_ref),
-                        None,
-                    )
-                    if candidate_id is None:
+                known = {_artifact_key(publication.topic.as_ref()): key for key, publication in candidates.items()}
+                missing = {
+                    _artifact_key(hit.artifact_ref): hit.artifact_ref
+                    for hit in result.hits
+                    if _artifact_key(hit.artifact_ref) not in known
+                }
+                if missing:
+                    publications = await self._topics.get_exact_many(connection, scope_id, tuple(missing.values()))
+                    for ref, publication in zip(missing, publications, strict=True):
                         candidate_id = f"candidate-{len(candidates) + 1:04d}"
-                        candidates[candidate_id] = await self._topics.get_exact(connection, scope_id, hit.artifact_ref)
-                    ids.add(candidate_id)
+                        candidates[candidate_id] = publication
+                        known[ref] = candidate_id
+                ids = {known[_artifact_key(hit.artifact_ref)] for hit in result.hits}
             secondary.append(frozenset(ids))
             vectors.append(vector)
         components = topic_memory_related_components(

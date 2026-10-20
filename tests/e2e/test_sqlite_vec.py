@@ -149,8 +149,17 @@ def test_sqlite_vector_completeness_rejects_corrupt_projection(tmp_path, corrupt
                     else {"revision": created.revision + 1}
                 )
                 await connection.execute(update(table).values(**values))
-            with pytest.raises(AtomicMemoryIndexError):
-                await memory.search("alpha", mode="vector")
+            if corruption == "missing-vector":
+                assert not (await memory.search("alpha", mode="vector")).hits
+            else:
+                with pytest.raises(AtomicMemoryIndexError):
+                    await memory.search("alpha", mode="vector")
+        if corruption == "missing-vector":
+            with pytest.raises(AtomicMemoryIndexError, match="rebuild-projection"):
+                async with open_builtin_contexts(
+                    BuiltinConfig(database=config), embedding_model=_KeywordEmbeddingModel()
+                ):
+                    pass
 
     asyncio.run(scenario())
 

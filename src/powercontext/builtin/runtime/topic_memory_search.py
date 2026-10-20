@@ -31,7 +31,6 @@ from powercontext.builtin.artifacts.topic_memory import (
     PublishedTopicMemory,
     TopicArtifactSearchRequest,
     TopicMemoryCapabilities,
-    TopicMemoryCurrentItem,
     TopicMemorySearchResult,
 )
 from powercontext.builtin.artifacts.topic_memory.search import TopicSearchPlan, plan_topic_search, topic_search_error
@@ -53,7 +52,7 @@ class TopicMemorySearcher:
 
     The calling Runtime facade owns scoped operation and model usage accounting.
     Public execution forwards the Family request to the composed backend. Legacy
-    execution preserves its existing callback keywords and complete-read cost.
+    execution preserves its existing callback keywords.
     """
 
     family = "topic-memory"
@@ -64,14 +63,12 @@ class TopicMemorySearcher:
         *,
         search: Callable[..., Awaitable[TopicMemorySearchResult]],
         get: Callable[[str, ArtifactRef], Awaitable[PublishedTopicMemory]] | None = None,
-        browse: Callable[..., Awaitable[tuple[TopicMemoryCurrentItem, ...]]] | None = None,
         embedding_model: EmbeddingModel | None = None,
         observer: Callable[[str, bool], None] | None = None,
         capabilities: TopicMemoryCapabilities | None = None,
     ) -> None:
         self._search = search
         self._get = get
-        self._browse = browse
         self._embedding = embedding_model
         self._observer = observer
         self._capabilities = capabilities
@@ -182,15 +179,6 @@ class TopicMemorySearcher:
             keywords["artifact_request"] = artifact_request
         if execution_context is not None:
             keywords["execution_context"] = execution_context
-        if (
-            embedding is not None
-            and self._browse is not None
-            and (execution_context is None or (execution_context.access is None and execution_context.trusted_local))
-            and not await self._browse(scope_id, limit=1, after=None)
-        ):
-            if artifact_request is not None and plan is not None and not plan.fallback_allowed:
-                return TopicMemorySearchResult(mode=plan.mode, artifacts=()), False
-            embedding = None
         if embedding is None:
             result = await self._search(scope_id, query, mode="fts", **keywords)
             return result.model_copy(update={"embedding_calls": 0}), False

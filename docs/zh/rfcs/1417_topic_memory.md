@@ -377,9 +377,10 @@ Chunk policy：
 5. 搜索命中后围绕最佳位置动态扩展 snippet；
 6. exact get 始终返回完整 Detail。
 
-具体 chunk 长度、尾块阈值和 overlap 比例是带 policy version 的内部常量，不是公共配置。实现还会强制每个 Topic
-的 chunk 数量上限，保证向量通道最坏情况下的近邻扫描不超过后端限制；对抗性 Markdown 会回退为有界重叠窗口。
-Chunk 策略变化需要重建对应检索投影。
+具体 chunk 长度、尾块阈值和 overlap 比例是带 policy version 的内部常量，不是公共配置。每个 Topic 的 chunk
+数量上限约束单个 Topic 的 chunk 投影写入量和存储量；对抗性 Markdown 会回退为有界重叠窗口。该预算不保证在后端原始
+近邻数量限制内获得完整的 Topic 级 Top-K，也不限制整个检索的工作量。后端检索行为与成本边界见
+[Topic Memory 工作流](../docs/workflows/topic-memory.md#搜索当前主题)。Chunk 策略变化需要重建对应检索投影。
 
 每个检索通道先按 Topic collapse，同一 Topic 的多个 detail 命中只保留最佳位置用于 snippet。当前部署启用的
 两个或四个通道通过 RRF 排名融合，不比较全文分数和向量距离的原始数值。最终一个 Topic 最多占一个结果位置，并保留

@@ -38,7 +38,10 @@ from powercontext.builtin.artifacts.search import (
     InvalidSearchScore,
     admits_fts_projection,
     admits_fts_text,
+    analyze_fts_query,
     analyze_text,
+    fts_match_query,
+    fts_query_requirements,
     lexical_search_score,
 )
 from powercontext.builtin.artifacts.skill import (
@@ -50,6 +53,7 @@ from powercontext.builtin.artifacts.skill import (
     skill_searchable_text,
 )
 from powercontext.builtin.artifacts.skill.package import capture_skill_archive
+from powercontext.builtin.persistence.atomic_memory_index import oceanbase_fts_coverage_sql, sqlite_fts_coverage_sql
 from powercontext.builtin.persistence.codec import load_model, stored_bytes
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE, SKILL_PACKAGES_TABLE
@@ -357,6 +361,133 @@ async def replace_skill_projection(
     )
 
 
+async def search_approved_artifact_rows(
+    connection: AsyncConnection,
+    scope_id: str,
+    family: str,
+    query: str,
+    limit: int,
+    *,
+    admission: AdmissionFloor | None,
+) -> tuple[Mapping[Any, Any], ...]:
+    """Qualify active heads before truncation; hydrate bounded candidates and decode selected rows.
+
+    Admission observes the ranked prefix, not rejected rows beyond that prefix.
+    """
+    terms, required = fts_query_requirements(query, floor=admission)
+    if not terms:
+        return ()
+    parameters: dict[str, Any] = {
+        "scope_id": scope_id,
+        "family": family,
+        "result_limit": limit,
+        "required": min(required, len(terms) + 1),
+    }
+    if connection.dialect.name == "sqlite":
+        coverage, values = sqlite_fts_coverage_sql(terms) if required > 1 else ("1", {})
+        parameters["query"] = fts_match_query(query)
+        source = (
+            "pc_artifact_fts AS f JOIN pc_artifact_heads AS h ON "
+            "h.scope_id=f.scope_id AND h.family=f.family AND h.artifact_id=f.artifact_id "
+            "AND h.revision=f.revision"
+        )
+        coverage = coverage.replace("searchable_text", "f.searchable_text")
+        score, predicate, direction, metric = (
+            "bm25(pc_artifact_fts)",
+            "pc_artifact_fts MATCH :query",
+            "ASC",
+            "sqlite_bm25",
+        )
+        identity = "f.rowid AS projection_id, "
+        projection_join = "JOIN pc_artifact_fts AS p ON p.rowid=c.projection_id "
+    else:
+        coverage, values = oceanbase_fts_coverage_sql(terms) if required > 1 else ("1", {})
+        parameters["query"] = analyze_fts_query(query)
+        source = "pc_artifact_heads AS h"
+        score = "MATCH(h.searchable_text) AGAINST (:query)"
+        predicate, direction, metric = score, "DESC", "oceanbase_match"
+        identity = ""
+        projection_join = (
+            "JOIN pc_artifact_heads AS p ON p.scope_id=:scope_id AND p.family=:family "
+            "AND p.artifact_id=c.artifact_id AND p.revision=c.revision "
+        )
+    parameters.update(values)
+    eligibility = f"WHERE h.scope_id=:scope_id AND h.family=:family AND h.lifecycle_state='active' AND {predicate}"
+    matches = f"FROM {source} {eligibility}"
+    witness: tuple[Mapping[Any, Any], ...] = ()
+    if connection.dialect.name != "sqlite" and required > 1:
+        parameters["probe_limit"] = limit * 8
+        probe = text(
+            f"WITH raw_probe AS (SELECT h.artifact_id, h.revision, h.searchable_text, {score} AS raw_score "  # noqa: S608
+            f"{matches} ORDER BY raw_score DESC, h.artifact_id, h.revision LIMIT :probe_limit) "
+            "SELECT r.*, a.content AS content, 0 AS is_rejected FROM raw_probe AS r "
+            "LEFT JOIN pc_artifacts AS a ON a.scope_id=:scope_id AND a.family=:family "
+            "AND a.artifact_id=r.artifact_id AND a.revision=r.revision "
+            "ORDER BY raw_score DESC, artifact_id, revision"
+        )
+        observed = tuple((await connection.execute(probe, parameters)).mappings())
+        qualified = tuple(
+            row for row in observed if admits_fts_projection(query, str(row["searchable_text"]), floor=admission)
+        )
+        witness = (
+            ({"is_rejected": 1, "score_metric": metric},)
+            if family == Experience.family and len(qualified) < len(observed)
+            else ()
+        )
+        if len(qualified) >= limit or len(observed) < parameters["probe_limit"]:
+            return witness + tuple({**row, "score_metric": metric} for row in qualified[:limit])
+    prefix = ""
+    candidate_source = source
+    if connection.dialect.name == "sqlite" and required > 1:
+        parameters["probe_limit"] = limit * 4
+        prefix = (
+            f"raw_probe AS MATERIALIZED (SELECT {identity}h.artifact_id, h.revision, "  # noqa: S608
+            f"{score} AS raw_score "
+            f"{matches} ORDER BY raw_score, h.artifact_id, h.revision LIMIT :probe_limit), "
+            "qualified_probe AS MATERIALIZED (SELECT r.* FROM raw_probe AS r "
+            "CROSS JOIN pc_artifact_fts AS f ON f.rowid=r.projection_id "
+            f"WHERE {coverage} >= :required), "
+            "fallback_gate AS MATERIALIZED (SELECT 1 "
+            "WHERE (SELECT COUNT(*) FROM raw_probe)=:probe_limit "
+            "AND (SELECT COUNT(*) FROM qualified_probe)<:result_limit), "
+        )
+        # Keep the bounded prefix and the zero-or-one-row fallback gate outside FTS loops.
+        candidate_source = "fallback_gate CROSS JOIN " + source.replace(" JOIN ", " CROSS JOIN ", 1)
+    candidates = (
+        f"SELECT {identity}h.artifact_id, h.revision, {score} AS raw_score "  # noqa: S608
+        f"FROM {candidate_source} {eligibility} AND {coverage} >= :required "
+        f"ORDER BY raw_score {direction}, h.artifact_id, h.revision LIMIT :result_limit"
+    )
+    if prefix:
+        # An exact sorted prefix proves Top-K when enough qualify; otherwise retain the full query.
+        candidates = (
+            "SELECT * FROM (SELECT * FROM qualified_probe "  # noqa: S608
+            "WHERE NOT EXISTS (SELECT 1 FROM fallback_gate) "
+            "ORDER BY raw_score, artifact_id, revision LIMIT :result_limit) "
+            f"UNION ALL SELECT * FROM ({candidates})"
+        )
+    rejected = (
+        (
+            " UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, 1 FROM "
+            "(SELECT 1 WHERE (SELECT COUNT(*) FROM raw_probe) > "
+            "(SELECT COUNT(*) FROM qualified_probe)) AS rejected"
+        )
+        if family == Experience.family and prefix
+        else ""
+    )
+    statement = text(
+        f"WITH {prefix}candidates AS ({candidates}) "  # noqa: S608
+        "SELECT c.artifact_id AS artifact_id, c.revision AS revision, p.searchable_text AS searchable_text, "
+        f"a.content AS content, c.raw_score AS raw_score, 0 AS is_rejected FROM candidates AS c {projection_join}"
+        "LEFT JOIN pc_artifacts AS a ON a.scope_id=:scope_id AND a.family=:family "
+        f"AND a.artifact_id=c.artifact_id AND a.revision=c.revision{rejected} "
+        f"ORDER BY is_rejected DESC, raw_score {direction}, artifact_id, revision"
+    )
+    rows = (await connection.execute(statement, parameters)).mappings()
+    result = tuple({**row, "score_metric": metric} for row in rows)
+    return witness + result
+
+
 def experience_search_hits(
     rows: Iterable[Mapping[Any, Any]],
     query: str,
@@ -384,6 +515,8 @@ def experience_search_hits(
     admitted = 0
     for row in rows:
         examined += 1
+        if row.get("is_rejected"):
+            continue
         content = _content(row["content"])
         if not admits_fts_text(query, experience_search_text(content), floor=admission):
             continue
@@ -547,5 +680,6 @@ __all__ = [
     "remove_experience_projection",
     "replace_experience_projection",
     "replace_skill_projection",
+    "search_approved_artifact_rows",
     "skill_search_hits",
 ]
