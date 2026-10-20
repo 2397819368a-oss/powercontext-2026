@@ -82,7 +82,7 @@ async def _running_host(tmp_path, host, *, metrics=None):
         client = await resources.enter_async_context(
             httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://testserver")
         )
-        yield client, runtime, supervisor
+        yield client, runtime, supervisor, app.state.metrics
 
 
 async def _add_pending(runtime, supervisor, scope_id, count):
@@ -110,8 +110,21 @@ def _published_observation(samples):
 @pytest.mark.parametrize("host", ["api", "background"])
 def test_first_collection_failure_does_not_publish_partial_processing_counts(tmp_path, monkeypatch, host):
     async def scenario():
-        async with _running_host(tmp_path, host) as (client, runtime, supervisor):
+        async with _running_host(tmp_path, host) as (client, runtime, supervisor, metrics):
             await _add_pending(runtime, supervisor, "private-first-scope", 1)
+            # API startup publishes dependency states independently of scrape snapshots.
+            # Rendering the registry preserves that baseline without refreshing Runtime.
+            baseline_samples = _samples(metrics.render().decode())
+            baseline = _published_observation(baseline_samples)
+            timestamp = "powercontext_server_telemetry_collection_timestamp_seconds"
+            dependency_state = "powercontext_server_dependency_state"
+            assert baseline[(timestamp, ())] == 0
+            assert {name for name, _ in baseline} <= {timestamp, dependency_state}
+            if host == "api":
+                assert any(name == dependency_state for name, _ in baseline)
+                assert _value(baseline_samples, "readiness_evaluated_timestamp_seconds") > 0
+            else:
+                assert baseline == {(timestamp, ()): 0}
             with monkeypatch.context() as failure:
                 failure.setattr(
                     runtime, "readiness_snapshot", Mock(side_effect=RuntimeError("private-provider-details"))
@@ -121,9 +134,7 @@ def test_first_collection_failure_does_not_publish_partial_processing_counts(tmp
             samples = _samples(response.text)
             assert _value(samples, "telemetry_collection_failures_total") == 1
             assert _value(samples, "telemetry_collection_timestamp_seconds") == 0
-            assert _published_observation(samples) == {
-                ("powercontext_server_telemetry_collection_timestamp_seconds", ()): 0,
-            }
+            assert _published_observation(samples) == baseline
             assert "private-provider-details" not in response.text
             recovered = await client.get("/metrics")
             assert recovered.status_code == 200
@@ -141,7 +152,7 @@ def test_first_collection_failure_does_not_publish_partial_processing_counts(tmp
 def test_threaded_render_retains_one_snapshot_while_endpoint_publishes_next(tmp_path, monkeypatch, render_directly):
     async def scenario():
         metrics = ServerMetrics(role="background")
-        async with _running_host(tmp_path, "background", metrics=metrics) as (client, runtime, supervisor):
+        async with _running_host(tmp_path, "background", metrics=metrics) as (client, runtime, supervisor, _):
             await _add_pending(runtime, supervisor, "private-first-scope", 1)
             first = await client.get("/metrics")
             assert first.status_code == 200
@@ -186,7 +197,7 @@ def test_threaded_render_retains_one_snapshot_while_endpoint_publishes_next(tmp_
 @pytest.mark.parametrize("host", ["api", "background"])
 def test_failed_concurrent_scrapes_keep_previous_counts_and_freshness_until_recovery(tmp_path, monkeypatch, host):
     async def scenario():
-        async with _running_host(tmp_path, host) as (client, runtime, supervisor):
+        async with _running_host(tmp_path, host) as (client, runtime, supervisor, _):
             await _add_pending(runtime, supervisor, "private-first-scope", 1)
             first = await client.get("/metrics")
             assert first.status_code == 200
