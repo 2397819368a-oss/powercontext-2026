@@ -331,7 +331,7 @@ def test_sqlite_experience_fts_tracks_only_approved_current_heads_and_rebuilds()
             assert await contexts.search_experience(scope_id, "falconcurrent", 8) == ()
 
             async with contexts.database.transaction() as connection:
-                await contexts.experience_index.initialize(connection)
+                await contexts.experience_index.rebuild(connection)
             rebuilt = await contexts.search_experience(scope_id, "falconcurrent", 8)
             assert tuple(hit.artifact_ref for hit in rebuilt) == (replaced.result_artifact,)
             assert await contexts.search_experience(scope_id, "staleprojection", 8) == ()

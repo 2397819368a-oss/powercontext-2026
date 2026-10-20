@@ -28,6 +28,7 @@ from powercontext.builtin.artifacts.memory import CapabilityNotSupportedError
 from powercontext.builtin.artifacts.search import AdmissionFloor
 from powercontext.builtin.artifacts.skill import Skill, SkillPackageSnapshot
 from powercontext.builtin.persistence.experience_index import (
+    APPROVED_ARTIFACT_PROJECTION_VERSION,
     ensure_artifact_head_searchable_text,
     rebuild_experience_projections,
     rebuild_skill_projections,
@@ -35,6 +36,10 @@ from powercontext.builtin.persistence.experience_index import (
     replace_experience_projection,
     replace_skill_projection,
     search_approved_artifact_rows,
+)
+from powercontext.builtin.persistence.lexical_projection import (
+    lexical_projection_is_current,
+    record_lexical_projection_version,
 )
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 
@@ -63,16 +68,25 @@ class OceanBaseExperienceFTSIndex:
         if connection.dialect.name != "mysql":
             raise CapabilityNotSupportedError("oceanbase-experience-fts")
         await ensure_artifact_head_searchable_text(connection)
-        await rebuild_experience_projections(connection)
-        await rebuild_skill_projections(connection)
         count = await connection.scalar(
             _OCEANBASE_FTS_INDEX_EXISTS_SQL,
             {"index_name": _OCEANBASE_FTS_INDEX_NAME},
         )
         if count == 0:
             await connection.exec_driver_sql(_OCEANBASE_CREATE_FTS_SQL)
+        if not await lexical_projection_is_current(
+            connection, ARTIFACT_HEADS_TABLE.name, version=APPROVED_ARTIFACT_PROJECTION_VERSION
+        ):
+            await self.rebuild(connection)
         probe = match(ARTIFACT_HEADS_TABLE.c.searchable_text, against="powercontext")
         await connection.execute(select(ARTIFACT_HEADS_TABLE.c.artifact_id).where(probe).limit(1))
+
+    async def rebuild(self, connection: AsyncConnection, /) -> None:
+        await rebuild_experience_projections(connection)
+        await rebuild_skill_projections(connection)
+        await record_lexical_projection_version(
+            connection, ARTIFACT_HEADS_TABLE.name, version=APPROVED_ARTIFACT_PROJECTION_VERSION
+        )
 
     async def replace(
         self,

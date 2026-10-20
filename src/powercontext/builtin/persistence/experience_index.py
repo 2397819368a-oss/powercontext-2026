@@ -56,7 +56,11 @@ from powercontext.builtin.artifacts.skill.package import capture_skill_archive
 from powercontext.builtin.persistence.atomic_memory_index import oceanbase_fts_coverage_sql, sqlite_fts_coverage_sql
 from powercontext.builtin.persistence.codec import load_model, stored_bytes
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
+from powercontext.builtin.persistence.lexical_projection import LEXICAL_ANALYZER_VERSION
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE, SKILL_PACKAGES_TABLE
+
+# Bump the suffix when Family searchable fields or package evidence rules change.
+APPROVED_ARTIFACT_PROJECTION_VERSION = f"{LEXICAL_ANALYZER_VERSION}:approved-v1"
 
 _SQLITE_SEARCHABLE_TEXT_EXISTS_SQL = text(
     """
@@ -93,6 +97,10 @@ class ExperienceIndex(Protocol):
     families: frozenset[str]
 
     async def initialize(self, connection: AsyncConnection, /) -> None: ...
+
+    async def rebuild(self, connection: AsyncConnection, /) -> None:
+        """Repair initialized projections from authority with writers stopped."""
+        ...
 
     async def replace(
         self,
@@ -138,6 +146,9 @@ class NoExperienceIndex:
     families: frozenset[str] = frozenset()
 
     async def initialize(self, _connection: AsyncConnection, /) -> None:
+        pass
+
+    async def rebuild(self, _connection: AsyncConnection, /) -> None:
         pass
 
     async def replace(

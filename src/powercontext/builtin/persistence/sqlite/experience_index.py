@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
+from aiosqlite import Connection as SQLiteConnection
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -30,6 +31,7 @@ from powercontext.builtin.artifacts.memory import CapabilityNotSupportedError
 from powercontext.builtin.artifacts.search import AdmissionFloor
 from powercontext.builtin.artifacts.skill import Skill, SkillPackageSnapshot, skill_searchable_text
 from powercontext.builtin.persistence.experience_index import (
+    APPROVED_ARTIFACT_PROJECTION_VERSION,
     ensure_artifact_head_searchable_text,
     rebuild_experience_projections,
     rebuild_skill_projections,
@@ -38,6 +40,11 @@ from powercontext.builtin.persistence.experience_index import (
     replace_skill_projection,
     search_approved_artifact_rows,
 )
+from powercontext.builtin.persistence.lexical_projection import (
+    lexical_projection_is_current,
+    record_lexical_projection_version,
+)
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 
 _CREATE_FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS pc_artifact_fts USING fts5(
@@ -49,30 +56,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS pc_artifact_fts USING fts5(
     tokenize='unicode61'
 )
 """
-_RECONCILE_DELETE_FTS_SQL = """
-DELETE FROM pc_artifact_fts
-WHERE NOT EXISTS (
-    SELECT 1 FROM pc_artifact_heads AS h
-    WHERE h.scope_id = pc_artifact_fts.scope_id AND h.family = pc_artifact_fts.family
-      AND h.artifact_id = pc_artifact_fts.artifact_id AND h.revision = pc_artifact_fts.revision
-      AND h.family IN ('experience', 'skill') AND h.lifecycle_state = 'active'
-      AND h.searchable_text = pc_artifact_fts.searchable_text
-)
-OR rowid NOT IN (
-    SELECT min(rowid) FROM pc_artifact_fts GROUP BY scope_id, family, artifact_id
-)
-"""
-_RECONCILE_INSERT_FTS_SQL = """
+_BACKFILL_FTS_SQL = """
 INSERT INTO pc_artifact_fts (scope_id, family, artifact_id, revision, searchable_text)
 SELECT h.scope_id, h.family, h.artifact_id, h.revision, h.searchable_text
 FROM pc_artifact_heads AS h
-WHERE h.family IN ('experience', 'skill') AND h.lifecycle_state = 'active'
+WHERE h.family IN ('experience', 'skill')
   AND h.searchable_text IS NOT NULL
-EXCEPT
-SELECT scope_id, family, artifact_id, revision, searchable_text
-FROM pc_artifact_fts
 """
-_PROBE_FTS_SQL = "SELECT rowid FROM pc_artifact_fts WHERE pc_artifact_fts MATCH 'powercontext'"
+_PROBE_FTS_SQL = "SELECT rowid FROM pc_artifact_fts WHERE pc_artifact_fts MATCH 'powercontext' LIMIT 1"
 _DELETE_FTS_SQL = text(
     "DELETE FROM pc_artifact_fts WHERE scope_id = :scope_id AND family = :family AND artifact_id = :artifact_id"
 )
@@ -92,13 +83,32 @@ class SQLiteExperienceFTSIndex:
     async def initialize(self, connection: AsyncConnection, /) -> None:
         if connection.dialect.name != "sqlite":
             raise CapabilityNotSupportedError("sqlite-experience-fts")
+        driver = (await connection.get_raw_connection()).driver_connection
+        if isinstance(driver, SQLiteConnection) and not driver.in_transaction:
+            await connection.exec_driver_sql("BEGIN")
         await ensure_artifact_head_searchable_text(connection)
+        existing = await connection.scalar(
+            text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pc_artifact_fts'")
+        )
+        if not existing:
+            await connection.exec_driver_sql(_CREATE_FTS_SQL)
+        if not await lexical_projection_is_current(
+            connection, ARTIFACT_HEADS_TABLE.name, version=APPROVED_ARTIFACT_PROJECTION_VERSION
+        ):
+            await self.rebuild(connection)
+        elif not existing:
+            # A missing helper can be restored from heads without decoding packages.
+            await connection.exec_driver_sql(_BACKFILL_FTS_SQL)
+        await connection.exec_driver_sql(_PROBE_FTS_SQL)
+
+    async def rebuild(self, connection: AsyncConnection, /) -> None:
         await rebuild_experience_projections(connection)
         await rebuild_skill_projections(connection)
-        await connection.exec_driver_sql(_CREATE_FTS_SQL)
-        await connection.exec_driver_sql(_RECONCILE_DELETE_FTS_SQL)
-        await connection.exec_driver_sql(_RECONCILE_INSERT_FTS_SQL)
-        await connection.exec_driver_sql(_PROBE_FTS_SQL)
+        await connection.exec_driver_sql("DELETE FROM pc_artifact_fts")
+        await connection.exec_driver_sql(_BACKFILL_FTS_SQL)
+        await record_lexical_projection_version(
+            connection, ARTIFACT_HEADS_TABLE.name, version=APPROVED_ARTIFACT_PROJECTION_VERSION
+        )
 
     async def replace(
         self,
