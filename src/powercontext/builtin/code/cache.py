@@ -125,6 +125,10 @@ class Generation:
 
 
 class GenerationCache:
+    #: Publication records are bookkeeping, not data: keeping a short window is
+    #: enough to reclaim an interrupted build and bounded on a long-lived binding.
+    PUBLICATION_WINDOW = 64
+
     def __init__(self, directory: Path, store: GraphStore | None = None) -> None:
         self.directory = directory
         self.store = store if store is not None else SQLiteGraphStore()
@@ -198,7 +202,83 @@ class GenerationCache:
             (path / child).mkdir(mode=0o700)
         return path
 
-    def publish(self, staging: Path, manifest: dict[str, Any], deadline: float, max_bytes: int) -> Generation:
+    def publications(self) -> dict[str, dict[str, Any]]:
+        path = self.directory / "publication.json"
+        if not path.exists():
+            return {}
+        records = read_json(path, maximum=64 * 1024).get("attempts")
+        if not isinstance(records, dict):
+            raise CodeError("index_integrity_failed")
+        return {str(attempt): record for attempt, record in records.items() if isinstance(record, dict)}
+
+    def begin_publication(self, staging: Path) -> str:
+        """Name the attempt before the store writes any row under it.
+
+        The identifier has to come from here rather than the store: a commit that
+        has to be recalled later must be nameable even when the directory that
+        carried its name is gone.
+        """
+        attempt = uuid.uuid4().hex
+        records = self.publications()
+        records[attempt] = {"directory": staging.name, "state": "pending", "started_at": time.time()}
+        self._write_publications(records)
+        return attempt
+
+    def complete_publication(self, attempt: str, directory: Path) -> None:
+        records = self.publications()
+        # The generation is already reachable at this point, so a missing record is
+        # repaired rather than raised: losing a name must not fail a live publication.
+        record = records.setdefault(
+            attempt, {"started_at": time.time(), "state": "pending", "directory": directory.name}
+        )
+        record.update({"directory": directory.name, "state": "published"})
+        self._write_publications(records)
+
+    def recover(self, deadline: float) -> int:
+        """Reclaim commits whose generation directory no longer exists.
+
+        ``collect()`` starts from directory names, so it cannot see a commit whose
+        directory was removed out of band — a wiped cache, a pruned staging area.
+        The records are the only place that still knows the identifier.
+        """
+        records = self.publications()
+        abandoned = [
+            attempt
+            for attempt, record in records.items()
+            if not (self.directory / str(record.get("directory", ""))).exists()
+        ]
+        for attempt in abandoned:
+            self.store.remove_generation(attempt, self.directory.name, deadline)
+            records.pop(attempt)
+        if abandoned:
+            self._write_publications(records)
+        return len(abandoned)
+
+    def _write_publications(self, records: dict[str, dict[str, Any]]) -> None:
+        if len(records) > self.PUBLICATION_WINDOW:
+            ordered = sorted(records.items(), key=lambda item: item[1].get("started_at", 0))
+            records = dict(ordered[-self.PUBLICATION_WINDOW :])
+        self.replace_json("publication.json", {"attempts": records})
+
+    def _forget_collected(self) -> None:
+        records = self.publications()
+        live = {
+            attempt: record
+            for attempt, record in records.items()
+            if (self.directory / str(record.get("directory", ""))).exists()
+        }
+        if len(live) != len(records):
+            self._write_publications(live)
+
+    def publish(
+        self,
+        staging: Path,
+        manifest: dict[str, Any],
+        deadline: float,
+        max_bytes: int,
+        *,
+        attempt: str | None = None,
+    ) -> Generation:
         manifest_content = json_bytes(manifest)
         write_private(staging / "manifest.json", manifest_content)
         write_private(staging / "reader.lock", b"")
@@ -226,6 +306,10 @@ class GenerationCache:
             self.replace_json(
                 "current.json", {"current": reference, "previous": pointer["current"] if pointer else None}
             )
+            if attempt is not None:
+                # The rename is the moment the generation becomes reachable, so the
+                # record has to point at the final name before anything reads it.
+                self.complete_publication(attempt, directory)
             self.collect(self.pointer(), deadline)
         return Generation(directory, manifest, self.store)
 
@@ -284,3 +368,4 @@ class GenerationCache:
             except CodeError as error:
                 if error.code != "code_cache_busy":
                     raise
+        self._forget_collected()

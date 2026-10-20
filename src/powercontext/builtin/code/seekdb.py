@@ -241,10 +241,24 @@ class SeekDBGraphStore:
         return reference
 
     def create(
-        self, directory: Path, nodes: list[dict[str, Any]], edges: list[dict[str, Any]], deadline: float
+        self,
+        directory: Path,
+        nodes: list[dict[str, Any]],
+        edges: list[dict[str, Any]],
+        deadline: float,
+        *,
+        generation_id: str | None = None,
     ) -> dict[str, Any]:
         self.initialize(deadline)
-        reference = {"backend": self.identity, "binding": directory.parent.name, "id": uuid.uuid4().hex}
+        if generation_id is not None and (
+            len(generation_id) != 32 or any(character not in "0123456789abcdef" for character in generation_id)
+        ):
+            raise CodeError("index_integrity_failed")
+        reference = {
+            "backend": self.identity,
+            "binding": directory.parent.name,
+            "id": generation_id or uuid.uuid4().hex,
+        }
         # Persist the cleanup handle before any database commit can leave orphan rows.
         # A killed writer may leave the temporary file incomplete, but remove() must
         # only see a complete descriptor or no committed database work at all.
@@ -403,6 +417,21 @@ class SeekDBGraphStore:
                 (reference["id"], reference["binding"]),
             )
             connection.commit()
+
+    def remove_generation(self, generation_id: str, binding: str, deadline: float) -> None:
+        """Delete a commit whose directory is gone; the identifier is the only handle left."""
+        try:
+            with self.connection(deadline) as connection, connection.cursor() as cursor:
+                for table in ("pc_code_edges", "pc_code_nodes"):
+                    check_deadline(deadline)
+                    cursor.execute(f"DELETE FROM {table} WHERE generation_id = %s", (generation_id,))  # noqa: S608 - constant tables.
+                cursor.execute(
+                    "DELETE FROM pc_code_generations WHERE id = %s AND binding = %s", (generation_id, binding)
+                )
+                connection.commit()
+        except pymysql.MySQLError as error:
+            if error.args[0] != 1146:  # This binding never created its tables.
+                raise
 
     def _incomplete_staging(self, directory: Path, deadline: float) -> bool:
         # Older builders wrote graph.json in place before opening the transaction.
