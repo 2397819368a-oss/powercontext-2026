@@ -2525,12 +2525,27 @@ def _artifact_handle_binding(handle: StableHandle, target: ArtifactRef) -> Artif
     )
 
 
+def _require_strict_query(
+    http_request: Request,
+    parameter_names: set[str],
+    *,
+    repeatable: set[str] | None = None,
+) -> None:
+    if set(http_request.query_params) - parameter_names:
+        raise InvalidBaseAccessRequestError("query", "contains unknown parameters")
+    singleton_names = parameter_names - (repeatable or set())
+    if any(len(http_request.query_params.getlist(name)) > 1 for name in singleton_names):
+        raise InvalidBaseAccessRequestError("query", "parameters must be provided at most once")
+
+
 def _list_artifacts_query(
+    http_request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
     tag: Annotated[list[str] | None, Query(min_length=1, max_length=16)] = None,
     tag_match: Annotated[TagMatch | None, Query()] = None,
 ) -> ListArtifactsRequest:
+    _require_strict_query(http_request, {"limit", "cursor", "tag", "tag_match"}, repeatable={"tag"})
     if tag is None and tag_match is not None:
         raise InvalidBaseAccessRequestError("tag_match", "requires at least one tag")
     return ListArtifactsRequest.model_validate({"limit": limit, "cursor": cursor, "tag": tag, "tag_match": tag_match})
@@ -2625,9 +2640,11 @@ async def get_topic_memory(
 
 
 def _list_artifact_revisions_query(
+    http_request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
 ) -> ListArtifactRevisionsRequest:
+    _require_strict_query(http_request, {"limit", "cursor"})
     return ListArtifactRevisionsRequest(limit=limit, cursor=cursor)
 
 
@@ -3483,11 +3500,13 @@ async def get_dream_run(
 
 
 def _list_dreams_query(
+    http_request: Request,
     status: str | None = None,
     operation: str | None = None,
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ListDreamRunsRequest:
+    _require_strict_query(http_request, {"status", "operation", "cursor", "limit"})
     return ListDreamRunsRequest.model_validate({
         "status": status,
         "operation": operation,
@@ -4718,7 +4737,7 @@ async def _authorization_payload(request: Request, operation: Operation[Any, Any
     if operation.request_type is None:
         return path_values
     if operation.request_location == "query":
-        return {**path_values, **request.query_params}
+        return {**request.query_params, **path_values}
     try:
         value = await request.json()
     except (UnicodeDecodeError, ValueError) as error:
