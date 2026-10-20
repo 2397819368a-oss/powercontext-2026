@@ -29,8 +29,8 @@ import { MCP_OPERATIONS } from '../../src/mcp-operations.generated.ts'
 test('documented setup installs the matched plugin, diagnoses the running host and recalls processed Source', { timeout: 240000 }, async () => {
   const env = await environment({ fullCatalog: true })
   try {
-    const installation = await installIntoHome(env.home)
-    assert.ok(installation.setup.includes('powercontext-dsh'))
+    const installation = await installIntoHome(env.home, { serverUrl: env.baseUrl })
+    assert.equal(installation.setup.setup, 'complete')
     assert.equal(installation.doctor.checks.plugin.checks.registration, 'present')
     assert.equal(installation.doctor.checks.plugin.checks.running_host_configuration, 'not_observed')
     const { instance, dshHome, doctor, status, workspace } = env.harness({ baseUrl: 'http://127.0.0.1:1' }, {

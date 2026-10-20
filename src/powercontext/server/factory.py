@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -60,7 +60,7 @@ from powercontext.http import (
 )
 from powercontext.paths import default_scheduler_path
 from powercontext.server.access import HttpAccessLogMiddleware
-from powercontext.server.app import _bind_evidence_access, create_app
+from powercontext.server.app import _bind_evidence_access, access_readiness_checks, create_app
 from powercontext.server.authentication import (
     AuthenticationProvider,
     StaticBearerAuthenticationProvider,
@@ -88,6 +88,7 @@ from powercontext.server.middleware import AuthenticationMiddleware
 from powercontext.server.processing_security import build_worker_security
 from powercontext.server.settings import MissingAuthenticationProviderError, ServerSettings
 from powercontext.server.tracing import HttpTracingMiddleware, ServerTracing
+from powercontext.server.worker_tracing import WorkerTracing
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +121,7 @@ class _MetricsEndpoint:
                 ),
             )
         runtime = request.app.state.application
-        supervisor = None if runtime is None else runtime.artifact_processing_supervisor
-        self._metrics.set_processing_families({} if supervisor is None else supervisor.family_status)
+        self._metrics.set_processing_families(None if runtime is None else runtime.artifact_processing_supervisor)
         return Response(self._metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -234,10 +234,14 @@ def create_server_app(  # noqa: C901
                     scope_cache_observer=None if metrics is None else metrics.set_runtime_scopes,
                     topic_memory_search_observer=None if metrics is None else metrics.observe_topic_memory_search,
                     tracing=resolved_tracing,
+                    model_usage_observer=None if metrics is None else metrics.observe_model_usage,
+                    worker_model_usage_observer=None if metrics is None else metrics.observe_worker_model_usage,
+                    processing_observer=None if metrics is None else metrics.observe_processing,
                     scheduled_source_runner=scheduled_source_runner,
                     scheduled_experience_runner=scheduled_experience_runner,
                     worker_security=worker_security,
                     worker_initializer=WorkerLogging(resolved.logging),
+                    worker_entrypoint_wrapper=WorkerTracing(resolved.tracing).wrap,
                     scheduled_profile_runner=_scheduled_profile_runner(
                         resolved,
                         active_access_control,
@@ -270,6 +274,7 @@ def create_server_app(  # noqa: C901
             app.state.dashboard_runtime = runtime
             app.state.access_control = active_access_control
             app.state.authentication_provider = configured_authentication
+            readiness_probe.set_access_checks(_state_access_checks(app))
             capabilities = await _server_capabilities(runtime)
 
             def current_capabilities() -> Capabilities:
@@ -286,6 +291,8 @@ def create_server_app(  # noqa: C901
             app.state.capability_provider = current_capabilities
             app.state.server_info = server_info(server_id)
             await readiness_probe()
+            if metrics is not None:
+                await resources.enter_async_context(readiness_probe.monitor())
             try:
                 yield
             finally:
@@ -368,6 +375,13 @@ def create_server_app(  # noqa: C901
     if resolved.dashboard.enabled:
         mount_dashboard(app)
     return app
+
+
+def _state_access_checks(app: FastAPI) -> Callable[[], Awaitable[Mapping[str, str]]]:
+    async def checks() -> dict[str, str]:
+        return await access_readiness_checks(app.state)
+
+    return checks
 
 
 def _resolve_security_providers(
@@ -519,14 +533,24 @@ def _scheduled_principal(
 
 
 class _ServerReadinessProbe:
-    def __init__(self, metrics: ServerMetrics | None, *, tracing: ServerTracing) -> None:
+    def __init__(
+        self,
+        metrics: ServerMetrics | None,
+        *,
+        tracing: ServerTracing,
+        access_checks: Callable[[], Awaitable[Mapping[str, str]]] | None = None,
+    ) -> None:
         self._metrics = metrics
         self._tracing = tracing
+        self._access_checks = access_checks
         self._runtime: BuiltinRuntime | None = None
         self._last_status: ReadinessStatus | None = None
 
     def bind(self, runtime: BuiltinRuntime) -> None:
         self._runtime = runtime
+
+    def set_access_checks(self, access_checks: Callable[[], Awaitable[Mapping[str, str]]] | None) -> None:
+        self._access_checks = access_checks
 
     def unbind(self) -> None:
         self._runtime = None
@@ -544,8 +568,44 @@ class _ServerReadinessProbe:
                 )
             else:
                 response = await self._check(runtime)
+        if self._metrics is not None:
+            await self._publish(response)
         self._observe(response.status)
         return response
+
+    async def _publish(self, response: ReadinessResponse) -> None:
+        """Publish the readiness aggregate that `/health/ready` would return."""
+
+        metrics = self._metrics
+        if metrics is None:
+            return
+        status = response.status
+        checks: dict[str, str] = dict(response.checks)
+        provider = self._access_checks
+        if provider is not None:
+            try:
+                checks = {**checks, **await provider()}
+            except Exception:
+                # An unreadable access layer only means the Server is not ready.
+                checks = {**checks, "access_provider": "not_ready"}
+            if any(checks.get(name) == "not_ready" for name in ("authentication_provider", "access_provider")):
+                status = ReadinessStatus.NOT_READY
+        metrics.observe_readiness(status.value, checks)
+
+    @asynccontextmanager
+    async def monitor(self) -> AsyncIterator[None]:
+        async def refresh() -> None:
+            while True:
+                await asyncio.sleep(30)
+                await self()
+
+        task = asyncio.create_task(refresh(), name="powercontext-readiness")
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def _check(self, runtime: BuiltinRuntime) -> ReadinessResponse:
         try:
@@ -650,3 +710,26 @@ async def _server_capabilities(runtime: BuiltinRuntime) -> Capabilities:
 __all__ = [
     "create_server_app",
 ]
+
+
+def create_background_metrics_app(
+    settings: ServerSettings,
+    runtime: BuiltinRuntime,
+    metrics: ServerMetrics,
+    access_control: AccessControlService | None,
+) -> FastAPI:
+    """Expose infrastructure only, reusing the Server authentication/error contracts."""
+    _, authentication, access, _ = _resolve_security_providers(
+        settings, access_control=access_control, authentication_provider=None
+    )
+    middleware = [] if authentication is None else [Middleware(AuthenticationMiddleware, provider=authentication)]
+    app = create_app(
+        infrastructure_only=True,
+        middleware=middleware,
+        access_control=access,
+        access_mode=settings.access.mode,
+        authentication_provider=authentication,
+    )
+    app.state.application = runtime
+    app.add_api_route("/metrics", _MetricsEndpoint(metrics), include_in_schema=False)
+    return app

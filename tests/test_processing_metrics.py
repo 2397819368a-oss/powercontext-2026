@@ -58,7 +58,9 @@ def _samples(rendered):
 def test_processing_metrics_expose_family_capacity_progress_and_counter_snapshots():
     metrics = ServerMetrics()
     snapshot = _status(scope_id="scope-secret", worker_id="worker-secret", binding_name="binding-secret")
-    metrics.set_processing_families(dict.fromkeys(("memory", "topic-memory", "experience", "profile"), snapshot))
+    metrics.set_processing_families(
+        SimpleNamespace(family_status=dict.fromkeys(("memory", "topic-memory", "experience", "profile"), snapshot))
+    )
 
     rendered = metrics.render().decode()
     samples = _samples(rendered)
@@ -95,10 +97,10 @@ def test_processing_metrics_expose_family_capacity_progress_and_counter_snapshot
     )
 
     # Scrapes observe cumulative state; they never add it repeatedly.
-    metrics.set_processing_families({"memory": _status(completed=13)})
+    metrics.set_processing_families(SimpleNamespace(family_status={"memory": _status(completed=13)}))
     assert _samples(metrics.render().decode())[(PREFIX + "completed_total", "memory")] == 13
     assert _samples(metrics.render().decode())[(PREFIX + "completed_total", "memory")] == 13
-    metrics.set_processing_families({"memory": _status(completed=0)})
+    metrics.set_processing_families(SimpleNamespace(family_status={"memory": _status(completed=0)}))
     assert _samples(metrics.render().decode())[(PREFIX + "completed_total", "memory")] == 0
 
 
@@ -107,7 +109,9 @@ def test_processing_metrics_expose_family_capacity_progress_and_counter_snapshot
 )
 def test_processing_metrics_reject_noncanonical_family_labels(invalid_family):
     metrics = ServerMetrics()
-    metrics.set_processing_families({invalid_family: _status(), "custom-family": _status()})
+    metrics.set_processing_families(
+        SimpleNamespace(family_status={invalid_family: _status(), "custom-family": _status()})
+    )
 
     samples = _samples(metrics.render().decode())
     assert {family for _, family in samples} == {"custom-family"}
@@ -115,13 +119,15 @@ def test_processing_metrics_reject_noncanonical_family_labels(invalid_family):
 
 def test_processing_metrics_replace_removed_families_and_omit_invalid_numbers():
     metrics = ServerMetrics()
-    metrics.set_processing_families({"memory": _status()})
-    metrics.set_processing_families({"topic-memory": _status()})
+    metrics.set_processing_families(SimpleNamespace(family_status={"memory": _status()}))
+    metrics.set_processing_families(SimpleNamespace(family_status={"topic-memory": _status()}))
     assert {family for _, family in _samples(metrics.render().decode())} == {"topic-memory"}
 
-    metrics.set_processing_families({"memory": {"used_workers": float("nan"), "failed": -1, "ready": "secret"}})
+    metrics.set_processing_families(
+        SimpleNamespace(family_status={"memory": {"used_workers": float("nan"), "failed": -1, "ready": "secret"}})
+    )
     assert _samples(metrics.render().decode()) == {}
-    metrics.set_processing_families({})
+    metrics.set_processing_families(None)
     assert _samples(metrics.render().decode()) == {}
 
 
