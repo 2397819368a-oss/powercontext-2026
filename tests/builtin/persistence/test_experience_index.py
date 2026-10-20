@@ -218,10 +218,12 @@ def test_sqlite_experience_fts_tracks_only_approved_current_heads_and_rebuilds()
             assert raw.raw < 0
             assert raw.higher_is_better is False
             assert scored_hit.retrieval_score == -raw.raw / (1 - raw.raw)
-            async with contexts.database.transaction() as connection:
-                excluded = await contexts.experience_index.search(
-                    connection, scope_id, "hamsterlegacy", 8, min_score=1, require_scores=True
-                )
+            from powercontext.builtin.artifacts.experience import ExperienceSearchRequest
+            from powercontext.builtin.runtime.experience_search import ExperienceArtifactSearcher
+
+            excluded = await ExperienceArtifactSearcher(
+                contexts.database, contexts.repositories.artifacts, contexts.experience_index
+            ).search(scope_id, ExperienceSearchRequest(query="hamsterlegacy", limit=8, min_score=1))
             assert excluded.hits == ()
             assert excluded.admission is not None
             assert excluded.admission.admitted == 1
@@ -471,11 +473,10 @@ def test_oceanbase_search_preserves_match_raw_score() -> None:
         dialect=SimpleNamespace(name="mysql"),
         execute=AsyncMock(return_value=SimpleNamespace(mappings=lambda: rows)),
     )
-    outcome = asyncio.run(
-        OceanBaseExperienceFTSIndex().search(
-            cast(AsyncConnection, connection), "project", "client", 8, require_scores=True
-        )
+    selected = asyncio.run(
+        OceanBaseExperienceFTSIndex().search(cast(AsyncConnection, connection), "project", "experience", "client", 8)
     )
+    outcome = experience_search_hits(selected, "client", 8, "project", require_scores=True)
     assert outcome.hits[0].channel_scores is not None
     assert outcome.hits[0].channel_scores["text"].metric == "oceanbase_match"
     assert outcome.hits[0].channel_scores["text"].raw == 2.0

@@ -191,7 +191,7 @@ class AtomicMemorySearchPage:
     rerank: AtomicMemoryRerankTrace | None = None
     recoverable: bool = False
     matches: tuple[ArtifactSearchMatch, ...] = ()
-    artifacts: tuple[AtomicMemory, ...] | None = None
+    artifacts: tuple[AtomicMemory, ...] = ()
 
 
 class AtomicMemoryApplication:
@@ -491,7 +491,7 @@ class ScopedAtomicMemory:
                 if artifact_request is None:
                     raise
                 raise ArtifactSearchContractError("atomic-memory", "Selected exact revision is unavailable") from exc
-            artifacts = validated if artifact_request is not None else None
+            artifacts = validated if artifact_request is not None else ()
             recoverable = recovery_admission is not None and await application.index.probe_recoverable(
                 connection, self.scope_id, request, recovery_admission
             )
@@ -725,7 +725,7 @@ class ScopedAtomicMemory:
         context,
         *,
         artifact_request=None,
-        artifacts=None,
+        artifacts=(),
     ):
         application = self.application
         reranker = application.reranker
@@ -735,7 +735,7 @@ class ScopedAtomicMemory:
                 candidates[:limit],
                 query_embedding,
                 embedding_calls,
-                artifacts=(() if artifacts is None else artifacts) if artifact_request is not None else None,
+                artifacts=artifacts,
             )
         # Reauthorize the exact candidate bodies immediately before an external rank model.
         try:
@@ -750,12 +750,9 @@ class ScopedAtomicMemory:
                 (),
                 query_embedding,
                 embedding_calls,
-                artifacts=() if artifact_request is not None else None,
             )
         complete_artifacts = []
         if artifact_request is not None:
-            if artifacts is None:
-                raise ArtifactSearchContractError("atomic-memory", "Selected exact Artifacts are unavailable")
             artifacts_by_ref = {_artifact_key(artifact.as_ref()): artifact for artifact in artifacts}
             complete_artifacts = [
                 artifacts_by_ref[_artifact_key(candidate.hit.artifact_ref)] for candidate in candidates
@@ -790,7 +787,7 @@ class ScopedAtomicMemory:
             embedding_calls,
             1,
             rerank=trace,
-            artifacts=tuple(complete_artifacts[rank - 1] for rank in ranks) if artifact_request is not None else None,
+            artifacts=tuple(complete_artifacts[rank - 1] for rank in ranks) if artifact_request is not None else (),
         )
 
     async def merge(

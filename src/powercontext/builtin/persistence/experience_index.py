@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from sqlalchemy import select, text, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -88,7 +88,9 @@ _GOVERNANCE_COLUMNS = {
 
 
 class ExperienceIndex(Protocol):
-    """A rebuildable query projection updated with approved Artifact heads."""
+    """Shared approved Experience/Skill projection with Family-owned result decoding."""
+
+    families: frozenset[str]
 
     async def initialize(self, connection: AsyncConnection, /) -> None: ...
 
@@ -106,14 +108,19 @@ class ExperienceIndex(Protocol):
         self,
         connection: AsyncConnection,
         scope_id: str,
+        family: Literal["experience", "skill"],
         query: str,
         limit: int,
         /,
         *,
         admission: AdmissionFloor | None = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> ExperienceSearchOutcome: ...
+    ) -> tuple[Mapping[Any, Any], ...]:
+        """Return ranked qualified rows with exact body and revision metadata.
+
+        Rows may include a bounded rejection witness. Family services apply
+        score controls and materialize selected rows with their lineage.
+        """
+        ...
 
     async def replace_skill(
         self,
@@ -124,22 +131,11 @@ class ExperienceIndex(Protocol):
         /,
     ) -> None: ...
 
-    async def search_skills(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        query: str,
-        limit: int,
-        /,
-        *,
-        admission: AdmissionFloor | None = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> tuple[SkillSearchHit, ...]: ...
-
 
 class NoExperienceIndex:
-    """Allow exact Experience reads when no recall projection is configured."""
+    """Retain exact Artifact reads when approved-head search is disabled."""
+
+    families: frozenset[str] = frozenset()
 
     async def initialize(self, _connection: AsyncConnection, /) -> None:
         pass
@@ -157,15 +153,14 @@ class NoExperienceIndex:
         self,
         _connection: AsyncConnection,
         _scope_id: str,
+        _family: Literal["experience", "skill"],
         _query: str,
         _limit: int,
         /,
         *,
         admission: AdmissionFloor | None = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> ExperienceSearchOutcome:
-        return ExperienceSearchOutcome()
+    ) -> tuple[Mapping[Any, Any], ...]:
+        return ()
 
     async def remove(self, _connection: AsyncConnection, _scope_id: str, _artifact_id: str, /) -> None:
         pass
@@ -179,20 +174,6 @@ class NoExperienceIndex:
         /,
     ) -> None:
         pass
-
-    async def search_skills(
-        self,
-        _connection: AsyncConnection,
-        _scope_id: str,
-        _query: str,
-        _limit: int,
-        /,
-        *,
-        admission: AdmissionFloor | None = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> tuple[SkillSearchHit, ...]:
-        return ()
 
 
 async def ensure_artifact_head_searchable_text(connection: AsyncConnection, /) -> None:
@@ -420,7 +401,8 @@ async def search_approved_artifact_rows(
         probe = text(
             f"WITH raw_probe AS (SELECT h.artifact_id, h.revision, h.searchable_text, {score} AS raw_score "  # noqa: S608
             f"{matches} ORDER BY raw_score DESC, h.artifact_id, h.revision LIMIT :probe_limit) "
-            "SELECT r.*, a.content AS content, 0 AS is_rejected FROM raw_probe AS r "
+            "SELECT r.*, a.content, a.created_at, a.created_by, a.restored_from_revision, "
+            "a.rollback_reason, 0 AS is_rejected FROM raw_probe AS r "
             "LEFT JOIN pc_artifacts AS a ON a.scope_id=:scope_id AND a.family=:family "
             "AND a.artifact_id=r.artifact_id AND a.revision=r.revision "
             "ORDER BY raw_score DESC, artifact_id, revision"
@@ -435,7 +417,7 @@ async def search_approved_artifact_rows(
             else ()
         )
         if len(qualified) >= limit or len(observed) < parameters["probe_limit"]:
-            return witness + tuple({**row, "score_metric": metric} for row in qualified[:limit])
+            return witness + tuple({**row, "family": family, "score_metric": metric} for row in qualified[:limit])
     prefix = ""
     candidate_source = source
     if connection.dialect.name == "sqlite" and required > 1:
@@ -468,7 +450,7 @@ async def search_approved_artifact_rows(
         )
     rejected = (
         (
-            " UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, 1 FROM "
+            " UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1 FROM "
             "(SELECT 1 WHERE (SELECT COUNT(*) FROM raw_probe) > "
             "(SELECT COUNT(*) FROM qualified_probe)) AS rejected"
         )
@@ -478,13 +460,14 @@ async def search_approved_artifact_rows(
     statement = text(
         f"WITH {prefix}candidates AS ({candidates}) "  # noqa: S608
         "SELECT c.artifact_id AS artifact_id, c.revision AS revision, p.searchable_text AS searchable_text, "
-        f"a.content AS content, c.raw_score AS raw_score, 0 AS is_rejected FROM candidates AS c {projection_join}"
+        "a.content, a.created_at, a.created_by, a.restored_from_revision, a.rollback_reason, "
+        f"c.raw_score AS raw_score, 0 AS is_rejected FROM candidates AS c {projection_join}"
         "LEFT JOIN pc_artifacts AS a ON a.scope_id=:scope_id AND a.family=:family "
         f"AND a.artifact_id=c.artifact_id AND a.revision=c.revision{rejected} "
         f"ORDER BY is_rejected DESC, raw_score {direction}, artifact_id, revision"
     )
     rows = (await connection.execute(statement, parameters)).mappings()
-    result = tuple({**row, "score_metric": metric} for row in rows)
+    result = tuple({**row, "family": family, "score_metric": metric} for row in rows)
     return witness + result
 
 
@@ -517,6 +500,16 @@ def experience_search_hits(
         examined += 1
         if row.get("is_rejected"):
             continue
+        if row["content"] is None:
+            raise RepositoryNotFoundError(
+                "artifact",
+                (
+                    scope_id,
+                    ArtifactRef(
+                        family=Experience.family, artifact_id=str(row["artifact_id"]), revision=int(row["revision"])
+                    ),
+                ),
+            )
         content = _content(row["content"])
         if not admits_fts_text(query, experience_search_text(content), floor=admission):
             continue
@@ -563,6 +556,11 @@ def skill_search_hits(
 
     hits: list[SkillSearchHit] = []
     for row in rows:
+        if row["content"] is None:
+            raise RepositoryNotFoundError(
+                "artifact",
+                ArtifactRef(family=Skill.family, artifact_id=str(row["artifact_id"]), revision=int(row["revision"])),
+            )
         content = _skill_content(row["content"])
         searchable = row.get("searchable_text") or analyze_text(skill_search_text(content))
         if not admits_fts_projection(query, str(searchable), floor=admission):

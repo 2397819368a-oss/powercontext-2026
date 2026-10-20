@@ -12,34 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SQLite FTS5 projection for approved Experience heads."""
+"""SQLite FTS5 projection shared by approved Experience and Skill heads."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.artifacts.experience import (
     Experience,
-    ExperienceSearchOutcome,
     experience_searchable_text,
 )
 from powercontext.builtin.artifacts.memory import CapabilityNotSupportedError
 from powercontext.builtin.artifacts.search import AdmissionFloor
-from powercontext.builtin.artifacts.skill import Skill, SkillPackageSnapshot, SkillSearchHit, skill_searchable_text
+from powercontext.builtin.artifacts.skill import Skill, SkillPackageSnapshot, skill_searchable_text
 from powercontext.builtin.persistence.experience_index import (
     ensure_artifact_head_searchable_text,
-    experience_search_hits,
     rebuild_experience_projections,
     rebuild_skill_projections,
     remove_experience_projection,
     replace_experience_projection,
     replace_skill_projection,
     search_approved_artifact_rows,
-    skill_search_hits,
 )
 
 _CREATE_FTS_SQL = """
@@ -88,7 +85,9 @@ _INSERT_FTS_SQL = text(
 
 
 class SQLiteExperienceFTSIndex:
-    """Maintain and query approved Experience heads with SQLite FTS5."""
+    """Maintain and query approved Experience and Skill heads with SQLite FTS5."""
+
+    families: frozenset[str] = frozenset({Experience.family, Skill.family})
 
     async def initialize(self, connection: AsyncConnection, /) -> None:
         if connection.dialect.name != "sqlite":
@@ -128,20 +127,14 @@ class SQLiteExperienceFTSIndex:
         self,
         connection: AsyncConnection,
         scope_id: str,
+        family: Literal["experience", "skill"],
         query: str,
         limit: int,
         /,
         *,
         admission: AdmissionFloor | None = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> ExperienceSearchOutcome:
-        rows = await search_approved_artifact_rows(
-            connection, scope_id, Experience.family, query, limit, admission=admission
-        )
-        return experience_search_hits(
-            rows, query, limit, scope_id, admission=admission, min_score=min_score, require_scores=require_scores
-        )
+    ) -> tuple[Mapping[Any, Any], ...]:
+        return await search_approved_artifact_rows(connection, scope_id, family, query, limit, admission=admission)
 
     async def remove(self, connection: AsyncConnection, scope_id: str, artifact_id: str, /) -> None:
         await remove_experience_projection(connection, scope_id, artifact_id)
@@ -172,25 +165,6 @@ class SQLiteExperienceFTSIndex:
                 "revision": skill.revision,
                 "searchable_text": skill_searchable_text(skill.content, package),
             },
-        )
-
-    async def search_skills(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        query: str,
-        limit: int,
-        /,
-        *,
-        admission: AdmissionFloor | None = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> tuple[SkillSearchHit, ...]:
-        rows = await search_approved_artifact_rows(
-            connection, scope_id, Skill.family, query, limit, admission=admission
-        )
-        return skill_search_hits(
-            rows, query, limit, admission=admission, min_score=min_score, require_scores=require_scores
         )
 
     @staticmethod

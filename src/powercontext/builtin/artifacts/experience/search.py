@@ -48,7 +48,7 @@ class ExperienceSearchOutcome:
     hits: tuple[ExperienceSearchHit, ...] = ()
     admission: AdmissionCounts | None = None
     matches: tuple[ArtifactSearchMatch, ...] = ()
-    artifacts: tuple[Experience, ...] | None = None
+    artifacts: tuple[Experience, ...] = ()
 
 
 class ExperienceSearchHit(BaseModel):

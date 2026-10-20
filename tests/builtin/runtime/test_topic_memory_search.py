@@ -49,11 +49,9 @@ def _service(*, embedding=None, capabilities=None, calls=None, observer=None):
     async def search(scope_id, query, /, **kwargs):
         if calls is not None:
             calls.append(kwargs)
-        return TopicMemorySearchResult(mode=kwargs["mode"], artifacts=() if "artifact_request" in kwargs else None)
+        return TopicMemorySearchResult(mode=kwargs["mode"], artifacts=())
 
-    return TopicMemorySearcher(
-        search=search, get=None, embedding_model=embedding, capabilities=capabilities, observer=observer
-    )
+    return TopicMemorySearcher(search=search, embedding_model=embedding, capabilities=capabilities, observer=observer)
 
 
 @pytest.mark.parametrize("mode", ["text", "vector", "hybrid"])
@@ -133,7 +131,7 @@ def test_topic_service_legacy_profile_reuse_has_no_new_callback_keywords():
 
     from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 
-    service = TopicMemorySearcher(search=legacy, get=None, embedding_model=embedding)
+    service = TopicMemorySearcher(search=legacy, embedding_model=embedding)
     result = asyncio.run(
         service.search_legacy(
             "scope",
@@ -143,7 +141,6 @@ def test_topic_service_legacy_profile_reuse_has_no_new_callback_keywords():
         )
     )
     assert result.embedding_calls == 0
-    assert result.artifacts is None
     assert embedding.calls == 0
     assert calls[0][2] == (1.0, 0.0)
 
@@ -293,7 +290,6 @@ def test_topic_service_missing_selected_exact_revision_is_a_contract_failure():
     from powercontext.artifacts import ArtifactRef
     from powercontext.artifacts.search import ArtifactSearchContractError, ArtifactSearchMatch
     from powercontext.builtin.artifacts.topic_memory import TopicMemorySearchHit
-    from powercontext.builtin.persistence.errors import RepositoryNotFoundError
     from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 
     ref = ArtifactRef(family="topic-memory", artifact_id="selected", revision=1)
@@ -309,9 +305,6 @@ def test_topic_service_missing_selected_exact_revision_is_a_contract_failure():
             matches=(ArtifactSearchMatch(ref, 0.5),),
         )
 
-    async def get(scope, artifact_ref):
-        raise RepositoryNotFoundError("artifact", artifact_ref)
-
-    service = TopicMemorySearcher(search=search, get=get, capabilities=TopicMemoryCapabilities(fts=True))
+    service = TopicMemorySearcher(search=search, capabilities=TopicMemoryCapabilities(fts=True))
     with pytest.raises(ArtifactSearchContractError):
         asyncio.run(service.search("scope", TopicArtifactSearchRequest(query="needle", mode="text")))

@@ -3740,7 +3740,6 @@ class BuiltinRuntime:
         if self._topic_memory_searcher is None and topic_memory_search is not None:
             self._topic_memory_searcher = TopicMemorySearcher(
                 search=topic_memory_search,
-                get=topic_memory_get,
                 embedding_model=topic_memory_embedding_model,
                 observer=topic_memory_search_observer,
             )

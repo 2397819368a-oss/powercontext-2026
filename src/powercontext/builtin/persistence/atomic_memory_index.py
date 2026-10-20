@@ -170,11 +170,15 @@ class AtomicMemoryRelatedRequest:
 
 
 class AtomicMemoryIndex(Protocol):
+    """Caller-owned projection transactions, including initialization and current-row validation."""
+
     table: Table
     tables: tuple[Table, ...]
     capabilities: AtomicMemoryIndexCapabilities
 
     async def initialize(self, connection: AsyncConnection, /) -> None: ...
+
+    async def validate_current(self, connection: AsyncConnection, /) -> None: ...
 
     async def replace(
         self, connection: AsyncConnection, scope_id: str, projection: AtomicMemoryProjection, /
@@ -197,29 +201,6 @@ class AtomicMemoryIndex(Protocol):
     async def refresh_tags(
         self, connection: AsyncConnection, scope_id: str, artifact_id: str, tag_keys: tuple[str, ...], /
     ) -> None: ...
-
-
-async def validate_atomic_memory_vectors(connection: AsyncConnection, index: AtomicMemoryIndex) -> None:
-    """Audit vector deployment readiness at startup, outside ordinary bounded search."""
-    profile = index.capabilities.embedding_profile
-    if profile is None or index.table not in index.tables:
-        return
-    table = index.table
-    invalid = [
-        table.c.embedding.is_(None),
-        table.c.embedding_input_hash.is_(None),
-        table.c.profile_fingerprint.is_(None),
-        table.c.profile_fingerprint != atomic_memory_profile_fingerprint(profile),
-        table.c.projection_format != ATOMIC_MEMORY_PROJECTION_FORMAT,
-    ]
-    if connection.dialect.name == "sqlite":
-        invalid.append(func.length(table.c.embedding) != profile.dimension * 4)
-    if await connection.scalar(select(table.c.artifact_id).where(or_(*invalid)).limit(1)) is not None:
-        raise AtomicMemoryIndexError(
-            "incomplete-vector",
-            "Current Atomic Memory vectors are incomplete or use another profile. Stop writers and run "
-            "powercontext server atomic-memory-rebuild-projection --maintenance-confirmed.",
-        )
 
 
 class AtomicMemoryProjectionPublisher:
@@ -564,6 +545,28 @@ class RelationalAtomicMemoryIndex:
             vector=profile is not None, hybrid=profile is not None, embedding_profile=profile
         )
 
+    async def validate_current(self, connection: AsyncConnection, /) -> None:
+        """Audit vector deployment readiness at startup, outside ordinary bounded search."""
+        profile = self.capabilities.embedding_profile
+        if profile is None:
+            return
+        table = self.table
+        invalid = [
+            table.c.embedding.is_(None),
+            table.c.embedding_input_hash.is_(None),
+            table.c.profile_fingerprint.is_(None),
+            table.c.profile_fingerprint != atomic_memory_profile_fingerprint(profile),
+            table.c.projection_format != ATOMIC_MEMORY_PROJECTION_FORMAT,
+        ]
+        if connection.dialect.name == "sqlite":
+            invalid.append(func.length(table.c.embedding) != profile.dimension * 4)
+        if await connection.scalar(select(table.c.artifact_id).where(or_(*invalid)).limit(1)) is not None:
+            raise AtomicMemoryIndexError(
+                "incomplete-vector",
+                "Current Atomic Memory vectors are incomplete or use another profile. Stop writers and run "
+                "powercontext server atomic-memory-rebuild-projection --maintenance-confirmed.",
+            )
+
     def _encode_embedding(self, vector: tuple[float, ...]) -> object:
         return vector
 
@@ -772,5 +775,4 @@ __all__ = [
     "load_atomic_memory_tags",
     "oceanbase_fts_coverage_sql",
     "sqlite_fts_coverage_sql",
-    "validate_atomic_memory_vectors",
 ]

@@ -169,7 +169,7 @@ def test_public_topic_search_keeps_signed_fts_metadata_and_exact_artifacts() -> 
             assert plain.artifacts is not None
             assert plain.artifacts[0] == publication.topic
             assert plain.artifacts[0].as_ref() == scored.matches[0].artifact_ref
-            assert legacy.artifacts is None
+            assert tuple(hit.artifact_ref for hit in legacy.hits) == tuple(hit.artifact_ref for hit in plain.hits)
             assert empty.artifacts == ()
             assert plain.matches[0].channel_scores is None
             assert scored.matches[0].channel_scores is not None

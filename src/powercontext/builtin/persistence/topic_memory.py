@@ -528,9 +528,7 @@ class TopicMemoryRepository:
         query_vector = self._canonical_query_vector(used_mode, query_vector)
         await self._check_retrieval_shape(connection)
         if not query_terms and used_mode == "fts":
-            return TopicMemorySearchResult(
-                mode=used_mode, hits=(), artifacts=() if artifact_request is not None else None
-            )
+            return TopicMemorySearchResult(mode=used_mode)
         request = TopicMemorySearchRequest(
             query=query,
             analyzed_query=" ".join(query_terms),
@@ -551,7 +549,7 @@ class TopicMemoryRepository:
             min_score=None if artifact_request is None else artifact_request.min_score,
             include_scores=artifact_request is not None and artifact_request.include_scores,
         )
-        artifacts = None
+        artifacts: tuple[TopicMemory, ...] = ()
         if artifact_request is not None:
             try:
                 artifacts = cast(

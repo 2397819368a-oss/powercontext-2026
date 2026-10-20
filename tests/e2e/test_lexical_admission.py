@@ -79,20 +79,18 @@ def test_qualified_long_text_survives_high_scoring_low_coverage_matches(
                     family,
                     ArtifactWrite(content=_content(family, "alpha" if number % 2 else "beta", number)),
                 )
-            async with contexts.database.transaction() as connection:
-                if family == "experience":
-                    result = await contexts.experience_index.search(connection, "project", "alpha beta gamma", 1)
-                    hits = result.hits
-                    relaxed = await contexts.experience_index.search(
-                        connection,
-                        "project",
-                        "alpha beta gamma",
-                        1,
-                        admission=AdmissionFloor(lexical_min_matched_terms=1, lexical_coverage=0),
-                    )
-                    assert relaxed.hits and relaxed.hits[0].artifact_ref.artifact_id != target.artifact_id
-                else:
-                    hits = await contexts.experience_index.search_skills(connection, "project", "alpha beta gamma", 1)
+            if family == "experience":
+                result = await contexts.search_experience_outcome("project", "alpha beta gamma", 1)
+                hits = result.hits
+                relaxed = await contexts.search_experience_outcome(
+                    "project",
+                    "alpha beta gamma",
+                    1,
+                    admission=AdmissionFloor(lexical_min_matched_terms=1, lexical_coverage=0),
+                )
+                assert relaxed.hits and relaxed.hits[0].artifact_ref.artifact_id != target.artifact_id
+            else:
+                hits = await contexts.search_skills("project", "alpha beta gamma", 1)
             assert len(hits) == 1
             assert hits[0].artifact_ref.artifact_id == target.artifact_id
             assert (

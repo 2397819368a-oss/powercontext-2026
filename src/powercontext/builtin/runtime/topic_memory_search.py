@@ -22,13 +22,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactRef
 from powercontext.artifacts.search import ArtifactSearchContractError, ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.memory import MemoryQueryEmbedding
 from powercontext.builtin.artifacts.search import AdmissionFloor, analyze_text
 from powercontext.builtin.artifacts.topic_memory import (
     MAX_TOPIC_MEMORY_QUERY_TERMS,
-    PublishedTopicMemory,
     TopicArtifactSearchRequest,
     TopicMemoryCapabilities,
     TopicMemorySearchResult,
@@ -42,7 +40,6 @@ from powercontext.builtin.inference import (
     InvalidInferenceOutputError,
 )
 from powercontext.builtin.inference.protocols import embed_query
-from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +59,11 @@ class TopicMemorySearcher:
         self,
         *,
         search: Callable[..., Awaitable[TopicMemorySearchResult]],
-        get: Callable[[str, ArtifactRef], Awaitable[PublishedTopicMemory]] | None = None,
         embedding_model: EmbeddingModel | None = None,
         observer: Callable[[str, bool], None] | None = None,
         capabilities: TopicMemoryCapabilities | None = None,
     ) -> None:
         self._search = search
-        self._get = get
         self._embedding = embedding_model
         self._observer = observer
         self._capabilities = capabilities
@@ -111,21 +106,8 @@ class TopicMemorySearcher:
             embedding_model=embedding,
             execution_context=execution_context,
         )
-        if result.artifacts is None:
-            if self._get is None:
-                raise ArtifactSearchContractError(
-                    self.family, "public Topic search did not materialize exact Artifacts"
-                )
-            if len(result.matches) != len(result.hits):
-                raise ArtifactSearchContractError(self.family, "public Topic hits and matches must have the same count")
-            artifacts = []
-            for match in result.matches:
-                try:
-                    publication = await self._get(scope_id, match.artifact_ref)
-                except RepositoryNotFoundError as error:
-                    raise ArtifactSearchContractError(self.family, "selected exact Artifact is missing") from error
-                artifacts.append(publication.topic)
-            result = result.model_copy(update={"artifacts": tuple(artifacts)})
+        if len(result.matches) != len(result.hits) or len(result.artifacts) != len(result.matches):
+            raise ArtifactSearchContractError(self.family, "public Topic search requires complete exact Artifacts")
         self._observe(result, fallback)
         return result
 

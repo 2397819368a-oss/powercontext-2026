@@ -12,28 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OceanBase FULLTEXT projection for approved Experience heads."""
+"""OceanBase FULLTEXT projection shared by approved Experience and Skill heads."""
 
 from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from sqlalchemy import select, text
 from sqlalchemy.dialects.mysql import match
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.builtin.artifacts.experience import Experience, ExperienceSearchOutcome
+from powercontext.builtin.artifacts.experience import Experience
 from powercontext.builtin.artifacts.memory import CapabilityNotSupportedError
 from powercontext.builtin.artifacts.search import AdmissionFloor
-from powercontext.builtin.artifacts.skill import Skill, SkillPackageSnapshot, SkillSearchHit
+from powercontext.builtin.artifacts.skill import Skill, SkillPackageSnapshot
 from powercontext.builtin.persistence.experience_index import (
     ensure_artifact_head_searchable_text,
-    experience_search_hits,
     rebuild_experience_projections,
     rebuild_skill_projections,
     remove_experience_projection,
     replace_experience_projection,
     replace_skill_projection,
     search_approved_artifact_rows,
-    skill_search_hits,
 )
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 
@@ -54,7 +55,9 @@ _OCEANBASE_FTS_INDEX_EXISTS_SQL = text(
 
 
 class OceanBaseExperienceFTSIndex:
-    """Maintain and query approved Experience heads with OceanBase FULLTEXT."""
+    """Maintain and query approved Experience and Skill heads with OceanBase FULLTEXT."""
+
+    families: frozenset[str] = frozenset({Experience.family, Skill.family})
 
     async def initialize(self, connection: AsyncConnection, /) -> None:
         if connection.dialect.name != "mysql":
@@ -87,20 +90,14 @@ class OceanBaseExperienceFTSIndex:
         self,
         connection: AsyncConnection,
         scope_id: str,
+        family: Literal["experience", "skill"],
         query: str,
         limit: int,
         /,
         *,
         admission: AdmissionFloor | None = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> ExperienceSearchOutcome:
-        rows = await search_approved_artifact_rows(
-            connection, scope_id, Experience.family, query, limit, admission=admission
-        )
-        return experience_search_hits(
-            rows, query, limit, scope_id, admission=admission, min_score=min_score, require_scores=require_scores
-        )
+    ) -> tuple[Mapping[Any, Any], ...]:
+        return await search_approved_artifact_rows(connection, scope_id, family, query, limit, admission=admission)
 
     async def replace_skill(
         self,
@@ -111,25 +108,6 @@ class OceanBaseExperienceFTSIndex:
         /,
     ) -> None:
         await replace_skill_projection(connection, scope_id, skill, package)
-
-    async def search_skills(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        query: str,
-        limit: int,
-        /,
-        *,
-        admission: AdmissionFloor | None = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> tuple[SkillSearchHit, ...]:
-        rows = await search_approved_artifact_rows(
-            connection, scope_id, Skill.family, query, limit, admission=admission
-        )
-        return skill_search_hits(
-            rows, query, limit, admission=admission, min_score=min_score, require_scores=require_scores
-        )
 
 
 __all__ = ["OceanBaseExperienceFTSIndex"]

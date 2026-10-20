@@ -773,7 +773,6 @@ def test_topic_embedding_timeout_is_paid_once_per_prepare(tmp_path, monkeypatch)
             assert runtime._topic_memory_search is not None
             runtime._topic_memory_searcher = TopicMemorySearcher(
                 search=runtime._topic_memory_search,
-                get=runtime._topic_memory_get,
                 embedding_model=embedding,
                 observer=runtime._topic_memory_search_observer,
             )
