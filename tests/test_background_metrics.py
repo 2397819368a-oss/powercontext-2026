@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import socket
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -39,6 +38,7 @@ from powercontext.server.settings import (
     ServerSettings,
     UnauthenticatedNonLoopbackBindError,
 )
+from powercontext.server.tracing import ServerTracing
 
 
 def _app(*, enforced: bool = False, access: Any = None, enabled: bool = True):
@@ -52,7 +52,7 @@ def _app(*, enforced: bool = False, access: Any = None, enabled: bool = True):
 
 
 @pytest.mark.parametrize("enforced", [False, True])
-def test_background_exposes_only_metrics(enforced):
+def test_background_exposes_metrics_and_public_liveness(enforced):
     class Access:
         deployment_id = "default"
 
@@ -70,6 +70,7 @@ def test_background_exposes_only_metrics(enforced):
         response = client.get("/metrics", headers=headers)
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/plain")
+        assert client.get("/health/live").status_code == 200
         for path in ("/", "/docs", "/openapi.json", "/health/ready", "/v1/capabilities", "/mcp", "/dashboard"):
             assert client.get(path, headers=headers).status_code == 404
 
@@ -114,7 +115,7 @@ def test_listener_real_socket_stops_and_releases_bind(cancel):
         with socket.socket() as reserve:
             reserve.bind(("127.0.0.1", 0))
             port = reserve.getsockname()[1]
-        settings = settings.model_copy(update={"http": HttpConfig(host="127.0.0.1", port=port)})
+        settings = settings.model_copy(update={"metrics": MetricsConfig(background_port=port)})
         stopped = asyncio.Event()
         task = asyncio.create_task(serve_background_metrics(app, settings, stopped))
         try:
@@ -151,9 +152,7 @@ def test_listener_bind_failure_propagates_without_aborting_event_loop():
         with socket.socket() as occupied:
             occupied.bind(("127.0.0.1", 0))
             occupied.listen()
-            settings = settings.model_copy(
-                update={"http": HttpConfig(host="127.0.0.1", port=occupied.getsockname()[1])}
-            )
+            settings = settings.model_copy(update={"metrics": MetricsConfig(background_port=occupied.getsockname()[1])})
             with pytest.raises(RuntimeError, match="failed to start"):
                 await serve_background_metrics(app, settings, asyncio.Event())
         assert await asyncio.sleep(0, result=True)
@@ -197,11 +196,12 @@ def test_background_runner_closes_runtime_and_removes_signal_handlers(monkeypatc
 
         monkeypatch.setattr("powercontext.server.cli.open_builtin_runtime", runtime)
         monkeypatch.setattr("powercontext.server.cli.serve_background_metrics", listener)
+        tracing = ServerTracing.context_only(role="background")
         if outcome in {"failed", "cancelled"}:
             with pytest.raises(OSError if outcome == "failed" else asyncio.CancelledError):
-                await _run_background_async(settings, SimpleNamespace(instrumentation=None))
+                await _run_background_async(settings, tracing)
         else:
-            await _run_background_async(settings, SimpleNamespace(instrumentation=None))
+            await _run_background_async(settings, tracing)
         assert "runtime-closed" in events
         if outcome == "disabled":
             assert "listener-open" not in events

@@ -96,6 +96,7 @@ def test_real_oceanbase_cli_supervisor_metrics_auth_and_shutdown(oceanbase_url, 
         "POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_FAMILIES": '["memory"]',
         "POWERCONTEXT_SERVER_RUNTIME_MEMORY_SCHEDULE_SECONDS": "3600",
         "POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_WORKERS": "1",
+        "POWERCONTEXT_SERVER_METRICS_BACKGROUND_PORT": str(port),
     })
     log_path = tmp_path / "server.log"
     with log_path.open("w+") as output:
@@ -162,7 +163,8 @@ def test_real_oceanbase_cli_supervisor_metrics_auth_and_shutdown(oceanbase_url, 
                     assert client.get("/health/ready", headers=headers).status_code == 200
                     assert client.get("/v1/capabilities", headers=headers).status_code == 200
                 else:
-                    assert samples[("powercontext_server_runtime_readiness_state", (("state", "unobserved"),))] == 1
+                    assert samples[("powercontext_server_runtime_readiness_state", (("state", "unobserved"),))] == 0
+                    assert client.get("/health/live").status_code == 200
                     for path in ("/health/ready", "/v1/capabilities", "/mcp", "/docs", "/openapi.json"):
                         assert client.get(path, headers=headers).status_code == 404
             process.send_signal(signal.SIGTERM)

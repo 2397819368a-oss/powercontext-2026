@@ -47,8 +47,6 @@ const labels: Record<string, [string, string]> = {
   ok: ["通过", "Passed"],
   degraded: ["部分可用", "Degraded"],
   skipped: ["未检查", "Skipped"],
-  present: ["已发现", "Present"],
-  missing: ["未发现", "Missing"],
   plugin: ["插件", "Plugin"],
   package: ["扩展包", "Package"],
   skill: ["技能", "Skill"],
@@ -149,7 +147,7 @@ export function Diagnostics({ language }: { language: Language }) {
           {report.hosts.map((host) => (
             <section key={host.host}>
               <h4>
-                {host.host} · {label(host.presence)}
+                {host.host} · {label(host.status)}
               </h4>
               <dl>
                 {host.checks.map((item) => (

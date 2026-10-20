@@ -105,6 +105,7 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_LOGGING_FORMAT` | `console` | `console` or structured `json` output |
 | `POWERCONTEXT_SERVER_LOGGING_ACCESS` | `true` | Log external HTTP and logical MCP request completion |
 | `POWERCONTEXT_SERVER_METRICS_ENABLED` | `true` | Expose Prometheus metrics at `/metrics` |
+| `POWERCONTEXT_SERVER_METRICS_BACKGROUND_PORT` | `8001` | Background-role infrastructure listener port; uses `HTTP_HOST` and is disabled with metrics |
 | `POWERCONTEXT_SERVER_TRACING_ENABLED` | `false` | Enable span recording and OTLP export |
 | `POWERCONTEXT_SERVER_CURSOR_SIGNING_SECRET` | local persisted key | Shared secret of at least 32 bytes for signing REST pagination cursors |
 | `POWERCONTEXT_SERVER_DATABASE_KIND` | `sqlite` | Storage backend: `sqlite`, `seekdb`, or `oceanbase` |
@@ -410,9 +411,10 @@ Handoff Report API routes are independently enabled by default. See
 [Use Handoff Report](../workflows/use-handoff-report.md) for selection, inspection, and export.
 
 The Artifact Processing Supervisor is enabled by the default `all` role. OceanBase deployments may run `api` and
-`background` separately. `powercontext server run --role background` starts only a metrics HTTP listener when metrics
-are enabled, using `POWERCONTEXT_SERVER_HTTP_HOST` and `POWERCONTEXT_SERVER_HTTP_PORT`; it does not serve API, MCP,
-Dashboard, or health routes. `/metrics` uses the same authentication and `server.observe` authorization as the API host.
+`background` separately. When metrics are enabled, `powercontext server run --role background` exposes `/metrics` and
+public `/health/live` using `POWERCONTEXT_SERVER_HTTP_HOST` and `POWERCONTEXT_SERVER_METRICS_BACKGROUND_PORT`
+(default `8001`); it does not serve business APIs, MCP, Dashboard, OpenAPI, or `/health/ready`.
+`/metrics` uses the same authentication and `server.observe` authorization as the API host.
 Use distinct ports for API and background processes on the same host. `POWERCONTEXT_SERVER_METRICS_ENABLED=false`
 opens no background listener. Multiple background candidates use the database Lease to elect one active Leader.
 SQLite and embedded seekdb support only the single-process `all` role. Automatic Topic Memory waves remain disabled until a positive interval is set;

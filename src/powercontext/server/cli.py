@@ -44,16 +44,17 @@ from powercontext.builtin.runtime.config import BuiltinConfig
 from powercontext.builtin.runtime.processing_registry import canonical_processing_manifest
 from powercontext.cli.env_file import environment_context
 from powercontext.cli.inference_notice import write_inference_capability_notice
+from powercontext.server.app import access_readiness_checks
 from powercontext.server.authz import PrincipalRef
 from powercontext.server.authz.composition import open_builtin_access_control
-from powercontext.server.background_metrics import create_background_metrics_app, serve_background_metrics
+from powercontext.server.background_metrics import serve_background_metrics
 from powercontext.server.configuration import (
     ServerConfigurationError,
     resolve_server_environment_file,
     server_settings_context,
 )
 from powercontext.server.database_migration import app as database_migration_app
-from powercontext.server.factory import create_server_app
+from powercontext.server.factory import _ServerReadinessProbe, create_background_metrics_app, create_server_app
 from powercontext.server.identity import open_server_identity_repository
 from powercontext.server.logging import WorkerLogging, configure_server_logging
 from powercontext.server.metrics import ServerMetrics
@@ -65,6 +66,7 @@ from powercontext.server.settings import (
     UnauthenticatedNonLoopbackBindError,
 )
 from powercontext.server.tracing import configure_server_tracing
+from powercontext.server.worker_tracing import WorkerTracing
 
 if TYPE_CHECKING:
     from powercontext.builtin.persistence.migrations.atomic_memory_references import CandidateDecision
@@ -468,6 +470,7 @@ async def _run_background_async(settings: ServerSettings, tracing: Any) -> None:
         inference=settings.inference,
         external_skills=settings.external_skills,
     )
+    metrics = ServerMetrics(role="background") if settings.metrics.enabled else None
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     installed: list[signal.Signals] = []
@@ -500,17 +503,29 @@ async def _run_background_async(settings: ServerSettings, tracing: Any) -> None:
                     instrumentation=tracing.instrumentation,
                     tracing=tracing,
                     worker_security=worker_security,
+                    model_usage_observer=None if metrics is None else metrics.observe_model_usage,
+                    worker_model_usage_observer=None if metrics is None else metrics.observe_worker_model_usage,
+                    processing_observer=None if metrics is None else metrics.observe_processing,
                     worker_initializer=WorkerLogging(settings.logging),
+                    worker_entrypoint_wrapper=WorkerTracing(settings.tracing).wrap,
                 )
             )
-            if settings.metrics.enabled and not stopped.is_set():
-                metrics = ServerMetrics(role="background")
+            if metrics is None or stopped.is_set():
+                await stopped.wait()
+            else:
                 application = create_background_metrics_app(
                     settings, runtime=runtime, metrics=metrics, access_control=access
                 )
+
+                async def background_access_checks() -> dict[str, str]:
+                    return await access_readiness_checks(application.state)
+
+                probe = _ServerReadinessProbe(metrics, tracing=tracing, access_checks=background_access_checks)
+                probe.bind(runtime)
+                resources.callback(probe.unbind)
+                await probe()
+                await resources.enter_async_context(probe.monitor())
                 await serve_background_metrics(application, settings, stopped)
-            else:
-                await stopped.wait()
     finally:
         for signum in installed:
             loop.remove_signal_handler(signum)

@@ -96,6 +96,7 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_LOGGING_FORMAT` | `console` | `console` 或结构化 `json` 输出 |
 | `POWERCONTEXT_SERVER_LOGGING_ACCESS` | `true` | 记录外部 HTTP 和逻辑 MCP request completion |
 | `POWERCONTEXT_SERVER_METRICS_ENABLED` | `true` | 在 `/metrics` 暴露 Prometheus metrics |
+| `POWERCONTEXT_SERVER_METRICS_BACKGROUND_PORT` | `8001` | Background role 的 infrastructure listener 端口；使用 `HTTP_HOST`，随 metrics 一起关闭 |
 | `POWERCONTEXT_SERVER_TRACING_ENABLED` | `false` | 启用 span recording 和 OTLP export |
 | `POWERCONTEXT_SERVER_CURSOR_SIGNING_SECRET` | 本地持久化密钥 | 用于签名 REST 分页 cursor 的共享密钥，至少 32 字节 |
 | `POWERCONTEXT_SERVER_DATABASE_KIND` | `sqlite` | 存储后端：`sqlite`、`seekdb` 或 `oceanbase` |
@@ -362,8 +363,9 @@ Handoff Report API route 独立默认启用。Selection、检查和导出步骤�
 [使用 Handoff Report](../workflows/use-handoff-report.md)。
 
 默认 `all` 角色会启动 Artifact Processing Supervisor。OceanBase 部署可以拆分 `api` 和 `background`；
-`powercontext server run --role background` 在启用指标时仅启动指标 HTTP listener，使用
-`POWERCONTEXT_SERVER_HTTP_HOST` 和 `POWERCONTEXT_SERVER_HTTP_PORT`，不提供 API、MCP、Dashboard 或健康检查路由。
+`powercontext server run --role background` 在启用指标时提供 `/metrics` 和公开的 `/health/live`，使用
+`POWERCONTEXT_SERVER_HTTP_HOST` 和 `POWERCONTEXT_SERVER_METRICS_BACKGROUND_PORT`（默认 `8001`），
+不提供业务 API、MCP、Dashboard、OpenAPI 或 `/health/ready`。
 `/metrics` 使用与 API 宿主相同的认证及 `server.observe` 授权。同机 API 与后台进程应使用不同端口。
 `POWERCONTEXT_SERVER_METRICS_ENABLED=false` 时后台不打开 listener。多个后台候选者通过数据库 Lease
 自动选出一个 active Leader。SQLite 与嵌入式 seekdb 只支持单进程 `all`。未设置正数间隔时，Topic Memory 自动波次

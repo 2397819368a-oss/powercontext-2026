@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Metrics-only HTTP surface for a separately hosted processing supervisor."""
+"""Infrastructure HTTP listener for a separately hosted processing supervisor."""
 
 from __future__ import annotations
 
@@ -21,14 +21,10 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 import uvicorn
-from fastapi import FastAPI, Request
-from starlette.responses import JSONResponse
+from fastapi import FastAPI
 from typing_extensions import override
 
-from powercontext.server.app import _error_response, _map_error, _set_error_headers
-from powercontext.server.authz.errors import AccessControlError
-from powercontext.server.factory import _MetricsEndpoint, _resolve_security_providers
-from powercontext.server.middleware import AuthenticationMiddleware
+from powercontext.server.factory import create_background_metrics_app
 from powercontext.server.settings import (
     _UNSAFE_BIND_MESSAGE,
     UnauthenticatedNonLoopbackBindError,
@@ -36,45 +32,9 @@ from powercontext.server.settings import (
 )
 
 if TYPE_CHECKING:
-    from powercontext.builtin.runtime import BuiltinRuntime
-    from powercontext.server.authz import AccessControlService
-    from powercontext.server.metrics import ServerMetrics
     from powercontext.server.settings import ServerSettings
 
-
-def create_background_metrics_app(
-    settings: ServerSettings,
-    *,
-    runtime: BuiltinRuntime | None,
-    metrics: ServerMetrics,
-    access_control: AccessControlService | None,
-) -> FastAPI:
-    """Expose only metrics, with the same authentication and authorization as the API host."""
-
-    _, authentication, access, _ = _resolve_security_providers(
-        settings, access_control=access_control, authentication_provider=None
-    )
-    app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
-    app.state.application = runtime
-    app.state.access_control = access
-    app.state.access_mode = settings.access.mode
-    if authentication is not None:
-        app.add_middleware(AuthenticationMiddleware, provider=authentication)
-
-    @app.exception_handler(AccessControlError)
-    async def access_error(_request: Request, error: AccessControlError) -> JSONResponse:
-        status, code, message, details = _map_error(error)
-        response = _error_response(status, code=code, message=message, details=details)
-        _set_error_headers(response, error)
-        return response
-
-    @app.exception_handler(Exception)
-    async def unexpected_error(_request: Request, _error: Exception) -> JSONResponse:
-        return _error_response(500, code="internal_error", message="The Server failed.", details=None)
-
-    if settings.metrics.enabled:
-        app.add_api_route("/metrics", _MetricsEndpoint(metrics), include_in_schema=False)
-    return app
+__all__ = ["create_background_metrics_app", "serve_background_metrics"]
 
 
 class _BackgroundMetricsServer(uvicorn.Server):
@@ -99,7 +59,7 @@ async def serve_background_metrics(app: FastAPI, settings: ServerSettings, stopp
         uvicorn.Config(
             app,
             host=settings.http.host,
-            port=settings.http.port,
+            port=settings.metrics.background_port,
             access_log=False,
             log_config=None,
             lifespan="off",

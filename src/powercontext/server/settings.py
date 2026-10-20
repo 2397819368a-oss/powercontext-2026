@@ -176,6 +176,7 @@ class MetricsConfig(BaseModel):
     """Prometheus metrics exposed by the Server."""
 
     enabled: bool = True
+    background_port: int = Field(default=8001, ge=1, le=65535)
 
 
 class TracingConfig(BaseModel):
