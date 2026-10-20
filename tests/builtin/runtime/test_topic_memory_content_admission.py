@@ -53,7 +53,8 @@ def _placeholder():
 
 
 @pytest.mark.parametrize("path", ["create", "update", "reconcile", "evolve", "mixed"])
-def test_invalid_content_preserves_topics_cursor_and_search(path):
+@pytest.mark.parametrize("formatted", [False, True])
+def test_invalid_content_preserves_topics_cursor_and_search(path, formatted):
     async def scenario():
         manager, profile, sources, topics = await _repositories()
         try:
@@ -81,8 +82,14 @@ def test_invalid_content_preserves_topics_cursor_and_search(path):
                     ),
                 )
                 term = await leases.start_single_process_term(connection, "holder")
+            placeholder = _placeholder()
+            if formatted:
+                placeholder = TopicMemoryContent(**{
+                    key: f"**{value.rstrip('.')}!**" if key != "title" else f"**{value}**"
+                    for key, value in placeholder.model_dump().items()
+                })
             bad = TopicMemoryProposal(
-                content=_placeholder(),
+                content=placeholder,
                 evidence_ids=("evidence-0001",),
                 candidate_id="candidate-0001" if path == "update" else None,
             )
@@ -200,6 +207,123 @@ def test_rejected_content_recovers_or_exhausts_the_original_budget(recover):
                         await SourceCursorRepository().load(connection, "scope-a", TOPIC_MEMORY_SOURCE_WINDOW_BINDING)
                         is None
                     )
+        finally:
+            await manager.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("path", ["create", "update", "reconcile"])
+@pytest.mark.parametrize(
+    "material", ["policy", "paraphrased-policy", "business-coordination", "split-quotes", "joined-quotes"]
+)
+def test_grounded_identity_content_publishes_with_exact_sources(path, material):
+    async def scenario():
+        manager, profile, sources, topics = await _repositories()
+        try:
+            content = (
+                TopicMemoryContent(
+                    title="Customer import identity policy",
+                    summary="Retain historical identities."
+                    if material == "paraphrased-policy"
+                    else "Preserve historical identities.",
+                    detail="Update existing identities without merging historical identities.",
+                )
+                if material in {"policy", "paraphrased-policy"}
+                else _placeholder().model_copy(update={"title": "Placeholder investigation"})
+            )
+            if material == "business-coordination":
+                content = TopicMemoryContent(
+                    title="Customer import identity policy",
+                    summary="Reconcile existing identities.",
+                    detail="Reconciliation preserving distinct historical identities.",
+                )
+            bodies = (
+                (f"{content.title}: {content.summary} {content.detail}",)
+                if material != "split-quotes"
+                else (
+                    "Placeholder investigation captured summary: " + content.summary,
+                    "Placeholder investigation captured detail: " + content.detail,
+                )
+            )
+            if material == "paraphrased-policy":
+                bodies = tuple(
+                    body.replace("Retain historical identities.", "Preserve historical identities.") for body in bodies
+                )
+            if material == "business-coordination":
+                bodies = (
+                    "Customer import: reconcile existing identities; reconciliation preserving distinct historical identities.",
+                )
+            prior = TopicMemoryContent(
+                title="zircon import",
+                summary="Zircon customer import is pending.",
+                detail="Customer import requirements need confirmation.",
+            )
+            leases = ArtifactProcessingLeaseRepository()
+            async with profile.database.transaction() as connection:
+                old = (
+                    None
+                    if path == "create"
+                    else await topics.publish_create(
+                        connection,
+                        "scope-a",
+                        "topic-old",
+                        TopicMemoryDraft(content=prior),
+                        prepare_topic_memory_projection(prior),
+                    )
+                )
+                stored = []
+                for index, body in enumerate(bodies, start=1):
+                    stored.append(
+                        await sources.add(
+                            connection,
+                            "scope-a",
+                            NoteSource(
+                                name=f"policy-{index}", materialization=SourceMaterialization.CAPTURED, body=body
+                            ),
+                        )
+                    )
+                term = await leases.start_single_process_term(connection, "holder")
+            evidence_ids = tuple(f"evidence-{index:04d}" for index in range(1, len(stored) + 1))
+            proposal = TopicMemoryProposal(
+                content=content, evidence_ids=evidence_ids, candidate_id="candidate-0001" if path == "update" else None
+            )
+            provisional = proposal.model_copy(update={"content": prior}) if path == "reconcile" else proposal
+            stages = _stages(
+                probe=TopicMemoryProbeOutput(probes=(TopicMemoryProbe(query="zircon", evidence_ids=evidence_ids),)),
+                global_output=TopicMemoryGlobalOutput(proposals=(provisional,)),
+                reconcile=(
+                    TopicMemoryReconcileOutput(
+                        proposals=(
+                            proposal.model_copy(
+                                update={"proposal_id": "proposal-0001", "candidate_id": "candidate-0001"}
+                            ),
+                        )
+                    ),
+                ),
+            )
+            processor = TopicMemoryProcessor(
+                database=profile.database,
+                sources=sources,
+                topics=topics,
+                stages=stages,
+                publisher=TopicMemoryAtomicPublisher(profile.database, sources, topics, leases=leases),
+            )
+            assignment = _assignment(term.fence("single-process"), through=len(stored))
+            assert (await processor.process(assignment)).outcome.value == "succeeded"
+            async with profile.database.transaction() as connection:
+                heads = await topics.browse_current(connection, "scope-a", limit=10)
+                assert len(heads) == 1
+                published = await topics.get_exact(connection, "scope-a", heads[0].artifact_ref)
+                cursor = await SourceCursorRepository().load(connection, "scope-a", TOPIC_MEMORY_SOURCE_WINDOW_BINDING)
+                if old is not None:
+                    assert (await topics.get_exact(connection, "scope-a", old.topic.as_ref())).topic.content == prior
+                    assert published.topic.revision == 2
+                    assert published.topic.lineage.artifacts == (old.topic.as_ref(),)
+            assert published.topic.content == content
+            assert published.topic.lineage.sources == tuple(item.ref for item in stored)
+            assert cursor is not None and cursor.cursor.sequence == len(stored)
+            assert await _budget_row(profile) is None
         finally:
             await manager.__aexit__(None, None, None)
 

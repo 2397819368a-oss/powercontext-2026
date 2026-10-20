@@ -90,13 +90,22 @@ _CHINESE_COORDINATION_WORD = re.compile(
     r"协调后的|协调结果|协调详情|保留不同的|保持不同的|不同历史身份|独立历史身份|历史身份|现有身份|"
     r"避免合并|不合并|协调|保留|保持|候选|提案|的|并|且|与|[\s，。：]"  # noqa: RUF001 - Chinese punctuation
 )
-_DISCUSSION = re.compile(
-    r"\b(?:example|placeholder|template|quoted|literal|investigation|protocol)\b|占位|模板|示例|排查|协议"
-)
 
 
 def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def _template_text(value: str) -> str:
+    """Ignore sentence endings and paired emphasis only for template recognition."""
+    while True:
+        value = value.rstrip(" .!?。！？")  # noqa: RUF001 - recognize Chinese sentence endings
+        for marker in ("**", "__", "*", "_"):
+            if len(value) > 2 * len(marker) and value.startswith(marker) and value.endswith(marker):
+                value = value[len(marker) : -len(marker)].strip()
+                break
+        else:
+            return value
 
 
 def _coordination_only(value: str, internal_ids: frozenset[str]) -> bool:
@@ -104,6 +113,10 @@ def _coordination_only(value: str, internal_ids: frozenset[str]) -> bool:
     text = _SECTION_LABEL.sub("", value)
     referenced = frozenset(_INTERNAL_ID.findall(text))
     if not referenced <= internal_ids:
+        return False
+    # Coordination can describe business rules too. Require a generated label or
+    # supplied internal reference; coordination words alone are insufficient.
+    if not (_SECTION_LABEL.match(value) or referenced):
         return False
     text = _INTERNAL_ID.sub("", text).strip(" .,:;-#")
     if text and not _CHINESE_COORDINATION_WORD.sub("", text):
@@ -124,7 +137,7 @@ class TopicMemoryContentAdmission:
     """Reject recognizable process templates, not arbitrary unsupported assertions.
 
     Normalize each supplied evidence/history body once per batch. Only cited Sources
-    and the selected historical Topic may support a literal discussion of a template.
+    and the selected historical Topic may support quoted templates. Ordinary identity rules need no literal match.
     """
 
     def __init__(
@@ -148,10 +161,11 @@ class TopicMemoryContentAdmission:
     ) -> str | None:
         """Return a content-free rejection code, or admit a potentially meaningful Topic."""
         title, summary, detail = (_normalize(value) for value in (content.title, content.summary, content.detail))
-        numbered = _TITLE_LABEL.fullmatch(title)
-        coordinated = tuple(_coordination_only(value, self._internal_ids) for value in (summary, detail))
-        labels = tuple(_SECTION_LABEL.match(value) for value in (summary, detail))
-        empty_sections = tuple(not _SECTION_LABEL.sub("", value) for value in (summary, detail))
+        template_sections = tuple(_template_text(value) for value in (summary, detail))
+        numbered = _TITLE_LABEL.fullmatch(_template_text(title))
+        coordinated = tuple(_coordination_only(value, self._internal_ids) for value in template_sections)
+        labels = tuple(_SECTION_LABEL.match(value) for value in template_sections)
+        empty_sections = tuple(not _SECTION_LABEL.sub("", value) for value in template_sections)
         if (
             numbered
             and all(labels)
@@ -162,10 +176,11 @@ class TopicMemoryContentAdmission:
             return "invalid_topic_placeholder"
         if not all(coordinated):
             return None
-        if _DISCUSSION.search(title):
-            context = [self._evidence[key] for key in evidence_ids if key in self._evidence]
-            if candidate_id in self._historical:
-                context.append(self._historical[candidate_id])
-            if any(_DISCUSSION.search(text) and summary in text and detail in text for text in context):
-                return None
+        context = [self._evidence[key] for key in evidence_ids if key in self._evidence]
+        if candidate_id in self._historical:
+            context.append(self._historical[candidate_id])
+        # Each quoted field may be supported by a different cited record; do not
+        # manufacture matches by concatenating record boundaries.
+        if all(any(section in text for text in context) for section in (summary, detail)):
+            return None
         return "invalid_topic_coordination_content"

@@ -44,7 +44,7 @@ def _content(
             "invalid_topic_coordination_content",
         ),
         (
-            _content(title="发布验证", summary="协调并保留历史身份。", detail="协调详情保持不同历史身份。"),
+            _content(title="发布验证", summary="S-19 协调并保留历史身份。", detail="D-19 协调详情保持不同历史身份。"),
             "invalid_topic_coordination_content",
         ),
     ],
@@ -78,7 +78,7 @@ def test_admits_meaningful_identifiers_and_short_content(content):
     assert admission.rejection(content, ("e1",)) is None
 
 
-def test_literal_template_discussion_requires_cited_support_and_an_explanatory_title():
+def test_quoted_coordination_requires_cited_support_and_cannot_be_a_numbered_placeholder():
     content = _content(title="Placeholder investigation")
     report = "Placeholder investigation: " + content.summary + " " + content.detail
     admission = TopicMemoryContentAdmission({"e1": report, "e2": "Check dashboard"}, {})
@@ -100,3 +100,87 @@ def test_only_selected_history_can_support_a_literal_discussion():
     admission = TopicMemoryContentAdmission({"e1": "Check dashboard"}, {"candidate-0001": history})
     assert admission.rejection(content, ("e1",), "candidate-0001") is None
     assert admission.rejection(content, ("e1",)) == "invalid_topic_coordination_content"
+
+
+@pytest.mark.parametrize(
+    "summary,source_summary",
+    [
+        ("Preserve historical identities.", "Preserve historical identities."),
+        ("Retain historical identities.", "Preserve historical identities."),
+        ("Preserve historical identities.", "Preserve historical identities;"),
+        ("保持历史身份。", "保留历史身份。"),
+    ],
+)
+def test_grounded_identity_policy_does_not_require_literal_matching(summary, source_summary):
+    content = _content(
+        title="Customer import identity policy",
+        summary=summary,
+        detail="保留不同历史身份。"
+        if "身份" in summary
+        else "Update existing identities without merging historical identities.",
+    )
+    source = f"{content.title}: {source_summary} {content.detail}"
+    admission = TopicMemoryContentAdmission({"e1": source, "e2": "Check the dashboard."}, {})
+    assert admission.rejection(content, ("e1",)) is None
+    # This guard detects templates, not arbitrary unsupported business assertions.
+    assert admission.rejection(content, ("e2",)) is None
+
+
+@pytest.mark.parametrize("joined", [False, True])
+def test_quoted_fields_can_be_supported_by_different_cited_sources(joined):
+    content = _content(title="Placeholder investigation")
+    summary = "Captured summary: " + content.summary
+    detail = "Captured detail: " + content.detail
+    evidence = {"e1": summary + "\n" + detail} if joined else {"e1": summary, "e2": detail}
+    admission = TopicMemoryContentAdmission(evidence, {})
+    assert admission.rejection(content, tuple(evidence)) is None
+    if not joined:
+        assert admission.rejection(content, ("e1",)) == "invalid_topic_coordination_content"
+
+
+def test_support_can_use_selected_history_and_cited_evidence_only():
+    content = _content(title="Identity retention policy")
+    history = _content(
+        title="Historical identity policy", summary=content.summary, detail="Earlier import constraints."
+    )
+    admission = TopicMemoryContentAdmission(
+        {"e1": "Import update: " + content.detail},
+        {"candidate-0001": history},
+    )
+    assert admission.rejection(content, ("e1",), "candidate-0001") is None
+    assert admission.rejection(content, ("e1",)) == "invalid_topic_coordination_content"
+
+
+@pytest.mark.parametrize(
+    "summary,detail,source",
+    [
+        (
+            "Reconcile existing identities.",
+            "Reconciliation preserving distinct historical identities.",
+            "Customer import: reconcile existing identities; reconciliation preserving distinct historical identities.",
+        ),
+        (
+            "协调并保留历史身份。",
+            "协调详情保持不同历史身份。",
+            "客户导入需要协调并保留历史身份；协调详情保持不同历史身份。",  # noqa: RUF001 - Chinese punctuation
+        ),
+    ],
+)
+def test_business_coordination_language_is_not_an_internal_template(summary, detail, source):
+    content = _content(title="Customer import identity policy", summary=summary, detail=detail)
+    assert TopicMemoryContentAdmission({"e1": source}, {}).rejection(content, ("e1",)) is None
+
+
+@pytest.mark.parametrize("marker", ["", "*", "**", "_", "__"])
+@pytest.mark.parametrize("ending", ["!", "？", "."])  # noqa: RUF001 - Chinese punctuation
+def test_placeholder_formatting_cannot_bypass_admission(marker, ending):
+    original = _content()
+    content = _content(
+        title=f"{marker}{original.title}{marker}",
+        summary=f"{marker}{original.summary.rstrip('.')}{ending}{marker}",
+        detail=f"{marker}{original.detail.rstrip('.')}{ending}{marker}",
+    )
+    assert (
+        TopicMemoryContentAdmission({"e1": "Check dashboard"}, {}).rejection(content, ("e1",))
+        == "invalid_topic_placeholder"
+    )

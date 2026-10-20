@@ -269,3 +269,121 @@ def test_topic_demonstrations_cannot_teach_placeholder_publication(key):
     with pytest.raises(PromptError) as caught:
         definition.resolve("scope-a", Prompt(artifact_id=key, revision=1, content=content))
     assert caught.value.during_inference
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("paraphrase", [False, True])
+def test_topic_demonstrations_accept_supported_identity_rules_across_cited_material(split, paraphrase):
+    title = "Customer import identity policy"
+    summary = "Preserve historical identities."
+    detail = "Update existing identities without merging historical identities."
+    bodies = [summary, detail] if split else [f"{title}: {summary} {detail}"]
+    evidence = [
+        {"evidence_id": f"e{index}", "source_type": "content", "content": body}
+        for index, body in enumerate(bodies, start=1)
+    ]
+    content = _with_demonstration({
+        "input": {"evidence": evidence, "probes": []},
+        "expected_output": {
+            "proposals": [
+                {
+                    "content": {
+                        "title": title,
+                        "summary": "Retain historical identities." if paraphrase else summary,
+                        "detail": detail,
+                    },
+                    "evidence_ids": [item["evidence_id"] for item in evidence],
+                }
+            ]
+        },
+    })
+    definition = PromptRegistry(builtin_prompt_definitions()).get("topic_memory.global")
+    before = content.model_dump_json()
+    definition.validate(content)
+    selected = definition.resolve("scope-a", Prompt(artifact_id="topic_memory.global", revision=1, content=content))
+    assert selected.selection == "artifact"
+    assert content.model_dump_json() == before
+
+
+@pytest.mark.parametrize("stage", ["evolve", "reduce", "reconcile"])
+@pytest.mark.parametrize("business", [False, True])
+def test_intermediate_topic_demonstrations_cannot_supply_source_support(stage, business):
+    body = (
+        {
+            "title": "Import policy",
+            "summary": "Reconcile existing identities.",
+            "detail": "Preserve historical identities.",
+        }
+        if business
+        else {
+            "title": "Placeholder investigation",
+            "summary": "S-19 coordinated without merging historical identities.",
+            "detail": "D-19 coordinated detail preserving distinct historical identity.",
+        }
+    )
+    proposal = {"content": body, "evidence_ids": ["e1"]}
+    if stage == "evolve":
+        value, output = {"work_id": "work-0001", "temporary": [proposal]}, {"proposal": proposal}
+    elif stage == "reduce":
+        value = {"temporary": [proposal], "max_result_tokens": 128}
+        output = {"covered_indices": [0], "temporary": proposal}
+    else:
+        proposal["proposal_id"] = "proposal-0001"
+        value, output = {"component_id": "component-0001", "proposals": [proposal]}, {"proposals": [proposal]}
+    content = _with_demonstration({"input": value, "expected_output": output})
+    key = f"topic_memory.{stage}"
+    definition = PromptRegistry(builtin_prompt_definitions()).get(key)
+    before = content.model_dump_json()
+    if business:
+        definition.validate(content)
+        assert (
+            definition.resolve("scope-a", Prompt(artifact_id=key, revision=1, content=content)).selection == "artifact"
+        )
+    else:
+        with pytest.raises(PromptError) as caught:
+            definition.validate(content)
+        assert caught.value.code == "prompt_definition_incompatible"
+        with pytest.raises(PromptError) as caught:
+            definition.resolve("scope-a", Prompt(artifact_id=key, revision=1, content=content))
+        assert caught.value.during_inference
+    assert content.model_dump_json() == before
+
+
+@pytest.mark.parametrize("support", ["sources", "selected-history", "unselected-history"])
+def test_topic_template_quotes_require_explicit_sources_or_selected_history(support):
+    body = {
+        "title": "Placeholder investigation",
+        "summary": "S-19 coordinated without merging historical identities.",
+        "detail": "D-19 coordinated detail preserving distinct historical identity.",
+    }
+    proposal = {"content": body, "evidence_ids": ["e1", "e2"]}
+    value = {"work_id": "work-0001", "temporary": [proposal]}
+    if support == "sources":
+        value["evidence"] = [
+            {"evidence_id": "e1", "source_type": "content", "content": body["summary"]},
+            {"evidence_id": "e2", "source_type": "content", "content": body["detail"]},
+        ]
+        key = "topic_memory.evolve"
+        output = {"proposal": proposal}
+    else:
+        # Reconcile exposes multiple history slots; only the output's selected slot is support.
+        proposal["proposal_id"] = "proposal-0001"
+        if support == "selected-history":
+            proposal["candidate_id"] = "candidate-0001"
+        value = {
+            "component_id": "component-0001",
+            "proposals": [proposal],
+            "historical": [{"candidate_id": "candidate-0001", **body}],
+        }
+        key = "topic_memory.reconcile"
+        output = {"proposals": [proposal]}
+    content = _with_demonstration({"input": value, "expected_output": output})
+    definition = PromptRegistry(builtin_prompt_definitions()).get(key)
+    if support == "unselected-history":
+        with pytest.raises(PromptError):
+            definition.validate(content)
+    else:
+        definition.validate(content)
+        assert (
+            definition.resolve("scope-a", Prompt(artifact_id=key, revision=1, content=content)).selection == "artifact"
+        )

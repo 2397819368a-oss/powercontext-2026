@@ -324,21 +324,22 @@ def _admit_topic_proposals(
     intermediate: Iterable[TopicMemoryProposal] = (),
 ) -> None:
     """Apply runtime content admission to custom demonstrations without changing their JSON."""
-    fragments: dict[str, list[str]] = {}
-    for item in intermediate:
-        text = f"{item.content.title}\n{item.content.summary}\n{item.content.detail}"
-        for evidence_id in item.evidence_ids:
-            fragments.setdefault(evidence_id, []).append(text)
-    material = {key: "\n".join(parts) for key, parts in fragments.items()}
-    material.update((item.evidence_id, item.content) for item in evidence)
+    material = {item.evidence_id: item.content for item in evidence}
     proposals = tuple(proposals)
+    # Intermediate outputs carry references, not canonical Source bodies. They
+    # identify internal IDs but cannot establish support for their own content.
+    internal_ids: set[str] = set()
+    for item in (*intermediate, *proposals):
+        internal_ids.update(item.evidence_ids)
+        if item.proposal_id is not None:
+            internal_ids.add(item.proposal_id)
     admission = TopicMemoryContentAdmission(
         material,
         {
             item.candidate_id: TopicMemoryContent(title=item.title, summary=item.summary, detail=item.detail)
             for item in historical
         },
-        internal_ids=(item.proposal_id for item in proposals if item.proposal_id is not None),
+        internal_ids=internal_ids,
     )
     for proposal in proposals:
         _require(admission.rejection(proposal.content, proposal.evidence_ids, proposal.candidate_id) is None)

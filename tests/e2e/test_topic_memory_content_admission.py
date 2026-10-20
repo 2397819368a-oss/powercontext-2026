@@ -21,6 +21,7 @@ import json
 import sqlite3
 import threading
 import time
+from functools import partial
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -28,12 +29,23 @@ from pydantic import AnyHttpUrl, SecretStr
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import InferenceConfig, RuntimeConfig
+from powercontext.builtin.runtime import composition as runtime_composition
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import McpConfig, ServerSettings
 from tests.e2e.topic_memory_product.common import start_loopback_server
 
 
-def test_http_worker_rejects_placeholder_then_publishes_grounded_revision(tmp_path, caplog, capfd):
+def test_http_worker_rejects_placeholder_then_publishes_grounded_revision(tmp_path, monkeypatch, caplog, capfd):
+    monkeypatch.setattr(
+        runtime_composition,
+        "ArtifactProcessingSupervisor",
+        partial(
+            runtime_composition.ArtifactProcessingSupervisor,
+            retry_base_seconds=0.05,
+            retry_cap_seconds=0.05,
+            retry_jitter=lambda: 1.0,
+        ),
+    )
     provider_app = FastAPI()
     permit_valid_output = threading.Event()
     global_calls = []
@@ -137,6 +149,7 @@ def test_http_worker_rejects_placeholder_then_publishes_grounded_revision(tmp_pa
             assert previous.status_code == 200, previous.text
             assert previous.json()["content"] == old
             permit_valid_output.set()
+            deadline = time.monotonic() + 60
             while True:
                 heads = client.get(base).json()["items"]
                 if len(heads) == 1 and heads[0]["revision"] == 2:
