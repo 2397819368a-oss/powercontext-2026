@@ -125,6 +125,27 @@ function form() {
     />,
   );
 }
+function makeSaved(count: number): {
+  outcome: ReturnType<typeof outcome>;
+  records: NonNullable<ReturnType<typeof outcome>["result"]>["records"];
+} {
+  const saved = outcome("succeeded");
+  saved.result = {
+    changed: true,
+    records: Array.from({ length: count }, (_, index) => ({
+      artifact: { ...artifact, artifact_id: `atomic-${index}` },
+      kind: "note",
+      text: `Atomic note ${index}`,
+      state: "active",
+      state_version: 0,
+      merged_into_id: null,
+    })),
+  };
+  saved.record.references = saved.result.records.map(
+    (record) => record.artifact,
+  );
+  return { outcome: saved, records: saved.result.records };
+}
 test("a save without records succeeds without inventing a memory or submitting on Enter", async () => {
   const user = userEvent.setup();
   form();
@@ -146,21 +167,7 @@ test.each([1, 2])(
   async (count) => {
     const user = userEvent.setup();
     form();
-    const saved = outcome("succeeded");
-    saved.result = {
-      changed: true,
-      records: Array.from({ length: count }, (_, index) => ({
-        artifact: { ...artifact, artifact_id: `atomic-${index}` },
-        kind: "note",
-        text: `Atomic note ${index}`,
-        state: "active",
-        state_version: 0,
-        merged_into_id: null,
-      })),
-    };
-    saved.record.references = saved.result.records.map(
-      (record) => record.artifact,
-    );
+    const { outcome: saved } = makeSaved(count);
     vi.mocked(desktopApi.remember).mockResolvedValue(saved);
     await user.type(screen.getByLabelText("Memory text"), "Atomic note");
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -177,21 +184,7 @@ test.each([1, 2])(
 );
 test("an Atomic save can be searched, opened and copied by exact Artifact reference", async () => {
   const user = userEvent.setup();
-  const saved = outcome("succeeded");
-  saved.result = {
-    changed: true,
-    records: [
-      {
-        artifact,
-        kind: "note",
-        text: "Atomic note",
-        state: "active",
-        state_version: 0,
-        merged_into_id: null,
-      },
-    ],
-  };
-  saved.record.references = [artifact];
+  const { outcome: saved } = makeSaved(1);
   vi.mocked(desktopApi.remember).mockResolvedValue(saved);
   vi.mocked(desktopApi.search).mockResolvedValue({
     hits: [
@@ -256,21 +249,13 @@ test("UTF-8 overflow and IME composition cannot accidentally submit", async () =
 });
 test("a saved record opens its exact revision through the existing reader", async () => {
   const user = userEvent.setup();
-  const saved = outcome("succeeded");
+  const { outcome: saved } = makeSaved(1);
   saved.result = {
-    changed: true,
+    ...saved.result!,
     records: [
-      {
-        artifact,
-        kind: "note",
-        text: "Just saved note",
-        state: "active",
-        state_version: 0,
-        merged_into_id: null,
-      },
+      { ...saved.result!.records[0], artifact, text: "Just saved note" },
     ],
   };
-  saved.record.references = [artifact];
   vi.mocked(desktopApi.remember).mockResolvedValue(saved);
   vi.mocked(desktopApi.atomicEntry).mockResolvedValue({
     artifact,
@@ -288,10 +273,14 @@ test("a saved record opens its exact revision through the existing reader", asyn
   );
   await user.type(screen.getByLabelText("Memory text"), "Just saved note");
   await user.click(screen.getByRole("button", { name: "Save" }));
-  await user.click(screen.getByRole("button", { name: "Open saved record" }));
+  const openSaved = screen.getByRole("button", { name: "Open saved record" });
+  await user.click(openSaved);
   expect(desktopApi.atomicEntry).toHaveBeenCalledWith(1, artifact);
   expect(screen.getByRole("heading", { name: "Memory details" })).toBeTruthy();
   expect(screen.getByText(/Records returned by this save/)).toBeTruthy();
+  // Closing the reader returns keyboard focus to the saved-record trigger.
+  await user.click(screen.getByRole("button", { name: "Close reader" }));
+  await waitFor(() => expect(document.activeElement).toBe(openSaved));
 });
 
 test("unknown save retains the draft, names its original target, and does not replay automatically", async () => {

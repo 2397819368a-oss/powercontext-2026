@@ -37,7 +37,10 @@ type Props = {
 export const textBytes = (value: string) =>
   new TextEncoder().encode(value).length;
 type NoteFormProps = Props & {
-  onReadSaved: (artifact: ArtifactReference) => void;
+  onReadSaved: (
+    artifact: ArtifactReference,
+    trigger: HTMLButtonElement,
+  ) => void;
 };
 export function NoteForm({
   state,
@@ -202,7 +205,11 @@ export function NoteForm({
                       <div className="hit-snippet">{record.text}</div>
                     </div>
                     <div className="hit-actions">
-                      <button onClick={() => onReadSaved(record.artifact)}>
+                      <button
+                        onClick={(event) =>
+                          onReadSaved(record.artifact, event.currentTarget)
+                        }
+                      >
                         {t.openSaved}
                       </button>
                     </div>
@@ -304,7 +311,11 @@ export function MemoryWorkspace(props: Props) {
       if (ticket === sequence.current) setBusy(null);
     }
   }
-  async function readSaved(artifact: ArtifactReference) {
+  async function readSaved(
+    artifact: ArtifactReference,
+    trigger: HTMLButtonElement,
+  ) {
+    readButton.current = trigger;
     await read(artifact, true);
   }
   const record = state?.lastWrite;
@@ -335,7 +346,7 @@ export function MemoryWorkspace(props: Props) {
         language={language}
         onState={onState}
         onDirty={onDirty}
-        onReadSaved={(artifact) => void readSaved(artifact)}
+        onReadSaved={(artifact, trigger) => void readSaved(artifact, trigger)}
       />
       <section className="card stack">
         <h2>{t.query}</h2>
