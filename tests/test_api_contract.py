@@ -34,6 +34,7 @@ from powercontext.http import (
     Candidate,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
+    CaptureWorkingNoteRequest,
     CommitHandoffRequest,
     CommittedHandoff,
     ContinueHandoffRequest,
@@ -97,6 +98,7 @@ from powercontext.http._generated.operations import (
     ACTIVATE_HANDOFF,
     APPROVE_CANDIDATE,
     CAPTURE_CONTENT_SOURCE,
+    CAPTURE_WORKING_NOTE,
     COMMIT_HANDOFF,
     CONTINUE_HANDOFF,
     CREATE_ARTIFACT,
@@ -195,7 +197,7 @@ def test_contract_uses_the_namespaced_request_id_header() -> None:
 def test_server_info_contract_is_observable_and_forward_compatible() -> None:
     contract = yaml.safe_load(CONTRACT_PATH.read_text())
 
-    assert contract["info"]["version"] == "1.3.0"
+    assert contract["info"]["version"] == "1.4.0"
     operation = contract["paths"]["/v1/server-info"]["get"]
     assert operation["operationId"] == "get_server_info"
     assert operation["x-powercontext-access"] == {
@@ -348,6 +350,9 @@ def test_capture_operation_declares_its_typed_accepted_exchange() -> None:
     assert CAPTURE_CONTENT_SOURCE.request_type is CaptureContentSourceRequest
     assert CAPTURE_CONTENT_SOURCE.response_type is CaptureContentSourceResponse
     assert CAPTURE_CONTENT_SOURCE.success_status == 202
+    assert CAPTURE_WORKING_NOTE.request_type is CaptureWorkingNoteRequest
+    assert CAPTURE_WORKING_NOTE.response_type is CaptureContentSourceResponse
+    assert CAPTURE_WORKING_NOTE.success_status == 202
 
 
 def test_topic_memory_operations_use_strict_public_shapes_without_retrieval_controls() -> None:

@@ -18,14 +18,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, open, opendir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import { MAX_CONTEXT_BYTES } from './runtime.mjs'
+import { isScopeId, MAX_CONTEXT_BYTES } from './runtime.mjs'
 
 const SCHEMA = 'powercontext.kimi-code.runtime-observation.v1'
 const FILE = /^attempt-([a-f0-9-]{36})\.json$/u
 const STAGES = ['scope', 'prepare', 'capture', 'injection']
 const STATES = new Set(['not_observed', 'resolved', 'ready', 'empty', 'accepted', 'rejected', 'unknown', 'skipped', 'emitted', 'failed'])
 const CODES = new Set(['invalid_settings', 'authentication_failed', 'invalid_credentials', 'server_unavailable',
-  'invalid_response', 'forbidden', 'not_found', 'runtime_unavailable'])
+  'invalid_response', 'forbidden', 'not_found', 'runtime_unavailable', 'workspace_required'])
 const REASONS = new Set(['disabled', 'too_large', 'deadline_exceeded', 'sensitive', 'no_context', 'not_reached'])
 const STAGE_STATES = { scope: ['resolved', 'failed', 'skipped', 'not_observed'],
   prepare: ['ready', 'empty', 'failed', 'skipped', 'not_observed'],
@@ -37,6 +37,7 @@ const MAX_TIMESTAMP = 253402300800000
 // directory scan budget leaves bounded room to read and prune that overflow.
 const LIMIT = 64
 const STALE_MS = 300000
+const TRANSIENT_REMOVE_CODES = new Set(['EACCES', 'EBUSY', 'EPERM'])
 const hash = value => createHash('sha256').update(value).digest('hex')
 
 function identity(input, settings) {
@@ -104,9 +105,10 @@ async function read(name) {
         !(value.completed_at === null || Number.isSafeInteger(value.completed_at) &&
           value.completed_at >= value.started_at && value.completed_at < MAX_TIMESTAMP) ||
         !['workspace', 'session', 'configuration'].every(key => /^[a-f0-9]{64}$/u.test(value.identity?.[key])) ||
-        typeof value.scope_id !== 'string' || !value.scope_id.trim() || [...value.scope_id].length > 256 ||
+        !(value.scope_id === null || isScopeId(value.scope_id)) ||
         !value.stages) throw new Error('invalid_state')
     for (const name of STAGES) validateStage(name, value.stages[name])
+    if (value.stages.scope.state === 'resolved' && !isScopeId(value.scope_id)) throw new Error('invalid_state')
     // Project only known fields, including from manually altered files.
     return { schema: SCHEMA, attempt_id: value.attempt_id, identity: Object.fromEntries(
       ['workspace', 'session', 'configuration'].map(key => [key, value.identity[key]])),
@@ -133,6 +135,15 @@ async function publish(record) {
   } finally { await unlink(temporary).catch(() => {}) }
 }
 
+async function removeCompleted(attemptId) {
+  try { await rm(join(directory(), `attempt-${attemptId}.json`), { force: true }) }
+  catch (error) {
+    // A concurrent Hook can still be reading this owned record on Windows. Retention is
+    // best-effort here; the capacity check below still rejects a persistently full directory.
+    if (!TRANSIENT_REMOVE_CODES.has(error.code)) throw error
+  }
+}
+
 export function startObservation(input, settings, onFailure) {
   const record = { schema: SCHEMA, attempt_id: randomUUID(), identity: identity(input, settings),
     scope_id: settings.scopeId, started_at: Date.now(), completed_at: null,
@@ -144,7 +155,7 @@ export function startObservation(input, settings, onFailure) {
     if (existing.length >= LIMIT) {
       const completed = (await records()).filter(item => item.completed_at !== null)
       for (const item of completed.slice(32)) {
-        await rm(join(directory(), `attempt-${item.attempt_id}.json`), { force: true })
+        await removeCompleted(item.attempt_id)
       }
       if ((await names()).length >= LIMIT) throw new Error('runtime_capacity_exceeded')
     }
@@ -157,7 +168,13 @@ export function startObservation(input, settings, onFailure) {
   }
   persist()
   return {
-    record(name, state, details) { record.stages[name] = stage(state, details); persist() },
+    record(name, state, details = {}) {
+      if (name === 'scope' && state === 'resolved') {
+        if (!isScopeId(details.scope_id)) throw new Error('invalid_state')
+        record.scope_id = details.scope_id
+      }
+      record.stages[name] = stage(state, details); persist()
+    },
     fail(name, error, write = false) {
       const rejected = error.httpStatus >= 400 && error.httpStatus < 500
       this.record(name, write && error.requestSent ? rejected ? 'rejected' : 'unknown' : 'failed',
@@ -180,7 +197,7 @@ export async function queryObservations(input, settings) {
   const result = { schema: 'powercontext.kimi-code.runtime-status.v1',
     selection: input.session_id === undefined ? 'workspace_latest' : 'session' }
   if (!latest) return { ...result, status: 'not_observed' }
-  if (latest.identity.configuration !== expected.configuration || latest.scope_id !== settings.scopeId) {
+  if (latest.identity.configuration !== expected.configuration || settings.scopeId && latest.scope_id !== settings.scopeId) {
     return { ...result, status: 'configuration_mismatch' }
   }
   return { ...result, status: 'observed', attempt_id: latest.attempt_id,

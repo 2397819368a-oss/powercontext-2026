@@ -1,3 +1,5 @@
+> 实现说明（[#2060](https://github.com/oceanbase/powercontext/pull/2060)）：下文的 owner-pending 门禁让无关记录阻断已授权访问，并放大 Dashboard 查询成本。应由创建、批准和发布流程建立 ownership，读取按当前有效 grant 或已记录的 owner 关系授权，Artifact grant 不扩展为 Scope 集合权限。
+
 - Proposal Name: `handoff_access_control`
 - RFC Number: 1396
 - Start Date: 2026-08-30

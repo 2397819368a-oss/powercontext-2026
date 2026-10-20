@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -61,6 +62,7 @@ from powercontext.http import (
     ArtifactAddress,
     AtomicMemoryLifecycleRequest,
     CaptureContentSourceRequest,
+    CaptureWorkingNoteRequest,
     CommitHandoffRequest,
     ContinueHandoffRequest,
     CreateScopeRequest,
@@ -85,6 +87,7 @@ from powercontext.http import (
     ReviseMemoryEntryRequest,
     ScopeSelection,
     SearchMemoryRequest,
+    WorkingNoteKind,
 )
 from powercontext.http import MemorySearchMode as HttpMemorySearchMode
 from powercontext.server.factory import create_server_app
@@ -276,6 +279,87 @@ def test_server_databases_share_source_to_memory_search_behavior(
         assert unrelated.hits == []
         assert entries.entries[0].artifact == ref
         assert exact.sources[0].source_id == "turn-1"
+
+    asyncio.run(scenario())
+
+
+def test_working_note_http_and_sdk_capture_stays_out_of_memory(tmp_path: Path) -> None:
+    app = create_server_app(
+        settings=_server_settings(tmp_path / "working-note.db"),
+        candidate_pipeline=atomic_memory_pipeline(ContentCandidatePipeline()),
+    )
+
+    async def scenario() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as transport,
+        ):
+            client = PowerContextClient("http://testserver", http_client=transport, trust_transport_security=True)
+            scope = await client.create_scope(
+                CreateScopeRequest(
+                    title="Working note",
+                    summary="Session-local evidence",
+                    idempotency_key="working-note-http",
+                )
+            )
+            with pytest.raises(ServerResponseError) as reserved_metadata:
+                await client.capture_content_source(
+                    CaptureContentSourceRequest(
+                        scope_id=scope.scope_id,
+                        source_id="spoofed-note",
+                        content="Generic capture cannot assign a server-owned Source kind.",
+                        metadata={"kind": "working_note"},
+                    )
+                )
+            working_note_metadata = await transport.post(
+                "/v1/sources/working-notes",
+                json={
+                    "scope_id": scope.scope_id,
+                    "source_id": "metadata-expiry",
+                    "content": "The public contract does not expose Working Note metadata.",
+                    "session_id": "session-1",
+                    "note_kind": "validation",
+                    "metadata": {"expires_at": "2000-01-01T00:00:00+00:00"},
+                },
+            )
+            captured = await client.capture_working_note(
+                CaptureWorkingNoteRequest(
+                    scope_id=scope.scope_id,
+                    source_id="note-1",
+                    content="The database migration probe passed locally.",
+                    session_id="session-1",
+                    note_kind=WorkingNoteKind.VALIDATION,
+                    expires_at=datetime.now(UTC) + timedelta(days=1),
+                )
+            )
+            with pytest.raises(ServerResponseError) as expired:
+                await client.capture_working_note(
+                    CaptureWorkingNoteRequest(
+                        scope_id=scope.scope_id,
+                        source_id="note-expired",
+                        content="This note is already stale.",
+                        session_id="session-1",
+                        note_kind=WorkingNoteKind.VALIDATION,
+                        expires_at=datetime.now(UTC) - timedelta(days=1),
+                    )
+                )
+            flushed = await client.flush_memory(FlushMemoryRequest(scope_id=scope.scope_id))
+            entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
+
+        assert captured.source.name == "content"
+        assert reserved_metadata.value.status_code == 422
+        assert reserved_metadata.value.code == "invalid_request"
+        assert working_note_metadata.status_code == 422
+        assert working_note_metadata.json()["error"]["code"] == "invalid_request"
+        assert captured.position == 1
+        assert captured.position == flushed.current_cursor
+        assert expired.value.status_code == 422
+        assert expired.value.code == "invalid_request"
+        assert flushed.memory is None
+        assert entries.entries == []
 
     asyncio.run(scenario())
 

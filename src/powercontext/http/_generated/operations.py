@@ -44,6 +44,7 @@ from powercontext.http._generated.models import (
     Capabilities,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
+    CaptureWorkingNoteRequest,
     ClearScopeBindingRequest,
     ClearScopeBindingResponse,
     CodeQueryRequest,
@@ -202,7 +203,7 @@ from powercontext.http._generated.models import (
 OPENAPI_VERSION = "3.0.3"
 API_TITLE = "PowerContext API"
 API_DESCRIPTION = "Remote PowerContext transport. Runtime behavior is reported by /v1/capabilities."
-API_VERSION = "1.3.0"
+API_VERSION = "1.4.0"
 FEATURE_CONTRACTS: dict[str, dict[str, JsonValue]] = {
     "access.principal": {"version": {"major": 1, "minor": 0}, "operations": ["get_access_principal"]},
     "scope.selection": {
@@ -910,6 +911,35 @@ CAPTURE_CONTENT_SOURCE = Operation[CaptureContentSourceRequest, CaptureContentSo
     responses={
         202: {
             "description": "The Source is durably stored for later processing.",
+            "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+        },
+        409: {"$ref": "#/components/responses/Conflict"},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action="scope.contribute", resource="scope", scope_id_field="scope_id", resolver="request"
+    ),
+)
+
+CAPTURE_WORKING_NOTE = Operation[CaptureWorkingNoteRequest, CaptureContentSourceResponse](
+    method="POST",
+    path="/v1/sources/working-notes",
+    operation_id="capture_working_note",
+    request_type=CaptureWorkingNoteRequest,
+    request_location="body",
+    path_parameters=(),
+    response_type=CaptureContentSourceResponse,
+    success_status=202,
+    summary="Capture session-local working evidence",
+    tags=("sources",),
+    scope_mode="current",
+    responses={
+        202: {
+            "description": "The Working Note is durably stored as Source evidence.",
             "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
         },
         409: {"$ref": "#/components/responses/Conflict"},

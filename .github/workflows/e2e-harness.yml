@@ -24,12 +24,18 @@ env:
   UV_VERSION: "0.10.12"
 
 concurrency:
-  group: e2e-harness-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
-  cancel-in-progress: false
+  group: e2e-harness-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-changes.yml
+
   validate:
-    if: github.event_name != 'workflow_dispatch' || inputs.suite != 'recall-effort'
+    needs: changes
+    if: >-
+      ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.suite != 'recall-effort') &&
+          (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').harness) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -40,7 +46,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
 
@@ -58,6 +64,8 @@ jobs:
           make harness-compose-check
 
   recall-effort:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').database) }}
     name: Recall effort (OceanBase)
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -175,9 +183,12 @@ jobs:
 
   atomic-memory-clean-oceanbase:
     name: Atomic Memory clean migration (OceanBase)
-    if: github.event_name != 'workflow_dispatch' || inputs.suite != 'recall-effort'
+    needs: changes
+    if: >-
+      ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.suite != 'recall-effort') &&
+          (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').database) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 70
     env:
       OCEANBASE_IMAGE: ghcr.io/oceanbase/oceanbase-ce:4.3.5.6-106000012026040916
       POWERCONTEXT_TEST_MIGRATION_OCEANBASE_URL: >-
@@ -256,6 +267,14 @@ jobs:
           uv run --locked python scripts/run_atomic_memory_clean_migration.py \
             oceanbase --output "$MIGRATION_REPORTS"
 
+      - name: Test long-query retrieval and admission without skips
+        timeout-minutes: 10
+        run: |
+          uv run --locked python scripts/run_atomic_memory_clean_migration.py \
+            oceanbase --output "$MIGRATION_REPORTS/long-query" --tests \
+            tests/e2e/test_atomic_artifact_search_http.py \
+            tests/e2e/test_atomic_memory_long_fts_query.py
+
       - name: Collect the database log
         if: always()
         run: |
@@ -311,7 +330,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
 
@@ -359,6 +378,7 @@ jobs:
           oceanbase_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id")
           test -n "$oceanbase_ip"
           export POWERCONTEXT_TEST_OCEANBASE_URL="mysql+aoceanbase://root%40test:powercontext-e2e@${oceanbase_ip}:2881/powercontext?charset=utf8mb4"
+          export POWERCONTEXT_TEST_MIGRATION_OCEANBASE_URL="$POWERCONTEXT_TEST_OCEANBASE_URL"
           uv run --locked --extra server python - <<'PY'
           import asyncio
           import os

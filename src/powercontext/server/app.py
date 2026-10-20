@@ -22,11 +22,11 @@ import binascii
 import ipaddress
 import json
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from datetime import UTC, datetime
-from functools import wraps
+from functools import partial, wraps
 from hashlib import sha256
 from time import perf_counter
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, TypeVar, cast
@@ -172,6 +172,7 @@ from powercontext.builtin.publication import (
 )
 from powercontext.builtin.records import (
     ArtifactAlreadyExistsError,
+    ArtifactRevisionActor,
     ArtifactRevisionPreconditionError,
     BaseAccessError,
     BaseOperationNotSupportedError,
@@ -180,7 +181,6 @@ from powercontext.builtin.records import (
     CursorExpiredError,
     InvalidBaseAccessRequestError,
     InvalidCursorError,
-    LogicalArtifactRecord,
 )
 from powercontext.builtin.records import (
     ArtifactCollectionItem as RuntimeArtifactCollectionItem,
@@ -244,6 +244,9 @@ from powercontext.builtin.runtime import (
 from powercontext.builtin.runtime import BootstrapContext as RuntimeBootstrapContext
 from powercontext.builtin.runtime import BootstrapContextRequest as RuntimeBootstrapContextRequest
 from powercontext.builtin.runtime import BootstrapDeliveryReceipt as RuntimeBootstrapDeliveryReceipt
+from powercontext.builtin.runtime import (
+    CaptureWorkingNote as RuntimeCaptureWorkingNote,
+)
 from powercontext.builtin.runtime import (
     CommitConnectorCheckpoint as RuntimeCommitConnectorCheckpoint,
 )
@@ -418,6 +421,7 @@ from powercontext.http import (
     Capabilities,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
+    CaptureWorkingNoteRequest,
     ClearScopeBindingRequest,
     ClearScopeBindingResponse,
     CodeQueryRequest,
@@ -662,6 +666,7 @@ from powercontext.http._generated.operations import (
     APPROVE_CANDIDATE,
     BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
+    CAPTURE_WORKING_NOTE,
     CHECK_ACCESS,
     CLEAR_SCOPE_BINDING,
     COMMIT_CONNECTOR_CHECKPOINT,
@@ -818,6 +823,7 @@ from powercontext.server.authz.models import (
     HandoffReceiptIdentity,
 )
 from powercontext.server.authz.profiles import ARTIFACT_FAMILY_PROFILES, artifact_family_profile
+from powercontext.server.authz.service import _require_allowed
 from powercontext.server.context import (
     bind_request_id,
     current_authentication,
@@ -856,6 +862,8 @@ _ScopePathId = Annotated[str, PathParameter(min_length=1, max_length=256, patter
 
 class _ScopedSourceApplication(Protocol):
     async def capture(self, value: CaptureSource, /) -> SourceReceipt: ...
+
+    async def capture_working_note(self, value: RuntimeCaptureWorkingNote, /) -> SourceReceipt: ...
 
 
 class _SourceApplication(Protocol):
@@ -917,7 +925,6 @@ class _ScopedRecordApplication(Protocol):
         execution_context: Any = None,
     ) -> RuntimeArtifactRecord: ...
 
-    async def logical_artifacts(self) -> tuple[LogicalArtifactRecord, ...]: ...
     async def query_artifacts(
         self,
         family: str,
@@ -935,6 +942,9 @@ class _ScopedRecordApplication(Protocol):
         expected_etag: str,
         write: RuntimeArtifactWrite,
         /,
+        *,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
     ) -> RuntimeArtifactRecord: ...
 
 
@@ -1461,6 +1471,7 @@ def create_app(
     _add_route(app, GET_PROMPT_CONFIGURATION, get_prompt_configuration)
     _add_route(app, REPLACE_ARTIFACT, replace_artifact)
     _add_route(app, CAPTURE_CONTENT_SOURCE, capture_content_source)
+    _add_route(app, CAPTURE_WORKING_NOTE, capture_working_note)
     add_atomic_memory_routes(
         app,
         application_dependency=_require_application,
@@ -2043,6 +2054,7 @@ async def list_scopes(
 async def create_scope(
     request: CreateScopeRequest,
     scopes: Annotated[ScopeApplication, Depends(_require_scope_application)],
+    http_request: Request,
 ) -> ScopeDescriptor:
     created = await scopes.create(
         ScopeDraft(
@@ -2057,6 +2069,11 @@ async def create_scope(
             idempotency_key=request.idempotency_key,
         )
     )
+    access = access_control_for_mode(http_request.app.state.access_control, mode=http_request.app.state.access_mode)
+    if access is not None:
+        await access.bootstrap_static_scope(
+            current_principal(), created.scope_id, context=_access_audit_context(CREATE_SCOPE.operation_id)
+        )
     return _scope_descriptor_response(created)
 
 
@@ -2179,7 +2196,6 @@ async def get_stats(
     http_request: Request,
 ) -> ScopedStats:
     response.headers["Cache-Control"] = "no-store"
-    await _require_selection_content_ready(http_request, request.selection)
     result = await application.statistics.overview(
         _domain_scope_selection(request.selection), period=RuntimeStatisticsPeriod(request.period.value)
     )
@@ -2192,7 +2208,6 @@ async def get_handoff_report(
     report: Annotated[HandoffReportApplication, Depends(_require_handoff_report_application)],
     http_request: Request,
 ) -> HandoffReportResponse | Response:
-    await _require_selection_content_ready(http_request, request.selection)
     result = await report.get_report(_domain_scope_selection(request.selection))
     selection_digest = cast(str, result.selection_digest)
     report_digest = cast(str, result.report_digest)
@@ -2316,14 +2331,17 @@ async def create_subject_source(
             )
         if new_scope:
             await access.bootstrap_subject_scope(connection, principal, target, context=context)
-        elif access.uses_static_preset(principal):
+        if access.uses_static_preset(principal):
             # The subject Scope is resolved inside the atomic dual-write transaction,
             # so materialize the fixed static preset through the same connection.
             bound = access.with_connection(connection)
             await bound.bootstrap_static_scope(principal, target, context=context)
             # Bootstrap is idempotent and must not bypass a previously revoked grant.
-            await bound.require(principal, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(target), context=context)
-        else:
+            if not new_scope:
+                await bound.require(
+                    principal, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(target), context=context
+                )
+        elif not new_scope:
             await access.require(principal, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(target), context=context)
 
     target, sources = await application.subject_sources.create(
@@ -2415,7 +2433,7 @@ async def flush_profile(
 async def get_source(
     scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
     source_type: Annotated[Literal["content"], Path()],
-    source_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r"^[\x21-\x7E]+$")],
+    source_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
     http_request: Request,
     application: Annotated[ServerApplication, Depends(_require_application)],
 ) -> SourceRecord:
@@ -2803,11 +2821,14 @@ async def replace_artifact(
     if family.value == "memory":
         raise BaseOperationNotSupportedError("artifact_family", "memory", "collection writes")
     expected_etag = _require_artifact_etag(if_match)
+    principal = current_principal()
     result = await application.records.for_scope(scope_id).replace_artifact(
         family.value,
         artifact_id,
         expected_etag,
         _artifact_write(request),
+        actor_type=None if principal is None else principal.type,
+        actor_id=None if principal is None else principal.id,
         **(
             {"execution_context": _atomic_execution_context(http_request, REPLACE_ARTIFACT.operation_id)}
             if family.value == "atomic-memory"
@@ -2856,6 +2877,12 @@ def _source_record_response(value: RuntimeSourceRecord) -> SourceRecord:
     )
 
 
+def _transport_actor(actor: ArtifactRevisionActor | None) -> TransportAccessPrincipal | None:
+    if actor is None:
+        return None
+    return TransportAccessPrincipal(type=actor.type, id=actor.id)
+
+
 def _artifact_revision_response(value: RuntimeArtifactRecord) -> ArtifactRevision:
     return ArtifactRevision(
         scope_id=value.scope_id,
@@ -2866,6 +2893,10 @@ def _artifact_revision_response(value: RuntimeArtifactRecord) -> ArtifactRevisio
         sources=[mapping.source_type_reference(ref) for ref in value.sources],
         artifacts=[mapping.artifact_reference(ref) for ref in value.artifacts],
         content_digest=value.content_digest,
+        created_at=value.created_at,
+        created_by=_transport_actor(value.created_by),
+        restored_from_revision=value.restored_from_revision,
+        reason=value.reason,
     )
 
 
@@ -2893,6 +2924,10 @@ def _artifact_collection_item_response(value: RuntimeArtifactCollectionItem) -> 
         summary=value.summary,
         published_at=value.published_at,
         source_count=value.source_count,
+        created_at=value.created_at,
+        created_by=_transport_actor(value.created_by),
+        restored_from_revision=value.restored_from_revision,
+        reason=value.reason,
     )
 
 
@@ -2902,6 +2937,8 @@ def _artifact_write(value: CreateArtifactRequest | ReplaceArtifactRequest) -> Ru
         content = mapping.runtime_handoff_content(content)
     return RuntimeArtifactWrite(
         prompt_key=value.root.prompt_key.value if isinstance(value.root, CreatePromptArtifactRequest) else None,
+        restored_from_revision=getattr(value.root, "restored_from_revision", None),
+        reason=getattr(value.root, "reason", None),
         content=cast(
             dict[str, JsonValue],
             content.model_dump(
@@ -2950,6 +2987,16 @@ async def capture_content_source(
 ) -> CaptureContentSourceResponse:
     _reject_reserved_handoff_receipt_content(request.content)
     result = await application.sources.for_scope(request.scope_id).capture(mapping.capture_request(request))
+    return mapping.capture_response(result)
+
+
+async def capture_working_note(
+    request: CaptureWorkingNoteRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> CaptureContentSourceResponse:
+    result = await application.sources.for_scope(request.scope_id).capture_working_note(
+        mapping.working_note_capture_request(request)
+    )
     return mapping.capture_response(result)
 
 
@@ -3061,8 +3108,6 @@ async def prepare_context(
                 tuple((AccessAction.SCOPE_READ, ResourceRef.scope(scope_id)) for scope_id in scope_ids),
                 context=_access_audit_context(PREPARE_CONTEXT.operation_id),
             )
-            for scope_id in scope_ids[1:]:
-                await require_scope_content_ready(http_request, scope_id)
 
         result = await scoped.prepare(
             prepared_request,
@@ -3093,8 +3138,6 @@ async def prepare_bootstrap_context(
                 tuple((AccessAction.SCOPE_READ, ResourceRef.scope(scope_id)) for scope_id in scope_ids),
                 context=_access_audit_context(PREPARE_BOOTSTRAP_CONTEXT.operation_id),
             )
-            for scope_id in scope_ids[1:]:
-                await require_scope_content_ready(http_request, scope_id)
 
         result = await scoped.prepare(prepared_request, authorize_scopes=authorize_scopes)
     return mapping.bootstrap_context_response(result)
@@ -3550,8 +3593,8 @@ async def list_managed_skills(
     application: Annotated[ServerApplication, Depends(_require_application)],
 ) -> ListManagedSkillsResponse:
     scoped = application.skill.for_scope(request.scope_id)
-    values = await search_skill_library(
-        scoped,
+    search = getattr(scoped, "search_library", partial(search_skill_library, scoped))
+    values = await search(
         "" if request.query is None else request.query,
         request.limit,
         include_deprecated=request.include_deprecated,
@@ -4136,33 +4179,38 @@ async def import_external_skill(
 async def _candidate_response(
     request: Request, scope_id: str, candidate: RuntimeCandidate[Any] | RuntimeTagCandidate
 ) -> Candidate:
-    response = mapping.candidate_response(candidate)
-    if candidate.candidate_kind == "tag":
-        return response
+    return (await _candidate_responses(request, scope_id, (candidate,)))[0]
+
+
+async def _candidate_responses(request, scope_id, candidates):
+    responses = [mapping.candidate_response(candidate) for candidate in candidates]
     access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
-    if access is None:
-        return response
+    artifact_candidates = [candidate for candidate in candidates if candidate.candidate_kind == "artifact"]
+    if access is None or not artifact_candidates:
+        return responses
+    principal = _require_principal()
     decision = await access.check(
-        _require_principal(),
+        principal,
         AccessAction.SCOPE_REVIEW,
         ResourceRef.scope(scope_id),
         context=_access_audit_context("candidate_permissions"),
     )
-    pending = candidate.status.value == "pending"
-    attestation = (
-        await access.candidate_owner(scope_id, candidate.candidate_id)
+    owners = (
+        await access.candidate_owners(scope_id, tuple(candidate.candidate_id for candidate in artifact_candidates))
         if decision.allowed and access.provider_capabilities.relationship_management
-        else None
+        else {}
     )
-    response.permissions = CandidatePermissions(
-        can_revise=pending
-        and decision.allowed
-        and attestation is not None
-        and attestation.proposed_owner == _require_principal(),
-        can_approve=pending and decision.allowed and attestation is not None,
-        can_reject=pending and decision.allowed,
-    )
-    return response
+    for candidate, response in zip(candidates, responses, strict=True):
+        if candidate.candidate_kind == "tag":
+            continue
+        pending = candidate.status.value == "pending"
+        owner = owners.get(candidate.candidate_id)
+        response.permissions = CandidatePermissions(
+            can_revise=pending and decision.allowed and owner is not None and owner.proposed_owner == principal,
+            can_approve=pending and decision.allowed and owner is not None,
+            can_reject=pending and decision.allowed,
+        )
+    return responses
 
 
 async def _require_catalog_target_write(request: Request, scope_id: str, candidate: Any) -> None:
@@ -4186,9 +4234,7 @@ async def list_candidates(
 ) -> CandidatePage:
     result = await application.review.for_scope(request.scope_id).list(mapping.list_candidates_request(request))
     response = CandidatePage(candidates=[], next_cursor=result.next_cursor)
-    response.candidates = [
-        await _candidate_response(http_request, request.scope_id, value) for value in result.candidates
-    ]
+    response.candidates = await _candidate_responses(http_request, request.scope_id, result.candidates)
     return response
 
 
@@ -4198,8 +4244,6 @@ async def get_candidate(
     http_request: Request,
 ) -> Candidate:
     result = await application.review.for_scope(request.scope_id).get(mapping.get_candidate_request(request))
-    if result.candidate_kind == "artifact":
-        await _require_candidate_artifact_owner(http_request, request.scope_id, result)
     return await _candidate_response(http_request, request.scope_id, result)
 
 
@@ -4209,9 +4253,6 @@ async def get_candidate_history(
     http_request: Request,
 ) -> CandidateHistory:
     service = application.review.for_scope(request.scope_id)
-    current = await service.get(mapping.get_candidate_request(request))
-    if current.candidate_kind == "artifact":
-        await _require_candidate_artifact_owner(http_request, request.scope_id, current)
     versions = await service.history(mapping.get_candidate_request(request))
     return CandidateHistory(versions=[mapping.candidate_response(item) for item in versions])
 
@@ -4310,27 +4351,6 @@ async def _require_candidate_target_write(request: Request, scope_id: str, candi
     else:
         return
     await access.require_all(_require_principal(), checks, context=_access_audit_context("review_candidate_target"))
-
-
-async def _require_candidate_artifact_owner(
-    request: Request,
-    scope_id: str,
-    candidate: ReviewedCandidate,
-) -> None:
-    if candidate.candidate_kind == "tag" or candidate.status.value != "approved" or candidate.result_artifact is None:
-        return
-    if candidate.result_artifact.family in {"memory", "prompt", "topic-memory"}:
-        # These results name aggregate or Scope-owned revisions, not separately owned content.
-        return
-    access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
-    if access is None:
-        return
-    artifact = candidate.result_artifact
-    owner = await access.artifact_owner(
-        ResourceRef.artifact(scope_id, family=artifact.family, artifact_id=artifact.artifact_id)
-    )
-    if owner is None:
-        raise AccessUnavailableError("artifact_owner_pending")
 
 
 def _require_handoff_selection(
@@ -4627,101 +4647,6 @@ def _add_route(
     )
 
 
-# Collection permission allows identity discovery, but content remains unavailable
-# until every committed identity has its immutable owner relation.
-_COLLECTION_CONTENT_OPERATIONS = frozenset({
-    "list_atomic_memories",
-    "search_atomic_memory",
-    "search_artifacts",
-    "search_memory",
-    "list_memory_entries",
-    "get_memory_capacity",
-    "list_memory_changes",
-    "prepare_context",
-    "prepare_bootstrap_context",
-    "list_managed_skills",
-    "list_candidates",
-    "get_candidate",
-    "list_artifacts",
-    "get_artifact",
-    "get_artifact_revision",
-    "list_artifact_revisions",
-    "get_artifact_tags",
-    "query_artifact_tags",
-    "prepare_handoff",
-    "activate_handoff",
-    "finalize_handoff",
-    "handoff_current_work",
-    "generate_experience",
-    "generate_skill",
-})
-
-
-async def _require_selection_content_ready(request: Request, selection: ScopeSelection) -> None:
-    if access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode) is None:
-        return
-    scopes = _require_scope_application(request)
-    for scope in await scopes.resolve_selection(_domain_scope_selection(selection)):
-        await require_scope_content_ready(request, scope.scope_id)
-
-
-async def require_scope_content_ready(request: Request, scope_id: str) -> None:
-    """Check an already-authorized collection using content-free catalog identities."""
-
-    access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
-    if access is None:
-        return
-    application = _require_application(request)
-    for identity in await application.records.for_scope(scope_id).logical_artifacts():
-        # Topic Memory is Scope-owned, including manual writes and publication copies.
-        # Its reads use Scope permission, never a pending artifact-owner relation.
-        if identity.family == "topic-memory":
-            continue
-        resource = ResourceRef.artifact(
-            scope_id,
-            family=identity.family,
-            artifact_id=identity.artifact_id,
-            selector=None if identity.entry_id is None else MemoryEntrySelector(entry_id=identity.entry_id),
-        )
-        if await access.artifact_owner(resource) is None:
-            raise AccessUnavailableError("artifact_owner_pending")
-
-
-async def _check_missing_memory_reads(
-    request: Request,
-    access: AccessControlService,
-    checks: Sequence[tuple[AccessAction, ResourceRef]],
-    context: AccessAuditContext,
-) -> None:
-    # A missing owner alone cannot distinguish an absent entry from a pending
-    # owner write. Inspect identities only after authorizing the parent Scope.
-    for action, resource in checks:
-        if (
-            action is not AccessAction.ARTIFACT_READ
-            or resource.scope_id is None
-            or not (
-                (resource.family == "memory" and isinstance(resource.selector, MemoryEntrySelector))
-                or (resource.family == "atomic-memory" and resource.selector is None)
-            )
-        ):
-            continue
-        decision = await access.check(
-            current_principal(), AccessAction.SCOPE_READ, ResourceRef.scope(resource.scope_id), context=context
-        )
-        if not decision.allowed:
-            continue
-        identities = await _require_application(request).records.for_scope(resource.scope_id).logical_artifacts()
-        if not any(
-            identity.family == resource.family
-            and identity.artifact_id == resource.artifact_id
-            and identity.entry_id == (None if resource.selector is None else resource.selector.entry_id)
-            for identity in identities
-        ):
-            if resource.family == "atomic-memory":
-                raise BaseValueNotFoundError("artifact", resource.artifact_id)
-            raise MemoryEntryNotFoundError(cast(MemoryEntrySelector, resource.selector).entry_id)
-
-
 def _authorization_dependency(
     operation: Operation[Any, Any],
 ) -> Callable[[Request], Awaitable[None]]:
@@ -4737,28 +4662,43 @@ def _authorization_dependency(
         if access is not None:
             payload = await _authorization_payload(request, operation)
             checks = _resolve_access_requirements(requirement, payload, deployment_id=access.deployment_id)
-            context = _access_audit_context(operation.operation_id)
-            for scope_id in sorted({resource.scope_id for _, resource in checks if resource.scope_id is not None}):
-                await access.bootstrap_static_scope(current_principal(), scope_id, context=context)
-            try:
-                if len(checks) == 1:
-                    action, resource = checks[0]
-                    await access.require(current_principal(), action, resource, context=context)
-                else:
-                    await access.require_all(current_principal(), checks, context=context)
-            except AccessUnavailableError as error:
-                if error.code == "artifact_owner_pending":
-                    await _check_missing_memory_reads(request, access, checks, context)
-                raise
-            if operation.operation_id in _COLLECTION_CONTENT_OPERATIONS:
-                for scope_id in sorted({
-                    resource.scope_id
-                    for _, resource in checks
-                    if resource.type is AccessResourceType.SCOPE and resource.scope_id is not None
-                }):
-                    await require_scope_content_ready(request, scope_id)
+            await _authorize_checks(request, access, checks, operation=operation.operation_id)
 
     return authorize
+
+
+async def _authorize_checks(
+    request: Request,
+    access: AccessControlService,
+    checks: Sequence[tuple[AccessAction, ResourceRef]],
+    *,
+    operation: str,
+) -> None:
+    context = _access_audit_context(operation)
+    principal = current_principal()
+    decisions = (
+        (await access.check(principal, *checks[0], context=context),)
+        if len(checks) == 1
+        else await access.check_batch(principal, checks, context=context)
+    )
+    scopes = set()
+    for (action, resource), decision in zip(checks, decisions, strict=True):
+        if decision.allowed:
+            continue
+        if decision.reason_code not in {
+            "no-matching-binding",
+            "no-matching-policy",
+        } or not access.can_bootstrap_static_scope(principal, action, resource):
+            _require_allowed(decision)
+        scopes.add(cast(str, resource.scope_id))
+    if not scopes:
+        return
+    for scope_id in sorted(scopes):
+        await access.bootstrap_static_scope(principal, scope_id, context=context)
+    if len(checks) == 1:
+        await access.require(principal, *checks[0], context=context)
+    else:
+        await access.require_all(principal, checks, context=context)
 
 
 async def _authorization_payload(request: Request, operation: Operation[Any, Any]) -> Mapping[str, Any]:
@@ -5295,8 +5235,8 @@ def _observe_application_operation(
         started_at = perf_counter()
         span = _start_application_span(app, operation)
         try:
-            await _validate_current_scope(app, operation, args, kwargs)
-            result = await endpoint(*args, **kwargs)
+            async with _current_scope(app, operation, args, kwargs):
+                result = await endpoint(*args, **kwargs)
         except asyncio.CancelledError:
             _observe_application(app, operation, "cancelled", started_at)
             _log_operation(
@@ -5342,24 +5282,27 @@ def _sensitive_operation_error(error: Exception) -> bool:
     )
 
 
-async def _validate_current_scope(
+@asynccontextmanager
+async def _current_scope(
     app: FastAPI,
     operation: Operation[Any, Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
-) -> None:
-    if operation.scope_mode != "current" or operation.request_type is None:
-        return
+) -> AsyncIterator[None]:
     scopes = getattr(app.state.application, "scopes", None)
-    if scopes is None:
-        return
-    request = next(
-        (value for value in (*args, *kwargs.values()) if isinstance(value, operation.request_type)),
-        None,
-    )
-    scope_id = getattr(request, "scope_id", None)
-    if isinstance(scope_id, str):
-        await scopes.get(scope_id)
+    if operation.scope_mode == "current" and operation.request_type is not None and scopes is not None:
+        request = next(
+            (value for value in (*args, *kwargs.values()) if isinstance(value, operation.request_type)),
+            None,
+        )
+        scope_id = getattr(request, "scope_id", None)
+        if isinstance(scope_id, str):
+            if isinstance(app.state.application, BuiltinRuntime):
+                async with app.state.application._scope_operation(scope_id):
+                    yield
+                return
+            await scopes.get(scope_id)
+    yield
 
 
 def _start_application_span(app: FastAPI, operation: Operation[Any, Any]) -> Any | None:

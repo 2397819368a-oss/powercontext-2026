@@ -133,7 +133,7 @@ from powercontext.builtin.persistence.artifact_governance import (
     ArtifactLifecycleState,
 )
 from powercontext.builtin.persistence.artifact_readers import TopicMemoryArtifactListReader
-from powercontext.builtin.persistence.artifacts import ArtifactRepository
+from powercontext.builtin.persistence.artifacts import ArtifactRepository, with_artifact_content
 from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndex
 from powercontext.builtin.persistence.candidates import CandidateRepository
 from powercontext.builtin.persistence.connectors import ConnectorCheckpointRepository
@@ -207,6 +207,7 @@ from powercontext.builtin.runtime.protocols import (
 )
 from powercontext.builtin.runtime.recall import RelationalRecallTokenEstimator
 from powercontext.builtin.runtime.recurrence import RelationalRecurrenceLedger
+from powercontext.builtin.runtime.skill_search import SkillArtifactSearcher
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -593,6 +594,7 @@ class RelationalContexts:
             topic_memories=topic_memory_repository,
             decision_observations=DecisionObservationRepository(),
         )
+        self.list_skills = SkillArtifactSearcher(database, self.repositories.artifacts, self.experience_index)
         self._model_usage = _ModelUsageRecorder(
             database,
             self.repositories.statistics,
@@ -618,7 +620,7 @@ class RelationalContexts:
                 if component is not None
             ),
         )
-        self.prompts = PromptService(self.prompt_registry, self._prompt_head, prompt_demonstrators)
+        self.prompts = PromptService(self.prompt_registry, self._prompt_heads, prompt_demonstrators)
         self.atomic_memory_processor = AtomicMemorySourceWindowProcessor(
             self.atomic_memory,
             self.repositories.sources,
@@ -921,12 +923,19 @@ class RelationalContexts:
         estimator = self._services_for(scope_id).recall_tokens()
         return None if estimator is None else await estimator.estimate(build)
 
-    async def _prompt_head(self, scope_id: str, key: str) -> Prompt | None:
+    async def _prompt_heads(self, scope_id: str, keys: tuple[str, ...]) -> dict[str, Prompt]:
+        statement = select(ARTIFACT_HEADS_TABLE).where(
+            ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
+            ARTIFACT_HEADS_TABLE.c.family == "prompt",
+            ARTIFACT_HEADS_TABLE.c.artifact_id.in_(keys),
+        )
         async with self.database.connection() as connection:
-            try:
-                return cast(Prompt, await self.repositories.artifacts.latest(connection, scope_id, "prompt", key))
-            except RepositoryNotFoundError:
-                return None
+            rows = (await connection.execute(with_artifact_content(statement))).mappings().all()
+            # A missing exact body has the same absent-head meaning as the scalar reader.
+            values = await self.repositories.artifacts.decode_many(
+                connection, scope_id, tuple(row for row in rows if row["content"] is not None)
+            )
+        return {value.artifact_id: cast(Prompt, value) for value in values}
 
     async def search_experience(
         self,
@@ -1139,58 +1148,6 @@ class RelationalContexts:
                 if origin.kind is not SkillOriginKind.POWERCONTEXT:
                     return origin
         return SkillOrigin(kind=SkillOriginKind.POWERCONTEXT)
-
-    async def list_skills(
-        self,
-        scope_id: str,
-        include_deprecated: bool,
-        limit: int,
-        /,
-    ) -> tuple[tuple[Skill, ArtifactGovernance], ...]:
-        """List current managed Skill heads with mutable governance state."""
-
-        if limit < 1:
-            raise ValueError("Skill Library limit must be positive")  # noqa: TRY003
-        scope = validate_scope_id(scope_id)
-        states = (
-            (ArtifactLifecycleState.ACTIVE.value, ArtifactLifecycleState.DEPRECATED.value)
-            if include_deprecated
-            else (ArtifactLifecycleState.ACTIVE.value,)
-        )
-        async with self.database.transaction() as connection:
-            rows = tuple(
-                (
-                    await connection.execute(
-                        select(
-                            ARTIFACT_HEADS_TABLE.c.artifact_id,
-                            ARTIFACT_HEADS_TABLE.c.revision,
-                        )
-                        .where(
-                            ARTIFACT_HEADS_TABLE.c.scope_id == scope,
-                            ARTIFACT_HEADS_TABLE.c.family == Skill.family,
-                            ARTIFACT_HEADS_TABLE.c.lifecycle_state.in_(states),
-                            ARTIFACT_HEADS_TABLE.c.merged_into_id.is_(None),
-                        )
-                        .order_by(ARTIFACT_HEADS_TABLE.c.artifact_id)
-                        .limit(limit)
-                    )
-                ).mappings()
-            )
-            values = []
-            for row in rows:
-                artifact_id = str(row["artifact_id"])
-                skill = await self.repositories.artifacts.get(
-                    connection,
-                    scope,
-                    ArtifactRef(
-                        family=Skill.family,
-                        artifact_id=artifact_id,
-                        revision=int(row["revision"]),
-                    ),
-                )
-                governance = await self.repositories.governance.get(connection, scope, Skill.family, artifact_id)
-                values.append((cast(Skill, skill), governance))
-            return tuple(values)
 
     async def update_skill_lifecycle(
         self,
@@ -1590,6 +1547,14 @@ class _RelationalSources:
         except RepositoryNotFoundError:
             raise SourceNotFoundError(source) from None
 
+    async def entry(self, ref: SourceRef, /) -> SourceJournalEntry | None:
+        try:
+            async with self._database.connection(self._bound_connection) as connection:
+                row = await self._repository.get(connection, self._scope_id, ref)
+        except RepositoryNotFoundError:
+            return None
+        return SourceJournalEntry(source_ref=row.ref, source=row.value, position=row.journal_position)
+
     async def entries(self) -> tuple[SourceJournalEntry, ...]:
         async with self._database.connection(self._bound_connection) as connection:
             rows = await self._repository.list(connection, self._scope_id)
@@ -1632,12 +1597,13 @@ class _RelationalTriggers:
                         connection,
                         self._services.scope_id,
                         (request.boundary_source,),
+                        allow_working_notes=True,
                     )
                 except RepositoryNotFoundError:
                     raise HandoffEvidenceUnavailableError(
                         HandoffSourceCitation(source_ref=request.boundary_source)
                     ) from None
-                require_source_eligible(request.boundary_source, source.value)
+                require_source_eligible(request.boundary_source, source.value, allow_working_notes=True)
                 state_row = await self._services.repositories.cursors.load(
                     connection,
                     self._services.scope_id,
