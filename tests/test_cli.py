@@ -17,7 +17,7 @@ import json
 import os
 import subprocess
 import sys
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import Self
@@ -631,6 +631,19 @@ def test_cli_exposes_installed_role_commands() -> None:
     assert all(command in result.output for command in ("capabilities", "candidate", "stats", "service", "server"))
     assert "builtin" not in result.output
     assert "client" not in result.output
+
+
+def test_cli_without_distribution_metadata_keeps_core_commands(monkeypatch) -> None:
+    monkeypatch.setattr("powercontext.cli.app.requires", Mock(side_effect=PackageNotFoundError("powercontext")))
+    cli = create_cli()
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert all(command in result.output for command in ("capabilities", "candidate", "stats", "setup", "doctor"))
+    for command in ("code", "server", "service"):
+        missing = CliRunner().invoke(cli, [command, "--help"])
+        assert missing.exit_code == 2
+        assert f"No such command '{command}'" in missing.output
 
 
 @pytest.mark.parametrize(

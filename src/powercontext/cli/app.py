@@ -67,8 +67,14 @@ def _show_version(value: bool) -> None:
 
 
 def _load_command_providers() -> list[typer.Typer]:
-    requirements = tuple(Requirement(value) for value in requires("powercontext") or ())
-    available_roles = {role: _role_available(role, requirements) for role in set(_OPTIONAL_COMMAND_ROLES.values())}
+    try:
+        requirements = tuple(Requirement(value) for value in requires("powercontext") or ())
+    except PackageNotFoundError:
+        requirements = None
+    available_roles = {
+        role: requirements is not None and _role_available(role, requirements)
+        for role in set(_OPTIONAL_COMMAND_ROLES.values())
+    }
     commands: list[typer.Typer] = []
     for entry_point in sorted(entry_points(group=COMMAND_PROVIDER_GROUP), key=lambda item: item.name):
         role = _OPTIONAL_COMMAND_ROLES.get(entry_point.value)
