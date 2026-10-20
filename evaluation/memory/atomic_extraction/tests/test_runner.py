@@ -24,6 +24,7 @@ from evaluation.memory.atomic_extraction import runner
 from evaluation.memory.atomic_extraction.manifest import load_manifest
 
 _SECRET_SENTINEL = "Bearer private-provider-secret"  # noqa: S105 - synthetic leak sentinel
+_CONTENT_SENTINEL = "PRIVATE_PREDICTED_SOURCE_MARKER"
 
 
 def test_provider_bootstrap_failure_writes_incomplete_content_free_report(
@@ -34,7 +35,9 @@ def test_provider_bootstrap_failure_writes_incomplete_content_free_report(
         "\n".join((
             "POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL=openai:test-model",
             f'POWERCONTEXT_SERVER_INFERENCE_GENERATION_HEADERS=\'{{"Authorization":"{_SECRET_SENTINEL}"}}\'',
-            "POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL_SETTINGS='{\"temperature\":0}'",
+            "POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL_SETTINGS="
+            f'\'{{"temperature":"{_CONTENT_SENTINEL}",'
+            f'"openai_prediction":{{"content":"{_CONTENT_SENTINEL}"}}}}\'',
         ))
         + "\n",
         encoding="utf-8",
@@ -60,29 +63,60 @@ def test_provider_bootstrap_failure_writes_incomplete_content_free_report(
     assert report["instruction_leakage"]["unobserved"] == report["overall"]["total"]
     manifest = json.loads((output / "run-manifest.json").read_text(encoding="utf-8"))
     assert manifest["provider"]["header_names"] == ["Authorization"]
-    assert manifest["provider"]["model_settings"] == {"temperature": 0}
+    public_settings = manifest["provider"]["model_settings"]
+    assert set(public_settings["temperature"]) == {"redacted_sha256"}
+    assert set(public_settings["openai_prediction"]) == {"redacted_sha256"}
     artifact_text = "\n".join(path.read_text(encoding="utf-8") for path in output.iterdir())
     assert _SECRET_SENTINEL not in artifact_text
+    assert _CONTENT_SENTINEL not in artifact_text
     assert "private provider response" not in artifact_text
 
 
-def test_safe_settings_preserve_token_budgets_and_redact_credentials() -> None:
+def test_safe_settings_preserve_allowlisted_scalars_and_redact_every_other_value() -> None:
     settings = {
         "max_tokens": 1024,
+        "temperature": 0,
+        "parallel_tool_calls": False,
+        "thinking": "high",
+        "service_tier": "priority",
         "api_key": "private-api-key",
         "apiKey": "private-camel-api-key",
         "nested": {"access_token": "private-access-token", "tokenizer": "provider-default"},
+        "openai_prediction": {"content": _CONTENT_SENTINEL},
+        "top_p": _CONTENT_SENTINEL,
+        "seed": _CONTENT_SENTINEL,
     }
 
     safe = runner._safe_settings(settings)
-    safe_nested = safe["nested"]
-    original_nested = settings["nested"]
 
     assert safe["max_tokens"] == 1024
-    assert isinstance(safe_nested, dict)
-    assert isinstance(original_nested, dict)
-    assert safe_nested["tokenizer"] == "provider-default"
-    assert safe["api_key"] != settings["api_key"]
-    assert safe["apiKey"] != settings["apiKey"]
-    assert safe_nested["access_token"] != original_nested["access_token"]
+    assert safe["temperature"] == 0
+    assert safe["parallel_tool_calls"] is False
+    assert safe["thinking"] == "high"
+    assert safe["service_tier"] == "priority"
+    for key in (
+        "api_key",
+        "apiKey",
+        "nested",
+        "openai_prediction",
+        "top_p",
+        "seed",
+    ):
+        redacted = safe[key]
+        assert isinstance(redacted, dict)
+        assert set(redacted) == {"redacted_sha256"}
     assert "private" not in json.dumps(safe)
+    assert _CONTENT_SENTINEL not in json.dumps(safe)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ("max_tokens", "temperature", "parallel_tool_calls", "thinking", "service_tier"),
+)
+def test_safe_settings_redact_invalid_values_under_allowlisted_keys(key: str) -> None:
+    safe = runner._safe_settings({key: _CONTENT_SENTINEL})
+    redacted = safe[key]
+
+    assert isinstance(redacted, dict)
+    assert set(redacted) == {"redacted_sha256"}
+    assert _CONTENT_SENTINEL not in json.dumps(safe)

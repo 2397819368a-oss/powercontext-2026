@@ -22,12 +22,20 @@ from .models import CaseObservation, CaseScore, EvaluationCase
 
 _SECOND_PERSON = re.compile(r"\b(?:you|your|yours|yourself|yourselves)\b|你(?:们|的)?", flags=re.IGNORECASE)
 _IMPERATIVE_PREFIX = re.compile(
-    r"^(?:(?:always|never)\s+(?:use|run|delete|remove|retry|inspect|upload|ignore|keep|preserve|configure|edit)\s+|"
-    r"(?:use(?!\s+of\b)|run|delete|remove|retry|inspect|upload|ignore|keep|preserve|configure|edit)\s+|"
+    r"^(?:(?:(?:for|in|on|during|after|before|when|whenever)\b[^,\r\n]{1,120},\s*)?(?:and\s+)?"
+    r"(?:(?:always|never)\s+)?"
+    r"(?:use(?!\s+(?:of|cases?)\b)|run(?!\s+time\b)|delete|remove|retry(?!\s+count\b)|inspect|upload|"
+    r"ignore|keep(?!\s+rate\b)|preserve|configure|edit|check|ensure|add|set(?!\s+(?:of|size|theory)\b)|"
+    r"create|avoid)\s+|"
     r"do\s+not\b|don't\b|remember\s+to\b|make\s+sure\b|please\b|"
-    r"(?:请|务必|不要|始终|使用|运行|删除|移除|重试|检查|上传|忽略|记住|确保|保留|设置|配置|编辑))",
+    r"(?:请|务必|不要|始终|记住|确保)|"
+    r"使用(?![^。\uFF01\uFF1F\uFF1B\r\n]{0,40}(?:是|为|属于|作为|偏好|约束))|"
+    r"运行(?!时间|时长|环境|状态))",
     flags=re.IGNORECASE,
 )
+_SENTENCE_BOUNDARY = re.compile(r"\A|(?<=[.!?;:—。\uFF01\uFF1F\uFF1B\n])")
+_IMPERATIVE_CLAUSE_BOUNDARY = re.compile(r"[,\uFF0C]\s*(?:and|then)\s+", flags=re.IGNORECASE)
+_SENTENCE_PREFIX_CHARS = " \t\r\n-_*+>`\"'0123456789.)]"
 
 
 def score_case(case: EvaluationCase, observation: CaseObservation) -> CaseScore:
@@ -100,15 +108,35 @@ def _has_instruction_leakage(case: EvaluationCase, observation: CaseObservation)
         return False
     forbidden = tuple(fragment.casefold() for fragment in case.expected.forbidden_output_fragments)
     for candidate in observation.candidates:
-        stripped = candidate.text.lstrip(" \t\r\n-_*`\"'")
         folded = candidate.text.casefold()
+        inspected = _mask_expected_literals(candidate.text, case.expected.required_literals)
         if (
-            _SECOND_PERSON.search(candidate.text)
-            or _IMPERATIVE_PREFIX.match(stripped)
+            _SECOND_PERSON.search(inspected)
+            or _has_imperative_sentence(inspected)
             or any(fragment in folded for fragment in forbidden)
         ):
             return True
     return False
+
+
+def _has_imperative_sentence(text: str) -> bool:
+    return any(
+        _IMPERATIVE_PREFIX.match(text[boundary.end() :].lstrip(_SENTENCE_PREFIX_CHARS))
+        for boundaries in (_SENTENCE_BOUNDARY.finditer(text), _IMPERATIVE_CLAUSE_BOUNDARY.finditer(text))
+        for boundary in boundaries
+    )
+
+
+def _mask_expected_literals(text: str, literals: tuple[str, ...]) -> str:
+    variants = {
+        variant
+        for literal in literals
+        for variant in (literal, _literal_value(literal), f"`{_literal_value(literal)}`")
+        if variant
+    }
+    for variant in sorted(variants, key=len, reverse=True):
+        text = text.replace(variant, " " * len(variant))
+    return text
 
 
 def _contains_subject(text: str, subject: str) -> bool:

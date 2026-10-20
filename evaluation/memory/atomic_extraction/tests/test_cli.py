@@ -22,6 +22,8 @@ from evaluation.memory.atomic_extraction.manifest import load_manifest
 from evaluation.memory.atomic_extraction.models import CandidateObservation, CaseObservation
 from evaluation.memory.atomic_extraction.runner import prompt_run_identities
 
+_SETTINGS_SENTINEL = "PRIVATE_PREDICTED_SOURCE_MARKER"
+
 
 def _write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -61,7 +63,10 @@ def test_pin_copies_only_safe_artifacts(tmp_path: Path) -> None:
                 "base_url_configured": False,
                 "base_url_sha256": None,
                 "header_names": [],
-                "model_settings": {},
+                "model_settings": {
+                    "openai_prediction": {"content": _SETTINGS_SENTINEL},
+                    "temperature": _SETTINGS_SENTINEL,
+                },
                 "model_settings_sha256": "c" * 64,
                 "timeout_seconds": 30,
                 "max_requests": 2,
@@ -88,10 +93,15 @@ def test_pin_copies_only_safe_artifacts(tmp_path: Path) -> None:
     assert main(["pin", "--run-directory", str(run), "--destination", str(destination)]) == 0
 
     assert {path.name for path in destination.iterdir()} == {"run-manifest.json", "report.json", "report.md"}
-    assert all(
-        case.case_id not in "".join(path.read_text(encoding="utf-8") for path in destination.iterdir())
-        for case in loaded.manifest.cases
-    )
+    artifact_text = "".join(path.read_text(encoding="utf-8") for path in destination.iterdir())
+    assert _SETTINGS_SENTINEL not in artifact_text
+    assert all(case.case_id not in artifact_text for case in loaded.manifest.cases)
+    pinned_manifest = json.loads((destination / "run-manifest.json").read_text(encoding="utf-8"))
+    pinned_report = json.loads((destination / "report.json").read_text(encoding="utf-8"))
+    for artifact in (pinned_manifest, pinned_report):
+        settings = artifact["provider"]["model_settings"]
+        assert set(settings["openai_prediction"]) == {"redacted_sha256"}
+        assert set(settings["temperature"]) == {"redacted_sha256"}
 
 
 def test_pin_rejects_a_run_from_a_different_prompt_contract(tmp_path: Path) -> None:

@@ -21,8 +21,9 @@ uv run python -m evaluation.memory.atomic_extraction validate
 uv run pytest evaluation/memory/atomic_extraction/tests
 ```
 
-The deterministic tests validate manifest coverage, exact literals and evidence IDs, independent factual-retention
-and instruction-leakage scoring, content-free reports, CLI behavior, and the all-empty failure control. They make no
+The deterministic tests validate manifest coverage, case-declared expected literals and evidence IDs, independent
+factual-retention and instruction-leakage scoring, content-free reports, CLI behavior, and the all-empty failure
+control. Only expected literals declared by a case are exempted from instruction-leakage scanning. The tests make no
 provider calls.
 
 ## Opt-in live run

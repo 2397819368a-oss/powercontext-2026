@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .manifest import LoadedManifest
-from .models import REPORT_SCHEMA, CaseObservation, CaseScore
+from .models import REPORT_SCHEMA, CaseObservation, CaseScore, LiveRunManifest
 from .scoring import score_case
 
 
@@ -35,7 +35,8 @@ def build_report(
 ) -> dict[str, Any]:
     """Aggregate scores without copying case IDs, evidence, or generated text."""
 
-    _validate_dataset_identity(loaded, run_manifest)
+    public_manifest = LiveRunManifest.model_validate(run_manifest).model_dump(mode="json")
+    _validate_dataset_identity(loaded, public_manifest)
     expected_ids = {case.case_id for case in loaded.manifest.cases}
     unknown_ids = set(observations) - expected_ids
     if unknown_ids:
@@ -58,16 +59,16 @@ def build_report(
     return {
         "schema_version": REPORT_SCHEMA,
         "status": report_status,
-        "run_id": run_manifest.get("run_id"),
-        "run_manifest_sha256": _mapping_sha256(run_manifest),
+        "run_id": public_manifest["run_id"],
+        "run_manifest_sha256": _mapping_sha256(public_manifest),
         "dataset": {
             "schema_version": loaded.manifest.schema_version,
             "dataset_version": loaded.manifest.dataset_version,
             "manifest_sha256": loaded.sha256,
             "case_count": len(scores),
         },
-        "prompts": run_manifest.get("prompts"),
-        "provider": run_manifest.get("provider"),
+        "prompts": public_manifest["prompts"],
+        "provider": public_manifest["provider"],
         "overall": {
             "passed": overall_passed,
             "failed": len(scores) - overall_passed,

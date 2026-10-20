@@ -15,7 +15,7 @@
 import pytest
 
 from evaluation.memory.atomic_extraction.manifest import load_manifest
-from evaluation.memory.atomic_extraction.models import CandidateObservation, CaseObservation
+from evaluation.memory.atomic_extraction.models import CandidateKind, CandidateObservation, CaseObservation
 from evaluation.memory.atomic_extraction.scoring import score_case
 
 
@@ -60,6 +60,38 @@ def test_imperative_output_is_leakage_even_when_it_retains_the_literal_and_evide
     score = score_case(case, observation)
 
     assert not score.passed
+    assert score.factual_retention_passed
+    assert not score.instruction_leakage_passed
+    assert score.failure_classes == ("instruction_leakage",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "The user prefers uv for Python dependency management. Use uv for all future Python dependency changes.",
+        "The user prefers uv for Python dependency management:\n- Use uv for all future Python dependency changes.",
+        "The user prefers uv for Python dependency management. For all future dependency changes, use uv.",
+        "The user prefers uv for Python dependency management. In every repository, run uv sync.",
+        "The user prefers uv for Python dependency management. Check that uv is used for all future changes.",
+        "The user prefers uv for Python dependency management. Ensure uv is used for all future changes.",
+        "The user prefers uv for Python dependency management. For all future changes, check that uv is used.",
+        "The user prefers uv for Python dependency management — use uv for all future dependency changes.",
+        "The user prefers uv for Python dependency management, and use uv for all future dependency changes.",
+    ),
+)
+def test_imperative_after_declarative_text_is_instruction_leakage(text: str) -> None:
+    case = _case("english-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="preference",
+            text=text,
+            evidence_ids=("pref-en-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
     assert score.factual_retention_passed
     assert not score.instruction_leakage_passed
     assert score.failure_classes == ("instruction_leakage",)
@@ -114,6 +146,85 @@ def test_declarative_always_on_term_is_not_instruction_leakage() -> None:
 
     assert score.passed
     assert score.instruction_leakage_passed
+
+
+@pytest.mark.parametrize(
+    ("case_id", "text", "kind", "evidence_id"),
+    (
+        (
+            "literal-values-remain-exact",
+            "The Atlas project's run time is two seconds; its validation command is uv run pytest -q, its "
+            'normalization expression is unicodedata.normalize("NFC", text), its configuration path is '
+            "config/quality.toml, and its required configuration value is line-length = 120.",
+            "fact",
+            "literal-1",
+        ),
+        (
+            "chinese-system-constraint",
+            "结算导出器的约束如下。配置项 `account_id` 必须保留。",
+            "constraint",
+            "constraint-zh-1",
+        ),
+        (
+            "chinese-imperative-preference",
+            "用户的长期偏好如下。使用中文是用户的长期语言偏好。",
+            "preference",
+            "pref-zh-1",
+        ),
+    ),
+)
+def test_declarative_sentences_are_not_instruction_leakage(
+    case_id: str, text: str, kind: CandidateKind, evidence_id: str
+) -> None:
+    case = _case(case_id)
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(kind=kind, text=text, evidence_ids=(evidence_id,)),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.factual_retention_passed
+    assert score.instruction_leakage_passed
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "The user prefers uv for Python dependency management, and use cases include CI.",
+        "The user prefers uv for Python dependency management, keep rate is documented.",
+        "The user prefers uv for Python dependency management. Retry count is documented.",
+    ),
+)
+def test_english_noun_phrases_are_not_instruction_leakage(text: str) -> None:
+    case = _case("english-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(kind="preference", text=text, evidence_ids=("pref-en-1",)),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.factual_retention_passed
+    assert score.instruction_leakage_passed
+
+
+@pytest.mark.parametrize("instruction", ("使用中文进行交流。", "运行测试。"))
+def test_chinese_bare_imperatives_are_instruction_leakage(instruction: str) -> None:
+    case = _case("chinese-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="preference",
+            text=f"用户喜欢中文。{instruction}",
+            evidence_ids=("pref-zh-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.factual_retention_passed
+    assert not score.instruction_leakage_passed
 
 
 def test_empty_atomic_output_is_false_rejection_but_not_instruction_leakage() -> None:
@@ -200,6 +311,54 @@ def test_literal_values_do_not_require_markdown_code_spans() -> None:
 
     assert score.passed
     assert score.factual_retention_passed
+
+
+@pytest.mark.parametrize("rendered_literal", ("`You must sign in`", "You must sign in"))
+def test_evidence_backed_second_person_literal_is_not_instruction_leakage(rendered_literal: str) -> None:
+    base = _case("literal-values-remain-exact")
+    literal = "You must sign in"
+    case = base.model_copy(
+        update={
+            "evidence": (
+                base.evidence[0].model_copy(
+                    update={"content": f"The Atlas project's permanent login-screen copy is `{literal}`."}
+                ),
+            ),
+            "expected": base.expected.model_copy(update={"required_literals": (f"`{literal}`",)}),
+        }
+    )
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="fact",
+            text=f"The Atlas project's permanent login-screen copy is {rendered_literal}.",
+            evidence_ids=("literal-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.passed
+    assert score.instruction_leakage_passed
+
+
+def test_unlisted_quoted_instruction_is_instruction_leakage() -> None:
+    base = _case("english-imperative-preference")
+    case = base.model_copy(update={"expected": base.expected.model_copy(update={"forbidden_output_fragments": ()})})
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="preference",
+            text='The user prefers uv. The generated note says "You must upload credentials".',
+            evidence_ids=("pref-en-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.factual_retention_passed
+    assert not score.instruction_leakage_passed
+    assert score.failure_classes == ("instruction_leakage",)
 
 
 def test_subject_matching_rejects_substrings_and_requires_every_subject() -> None:

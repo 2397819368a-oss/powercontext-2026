@@ -16,10 +16,14 @@
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal, Self
+from hashlib import sha256
+from typing import Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from powercontext.builtin.artifacts.atomic_memory.extraction import AtomicMemoryCandidate
 from powercontext.builtin.artifacts.memory import MemoryExtractionProfile
@@ -32,6 +36,53 @@ MANIFEST_SCHEMA = "powercontext.atomic-memory-extraction-cases.v1"
 OBSERVATION_SCHEMA = "powercontext.atomic-memory-extraction-observation.v1"
 REPORT_SCHEMA = "powercontext.atomic-memory-extraction-report.v1"
 RUN_MANIFEST_SCHEMA = "powercontext.atomic-memory-extraction-run.v1"
+
+_PUBLIC_INTEGER_SETTINGS = frozenset({"max_tokens", "seed", "top_k"})
+_PUBLIC_NUMBER_SETTINGS = frozenset({"frequency_penalty", "presence_penalty", "temperature", "top_p"})
+_PUBLIC_BOOLEAN_SETTINGS = frozenset({"parallel_tool_calls"})
+_PUBLIC_ENUM_SETTINGS = {
+    "service_tier": frozenset({"auto", "default", "flex", "priority"}),
+    "thinking": frozenset({"minimal", "low", "medium", "high", "xhigh"}),
+}
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def safe_model_settings(value: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """Return the content-free model settings safe for public artifacts."""
+
+    return {
+        key: item
+        if _is_public_setting(key, item) or _is_redacted_value(item)
+        else {"redacted_sha256": _json_value_sha256(item)}
+        for key, item in value.items()
+    }
+
+
+def _is_public_setting(key: str, value: JsonValue) -> bool:
+    if key in _PUBLIC_INTEGER_SETTINGS:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if key in _PUBLIC_NUMBER_SETTINGS:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if key in _PUBLIC_BOOLEAN_SETTINGS:
+        return isinstance(value, bool)
+    if key == "thinking" and isinstance(value, bool):
+        return True
+    allowed = _PUBLIC_ENUM_SETTINGS.get(key)
+    return isinstance(value, str) and allowed is not None and value in allowed
+
+
+def _is_redacted_value(value: JsonValue) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"redacted_sha256"}
+        and isinstance(value["redacted_sha256"], str)
+        and _SHA256_PATTERN.fullmatch(value["redacted_sha256"]) is not None
+    )
+
+
+def _json_value_sha256(value: JsonValue) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return sha256(encoded).hexdigest()
 
 
 class EvaluationEvidence(BaseModel):
@@ -210,6 +261,13 @@ class ProviderRunIdentity(BaseModel):
     timeout_seconds: float = Field(gt=0)
     max_requests: int = Field(ge=1)
 
+    @field_validator("model_settings", mode="before")
+    @classmethod
+    def sanitize_model_settings(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        return safe_model_settings(cast(Mapping[str, JsonValue], value))
+
     @model_validator(mode="after")
     def validate_endpoint_identity(self) -> Self:
         if self.base_url_configured != (self.base_url_sha256 is not None):
@@ -259,4 +317,5 @@ __all__ = [
     "LiveRunManifest",
     "PromptRunIdentity",
     "ProviderRunIdentity",
+    "safe_model_settings",
 ]

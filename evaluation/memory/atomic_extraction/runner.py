@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
@@ -51,6 +50,7 @@ from .models import (
     EvaluationCase,
     LiveRunManifest,
     PromptRunIdentity,
+    safe_model_settings,
 )
 from .report import build_report, load_observations, write_report
 
@@ -216,21 +216,7 @@ def _prompt_definition(profile: MemoryExtractionProfile):
 
 
 def _safe_settings(value: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
-    return {key: _safe_value(key, item) for key, item in value.items()}
-
-
-def _safe_value(key: str, value: JsonValue) -> JsonValue:
-    sensitive = {"authorization", "credential", "key", "password", "secret", "token"}
-    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
-    key_parts = [part.casefold() for part in re.findall(r"[A-Za-z0-9]+", separated)]
-    compact = "".join(key_parts)
-    if set(key_parts) & sensitive or compact in {"apikey", "accesstoken", "clientsecret"}:
-        return {"redacted_sha256": _value_sha256(value)}
-    if isinstance(value, dict):
-        return {str(child): _safe_value(str(child), item) for child, item in value.items()}
-    if isinstance(value, list):
-        return [_safe_value(key, item) for item in value]
-    return value
+    return safe_model_settings(value)
 
 
 def _value_sha256(value: object) -> str:
