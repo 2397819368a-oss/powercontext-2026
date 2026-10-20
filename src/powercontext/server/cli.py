@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
-from contextlib import AsyncExitStack, nullcontext, suppress
+from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from sqlite3 import SQLITE_CANTOPEN
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -47,6 +47,7 @@ from powercontext.cli.inference_notice import write_inference_capability_notice
 from powercontext.server.app import access_readiness_checks
 from powercontext.server.authz import PrincipalRef
 from powercontext.server.authz.composition import open_builtin_access_control
+from powercontext.server.background_metrics import serve_background_metrics
 from powercontext.server.configuration import (
     ServerConfigurationError,
     resolve_server_environment_file,
@@ -455,7 +456,7 @@ def _run_server(application: Any, *, host: str, port: int) -> None:
 
 
 def _run_background(settings: ServerSettings, tracing: Any) -> None:
-    """Run a Supervisor-only process until SIGINT or SIGTERM."""
+    """Run a Supervisor and optional metrics listener until SIGINT or SIGTERM."""
 
     asyncio.run(_run_background_async(settings, tracing))
 
@@ -469,7 +470,7 @@ async def _run_background_async(settings: ServerSettings, tracing: Any) -> None:
         inference=settings.inference,
         external_skills=settings.external_skills,
     )
-    metrics = ServerMetrics() if settings.metrics.enabled else None
+    metrics = ServerMetrics(role="background") if settings.metrics.enabled else None
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     installed: list[signal.Signals] = []
@@ -512,44 +513,19 @@ async def _run_background_async(settings: ServerSettings, tracing: Any) -> None:
             if metrics is None or stopped.is_set():
                 await stopped.wait()
             else:
-                import uvicorn
-
-                probe = _ServerReadinessProbe(metrics, tracing=tracing)
-                probe.bind(runtime)
-                await probe()
-                await resources.enter_async_context(probe.monitor())
-                app = create_background_metrics_app(settings, runtime, metrics, access)
+                application = create_background_metrics_app(
+                    settings, runtime=runtime, metrics=metrics, access_control=access
+                )
 
                 async def background_access_checks() -> dict[str, str]:
-                    return await access_readiness_checks(app.state)
+                    return await access_readiness_checks(application.state)
 
-                probe.set_access_checks(background_access_checks)
+                probe = _ServerReadinessProbe(metrics, tracing=tracing, access_checks=background_access_checks)
+                probe.bind(runtime)
+                resources.callback(probe.unbind)
                 await probe()
-                server = uvicorn.Server(
-                    uvicorn.Config(
-                        app,
-                        host=settings.http.host,
-                        port=settings.metrics.background_port,
-                        access_log=False,
-                        log_config=None,
-                        timeout_graceful_shutdown=2,
-                    )
-                )
-                serving = asyncio.create_task(server.serve(), name="background-metrics-http")
-                stopping = asyncio.create_task(stopped.wait())
-                try:
-                    await asyncio.wait((serving, stopping), return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    server.should_exit = True
-                    stopping.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await stopping
-                    try:
-                        await asyncio.wait_for(asyncio.shield(serving), timeout=5)
-                    except TimeoutError:
-                        serving.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await serving
+                await resources.enter_async_context(probe.monitor())
+                await serve_background_metrics(application, settings, stopped)
     finally:
         for signum in installed:
             loop.remove_signal_handler(signum)

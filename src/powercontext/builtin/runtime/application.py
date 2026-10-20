@@ -258,6 +258,7 @@ from powercontext.builtin.runtime.readiness import (
     ReadinessCheckStatus,
     RuntimeReadiness,
     RuntimeReadinessChecks,
+    RuntimeReadinessSnapshot,
     RuntimeReadinessStatus,
 )
 from powercontext.builtin.runtime.recall_sufficiency import (
@@ -363,10 +364,6 @@ TopicMemoryFlush = Callable[[str], Awaitable[bool]]
 TopicMemorySearchObserver = Callable[[str, bool], None]
 
 logger = logging.getLogger(__name__)
-
-# Leave room for database reads and assembly within the default one-second Hook request.
-_CONTEXT_TOPIC_EMBEDDING_TIMEOUT_SECONDS = 0.25
-_CONTEXT_MEMORY_EMBEDDING_TIMEOUT_SECONDS = 0.25
 
 _MEMORY_CAPTURE_STAGE = "memory.capture"
 _MEMORY_CAPTURE_SOURCE_COUNT = "powercontext.memory.capture.source_count"
@@ -1476,6 +1473,7 @@ class ScopedContextApplication:
         embedding_calls = 0
         generation_calls = 0
         memory_recoverable = False
+        shared_embedding = next((embedding for embedding in reuse.values() if embedding is not None), None)
         for scope_id in scope_ids:
             memory_limit = (
                 builder.memory_candidate_limit + sum(identity[0] == scope_id for identity in excluded_memory)
@@ -1488,7 +1486,7 @@ class ScopedContextApplication:
                 memory_limit=memory_limit,
                 experience_limit=builder.experience_candidate_limit if EXPERIENCE_FAMILY in families else 0,
                 admission=admission,
-                reuse=reuse.get(scope_id),
+                reuse=reuse.get(scope_id, shared_embedding),
                 allow_embedding=scope_id not in reuse or reuse[scope_id] is not None,
             )
             memory_recoverable |= outcome.memory_recoverable
@@ -1506,6 +1504,8 @@ class ScopedContextApplication:
             )
             experience_candidates.append(outcome.experience)
             reuse[scope_id] = outcome.memory_query_embedding
+            if outcome.memory_query_embedding is not None:
+                shared_embedding = outcome.memory_query_embedding
             admissions.extend(
                 count for count in (outcome.memory_admission, outcome.experience_admission) if count is not None
             )
@@ -1516,12 +1516,21 @@ class ScopedContextApplication:
             experience_candidates,
             builder.experience_candidate_limit,
         )
+        atomic = self._runtime.atomic_memory
+        topic_embedding = topic_reuse.get(self.scope_id)
+        if (
+            self.scope_id not in topic_reuse
+            and atomic is not None
+            and self._runtime._topic_memory_embedding_model is atomic._application.embedding_model
+            and bounded_topic_memory_query(request.query.strip()) == request.query
+        ):
+            topic_embedding = shared_embedding
         topic_outcome = (
             await self._topic_memory_hits(
                 request.query.strip(),
                 builder.topic_memory_candidate_limit,
                 admission=admission,
-                reuse=topic_reuse.get(self.scope_id),
+                reuse=topic_embedding,
                 allow_embedding=self.scope_id not in topic_reuse or topic_reuse[self.scope_id] is not None,
             )
             if TOPIC_MEMORY_FAMILY in families
@@ -1570,7 +1579,7 @@ class ScopedContextApplication:
                         mode="auto",
                         admission=admission,
                         query_embedding=reuse,
-                        embedding_timeout_seconds=_CONTEXT_MEMORY_EMBEDDING_TIMEOUT_SECONDS,
+                        embedding_timeout_seconds=self._runtime.recall_embedding_timeout_seconds,
                         allow_embedding=allow_embedding,
                         recovery_admission=None if policy is None else policy.round2_admission,
                         context=_PREPARE_ATOMIC_CONTEXT.get(),
@@ -1659,7 +1668,7 @@ class ScopedContextApplication:
                         SearchTopicMemoryRequest(query=bounded_query, limit=limit),
                         admission=admission,
                         query_embedding=reuse,
-                        embedding_timeout_seconds=_CONTEXT_TOPIC_EMBEDDING_TIMEOUT_SECONDS,
+                        embedding_timeout_seconds=self._runtime.recall_embedding_timeout_seconds,
                         allow_embedding=allow_embedding,
                     )
                 )
@@ -3639,6 +3648,7 @@ class BuiltinRuntime:
         source_window_limit: int = 100,
         context_assembly_max_entries: int = 8,
         recall_sufficiency_policy: RecallSufficiencyPolicy | None = None,
+        recall_embedding_timeout_seconds: float = 0.25,
         scope_cache_size: int = DEFAULT_SCOPE_CACHE_SIZE,
         scope_evictor: ScopeEvictor | None = None,
         scope_cache_observer: ScopeCacheObserver | None = None,
@@ -3696,6 +3706,8 @@ class BuiltinRuntime:
             raise _RuntimeConfigurationError("source_window_limit")
         if context_assembly_max_entries < 1:
             raise _RuntimeConfigurationError("context_assembly_max_entries")
+        if not recall_embedding_timeout_seconds > 0:
+            raise _RuntimeConfigurationError("recall_embedding_timeout_seconds")
         if scope_cache_size < 1:
             raise _RuntimeConfigurationError("scope_cache_size")
         self._provider = provider
@@ -3737,8 +3749,6 @@ class BuiltinRuntime:
         if self._topic_memory_searcher is None and topic_memory_search is not None:
             self._topic_memory_searcher = TopicMemorySearcher(
                 search=topic_memory_search,
-                get=topic_memory_get,
-                browse=topic_memory_browse,
                 embedding_model=topic_memory_embedding_model,
                 observer=topic_memory_search_observer,
             )
@@ -3777,6 +3787,7 @@ class BuiltinRuntime:
         self.source_window_limit = source_window_limit
         self.context_assembly_max_entries = context_assembly_max_entries
         self.recall_sufficiency_policy = recall_sufficiency_policy
+        self.recall_embedding_timeout_seconds = recall_embedding_timeout_seconds
         self._scope_cache = ScopeCache(
             scope_cache_size,
             evictor=scope_evictor,
@@ -3870,6 +3881,21 @@ class BuiltinRuntime:
         if self._extraction_diagnostics is None:
             return None
         return self._extraction_diagnostics.snapshot(self.artifact_processing_supervisor)
+
+    def readiness_snapshot(self) -> RuntimeReadinessSnapshot:
+        """Read dependency observations without probing storage or inference providers."""
+
+        snapshot = self._readiness.snapshot()
+        if (
+            self._closing
+            or self._closed
+            or (
+                self.artifact_processing_supervisor is not None
+                and self.artifact_processing_supervisor.status.value == "degraded"
+            )
+        ):
+            return replace(snapshot, status=RuntimeReadinessStatus.NOT_READY)
+        return snapshot
 
     async def readiness(self) -> RuntimeReadiness:
         """Check whether the Runtime and its assembled dependencies can accept work."""

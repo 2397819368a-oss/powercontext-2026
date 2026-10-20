@@ -25,13 +25,13 @@ from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.experience import (
     Experience,
     ExperienceContent,
-    ExperienceSearchOutcome,
     FailureRecord,
     FailureSignature,
     FailureVerification,
 )
-from powercontext.builtin.artifacts.skill import Skill, SkillContent, SkillPackageSnapshot, SkillSearchHit
+from powercontext.builtin.artifacts.skill import Skill, SkillContent, SkillPackageSnapshot
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
+from powercontext.builtin.persistence.experience_index import NoExperienceIndex
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import ARTIFACTS_TABLE, BUILTIN_TABLES
 from powercontext.builtin.records import ArtifactWrite
@@ -80,7 +80,7 @@ class _InjectedExperienceProjectionError(RuntimeError):
     pass
 
 
-class _FailingExperienceIndex:
+class _FailingExperienceIndex(NoExperienceIndex):
     async def initialize(self, _connection: AsyncConnection, /) -> None:
         pass
 
@@ -96,20 +96,6 @@ class _FailingExperienceIndex:
     ) -> None:
         raise _InjectedExperienceProjectionError
 
-    async def search(
-        self,
-        _connection: AsyncConnection,
-        _scope_id: str,
-        _query: str,
-        _limit: int,
-        /,
-        *,
-        admission: object = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> ExperienceSearchOutcome:
-        return ExperienceSearchOutcome()
-
     async def replace_skill(
         self,
         _connection: AsyncConnection,
@@ -119,20 +105,6 @@ class _FailingExperienceIndex:
         /,
     ) -> None:
         pass
-
-    async def search_skills(
-        self,
-        _connection: AsyncConnection,
-        _scope_id: str,
-        _query: str,
-        _limit: int,
-        /,
-        *,
-        admission: object = None,
-        min_score: float | None = None,
-        require_scores: bool = False,
-    ) -> tuple[SkillSearchHit, ...]:
-        return ()
 
 
 def _proposal(lesson: str = "Regenerate the Client before contract tests.") -> ExperienceContent:

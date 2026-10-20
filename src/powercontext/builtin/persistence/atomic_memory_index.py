@@ -23,7 +23,7 @@ from hashlib import sha256
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel
-from sqlalchemy import Table, bindparam, delete, insert, inspect, select, text, update
+from sqlalchemy import Table, bindparam, delete, func, insert, inspect, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef, ChannelScore
@@ -51,6 +51,17 @@ _OBSOLETE_PROJECTION_COLUMNS = frozenset({"read_grants", "owner_type", "owner_id
 
 
 async def _projection_columns(connection: AsyncConnection, table: Table) -> set[str]:
+    if connection.dialect.name == "mysql":
+        return set(
+            await connection.scalars(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() AND table_name = :table_name"
+                ),
+                {"table_name": table.name},
+            )
+        )
+
     def read(sync: Any) -> set[str]:
         inspector = inspect(sync)
         if not inspector.has_table(table.name):
@@ -159,11 +170,15 @@ class AtomicMemoryRelatedRequest:
 
 
 class AtomicMemoryIndex(Protocol):
+    """Caller-owned projection transactions, including initialization and current-row validation."""
+
     table: Table
     tables: tuple[Table, ...]
     capabilities: AtomicMemoryIndexCapabilities
 
     async def initialize(self, connection: AsyncConnection, /) -> None: ...
+
+    async def validate_current(self, connection: AsyncConnection, /) -> None: ...
 
     async def replace(
         self, connection: AsyncConnection, scope_id: str, projection: AtomicMemoryProjection, /
@@ -368,13 +383,11 @@ def atomic_memory_filter_sql(
 def atomic_memory_vector_sql(
     eligibility: str, dialect: Literal["sqlite", "mysql"], /, *, bounded: bool, threshold: bool
 ) -> str:
-    """One statement checks readiness and retrieves matches at one channel snapshot.
+    """Exact Top-K over usable rows, or complete enumeration with a readiness sentinel.
 
-    The sentinel reports any incomplete eligible row even when no vector meets
-    the threshold. Bounded results limit only after same-row eligibility and exact
-    scoring. Explicit L2 thresholds belong to complete related enumeration;
-    ordinary search uses cosine admission on unit-normalized L2 vectors.
-    There is no business-table join, ANN or enumeration result cap.
+    Bounded search is not a collection audit. Complete related enumeration rejects
+    incomplete eligible vectors and has no result cap. Both apply same-row filters
+    before truncation and keep business-table joins out of candidate scoring.
     """
 
     distance = "vec_distance_l2" if dialect == "sqlite" else "l2_distance"
@@ -388,6 +401,17 @@ def atomic_memory_vector_sql(
         " AND distance <= :max_distance" if threshold else f" AND {clamped_similarity} >= :min_semantic_similarity"
     )
     limit_sql = " LIMIT :result_limit" if bounded else ""
+    if bounded and not threshold:
+        return (
+            "WITH scored AS (SELECT artifact_id, revision, state_version, kind, text, "  # noqa: S608
+            f"{distance}(embedding, :query_vector) AS distance FROM pc_atomic_memory_current "
+            f"WHERE scope_id = :scope_id AND ({eligibility}) "
+            "AND embedding IS NOT NULL AND profile_fingerprint = :profile AND embedding_input_hash IS NOT NULL "
+            f"AND projection_format = :projection_format{valid_length}) "
+            "SELECT artifact_id, revision, state_version, kind, text, distance, 0 AS invalid_vectors "
+            f"FROM scored WHERE {clamped_similarity} >= :min_semantic_similarity "
+            "ORDER BY distance, artifact_id LIMIT :result_limit"
+        )
     # eligibility is built by atomic_memory_filter_sql from fixed grammar.
     return (
         "WITH eligible AS (SELECT artifact_id, revision, state_version, kind, text, embedding, "  # noqa: S608
@@ -521,6 +545,28 @@ class RelationalAtomicMemoryIndex:
             vector=profile is not None, hybrid=profile is not None, embedding_profile=profile
         )
 
+    async def validate_current(self, connection: AsyncConnection, /) -> None:
+        """Audit vector deployment readiness at startup, outside ordinary bounded search."""
+        profile = self.capabilities.embedding_profile
+        if profile is None:
+            return
+        table = self.table
+        invalid = [
+            table.c.embedding.is_(None),
+            table.c.embedding_input_hash.is_(None),
+            table.c.profile_fingerprint.is_(None),
+            table.c.profile_fingerprint != atomic_memory_profile_fingerprint(profile),
+            table.c.projection_format != ATOMIC_MEMORY_PROJECTION_FORMAT,
+        ]
+        if connection.dialect.name == "sqlite":
+            invalid.append(func.length(table.c.embedding) != profile.dimension * 4)
+        if await connection.scalar(select(table.c.artifact_id).where(or_(*invalid)).limit(1)) is not None:
+            raise AtomicMemoryIndexError(
+                "incomplete-vector",
+                "Current Atomic Memory vectors are incomplete or use another profile. Stop writers and run "
+                "powercontext server atomic-memory-rebuild-projection --maintenance-confirmed.",
+            )
+
     def _encode_embedding(self, vector: tuple[float, ...]) -> object:
         return vector
 
@@ -644,13 +690,34 @@ class RelationalAtomicMemoryIndex:
         if not recoverable:
             return False
         new_channels = [f"({lower} AND NOT {admitted})" for admitted, lower in zip(current, recoverable, strict=True)]
-        statement = text(
+        probe = (
             "SELECT 1 FROM pc_atomic_memory_current WHERE scope_id = :scope_id "  # noqa: S608
             f"AND ({eligibility}) AND ({' OR '.join(new_channels)}) LIMIT 1"
         )
+        invalid = "0 = 1"
+        profile = self.profile
+        if request.mode in {"vector", "hybrid"} and profile is not None:
+            parameters.update(
+                profile=atomic_memory_profile_fingerprint(profile),
+                projection_format=ATOMIC_MEMORY_PROJECTION_FORMAT,
+                embedding_bytes=profile.dimension * 4,
+            )
+            length = " OR LENGTH(embedding) <> :embedding_bytes" if dialect == "sqlite" else ""
+            invalid = (
+                "EXISTS (SELECT 1 FROM pc_atomic_memory_current WHERE scope_id = :scope_id "  # noqa: S608
+                f"AND ({eligibility}) AND (embedding IS NULL OR embedding_input_hash IS NULL "
+                "OR profile_fingerprint IS NULL OR profile_fingerprint <> :profile "
+                f"OR projection_format <> :projection_format{length}) LIMIT 1)"
+            )
+        statement = text(f"SELECT CASE WHEN {invalid} THEN -1 ELSE EXISTS ({probe}) END")
         if request.mode in {"vector", "hybrid"} and dialect == "mysql":
             statement = statement.bindparams(bindparam("probe_vector", type_=self.table.c.embedding.type))
-        return await connection.scalar(statement, parameters) is not None
+        result = await connection.scalar(statement, parameters)
+        if result == -1:
+            raise AtomicMemoryIndexError(
+                "incomplete-vector", "Eligible Atomic Memory vectors are incomplete or use another profile"
+            )
+        return bool(result)
 
     def _require_vectors(
         self,

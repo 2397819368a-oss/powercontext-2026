@@ -110,6 +110,7 @@ class ArtifactProcessingWorkerCompletion:
     held_count: int = 0
     hold_codes: tuple[str, ...] = ()
     model_usage: ArtifactProcessingModelUsageDelta | None = None
+    noop: bool = False
 
 
 class ArtifactProcessingWorkerHandle(Protocol):

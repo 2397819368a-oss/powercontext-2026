@@ -60,10 +60,11 @@ from powercontext.builtin.inference import (
     InvalidInferenceOutputError,
     embed_query,
 )
+from powercontext.builtin.persistence.artifacts import with_artifact_content
 from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndexError, AtomicMemoryRelatedRequest
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.decision_observations import DecisionObservationRepository
-from powercontext.builtin.persistence.errors import GenerationConflictError
+from powercontext.builtin.persistence.errors import GenerationConflictError, RepositoryNotFoundError
 from powercontext.builtin.persistence.memory_windows import MemorySourceWindowRepository
 from powercontext.builtin.persistence.sources import SourceRepository
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, SOURCE_JOURNAL_HEADS_TABLE
@@ -483,13 +484,47 @@ class AtomicMemorySourceWindowProcessor:
         from powercontext.server.authz import AccessDeniedError
 
         recalled = []
-        for hit in hits:
-            try:
-                async with self._read_transaction(context) as connection:
-                    record = await self.application.service.get(
-                        connection, scope_id, hit.artifact_ref.artifact_id, context
+        heads = ARTIFACT_HEADS_TABLE
+        for offset in range(0, len(hits), 100):
+            async with self._read_transaction(context) as connection:
+                allowed = []
+                for hit in hits[offset : offset + 100]:
+                    try:
+                        await self.application.security.authorize(
+                            connection,
+                            scope_id,
+                            context,
+                            "read",
+                            ArtifactRef(family="atomic-memory", artifact_id=hit.artifact_ref.artifact_id, revision=1),
+                        )
+                    except AccessDeniedError:
+                        continue
+                    allowed.append(hit)
+                if not allowed:
+                    continue
+                rows = (
+                    await connection.execute(
+                        with_artifact_content(select(heads)).where(
+                            heads.c.scope_id == scope_id,
+                            heads.c.family == "atomic-memory",
+                            heads.c.artifact_id.in_(tuple(hit.artifact_ref.artifact_id for hit in allowed)),
+                        )
                     )
-                    await self.application.security.authorize(connection, scope_id, context, "write", record.ref)
+                ).mappings()
+                by_id = {row["artifact_id"]: row for row in rows}
+                for hit in allowed:
+                    if hit.artifact_ref.artifact_id not in by_id:
+                        raise RepositoryNotFoundError(
+                            "artifact", (scope_id, "atomic-memory", hit.artifact_ref.artifact_id)
+                        )
+                records = await self.application.service.read_many(
+                    connection, scope_id, tuple(by_id[hit.artifact_ref.artifact_id] for hit in allowed)
+                )
+                for hit, record in zip(allowed, records, strict=True):
+                    try:
+                        await self.application.security.authorize(connection, scope_id, context, "write", record.ref)
+                    except AccessDeniedError:
+                        continue
                     if (
                         record.ref != hit.artifact_ref
                         or record.state.state_version != hit.state_version
@@ -498,26 +533,24 @@ class AtomicMemorySourceWindowProcessor:
                         or record.artifact.content.text != hit.text
                     ):
                         _conflict("Related memory changed before comparison")
-            except AccessDeniedError:
-                continue
-            content = AtomicMemoryContent(kind=hit.kind, text=hit.text)
-            supported = AtomicMemoryArtifactEvidence(
-                evidence_id=f"artifact:{record.ref.artifact_id}@{record.ref.revision}",
-                artifact_ref=record.ref,
-                content=content,
-            )
-            artifacts[(record.ref.family, record.ref.artifact_id, record.ref.revision)] = record.ref
-            recalled.append(
-                workset.add(
-                    AtomicMemoryWorkingItem(
-                        key=f"memory:{hit.artifact_ref.artifact_id}",
+                    content = AtomicMemoryContent(kind=hit.kind, text=hit.text)
+                    supported = AtomicMemoryArtifactEvidence(
+                        evidence_id=f"artifact:{record.ref.artifact_id}@{record.ref.revision}",
+                        artifact_ref=record.ref,
                         content=content,
-                        origins=(record.as_read(),),
-                        evidence=(supported,),
-                        artifacts=(record.ref,),
                     )
-                )
-            )
+                    artifacts[(record.ref.family, record.ref.artifact_id, record.ref.revision)] = record.ref
+                    recalled.append(
+                        workset.add(
+                            AtomicMemoryWorkingItem(
+                                key=f"memory:{hit.artifact_ref.artifact_id}",
+                                content=content,
+                                origins=(record.as_read(),),
+                                evidence=(supported,),
+                                artifacts=(record.ref,),
+                            )
+                        )
+                    )
         return recalled
 
     async def _recall(self, scope_id, query, context):

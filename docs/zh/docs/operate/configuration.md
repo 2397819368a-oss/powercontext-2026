@@ -137,6 +137,7 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_GATE_ALLOW_WITH_RERANK` | `false` | 已启用 `MEMORY_RERANK_ENABLED` 时是否仍允许追加搜索；默认在 rerank 之后不再追加 |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_FTS_WEIGHT` | `1.0` | hybrid Atomic Memory 和 Topic Memory RRF 中 FTS 的相对贡献；`0` 会从 hybrid 结果中排除仅命中 FTS 的候选 |
 | `POWERCONTEXT_SERVER_RUNTIME_RECALL_VECTOR_WEIGHT` | `1.0` | hybrid Atomic Memory 和 Topic Memory RRF 中 vector 的相对贡献；`0` 会从 hybrid 结果中排除仅命中 vector 的候选 |
+| `POWERCONTEXT_SERVER_RUNTIME_RECALL_EMBEDDING_TIMEOUT_SECONDS` | `0.25` | 一次上下文准备里每次 Atomic Memory 或 Topic Memory 检索等待查询 embedding 的秒数，上限 `60`。准备会依次检索该 Scope 及其每个 context reference，等待时间会累加。某次等待超时后，该次检索只用词法匹配继续，并记录 `memory.search.embedding_fallback` 或 `topic_memory.search.embedding_fallback`。远程 embedding 提供商需要比默认值更长的时间；累计等待应控制在宿主 Hook 请求超时之内，多数宿主为 3 秒 |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_SCHEDULE_SECONDS` | 未设置 | Memory 自动准入间隔；`SCHEDULE_SECONDS` 保留为兼容别名 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SCHEDULE_SECONDS` | 未设置 | Topic Memory 自动准入间隔；未设置时不接纳新的自动调用 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SOURCE_WINDOW_LIMIT` | `10` | 每个 Topic Memory Window 的 Source 数量上限，硬上限为 100；一次 Scope 调用可完成多个 Window |
@@ -283,9 +284,10 @@ SQLite 使用 `all`。Dream 的模型标识在首次执行时固定，关闭自�
 `ARTIFACT_PROCESSING_FAMILIES=[]` 关闭内置后台 Family；否则启动在接受工作前失败。
 仅关闭 schedule 不足以满足要求，因为显式请求仍会启动 Worker。同步 SDK Context 和纯 API 组合仍支持自定义 Source Registry。
 
-受鉴权保护的 `/metrics` 暴露 `powercontext_server_artifact_processing_*` 指标，只使用 `family` 标签，涵盖 Worker 额度、
+受鉴权保护的 `/metrics` 暴露 `powercontext_server_artifact_processing_*` 指标，使用有界的 `family` 标签，并按需增加
+`state`、`outcome`、`category` 或 `reason`，涵盖 Worker 额度、
 ready/retry 队列、未确认 Scope 数、发现与调用耗时，以及完成、失败、超时次数。未确认数反映最近一次发现结果；计数器随
-Supervisor 实例重建而重置。
+Supervisor 实例重建而重置。新鲜度、状态、attempt/确认与告警语义参见[日志、指标与 Tracing](observability.md)。
 
 `GET /v1/capabilities` 的 `extraction` 对象分别返回配置、后台执行状态和本地观察记录。
 读取快照不查询数据库、不调用模型，也不生成整个管道的健康结论。
@@ -367,7 +369,11 @@ Handoff Report API route 独立默认启用。Selection、检查和导出步骤�
 [使用 Handoff Report](../workflows/use-handoff-report.md)。
 
 默认 `all` 角色会启动 Artifact Processing Supervisor。OceanBase 部署可以拆分 `api` 和 `background`；
-`powercontext server run --role background` 不启动 HTTP、MCP 或 Dashboard listener，多个后台候选者通过数据库 Lease
+`powercontext server run --role background` 在启用指标时提供 `/metrics` 和公开的 `/health/live`，使用
+`POWERCONTEXT_SERVER_HTTP_HOST` 和 `POWERCONTEXT_SERVER_METRICS_BACKGROUND_PORT`（默认 `8001`），
+不提供业务 API、MCP、Dashboard、OpenAPI 或 `/health/ready`。
+`/metrics` 使用与 API 宿主相同的认证及 `server.observe` 授权。同机 API 与后台进程应使用不同端口。
+`POWERCONTEXT_SERVER_METRICS_ENABLED=false` 时后台不打开 listener。多个后台候选者通过数据库 Lease
 自动选出一个 active Leader。SQLite 与嵌入式 seekdb 只支持单进程 `all`。未设置正数间隔时，Topic Memory 自动波次
 保持关闭；显式 flush 工作的恢复不依赖该间隔。Topic Worker 要求使用文件 SQLite；内存 SQLite 配合 generation
 model 的配置会在声明处理能力之前被拒绝。请通过 `POWERCONTEXT_SERVER_DATABASE_URL` 指定持久数据库路径，例如

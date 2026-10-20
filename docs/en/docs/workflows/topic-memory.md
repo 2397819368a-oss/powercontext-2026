@@ -117,6 +117,18 @@ For complete Artifact results, explicit text/vector/hybrid modes, admission, sco
 [Fusion algorithms and parameters](search-fusion.md). The dedicated route keeps its existing summary response and
 `0`–`100` score scale.
 
+Explicit vector/hybrid search uses the configured query embedding provider even in an empty Scope; provider errors and
+fallback depend on the requested mode. SQLite ranks exact nearest Topics across both title/summary and detail vectors.
+It first checks a bounded exact neighbor prefix. If that prefix contains enough eligible distinct Topics or is exhausted,
+it returns; otherwise one full exact query replaces the prefix. Worst-case latency grows with eligible chunks. At exactly equal
+distances, boundary Topic membership and the choice of an equally near chunk need not follow global identity or
+ordinal order. These choices can change fused candidates and scores; the final fused-score tie rules still apply.
+seekdb/OceanBase use approximate title/summary retrieval. Detail search ranks current chunks by each Topic's minimum
+distance before the candidate limit and payload reads. This scans eligible chunks and has no constant-latency guarantee.
+The native fused result remains approximate because its title channel uses ANN; measure recall and tail latency for
+the deployment. Startup leaves existing detail HNSW indexes intact and does not create a detail graph for new databases.
+Detail queries do not use that graph; an existing graph still incurs database maintenance costs.
+
 ## Read exact detail
 
 Do not reconstruct the latest version from a title. Pass the `artifact` from a search hit (`family`, `artifact_id`, and

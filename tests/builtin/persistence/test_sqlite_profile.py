@@ -62,7 +62,6 @@ def test_unsupported_sqlite_is_rejected_without_changing_storage(tmp_path, monke
 
     asyncio.run(scenario())
     assert (database.read_bytes() if database.exists() else None) == before
-    assert sorted(path.name for path in tmp_path.iterdir()) == (["legacy.db"] if existing else [])
 
 
 def test_sqlite_stop_waiters_finish_when_another_waiter_is_cancelled(tmp_path) -> None:

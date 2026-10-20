@@ -121,7 +121,7 @@ class _MetricsEndpoint:
                 ),
             )
         runtime = request.app.state.application
-        self._metrics.set_processing_families(None if runtime is None else runtime.artifact_processing_supervisor)
+        self._metrics.refresh_runtime(runtime)
         return Response(self._metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -165,7 +165,7 @@ def create_server_app(  # noqa: C901
         inference=resolved.inference,
         external_skills=resolved.external_skills,
     )
-    metrics = ServerMetrics() if resolved.metrics.enabled else None
+    metrics = ServerMetrics(role=resolved.runtime.artifact_processing_role) if resolved.metrics.enabled else None
     resolved_tracing = (
         ServerTracing.context_only(role=resolved.runtime.artifact_processing_role) if tracing is None else tracing
     )
@@ -708,13 +708,14 @@ async def _server_capabilities(runtime: BuiltinRuntime) -> Capabilities:
 
 
 __all__ = [
+    "create_background_metrics_app",
     "create_server_app",
 ]
 
 
 def create_background_metrics_app(
     settings: ServerSettings,
-    runtime: BuiltinRuntime,
+    runtime: BuiltinRuntime | None,
     metrics: ServerMetrics,
     access_control: AccessControlService | None,
 ) -> FastAPI:
@@ -726,10 +727,12 @@ def create_background_metrics_app(
     app = create_app(
         infrastructure_only=True,
         middleware=middleware,
+        metrics=metrics,
         access_control=access,
         access_mode=settings.access.mode,
         authentication_provider=authentication,
     )
     app.state.application = runtime
-    app.add_api_route("/metrics", _MetricsEndpoint(metrics), include_in_schema=False)
+    if settings.metrics.enabled:
+        app.add_api_route("/metrics", _MetricsEndpoint(metrics), include_in_schema=False)
     return app
