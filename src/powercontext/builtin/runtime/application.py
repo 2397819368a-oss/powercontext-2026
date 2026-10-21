@@ -522,7 +522,7 @@ class ScopedSourceApplication:
         if not value.note_kind.strip():
             raise ValueError("note_kind must not be blank")  # noqa: TRY003
         if value.expires_at is not None and (value.expires_at.tzinfo is None or value.expires_at.utcoffset() is None):
-            raise InvalidRuntimeRequestError("working-note-expiry")
+            raise InvalidRuntimeRequestError("working-note-expiry-timezone")
         metadata = dict(value.metadata)
         metadata.update({
             "kind": WORKING_NOTE_SOURCE_KIND,
@@ -536,7 +536,7 @@ class ScopedSourceApplication:
             replay = await self._replay_working_note(capture)
             if replay is not None:
                 return replay
-            raise InvalidRuntimeRequestError("working-note-expiry")
+            raise InvalidRuntimeRequestError("working-note-expiry-past")
         return await self._capture(capture, working_note=True)
 
     async def _replay_working_note(self, value: CaptureSource, /) -> SourceReceipt | None:

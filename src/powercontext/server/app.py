@@ -5779,6 +5779,24 @@ def _map_scope_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | 
     return None
 
 
+_CANDIDATE_ERROR_REASONS = {
+    ("artifacts", "must include the exact target"): ("artifact_refs", "target_not_in_artifact_refs"),
+    ("artifacts", "new managed Skill lineage"): ("artifact_refs", "skill_lineage_not_permitted"),
+    ("artifacts", "managed Skill lineage"): ("artifact_refs", "target_not_in_artifact_refs"),
+    ("target", "must identify a"): ("target", "target_family_mismatch"),
+    ("target", "Artifact is not available in this scope"): ("target", "target_unavailable"),
+}
+
+
+def _candidate_error_details(error: InvalidCandidateError) -> dict[str, Any] | None:
+    for (field, prefix), (public_field, reason) in _CANDIDATE_ERROR_REASONS.items():
+        if error.field == field and error.detail.startswith(prefix):
+            return {"field": public_field, "reason": reason}
+    # Internal-only fields (audit, basis, family) and reasons shared by several
+    # public fields (evidence) have no stable name a caller can act on.
+    return None
+
+
 def _map_candidate_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
     if isinstance(error, CandidateNotFoundError):
         return status.HTTP_404_NOT_FOUND, "candidate_not_found", "The requested Candidate was not found.", None
@@ -5804,7 +5822,12 @@ def _map_candidate_error(error: Exception) -> tuple[int, str, str, dict[str, Any
             {"status": error.status},
         )
     if isinstance(error, InvalidCandidateError):
-        return status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_request", "The request is invalid.", None
+        return (
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "invalid_request",
+            "The request is invalid.",
+            _candidate_error_details(error),
+        )
     return None
 
 
@@ -5924,7 +5947,17 @@ def _invalid_request_details(error: Exception) -> dict[str, Any] | None:
         and error.canonical_code is not None
     ):
         return {"code": error.canonical_code, "message": str(error.detail)}
+    if isinstance(error, InvalidRuntimeRequestError):
+        reason = _WORKING_NOTE_EXPIRY_REASONS.get(error.code)
+        if reason is not None:
+            return {"field": "expires_at", "reason": reason}
     return None
+
+
+_WORKING_NOTE_EXPIRY_REASONS = {
+    "working-note-expiry-timezone": "missing_time_zone",
+    "working-note-expiry-past": "not_in_future",
+}
 
 
 def _map_source_ingestion_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
