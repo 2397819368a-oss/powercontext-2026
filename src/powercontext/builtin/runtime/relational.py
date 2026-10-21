@@ -1372,6 +1372,12 @@ class RelationalContexts:
             ).scalars()
             return tuple(str(value) for value in values)
 
+    async def unconsumed_source_scope_ids(self) -> tuple[str, ...]:
+        """Return built-in Source windows that still have journal input."""
+
+        async with self.database.transaction() as connection:
+            return await self.repositories.cursors.unconsumed_scope_ids(connection, SOURCE_WINDOW_TRIGGER_NAME)
+
     async def handoff_scope_ids(self) -> tuple[str, ...]:
         """Return scopes with a committed Handoff head, in deterministic order."""
 

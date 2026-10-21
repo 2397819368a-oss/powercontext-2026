@@ -204,6 +204,15 @@ Experience Revision 仍不会进入 PreparedContext。
 证据、Candidate version、approved Revision、召回和导出的关系见
 [Experience 与 Skill 生命周期](../workflows/experience-and-skill-lifecycle.md)。
 
+## 后台 Atomic Memory 处理
+
+内置 Source-window 定时任务会先比较 journal 位置与自身持久化的消费游标，再激活 Scope。已经完全消费的
+journal 跳过 Scope 处理；仍有缓冲窗口时，即使没有新的 Source，后续 tick 也会继续选择该 Scope。
+发现阶段只提供候选：选中 Scope 后仍执行鉴权和 cursor/window 检查；发现之后提交的新捕获会在后续 tick 可见。
+
+该选择方式只用于内置 Source-window 策略。直接组装 Runtime 并传入自定义 Scope selector 时，仍使用该
+selector；Experience 孵化继续使用独立的游标和定时任务。
+
 ## 后台 Experience 孵化
 
 Integration 可以把已完成任务采集为 metadata 含 `"kind": "task-outcome"` 的 Content Source。启用
