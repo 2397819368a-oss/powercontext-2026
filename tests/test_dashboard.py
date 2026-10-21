@@ -20,7 +20,7 @@ from html import unescape
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Any, cast
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from fastapi import FastAPI
@@ -32,6 +32,7 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import MODEL_USAGE_DAILY_TABLE
 from powercontext.server.dashboard.api import DashboardAPI
 from powercontext.server.dashboard.errors import ReadError
+from powercontext.server.dashboard.navigation import collection_return
 from powercontext.server.dashboard.preferences import CATALOGS
 from powercontext.server.dashboard.routes import LABELS
 from powercontext.server.factory import create_server_app
@@ -782,6 +783,32 @@ def test_skill_search_preserves_state_through_detail_and_back(dashboard: TestCli
     assert "other-skill" not in restored.text
 
 
+def test_skill_search_preserves_the_result_page_through_detail_and_back(dashboard: TestClient) -> None:
+    scope = create_scope(dashboard, "Skill search paging")["scope_id"]
+    source = capture_source(dashboard, scope, "Page through the matching skills.")
+    for index in range(7):
+        create_skill(dashboard, scope, source, f"needle-skill-{index}")
+    second = dashboard.get(
+        "/dashboard/methods", params={"scope": scope, "kind": "skill", "q": "needle", "skill_page": "2"}
+    )
+    assert second.status_code == 200
+    page_records = record_links(second.text, "/dashboard/skill", "artifact")
+    assert len(page_records) == 1
+    detail_url = next(
+        unescape(value)
+        for value in re.findall(r'href="([^"]+)"', second.text)
+        if urlsplit(unescape(value)).path == "/dashboard/skill"
+    )
+    detail = dashboard.get(detail_url)
+    assert detail.status_code == 200
+    restored = dashboard.get(labelled_link(detail.text, LABELS["back_methods"]))
+    assert restored.status_code == 200
+    assert restored.url.params["q"] == "needle"
+    assert restored.url.params["skill_page"] == "2"
+    assert restored.url.params["kind"] == "skill"
+    assert record_links(restored.text, "/dashboard/skill", "artifact") == page_records
+
+
 @pytest.mark.parametrize("family", ["experience", "skill"])
 def test_methods_return_uses_the_current_language(dashboard: TestClient, family: str) -> None:
     scope = create_scope(dashboard, f"{family} language return")["scope_id"]
@@ -809,6 +836,40 @@ def test_methods_return_uses_the_current_language(dashboard: TestClient, family:
     assert restored.url.params["q"] == "needle"
     assert restored.url.params["kind"] == family
     assert ("搜索经验" if family == "experience" else "搜索技能") in restored.text
+
+
+def test_methods_return_to_accepts_supported_text() -> None:
+    scope = "scp_demo"
+    for query in ("needle\\path", "needle & path = 100% #1", "中" * 2000):
+        raw = "/dashboard/methods?" + urlencode({
+            "scope": scope,
+            "period": "7d",
+            "kind": "experience",
+            "q": query,
+            "experience_page": "2",
+        })
+        result = collection_return(raw, scope, page="methods")
+        assert result is not None
+        params = parse_qs(urlsplit(result).query)
+        assert params["q"] == [query]
+        assert params["experience_page"] == ["2"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "/dashboard/methods?scope=other&kind=experience&q=needle",
+        "/dashboard/handoff?scope=scp_demo&cursor=next",
+        "/dashboard/methods?scope=scp_demo&kind=all&q=needle",
+        "/dashboard/methods?scope=scp_demo&kind=experience&q=needle&experience_page=0",
+        "/dashboard/methods?scope=scp_demo&kind=experience&q=needle&experience_page=1%5C2",
+        "/dashboard/methods?scope=scp_demo&kind=experience&q=needle%0D%0ASet-Cookie",
+        "/dashboard/methods?scope=scp_demo&kind=experience&q=needle&extra=1",
+        "/dashboard/methods?scope=scp_demo&kind=experience&q=" + "a" * (33 * 1024),
+    ],
+)
+def test_methods_return_to_rejects_unsupported_context(raw: str) -> None:
+    assert collection_return(raw, "scp_demo", page="methods") is None
 
 
 def test_experience_search_return_to_accepts_backslashes(dashboard: TestClient) -> None:
@@ -996,6 +1057,33 @@ def test_experience_search_reports_request_failures_distinctly(dashboard: TestCl
     assert seen == [search_path]
     assert LABELS["error_503"] in response.text
     assert LABELS["experiences_no_match"] not in response.text
+
+
+def test_experience_detail_error_returns_to_the_search_page(dashboard: TestClient, monkeypatch) -> None:
+    scope = create_scope(dashboard, "Experience detail error")["scope_id"]
+    source = capture_source(dashboard, scope, "Keep the needle error searchable.")
+    create_experience(dashboard, scope, source, situation="needle error", lesson="Keep the needle error")
+    searched = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": "experience", "q": "needle"})
+    assert searched.status_code == 200
+    detail_url = next(
+        unescape(value)
+        for value in re.findall(r'href="([^"]+)"', searched.text)
+        if urlsplit(unescape(value)).path == "/dashboard/experience"
+    )
+    read = DashboardAPI.read
+
+    async def failing(api, path, payload=None):
+        if path.startswith(f"/v1/scopes/{scope}/artifacts/experience/"):
+            raise ReadError(503, "service_unavailable")
+        return await read(api, path, payload)
+
+    monkeypatch.setattr(DashboardAPI, "read", failing)
+    detail = dashboard.get(detail_url)
+    assert detail.status_code == 503
+    assert LABELS["error_503"] in detail.text
+    restored = dashboard.get(page_link(detail.text, LABELS["back_list"]))
+    assert restored.status_code == 200
+    assert restored.url.params["q"] == "needle"
 
 
 def test_skill_with_usage_provenance_is_readable_and_searchable(dashboard: TestClient) -> None:
