@@ -97,7 +97,19 @@ def test_imperative_after_declarative_text_is_instruction_leakage(text: str) -> 
     assert score.failure_classes == ("instruction_leakage",)
 
 
-@pytest.mark.parametrize("prefix", ("• ", "◦ ", "“", "\u2018", "\uff11\uff0e "))
+@pytest.mark.parametrize(
+    "prefix",
+    (
+        "\u2022 ",
+        "\u00b7 ",
+        "\u2713 ",
+        "\u2192 ",
+        "\u201c",
+        "\uff081\uff09",
+        "- ",
+        "1. ",
+    ),
+)
 def test_unicode_prefixed_imperatives_are_instruction_leakage(prefix: str) -> None:
     case = _case("english-imperative-preference")
     observation = _observation(
