@@ -329,14 +329,6 @@ def create_server_app(  # noqa: C901
             ),
         )
 
-    configured_middleware.insert(
-        0,
-        Middleware(
-            HttpResourceLimitsMiddleware,
-            max_request_body_bytes=resolved.http.max_request_body_bytes,
-            max_concurrent_requests=resolved.http.max_concurrent_requests,
-        ),
-    )
     app = create_app(
         lifespan=lifespan,
         readiness_probe=readiness_probe,
@@ -380,10 +372,15 @@ def create_server_app(  # noqa: C901
             access_log=resolved.logging.access,
             metrics=metrics,
             tracing=resolved_tracing,
-            stateless_http=resolved.mcp.stateless_http,
         )
     if resolved.dashboard.enabled:
         mount_dashboard(app)
+    # Reserve capacity until the final response send, outside response-forwarding middleware.
+    app.add_middleware(
+        HttpResourceLimitsMiddleware,
+        max_request_body_bytes=resolved.http.max_request_body_bytes,
+        max_concurrent_requests=resolved.http.max_concurrent_requests,
+    )
     return app
 
 

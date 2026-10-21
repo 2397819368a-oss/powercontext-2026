@@ -105,12 +105,10 @@ parsing and application overhead; replay briefly copies each accepted body once 
 Reverse proxies own request-rate quotas, upload timeouts, connection limits,
 and aggregate limits across Server processes.
 
-MCP uses stateful HTTP by default. The pinned FastMCP 3.4.4 composition API does not expose an idle session timeout, so
-idle sessions can remain retained after their HTTP requests finish; the concurrency cap does not bound that retained
-session state. For tools-only deployments that do not need session streams or resumability, set
-`POWERCONTEXT_SERVER_MCP_STATELESS_HTTP=true`. This explicitly opts out of retained transport sessions.
-A long-lived stateful GET stream occupies an HTTP slot; allow additional slots for concurrent POST requests.
-A limit of one supports sequential requests without a concurrent GET stream.
+MCP uses stateless Streamable HTTP so each tool execution receives the current request's authenticated identity.
+It does not issue transport session IDs or retain resumable cross-request SSE sessions. Reconnect clients after
+upgrading from a stateful Server. Persisted Scope, Memory and Handoff data are unaffected. A long-lived response
+still occupies an HTTP slot until it finishes; reserve other slots for concurrent requests.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -121,7 +119,6 @@ A limit of one supports sequential requests without a concurrent GET stream.
 | `POWERCONTEXT_SERVER_WORKSPACE` | Server startup directory | Resolution root for local project Agent Skill folders |
 | `POWERCONTEXT_SERVER_MCP_ENABLED` | `true` | Enable Streamable HTTP MCP |
 | `POWERCONTEXT_SERVER_MCP_PATH` | `/mcp` | MCP path |
-| `POWERCONTEXT_SERVER_MCP_STATELESS_HTTP` | `false` | Opt into stateless MCP HTTP for tools-only deployments without session streams or resumability |
 | `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `false` | Personal and demonstration Dashboard; local `ACCESS_MODE=disabled` needs no token, while `enforced` requires a static Bearer token; injected authentication or authorization Providers are unsupported |
 | `POWERCONTEXT_SERVER_AUTH_ENABLED` | `false` | Legacy static bearer switch; `true` maps to `ACCESS_MODE=enforced` and requires `AUTH_TOKEN` |
 | `POWERCONTEXT_SERVER_AUTH_TOKEN` | unset | Legacy static bearer token; used as compatibility authentication and mapped to the built-in administrator when no Authentication Provider is injected |

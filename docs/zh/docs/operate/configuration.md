@@ -93,11 +93,9 @@ Server 在下游解析之前按实际收到的字节限制请求体，默认上�
 交给下游时会短暂复制一次已接收的请求体，随后释放输入缓冲。
 按请求来源设置速率配额、上传超时、连接上限和跨 Server 进程的总额度由反向代理负责。
 
-MCP 默认使用 stateful HTTP。锁定的 FastMCP 3.4.4 组合接口不提供空闲会话超时，HTTP 请求结束后，
-空闲会话仍可能保留；并发请求上限不能限制这部分会话状态。只使用工具、不需要会话流或恢复能力的部署，
-可设置 `POWERCONTEXT_SERVER_MCP_STATELESS_HTTP=true`，显式选择不保留传输会话。
-长期存在的 stateful GET 流会占用一个 HTTP 名额，应为并行 POST 请求预留其他名额。
-上限为一时支持不同时开启 GET 流的顺序请求。
+MCP 使用 stateless Streamable HTTP，每次工具执行都采用当前请求的认证身份，不发放传输 Session ID，
+也不保留跨请求恢复的 SSE 会话。从 stateful Server 升级后应重新连接客户端；已持久化的 Scope、Memory
+和 Handoff 数据不受影响。长响应在结束前仍占用一个 HTTP 名额，应为并发请求预留其他名额。
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -108,7 +106,6 @@ MCP 默认使用 stateful HTTP。锁定的 FastMCP 3.4.4 组合接口不提供�
 | `POWERCONTEXT_SERVER_WORKSPACE` | Server 启动目录 | 本机项目级 Agent Skill 目录的解析根目录 |
 | `POWERCONTEXT_SERVER_MCP_ENABLED` | `true` | 启用 Streamable HTTP MCP |
 | `POWERCONTEXT_SERVER_MCP_PATH` | `/mcp` | MCP 路径 |
-| `POWERCONTEXT_SERVER_MCP_STATELESS_HTTP` | `false` | 只使用工具、不需要会话流或恢复能力时，显式选择 stateless MCP HTTP |
 | `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `false` | 个人与演示 Dashboard；本地 `ACCESS_MODE=disabled` 时无需 token，`enforced` 时要求静态 Bearer token；不支持注入认证或授权 Provider |
 | `POWERCONTEXT_SERVER_AUTH_ENABLED` | `false` | 旧静态 Bearer 兼容开关；`true` 自动映射为 `ACCESS_MODE=enforced`，并要求设置 `AUTH_TOKEN` |
 | `POWERCONTEXT_SERVER_AUTH_TOKEN` | 未设置 | 旧静态 Bearer token；未注入 Authentication Provider 时作为兼容认证并映射为内置管理员 |

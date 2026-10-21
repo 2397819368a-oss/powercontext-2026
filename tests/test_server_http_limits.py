@@ -42,7 +42,13 @@ def _server(downstream: ASGIApp, *, max_body: int = 8, max_requests: int = 1) ->
 
 
 async def _invoke(
-    app: ASGIApp, chunks: Sequence[bytes] = (), *, headers: list[tuple[bytes, bytes]] | None = None
+    app: ASGIApp,
+    chunks: Sequence[bytes] = (),
+    *,
+    headers: list[tuple[bytes, bytes]] | None = None,
+    response_send: Send | None = None,
+    path: str = "/sentinel/",
+    method: str = "POST",
 ) -> tuple[list[Message], int]:
     pending = deque(chunks)
     reads = 0
@@ -58,16 +64,18 @@ async def _invoke(
         }
 
     async def send(message: Message) -> None:
+        if response_send is not None:
+            await response_send(message)
         output.append(message)
 
     scope: Scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "POST",
+        "method": method,
         "scheme": "http",
-        "path": "/sentinel/",
-        "raw_path": b"/sentinel/",
+        "path": path,
+        "raw_path": path.encode(),
         "query_string": b"",
         "headers": [] if headers is None else headers,
         "server": ("localhost", 8000),
@@ -75,6 +83,40 @@ async def _invoke(
     }
     await app(scope, receive, send)
     return output, reads
+
+
+def test_blocked_outward_response_holds_server_capacity_until_sent() -> None:
+    async def scenario() -> None:
+        sending = asyncio.Event()
+        release = asyncio.Event()
+        app = create_server_app(
+            settings=ServerSettings(
+                http=HttpConfig(max_concurrent_requests=1),
+                mcp=McpConfig(enabled=False),
+            )
+        )
+
+        async def blocked_send(message: Message) -> None:
+            if message["type"] == "http.response.body":
+                sending.set()
+                await release.wait()
+
+        first = asyncio.create_task(_invoke(app, response_send=blocked_send, path="/health/live", method="GET"))
+        try:
+            await asyncio.wait_for(sending.wait(), timeout=2)
+            for _ in range(4):
+                overloaded, reads = await _invoke(app, [b"must not be read"], path="/health/live", method="GET")
+                assert overloaded[0]["status"] == 503
+                assert json.loads(overloaded[1]["body"])["error"]["code"] == "server_overloaded"
+                assert reads == 0
+        finally:
+            release.set()
+            await first
+
+        accepted, _ = await _invoke(app, path="/health/live", method="GET")
+        assert accepted[0]["status"] == 200
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(
@@ -198,6 +240,7 @@ def test_finished_response_releases_capacity_before_cleanup_without_releasing_a_
     async def scenario() -> None:
         cleanup = asyncio.Event()
         cleaning_up = asyncio.Event()
+        response_sent = asyncio.Event()
         second_started = asyncio.Event()
         second_release = asyncio.Event()
         calls = 0
@@ -220,10 +263,16 @@ def test_finished_response_releases_capacity_before_cleanup_without_releasing_a_
                 await Response(b"accepted")(scope, receive, send)
 
         app = _server(downstream)
-        first = asyncio.create_task(_invoke(app))
+
+        async def observe_send(message: Message) -> None:
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                response_sent.set()
+
+        first = asyncio.create_task(_invoke(app, response_send=observe_send))
         second: asyncio.Task[tuple[list[Message], int]] | None = None
         try:
             await asyncio.wait_for(cleaning_up.wait(), timeout=1)
+            await asyncio.wait_for(response_sent.wait(), timeout=1)
             second = asyncio.create_task(_invoke(app))
             await asyncio.wait_for(second_started.wait(), timeout=1)
             cleanup.set()

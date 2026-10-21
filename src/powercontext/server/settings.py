@@ -123,7 +123,6 @@ class McpConfig(BaseModel):
 
     enabled: bool = True
     path: str = "/mcp"
-    stateless_http: bool = False
 
     @field_validator("path")
     @classmethod

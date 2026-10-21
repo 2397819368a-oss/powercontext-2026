@@ -32,13 +32,12 @@ from powercontext.server.factory import create_server_app
 from powercontext.server.settings import ServerSettings
 
 
-@pytest.mark.parametrize("mode", ["stateful", "stateless", "stateful_single_slot"])
+@pytest.mark.parametrize("max_requests", [1, 2])
 def test_configured_http_limits_preserve_real_http_and_mcp_operations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_requests: int
 ) -> None:
     monkeypatch.setenv("POWERCONTEXT_SERVER_HTTP_MAX_REQUEST_BODY_BYTES", "1024")
-    monkeypatch.setenv("POWERCONTEXT_SERVER_HTTP_MAX_CONCURRENT_REQUESTS", "1" if mode.endswith("single_slot") else "2")
-    monkeypatch.setenv("POWERCONTEXT_SERVER_MCP_STATELESS_HTTP", str(mode == "stateless").lower())
+    monkeypatch.setenv("POWERCONTEXT_SERVER_HTTP_MAX_CONCURRENT_REQUESTS", str(max_requests))
     app = create_server_app(
         settings=ServerSettings(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'server.db'}"))
     )
@@ -77,11 +76,8 @@ def test_configured_http_limits_preserve_real_http_and_mcp_operations(
                 },
             )
             assert initialized.status_code == 200
-            session_id = initialized.headers.get("mcp-session-id")
-            assert bool(session_id) == (mode != "stateless")
+            assert "mcp-session-id" not in initialized.headers
             headers = {"Accept": "application/json, text/event-stream"}
-            if session_id is not None:
-                headers["Mcp-Session-Id"] = session_id
             notified = http.post(
                 "/mcp/", headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"}
             )
@@ -101,19 +97,15 @@ def test_configured_http_limits_preserve_real_http_and_mcp_operations(
             result = json.loads(result_line.removeprefix("data:"))["result"]
             assert not result.get("isError", False)
             assert result["structuredContent"]["scope_id"] == scope_id
-            if session_id is not None:
-                assert http.delete("/mcp/", headers=headers).status_code == 200
 
-        if mode != "stateful_single_slot":
+        async def tools() -> None:
+            async with Client(StreamableHttpTransport(f"{base_url}/mcp/")) as client:
+                resolved = await client.call_tool("resolve_scope_binding", {"binding_keys": []})
+                assert not resolved.is_error
+                assert resolved.structured_content is not None
+                assert resolved.structured_content["scope_id"] == scope_id
 
-            async def tools() -> None:
-                async with Client(StreamableHttpTransport(f"{base_url}/mcp/")) as client:
-                    resolved = await client.call_tool("resolve_scope_binding", {"binding_keys": []})
-                    assert not resolved.is_error
-                    assert resolved.structured_content is not None
-                    assert resolved.structured_content["scope_id"] == scope_id
-
-            asyncio.run(tools())
+        asyncio.run(tools())
     finally:
         server.should_exit = True
         thread.join(timeout=10)
