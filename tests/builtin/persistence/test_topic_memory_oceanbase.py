@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -52,7 +51,6 @@ from powercontext.builtin.persistence.tables import (
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
 from powercontext.builtin.persistence.topic_memory_index import (
     CompositeTopicMemoryIndex,
-    topic_memory_embedding_profile_fingerprint,
 )
 
 
@@ -191,8 +189,7 @@ def test_live_oceanbase_topic_vector_hybrid_and_detail_search() -> None:
                 ) as profile:
                     async with profile.database.transaction() as connection:
                         await repository.initialize(connection)
-                    # Reverse insertion order, equal distances, multiple chunks:
-                    # tie-break and collapse must occur outside the bounded ANN.
+                    # Equal distances across multi-chunk Topics retain ordering and Scope isolation.
                     for scope, label in (("scope-a", "zulu"), ("scope-a", "alpha"), ("scope-b", "hidden")):
                         content = TopicMemoryContent(
                             title=f"{label} recovery",
@@ -240,66 +237,12 @@ def test_live_oceanbase_topic_vector_hybrid_and_detail_search() -> None:
                         )
                         for hits in (channels.topic_vector, channels.detail_vector):
                             assert [hit.artifact_ref.artifact_id for hit in hits] == ["topic-alpha", "topic-zulu"]
-                        assert [hit.chunk_ordinal for hit in channels.detail_vector] == [0, 0]
+                        assert all(
+                            hit.chunk_ordinal is not None and hit.distance == 0 for hit in channels.detail_vector
+                        )
             finally:
                 if database_created:
                     async with server_profile.database.transaction() as connection:
                         await connection.exec_driver_sql(f"DROP DATABASE `{database_name}`")
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("mode", ["vector", "hybrid"])
-def test_oceanbase_detail_vector_collapses_topics_before_the_channel_limit(mode) -> None:
-    async def scenario() -> None:
-        connection = AsyncMock(spec=AsyncConnection)
-        connection.execute.return_value.mappings = MagicMock(return_value=())
-        index = OceanBaseTopicMemoryVectorIndex(_embedding_profile())
-
-        result = await index.search(
-            cast(AsyncConnection, connection),
-            "scope-a",
-            TopicMemorySearchRequest(
-                query="semantic evidence",
-                analyzed_query="semantic evidence",
-                candidate_limit=2,
-                mode=mode,
-                query_vector=(1.0, 0.0, 0.0),
-                embedding_profile=_embedding_profile(),
-            ),
-        )
-
-        statements = [str(call.args[0]) for call in connection.execute.await_args_list]
-        # OceanBase's grammar is `order_by opt_approx limit_clause`: the
-        # modifier follows the ENTIRE sort list, never an individual key.
-        for statement in statements:
-            assert re.search(r"\bAPPROXIMATE\s+LIMIT\s+:(?:candidate|neighbor)_limit\b", statement)
-            assert not re.search(r"\bAPPROXIMATE\s*,", statement)
-            # The vector executor (not just the parser) rejects secondary
-            # sort keys on ANN queries. Tie-break only AFTER bounded KNN.
-            assert re.search(
-                r"ORDER BY\s+l2_distance\([^()]+\)\s+APPROXIMATE\s+LIMIT\s+:(?:candidate|neighbor)_limit",
-                statement,
-            )
-            # CE 4.3.5.6 loses same-scope neighbors if ANN itself joins the
-            # active tables. Hydrate only AFTER bounded, join-free selection.
-            ann_selection = statement[: statement.index("APPROXIMATE")]
-            assert "JOIN" not in ann_selection
-            assert "WHERE v.scope_id = :scope_id" in ann_selection
-            assert "v.profile_fingerprint = :profile_fingerprint" in ann_selection
-            assert statement.index("JOIN pc_topic_memory_active_topics") > statement.index("APPROXIMATE")
-            assert statement.rfind("ORDER BY distance, artifact_id, revision DESC") > statement.index("APPROXIMATE")
-        assert statements[0].index("LIMIT :candidate_limit") < statements[0].rfind("ORDER BY distance")
-        assert "row_number() OVER" in statements[1]
-        assert "WHERE topic_rank = 1" in statements[1]
-        assert statements[1].find("LIMIT :neighbor_limit") < statements[1].find("row_number() OVER")
-        assert statements[1].rfind("LIMIT :candidate_limit") > statements[1].rfind("WHERE topic_rank = 1")
-        assert connection.execute.await_args_list[1].args[1]["neighbor_limit"] == 400
-        for call in connection.execute.await_args_list:
-            assert call.args[1]["profile_fingerprint"] == topic_memory_embedding_profile_fingerprint(
-                _embedding_profile()
-            )
-        assert result.topic_vector == ()
-        assert result.detail_vector == ()
 
     asyncio.run(scenario())

@@ -91,8 +91,13 @@ Submit to `POST /v1/atomic-memory/search`:
 `mode` accepts `text`, `vector` or `hybrid` and defaults to `text`. Vector and hybrid modes require an available,
 matching Embedding profile. Search returns active memories only. Each `hits[].memory` contains the content, exact
 Artifact reference and state version; the hit also has `score` and `matched_by`. Preserve `memory.artifact` for citations.
-Ordinary vector search applies eligibility first, computes exact L2, then ranks and limits results. This path does not
-use ANN and does not establish production backend performance or acceptance.
+Ordinary vector search on seekdb and OceanBase uses native approximate nearest-neighbor retrieval, with Scope, kind
+and tag eligibility inside the candidate query before its limit. ANN can omit exact nearest neighbors; tune and measure
+recall and latency for the deployment's embedding model and filter selectivity. SQLite uses Scope-partitioned
+sqlite-vec native exact KNN for bounded search. Normal startup audits vector deployment readiness; ordinary Top-K
+selects usable vectors and validates selected results rather than auditing the whole eligible collection. Complete
+threshold enumeration used by generation and exact recovery probes still reject incomplete eligible vectors.
+Enumeration remains exact on every backend.
 
 For complete Artifact results and advanced retrieval controls, use
 `POST /v1/scopes/S/artifacts/atomic-memory/search`. This unified route requires `scope.read`, defaults to text,

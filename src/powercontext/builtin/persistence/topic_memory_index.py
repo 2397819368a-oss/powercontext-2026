@@ -63,14 +63,6 @@ class TopicMemoryIndex(Protocol):
         /,
     ) -> TopicMemorySearchChannels: ...
 
-    async def vector_complete(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        topic_ref: ArtifactRef,
-        /,
-    ) -> bool: ...
-
 
 class NoTopicMemoryIndex:
     """Support exact audit reads without claiming searchable publication."""
@@ -102,15 +94,6 @@ class NoTopicMemoryIndex:
         /,
     ) -> TopicMemorySearchChannels:
         return TopicMemorySearchChannels()
-
-    async def vector_complete(
-        self,
-        _connection: AsyncConnection,
-        _scope_id: str,
-        _topic_ref: ArtifactRef,
-        /,
-    ) -> bool:
-        return False
 
 
 class CompositeTopicMemoryIndex:
@@ -187,21 +170,6 @@ class CompositeTopicMemoryIndex:
                 ),
             )
         return channels
-
-    async def vector_complete(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        topic_ref: ArtifactRef,
-        /,
-    ) -> bool:
-        vector_indexes = tuple(index for index in self.indexes if index.capabilities.vector)
-        if not vector_indexes:
-            return False
-        for index in vector_indexes:
-            if not await index.vector_complete(connection, scope_id, topic_ref):
-                return False
-        return True
 
 
 def _combine_retrieved(left: int | None, right: int | None) -> int | None:

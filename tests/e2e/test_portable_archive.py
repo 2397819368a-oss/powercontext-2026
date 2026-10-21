@@ -1566,6 +1566,51 @@ def test_archive_rejects_wire_values_that_cannot_roundtrip(tmp_path: Path, encod
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("field", ["kind", "value"])
+@pytest.mark.parametrize("invalid", ["", " \t", " padded", "padded "])
+def test_archive_rejects_unreadable_scope_external_references(tmp_path: Path, field: str, invalid: str) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive = tmp_path / "scope.pcb"
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'target.db'}"))
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(
+                    title="Scope references",
+                    summary="Preserve readable external references",
+                    idempotency_key="scope-references",
+                    external_references=(ScopeExternalReference(kind="代码库", value="team/项目 name"),),
+                )
+            )
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        original = archive.read_bytes()
+
+        def rewrite(records):
+            reference = next(record for record in records if record["record_type"] == "scope_external_reference")
+            reference["payload"][field] = invalid
+            reference["payload"]["value_digest"] = hashlib.sha256(reference["payload"]["value"].encode()).hexdigest()
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(config) as target:
+            before = await target.scopes.list()
+            for operation in (target.portability.inspect, target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match="external reference"):
+                    await operation(archive)
+                assert await target.scopes.list() == before
+            archive.write_bytes(original)
+            assert (await target.portability.validate(archive)).compatible
+            assert (await target.portability.restore(archive)).status == "ready"
+            assert await target.scopes.get(scope.scope_id) == scope
+        async with open_builtin_contexts(config) as target:
+            assert await target.scopes.get(scope.scope_id) == scope
+            assert (await target.portability.restore(archive)).inserted == 0
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("damage", ["cycle", "external_digest"])
 def test_archive_validates_scope_relationships_before_writing(tmp_path: Path, damage: str) -> None:
     async def scenario() -> None:

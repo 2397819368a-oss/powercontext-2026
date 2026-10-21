@@ -108,6 +108,7 @@ from powercontext.builtin.persistence.tables import (
     TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE,
 )
 from powercontext.builtin.records import ArtifactRevisionActor
+from powercontext.builtin.scope.models import ScopeExternalReference
 from powercontext.builtin.sources.observation_validation import (
     validate_source_definition_manifest,
     validate_source_observation,
@@ -1377,6 +1378,10 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             raise BundleFormatError("scope cannot reference itself")
     elif kind == "scope_external_reference":
         strings("kind", "value", "value_digest")
+        try:
+            ScopeExternalReference(kind=payload["kind"], value=payload["value"])
+        except ValidationError as error:
+            raise BundleFormatError("scope external reference has invalid domain values") from error
         if payload["value_digest"] != hashlib.sha256(payload["value"].encode()).hexdigest():
             raise BundleFormatError("scope external reference has invalid value digest")
     elif kind == "scope_creation_request":
