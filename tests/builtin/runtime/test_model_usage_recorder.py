@@ -155,7 +155,10 @@ def test_queue_capacity_drops_without_sql_or_sensitive_logs(caplog: pytest.LogCa
 def test_in_memory_usage_does_not_join_outer_rollback() -> None:
     async def scenario() -> None:
         async with _database() as database:
-            recorder = _ModelUsageRecorder(database, StatisticsRepository())
+            # Verify rollback isolation after settlement, not the short best-effort flush deadline.
+            recorder = _ModelUsageRecorder(
+                database, StatisticsRepository(), write_timeout_seconds=5.0, flush_timeout_seconds=6.0
+            )
             try:
                 with pytest.raises(ValueError, match="business rollback"):
                     async with database.transaction() as connection:
