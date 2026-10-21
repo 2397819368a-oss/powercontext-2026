@@ -821,10 +821,14 @@ def test_methods_return_to_accepts_supported_text() -> None:
         "/dashboard/methods?scope=scp_demo&kind=all&q=needle",
         "/dashboard/methods?scope=scp_demo&kind=experience&q=needle&experience_page=1%5C2",
         "/dashboard/methods?scope=scp_demo&kind=experience&q=needle%0D%0ASet-Cookie",
-        "/dashboard/methods?scope=scp_demo&kind=experience&q=" + "a" * (33 * 1024),
     ],
 )
 def test_methods_return_to_rejects_unsupported_context(raw: str) -> None:
+    assert collection_return(raw, "scp_demo", page="methods") is None
+
+
+def test_methods_return_to_rejects_oversized_context() -> None:
+    raw = "/dashboard/methods?scope=scp_demo&kind=experience&q=" + "a" * (33 * 1024)
     assert collection_return(raw, "scp_demo", page="methods") is None
 
 
@@ -835,6 +839,7 @@ def test_methods_return_to_rejects_unsupported_context(raw: str) -> None:
         ("needle & path = 100% #1", "Keep special characters"),
         ("经验 " * 460, "经验 long query"),
     ],
+    ids=["backslash", "special", "long"],
 )
 def test_experience_search_accepts_edge_query_text(dashboard: TestClient, query: str, text: str) -> None:
     scope = create_scope(dashboard, "Experience edge queries")["scope_id"]
