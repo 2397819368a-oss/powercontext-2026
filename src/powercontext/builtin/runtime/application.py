@@ -4159,9 +4159,7 @@ class BuiltinRuntime:
             # Relational triggers serialize activations and recheck cursor,
             # window and Artifact reads at commit. Capture may proceed while
             # their model prepares; custom triggers retain Runtime serialization.
-            lock = (
-                nullcontext() if isinstance(runtime_context.triggers, _RelationalTriggers) else self._locked(scope_id)
-            )
+            lock = nullcontext() if type(runtime_context.triggers) is _RelationalTriggers else self._locked(scope_id)
             async with lock:
                 try:
                     result = await runtime_context.triggers.flush(limit=window_limit, atomic_context=context)
