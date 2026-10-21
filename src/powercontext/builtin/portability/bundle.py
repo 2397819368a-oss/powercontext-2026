@@ -107,12 +107,13 @@ from powercontext.builtin.persistence.tables import (
     SOURCES_TABLE,
     TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE,
 )
-from powercontext.builtin.records import ArtifactRevisionActor
+from powercontext.builtin.records import ArtifactRevisionActor, InvalidBaseAccessRequestError
 from powercontext.builtin.scope.models import ScopeExternalReference
 from powercontext.builtin.sources.observation_validation import (
     validate_source_definition_manifest,
     validate_source_observation,
 )
+from powercontext.builtin.tags import normalize_tags
 from powercontext.errors import SourceError
 from powercontext.sources import SourceDefinitionManifest, SourceObservation
 
@@ -1545,6 +1546,12 @@ def _validate_record_values(record: _Record, /) -> None:  # noqa: C901 - one ver
             raise BundleFormatError("artifact tag has invalid target")
         if identity["target_type"] == "memory_entry" and identity["family"] != "memory":
             raise BundleFormatError("artifact tag has invalid target")
+        try:
+            normalized = normalize_tags((payload["tag"],))
+        except InvalidBaseAccessRequestError as error:
+            raise BundleFormatError("artifact tag has invalid label") from error
+        if identity["tag_key"] not in normalized:
+            raise BundleFormatError("artifact tag label does not match its normalized key")
         if _database_value(payload["tag_key_hash"]) != hashlib.sha256(str(identity["tag_key"]).encode()).digest():
             raise BundleFormatError("artifact tag has invalid key hash")
 

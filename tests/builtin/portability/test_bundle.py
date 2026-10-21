@@ -792,8 +792,8 @@ def test_bundle_preserves_registered_family_dependencies_and_tags(tmp_path: Path
                         artifact_id="portable",
                         target_type="artifact",
                         target_id="portable",
-                        tag_key_hash=hashlib.sha256(b"team").digest(),
-                        tag_key="team",
+                        tag_key_hash=hashlib.sha256(b"platform").digest(),
+                        tag_key="platform",
                         tag="platform",
                         assigned_at=now,
                     )

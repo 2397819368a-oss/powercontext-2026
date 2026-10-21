@@ -524,7 +524,7 @@ def test_archive_restores_tagged_memory_vector_search_and_survives_restart(
             tag_target = ArtifactTagTarget(family="atomic-memory", artifact_id=memory.artifact_id)
             empty = await source.records.get_tags(scope.scope_id, tag_target)
             tagged = await source.records.replace_tags(
-                scope.scope_id, tag_target, ("archive",), expected_etag=empty.etag
+                scope.scope_id, tag_target, ("ARCHIVE", "Straße", "Café", "中文"), expected_etag=empty.etag
             )
 
             async def authorize(_scopes: tuple[str, ...]) -> None:
@@ -538,8 +538,78 @@ def test_archive_restores_tagged_memory_vector_search_and_survives_restart(
         async with open_builtin_contexts(target_config, embedding_model=Embedding()) as target:
             service = target.atomic_memory.for_scope(scope.scope_id)
             for mode in ("text", "vector", "hybrid"):
-                result = await service.search("portable", mode=mode, tag_filter=TagFilter(tags=("archive",)))
+                result = await service.search(
+                    "portable", mode=mode, tag_filter=TagFilter(tags=("archive", "STRASSE", "Café", "中文"))
+                )
                 assert [hit.hit.artifact_ref.artifact_id for hit in result.hits] == [memory.artifact_id]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("tag", "Different"),
+        ("tag", ""),
+        ("tag", " archive"),
+        ("tag", "archive "),
+        ("tag", "a\x00b"),
+        ("tag", "\u0378"),
+        ("tag_key", "ARCHIVE"),
+        ("tag_key", "different"),
+    ],
+)
+def test_archive_rejects_inconsistent_tag_labels_before_writing(tmp_path: Path, field: str, invalid: str) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive = tmp_path / "tags.pcb"
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'target.db'}"))
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Tags", summary="Preserve searchable labels", idempotency_key="tag-labels")
+            )
+            memory = await source.records.create_artifact(
+                scope.scope_id, "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Portable tags."})
+            )
+            tag_target = ArtifactTagTarget(family="atomic-memory", artifact_id=memory.artifact_id)
+            empty = await source.records.get_tags(scope.scope_id, tag_target)
+            tagged = await source.records.replace_tags(
+                scope.scope_id, tag_target, ("archive",), expected_etag=empty.etag
+            )
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        original = archive.read_bytes()
+
+        def rewrite(records):
+            record = next(record for record in records if record["record_type"] == "artifact_tag")
+            if field == "tag":
+                record["payload"]["tag"] = invalid
+            else:
+                record["identity"]["tag_key"] = invalid
+                record["payload"]["tag_key_hash"] = {
+                    "base64": base64.b64encode(hashlib.sha256(invalid.encode()).digest()).decode()
+                }
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(config) as target:
+            before = await target.scopes.list()
+            for operation in (target.portability.inspect, target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match="artifact tag"):
+                    await operation(archive)
+                assert await target.scopes.list() == before
+            archive.write_bytes(original)
+            assert (await target.portability.validate(archive)).compatible
+            assert (await target.portability.restore(archive)).projections_ready
+            assert await target.records.get_tags(scope.scope_id, tag_target) == tagged
+        async with open_builtin_contexts(config) as target:
+            assert (await target.portability.restore(archive)).inserted == 0
+            assert await target.records.get_tags(scope.scope_id, tag_target) == tagged
+            hits = await target.atomic_memory.for_scope(scope.scope_id).search(
+                "portable", tag_filter=TagFilter(tags=tagged.tags)
+            )
+            assert [hit.hit.artifact_ref.artifact_id for hit in hits.hits] == [memory.artifact_id]
 
     asyncio.run(scenario())
 
