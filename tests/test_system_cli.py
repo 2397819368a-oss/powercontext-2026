@@ -101,9 +101,10 @@ def test_server_defaults_to_persistent_user_storage(
     assert default_scheduler_path() == data_dir / "scheduler.db"
 
 
+@pytest.mark.parametrize("capture_images", [None, True, False])
 @pytest.mark.parametrize("already_disabled", [False, True])
 def test_setup_codex_installs_or_preserves_native_disablement(
-    tmp_path: Path, monkeypatch, installed_agent_checks, already_disabled
+    tmp_path: Path, monkeypatch, installed_agent_checks, already_disabled, capture_images
 ) -> None:
     data_dir = tmp_path / "data"
     monkeypatch.setenv("POWERCONTEXT_HOME", str(data_dir))
@@ -129,6 +130,11 @@ def test_setup_codex_installs_or_preserves_native_disablement(
         return {"installed": installed}
 
     monkeypatch.setattr(system_cli, "_run_codex_json", native)
+    from powercontext.cli import codex_images
+
+    monkeypatch.delenv("POWERCONTEXT_CODEX_CAPTURE_IMAGES", raising=False)
+    monkeypatch.setattr(codex_images, "run_image_config", lambda root, action: {"enabled": action == "setup"})
+    arguments = [] if capture_images is None else ["--capture-images" if capture_images else "--no-capture-images"]
     result = CliRunner().invoke(
         create_cli([setup_app]),
         [
@@ -139,6 +145,7 @@ def test_setup_codex_installs_or_preserves_native_disablement(
             "--ref",
             "tested-ref",
             "--json",
+            *arguments,
         ],
     )
     assert result.exit_code == 0, result.output
@@ -148,6 +155,7 @@ def test_setup_codex_installs_or_preserves_native_disablement(
         "plugin_version": "0.1.0",
         "data_dir": str(data_dir),
         "authorization_state": "not_configured",
+        **({"image_capture": {"enabled": capture_images}} if capture_images is not None else {}),
     }
     assert record["installed"] is True
     assert record["enabled"] is not already_disabled
@@ -176,6 +184,8 @@ def test_codex_diagnostics_verify_native_mcp_tools_without_process_authorization
 
     diagnostics = system_cli.CodexInstaller().verify()
 
+    assert diagnostics["images"].status is DiagnosticStatus.OK
+    assert "off for this workspace" in diagnostics["images"].detail
     assert diagnostics["mcp_configuration"].status is DiagnosticStatus.OK
     assert diagnostics["authorization"].status is DiagnosticStatus.OK
     assert diagnostics["mcp_tools"].status is DiagnosticStatus.OK

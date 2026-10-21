@@ -1445,6 +1445,7 @@ def create_app(
     @app.exception_handler(BaseAccessError)
     @app.exception_handler(PromptError)
     @app.exception_handler(SourceNotEligibleError)
+    @app.exception_handler(ImageError)
     @app.exception_handler(PowerContextError)
     @app.exception_handler(PersistenceError)
     async def application_error(request: Request, error: Exception) -> JSONResponse:
@@ -1468,10 +1469,6 @@ def create_app(
     if infrastructure_only:
         _add_route(app, GET_LIVENESS, get_liveness)
         return app
-
-    @app.exception_handler(ImageError)
-    async def image_error(request: Request, error: ImageError) -> JSONResponse:
-        return _error_response(error.status_code, code=error.code, message="The image operation failed.", details=None)
 
     _add_route(app, EXPERIMENTAL_CAPTURE_IMAGE, capture_image)
     _add_route(app, EXPERIMENTAL_GET_IMAGE_ASSET, get_image_asset)

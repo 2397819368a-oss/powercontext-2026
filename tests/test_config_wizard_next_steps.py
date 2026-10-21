@@ -17,6 +17,7 @@
 import io
 import json
 import re
+import shlex
 import urllib.error
 import urllib.request
 from email.message import Message
@@ -80,7 +81,8 @@ def test_scope_binding_reloads_client_environment_before_agent_installation(tmp_
 
     creation = steps.index("POST http://127.0.0.1:8000/v1/scopes")
     installation = steps.index("powercontext setup claude-code")
-    assert f". {client_file}" in steps[creation:installation]
+    commands = steps[creation:installation].splitlines()
+    assert any(shlex.split(line) == [".", str(client_file)] for line in commands if line.startswith(". "))
     assert "Reload the edited client environment before starting a new Agent" in steps
 
 
