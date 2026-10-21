@@ -302,7 +302,6 @@ class RecordService(Protocol):
         /,
         *,
         execution_context: Any = None,
-        on_commit: Callable[[Any, ArtifactCreated], Awaitable[None]] | None = None,
     ) -> ArtifactCreated: ...
 
     async def create_atomic_memories(
