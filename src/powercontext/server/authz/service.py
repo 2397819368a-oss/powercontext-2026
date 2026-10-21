@@ -662,6 +662,19 @@ class AccessControlService:
             and policy_engine is not engine
         )
 
+    def supports_write_transaction(self, engine: AsyncEngine) -> bool:
+        """Whether owner relations and audit can join this business database."""
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
+        if type(self.relationships) is not RelationalAccessRepository or self.audit is not self.relationships:
+            return False
+        relationship_engine = self.relationships._database.engine
+        return relationship_engine.url == engine.url and not (
+            engine.dialect.name == "sqlite"
+            and engine.url.database in {None, "", ":memory:"}
+            and relationship_engine is not engine
+        )
+
     def for_read(self, connection: AsyncConnection) -> AccessControlService:
         """Use a local policy snapshot when available, preserving external point decisions."""
         from powercontext.server.authz.repository import RelationalAccessRepository
