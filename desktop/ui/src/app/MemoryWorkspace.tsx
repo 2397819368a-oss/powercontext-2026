@@ -59,6 +59,9 @@ export function NoteForm({
   const [error, setError] = useState<unknown>(null);
   const [outcome, setOutcome] = useState<WriteOutcome | null>(null);
   const [saved, setSaved] = useState<AtomicMemoryRecord[]>([]);
+  // The save receipt records how many records the Server actually returned;
+  // it stays intact when a later failed read hides the visible bodies.
+  const [returnedCount, setReturnedCount] = useState<number | null>(null);
   const submitting = useRef(false);
   const composing = useRef(false);
   const lifetime = useRef(0);
@@ -71,6 +74,7 @@ export function NoteForm({
     setError(null);
     setOutcome(null);
     setSaved([]);
+    setReturnedCount(null);
     onDirty(false);
     submitting.current = false;
     setBusy(false);
@@ -104,13 +108,16 @@ export function NoteForm({
     setError(null);
     setOutcome(null);
     setSaved([]);
+    setReturnedCount(null);
     try {
       const result = await desktopApi.remember(original, text);
       if (isCurrent()) {
         setOutcome(result);
         if (result.record.status === "succeeded") {
           // Zero, one, or multiple returned records: represent each honestly.
-          setSaved(result.result?.records ?? []);
+          const records = result.result?.records ?? [];
+          setReturnedCount(records.length);
+          setSaved(records);
           setText("");
           onDirty(false);
         }
@@ -196,9 +203,13 @@ export function NoteForm({
             </span>
           </p>
         )}
+      {outcome?.record.status === "succeeded" && returnedCount !== null && (
+        <p role="status">
+          {returnedCount > 0 ? t.savedReturned(returnedCount) : t.noEntry}
+        </p>
+      )}
       {saved.length > 0 && (
         <div className="stack">
-          <p role="status">{t.savedReturned(saved.length)}</p>
           <ul className="memory-hits">
             {saved.map((record) => {
               const key = JSON.stringify(record.artifact);
@@ -226,9 +237,6 @@ export function NoteForm({
             })}
           </ul>
         </div>
-      )}
-      {outcome?.record.status === "succeeded" && saved.length === 0 && (
-        <p role="status">{t.noEntry}</p>
       )}
     </section>
   );

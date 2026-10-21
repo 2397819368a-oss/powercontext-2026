@@ -333,8 +333,14 @@ test.each(["forbidden", "network"])(
     expect(
       screen.queryByRole("button", { name: "Open saved record" }),
     ).toBeNull();
+    // The save receipt keeps the real returned count; a failed read must not
+    // rewrite it into a zero-record result.
     expect(screen.getByRole("status").textContent).toContain(
       "Saved successfully.",
+    );
+    expect(screen.getByRole("status").textContent).toContain("1 record");
+    expect(screen.getByRole("status").textContent).not.toContain(
+      "Server returned no memory",
     );
   },
 );
