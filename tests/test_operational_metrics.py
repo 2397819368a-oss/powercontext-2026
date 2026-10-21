@@ -272,7 +272,7 @@ def test_healthy_combined_api_exposes_idle_stalled_and_stopped_processing(  # no
                     # timeout is final.
                     stable_for = 0.0
                     previous = supervisor.family_status["memory"]
-                    while stable_for < 0.5:  # noqa: ASYNC110
+                    while stable_for < 0.5:
                         await asyncio.sleep(0.02)
                         current = supervisor.family_status["memory"]
                         if (
