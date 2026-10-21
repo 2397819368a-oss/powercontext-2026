@@ -18,7 +18,7 @@ import asyncio
 import json
 import socket
 from collections.abc import AsyncIterator, Generator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,8 +30,9 @@ import uvicorn
 from fastapi import FastAPI
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from sse_starlette.sse import AppStatus
+from sse_starlette.sse import EventSourceResponse
 from starlette.middleware import Middleware
+from typing_extensions import override
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryAccess, AtomicMemoryPage
@@ -107,6 +108,15 @@ def _rpc_body(response: httpx.Response) -> dict[str, Any]:
     return next(json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: "))
 
 
+class _TestServer(uvicorn.Server):
+    @override
+    @contextmanager
+    def capture_signals(self) -> Generator[None, None, None]:
+        # Pytest owns process signals. SSE must not capture this temporary listener
+        # through Uvicorn's SIGTERM handler and later shut down unrelated streams.
+        yield
+
+
 @asynccontextmanager
 async def _http_client(app: FastAPI, *, over_tcp: bool) -> AsyncIterator[httpx.AsyncClient]:
     if not over_tcp:
@@ -116,9 +126,10 @@ async def _http_client(app: FastAPI, *, over_tcp: bool) -> AsyncIterator[httpx.A
 
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
-        server = uvicorn.Server(uvicorn.Config(app, lifespan="off", access_log=False, log_level="warning"))
+        server = _TestServer(
+            uvicorn.Config(app, lifespan="off", access_log=False, log_level="warning", log_config=None)
+        )
         task = asyncio.create_task(server.serve(sockets=[listener]))
-        previous_exit_status = AppStatus.should_exit
         try:
             async with asyncio.timeout(10):
                 while not server.started:
@@ -133,17 +144,11 @@ async def _http_client(app: FastAPI, *, over_tcp: bool) -> AsyncIterator[httpx.A
                 yield client
         finally:
             server.should_exit = True
-            try:
-                await asyncio.wait_for(task, timeout=10)
-            finally:
-                AppStatus.should_exit = previous_exit_status
+            await asyncio.wait_for(task, timeout=10)
 
 
 @pytest.mark.parametrize("over_tcp", [False, True], ids=["asgi", "tcp"])
-def test_mcp_authorization_and_audit_use_each_http_requests_identity(over_tcp: bool, monkeypatch) -> None:
-    # An in-process Uvicorn shutdown must not stop SSE responses in later tests.
-    monkeypatch.setattr(AppStatus, "should_exit", False)
-
+def test_mcp_authorization_and_audit_use_each_http_requests_identity(over_tcp: bool) -> None:
     async def scenario() -> None:
         async with SQLiteProfile.open(SQLiteConfig(), tables=ACCESS_TABLES) as profile:
             repository = RelationalAccessRepository(profile.database)
@@ -303,6 +308,51 @@ class _SwitchableAuth(httpx.Auth):
         yield request
 
 
+@pytest.mark.parametrize("overlap", [False, True], ids=["restart", "overlapping-listeners"])
+def test_mcp_tcp_requests_survive_other_listener_shutdown(overlap: bool) -> None:
+    async def scenario() -> None:
+        streaming_app = FastAPI()
+
+        @streaming_app.get("/events")
+        async def events():
+            async def generate():
+                # Keep the stream alive while its shutdown listener starts.
+                await asyncio.sleep(0.1)
+                yield {"data": "ready"}
+
+            return EventSourceResponse(generate())
+
+        app = create_app()
+        mount_mcp(app)
+        async with app.router.lifespan_context(app), AsyncExitStack() as clients:
+            client = await clients.enter_async_context(_http_client(app, over_tcp=True)) if overlap else None
+            async with _http_client(streaming_app, over_tcp=True) as streaming_client:
+                streamed = await streaming_client.get("/events")
+                assert "data: ready" in streamed.text
+
+            # A fast restart can hide an old SSE watcher's delayed shutdown work.
+            await asyncio.sleep(1.1)
+            if client is None:
+                client = await clients.enter_async_context(_http_client(app, over_tcp=True))
+            response = await client.post(
+                "/mcp/",
+                headers={"Accept": "application/json, text/event-stream"},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "restart",
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": {"name": "shutdown-regression", "version": "1"},
+                    },
+                },
+            )
+            assert "serverInfo" in _rpc_body(response)["result"]
+
+    asyncio.run(scenario())
+
+
 def test_mcp_client_writes_reconnects_and_preserves_memory_after_server_restart(tmp_path: Path) -> None:
     async def scenario() -> None:
         database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
@@ -378,6 +428,8 @@ def test_mcp_client_writes_reconnects_and_preserves_memory_after_server_restart(
                         "write after denied request",
                     }
 
+            # Let an SSE shutdown watcher poll after the old listener has exited.
+            await asyncio.sleep(0.75)
             restarted = server_app()
             async with (
                 restarted.router.lifespan_context(restarted),
