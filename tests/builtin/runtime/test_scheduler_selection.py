@@ -177,3 +177,39 @@ def test_invalid_cursor_isolated_from_other_scopes(tmp_path):
             assert (await runtime.atomic_memory.for_scope(peer.scope_id).cursor()).sequence == 1
 
     asyncio.run(scenario())
+
+
+def test_refilled_scope_does_not_starve_other_selected_windows(tmp_path):
+    async def scenario():
+        active_scope = ""
+        refill = 0
+
+        async def runner(scope_id, runtime):
+            nonlocal refill
+            if scope_id == active_scope:
+                refill += 1
+                await _capture(runtime, scope_id, f"refill-{refill}")
+            return await runtime.atomic_memory.for_scope(scope_id).flush()
+
+        async with open_builtin_runtime(
+            _config(tmp_path),
+            candidate_pipeline=atomic_memory_pipeline(_Extractor()),
+            scheduled_source_runner=runner,
+        ) as runtime:
+            assert runtime.atomic_memory is not None
+            assert runtime.processor is not None
+            scopes = [await _scope(runtime, name) for name in ("Active", "Peer A", "Peer B")]
+            active_scope = min(scope.scope_id for scope in scopes)
+            for scope in scopes:
+                await _capture(runtime, scope.scope_id, "initial")
+            await asyncio.wait_for(runtime.processor.run(), timeout=5)
+            for scope in scopes:
+                assert (await runtime.atomic_memory.for_scope(scope.scope_id).cursor()).sequence == 1
+            await asyncio.wait_for(runtime.processor.run(), timeout=5)
+            assert (await runtime.atomic_memory.for_scope(active_scope).cursor()).sequence == 2
+            # The active Scope is still dirty after both ticks; its peers were
+            # processed without waiting for that journal to become clean.
+            result = await runtime.atomic_memory.for_scope(active_scope).flush()
+            assert result.source_count == 1
+
+    asyncio.run(scenario())
