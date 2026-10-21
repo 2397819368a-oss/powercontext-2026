@@ -332,9 +332,10 @@ class _SpawnedWorkerHandle:
         self._receiver = receiver
         self._closed = False
         self._close_lock = asyncio.Lock()
+        self._join_task: asyncio.Task[None] | None = None
 
     async def wait(self) -> ArtifactProcessingWorkerCompletion:
-        await asyncio.to_thread(self._process.join)
+        await self._join()
         try:
             if self._receiver.poll():
                 result = self._receiver.recv()
@@ -373,13 +374,24 @@ class _SpawnedWorkerHandle:
                 return
             if self._process.is_alive():
                 self._process.terminate()
-                await asyncio.to_thread(self._process.join, _SPAWN_SIGTERM_GRACE_SECONDS)
+                try:
+                    async with asyncio.timeout(_SPAWN_SIGTERM_GRACE_SECONDS):
+                        await self._join()
+                except TimeoutError:
+                    pass
             if self._process.is_alive():
                 self._process.kill()
-                await asyncio.to_thread(self._process.join)
+            await self._join()
             self._receiver.close()
             self._process.close()
             self._closed = True
+
+    async def _join(self) -> None:
+        # Cancelling an async waiter cannot stop its executor thread. Keep one
+        # join owner until it publishes the exit status, including on shutdown.
+        if self._join_task is None:
+            self._join_task = asyncio.create_task(asyncio.to_thread(self._process.join))
+        await asyncio.shield(self._join_task)
 
     async def _close(self) -> None:
         async with self._close_lock:

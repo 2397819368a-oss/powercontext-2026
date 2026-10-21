@@ -222,6 +222,17 @@ Experience revisions remain excluded.
 For the relationship between evidence, Candidate versions, approved Revisions, recall, and export, see
 [Experience and Skill lifecycle](../workflows/experience-and-skill-lifecycle.md).
 
+## Scheduled Atomic Memory processing
+
+The built-in Source-window schedule compares journal positions with its own persisted consumption cursor before
+activating a Scope. Fully consumed journals skip scoped processing, while buffered windows remain eligible on later
+ticks without requiring another captured Source. Discovery is advisory: authorization and cursor/window checks
+still run in the selected Scope's processing operation, and captures committed after discovery remain visible to
+subsequent ticks.
+
+This selection applies to the built-in Source-window policy. A directly assembled Runtime with a custom Scope
+selector retains that selector, and Experience incubation uses its independent cursor and schedule.
+
 ## Scheduled Experience incubation
 
 An integration can capture a completed task as a Content Source with metadata `"kind": "task-outcome"`. When the

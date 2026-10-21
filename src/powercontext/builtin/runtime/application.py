@@ -3690,6 +3690,7 @@ class BuiltinRuntime:
         scope_evictor: ScopeEvictor | None = None,
         scope_cache_observer: ScopeCacheObserver | None = None,
         scope_ids: ScopeIds | None = None,
+        source_scope_ids: ScopeIds | None = None,
         review_service: ReviewServiceFactory | None = None,
         catalog_change_service: Callable[[str], CatalogChangeService] | None = None,
         profiles: RelationalProfileService | None = None,
@@ -3866,7 +3867,8 @@ class BuiltinRuntime:
         self.archive = archive_service
         self.handoff_report: HandoffReportApplication | None = None
         self.artifact_processing_supervisor: ArtifactProcessingSupervisors | None = None
-        self.processor = None if scope_ids is None else ScheduledSourceProcessor(self, scope_ids)
+        source_ids = scope_ids if source_scope_ids is None else source_scope_ids
+        self.processor = None if source_ids is None else ScheduledSourceProcessor(self, source_ids)
         self.experience_processor = (
             None if scope_ids is None or experience_incubator is None else ScheduledExperienceProcessor(self, scope_ids)
         )
@@ -4198,13 +4200,19 @@ class BuiltinRuntime:
         return self._scope_cache.lock(validate_scope_id(scope_id))
 
     async def _flush_sources(self, scope_id: str, *, limit: int | None = None, context=None) -> MemoryFlushResult:
+        from powercontext.builtin.runtime.relational import _RelationalTriggers
+
         async with self._context(
             scope_id,
             generation_purpose=ModelUsagePurpose.MEMORY_EXTRACTION,
             embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING,
         ) as runtime_context:
             window_limit = self.source_window_limit if limit is None else limit
-            async with self._locked(scope_id):
+            # Relational triggers serialize activations and recheck cursor,
+            # window and Artifact reads at commit. Capture may proceed while
+            # their model prepares; custom triggers retain Runtime serialization.
+            lock = nullcontext() if type(runtime_context.triggers) is _RelationalTriggers else self._locked(scope_id)
+            async with lock:
                 try:
                     result = await runtime_context.triggers.flush(limit=window_limit, atomic_context=context)
                 except Exception as error:

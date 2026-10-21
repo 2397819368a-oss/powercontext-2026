@@ -1392,6 +1392,12 @@ class RelationalContexts:
             ).scalars()
             return tuple(str(value) for value in values)
 
+    async def unconsumed_source_scope_ids(self) -> tuple[str, ...]:
+        """Return built-in Source windows that still have journal input."""
+
+        async with self.database.transaction() as connection:
+            return await self.repositories.cursors.unconsumed_scope_ids(connection, SOURCE_WINDOW_TRIGGER_NAME)
+
     async def handoff_scope_ids(self) -> tuple[str, ...]:
         """Return scopes with a committed Handoff head, in deterministic order."""
 
@@ -1494,7 +1500,8 @@ class RelationalContexts:
                     .limit(1)
                 )
                 if missing is not None:
-                    raise RuntimeError("restored approved Artifact projection is incomplete")  # noqa: TRY003
+                    message = "restored approved Artifact projection is incomplete"
+                    raise RuntimeError(message)
 
     async def _authorize_atomic_tag_write(self, connection, scope_id: str, artifact_id: str, context=None) -> None:
         await self.atomic_memory.security.authorize(
