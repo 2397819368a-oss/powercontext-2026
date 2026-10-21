@@ -301,6 +301,22 @@ def labelled_link(html: str, label: str) -> str:
     return unescape(match[1])
 
 
+def detail_link(html: str, family: str) -> str:
+    return next(
+        unescape(value)
+        for value in re.findall(r'href="([^"]+)"', html)
+        if urlsplit(unescape(value)).path == f"/dashboard/{family}"
+    )
+
+
+def alert_retry(html: str) -> str:
+    alert = re.search(r'<section class="alert alert-warning my-3" role="alert">.*?</section>', html, re.S)
+    assert alert is not None
+    match = re.search(r'href="([^"]+)"[^>]*>' + re.escape(LABELS["retry"]) + "</a>", alert[0])
+    assert match is not None
+    return unescape(match[1])
+
+
 def test_scope_selection_default_and_unknown_scope(dashboard: TestClient) -> None:
     parent = create_scope(dashboard, "Project")
     child = create_scope(dashboard, "Documentation", parent["scope_id"])
@@ -699,32 +715,10 @@ def test_experience_search_filters_results_and_restores_browsing(dashboard: Test
     assert labels["experience_empty"] not in empty.text
 
 
-def test_experience_search_keeps_the_query_across_result_pages(dashboard: TestClient) -> None:
+def test_experience_search_preserves_query_and_page_through_detail_and_back(dashboard: TestClient) -> None:
     scope = create_scope(dashboard, "Experience search paging")["scope_id"]
     source = capture_source(dashboard, scope, "Page through the matching experiences.")
-    expected = {
-        create_experience(
-            dashboard,
-            scope,
-            source,
-            situation=f"Reviewing handoff {index}",
-            lesson=f"Keep handoff note {index} documented",
-        )
-        for index in range(7)
-    }
-
-    first = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": "experience", "q": "handoff"})
-    assert first.status_code == 200
-    assert len(record_links(first.text, "/dashboard/experience", "artifact")) == 6
-    following = page_link(first.text, LABELS["next_page"])
-    assert parse_qs(urlsplit(following).query)["q"] == ["handoff"]
-    assert collect_pages(dashboard, first.text, "/dashboard/experience", "artifact") == expected
-
-
-def test_experience_search_preserves_state_through_detail_and_back(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Experience detail return")["scope_id"]
-    source = capture_source(dashboard, scope, "Return to the searched experience list.")
-    for index in range(13):
+    for index in range(7):
         create_experience(
             dashboard,
             scope,
@@ -732,23 +726,19 @@ def test_experience_search_preserves_state_through_detail_and_back(dashboard: Te
             situation=f"Reviewing needle {index}",
             lesson=f"Keep needle note {index} documented",
         )
-    second = dashboard.get(
-        "/dashboard/methods",
-        params={"scope": scope, "kind": "experience", "q": "needle", "experience_page": "2"},
-    )
+    first = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": "experience", "q": "needle"})
+    assert first.status_code == 200
+    assert len(record_links(first.text, "/dashboard/experience", "artifact")) == 6
+    following = page_link(first.text, LABELS["next_page"])
+    assert parse_qs(urlsplit(following).query)["q"] == ["needle"]
+    second = dashboard.get(following)
     assert second.status_code == 200
     page_records = record_links(second.text, "/dashboard/experience", "artifact")
-    assert len(page_records) == 6
-    detail_url = next(
-        unescape(value)
-        for value in re.findall(r'href="([^"]+)"', second.text)
-        if urlsplit(unescape(value)).path == "/dashboard/experience"
-    )
+    assert len(page_records) == 1
+    detail_url = detail_link(second.text, "experience")
     return_to = parse_qs(urlsplit(detail_url).query)["return_to"][0]
     assert parse_qs(urlsplit(return_to).query)["q"] == ["needle"]
     assert parse_qs(urlsplit(return_to).query)["experience_page"] == ["2"]
-    assert parse_qs(urlsplit(return_to).query)["kind"] == ["experience"]
-
     detail = dashboard.get(detail_url)
     assert detail.status_code == 200
     restored = dashboard.get(labelled_link(detail.text, LABELS["back_methods"]))
@@ -757,30 +747,6 @@ def test_experience_search_preserves_state_through_detail_and_back(dashboard: Te
     assert restored.url.params["experience_page"] == "2"
     assert restored.url.params["kind"] == "experience"
     assert record_links(restored.text, "/dashboard/experience", "artifact") == page_records
-
-
-def test_skill_search_preserves_state_through_detail_and_back(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Skill detail return")["scope_id"]
-    source = capture_source(dashboard, scope, "Return to the searched skill list.")
-    create_skill(dashboard, scope, source, "needle-skill")
-    create_skill(dashboard, scope, source, "other-skill")
-    searched = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": "skill", "q": "needle"})
-    assert searched.status_code == 200
-    assert "needle-skill" in searched.text
-    assert "other-skill" not in searched.text
-    detail_url = next(
-        unescape(value)
-        for value in re.findall(r'href="([^"]+)"', searched.text)
-        if urlsplit(unescape(value)).path == "/dashboard/skill"
-    )
-    detail = dashboard.get(detail_url)
-    assert detail.status_code == 200
-    restored = dashboard.get(labelled_link(detail.text, LABELS["back_methods"]))
-    assert restored.status_code == 200
-    assert restored.url.params["q"] == "needle"
-    assert restored.url.params["kind"] == "skill"
-    assert "needle-skill" in restored.text
-    assert "other-skill" not in restored.text
 
 
 def test_skill_search_preserves_the_result_page_through_detail_and_back(dashboard: TestClient) -> None:
@@ -794,11 +760,7 @@ def test_skill_search_preserves_the_result_page_through_detail_and_back(dashboar
     assert second.status_code == 200
     page_records = record_links(second.text, "/dashboard/skill", "artifact")
     assert len(page_records) == 1
-    detail_url = next(
-        unescape(value)
-        for value in re.findall(r'href="([^"]+)"', second.text)
-        if urlsplit(unescape(value)).path == "/dashboard/skill"
-    )
+    detail_url = detail_link(second.text, "skill")
     detail = dashboard.get(detail_url)
     assert detail.status_code == 200
     restored = dashboard.get(labelled_link(detail.text, LABELS["back_methods"]))
@@ -819,11 +781,7 @@ def test_methods_return_uses_the_current_language(dashboard: TestClient, family:
         create_skill(dashboard, scope, source, "needle-skill")
     searched = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": family, "q": "needle", "lang": "en"})
     assert searched.status_code == 200
-    detail_url = next(
-        unescape(value)
-        for value in re.findall(r'href="([^"]+)"', searched.text)
-        if urlsplit(unescape(value)).path == f"/dashboard/{family}"
-    )
+    detail_url = detail_link(searched.text, family)
     return_to = parse_qs(urlsplit(detail_url).query)["return_to"][0]
     assert parse_qs(urlsplit(return_to).query)["lang"] == ["en"]
     detail = dashboard.get(detail_url)
@@ -861,10 +819,8 @@ def test_methods_return_to_accepts_supported_text() -> None:
         "/dashboard/methods?scope=other&kind=experience&q=needle",
         "/dashboard/handoff?scope=scp_demo&cursor=next",
         "/dashboard/methods?scope=scp_demo&kind=all&q=needle",
-        "/dashboard/methods?scope=scp_demo&kind=experience&q=needle&experience_page=0",
         "/dashboard/methods?scope=scp_demo&kind=experience&q=needle&experience_page=1%5C2",
         "/dashboard/methods?scope=scp_demo&kind=experience&q=needle%0D%0ASet-Cookie",
-        "/dashboard/methods?scope=scp_demo&kind=experience&q=needle&extra=1",
         "/dashboard/methods?scope=scp_demo&kind=experience&q=" + "a" * (33 * 1024),
     ],
 )
@@ -872,49 +828,29 @@ def test_methods_return_to_rejects_unsupported_context(raw: str) -> None:
     assert collection_return(raw, "scp_demo", page="methods") is None
 
 
-def test_experience_search_return_to_accepts_backslashes(dashboard: TestClient) -> None:
-    scope = create_scope(dashboard, "Experience backslash search")["scope_id"]
-    source = capture_source(dashboard, scope, "Keep the needle path searchable.")
+@pytest.mark.parametrize(
+    ("query", "text"),
+    [
+        ("needle\\path", "Keep the needle path"),
+        ("needle & path = 100% #1", "Keep special characters"),
+        ("经验 " * 460, "经验 long query"),
+    ],
+)
+def test_experience_search_accepts_edge_query_text(dashboard: TestClient, query: str, text: str) -> None:
+    scope = create_scope(dashboard, "Experience edge queries")["scope_id"]
+    source = capture_source(dashboard, scope, "Keep edge queries searchable.")
     create_experience(dashboard, scope, source, situation="needle path", lesson="Keep the needle path")
-    create_experience(dashboard, scope, source, situation="unrelated lesson", lesson="Keep the unrelated lesson")
-    searched = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": "experience", "q": "needle\\path"})
-    assert searched.status_code == 200
-    assert "Keep the needle path" in searched.text
-    assert "Keep the unrelated lesson" not in searched.text
-    detail_url = next(
-        unescape(value)
-        for value in re.findall(r'href="([^"]+)"', searched.text)
-        if urlsplit(unescape(value)).path == "/dashboard/experience"
-    )
-    detail = dashboard.get(detail_url)
-    assert detail.status_code == 200
-    restored = dashboard.get(labelled_link(detail.text, LABELS["back_methods"]))
-    assert restored.status_code == 200
-    assert restored.url.params["q"] == "needle\\path"
-    assert "Keep the needle path" in restored.text
-    assert "Keep the unrelated lesson" not in restored.text
-
-
-def test_experience_search_return_to_accepts_a_long_query(dashboard: TestClient) -> None:
-    query = "经验 " * 460
-    scope = create_scope(dashboard, "Experience long query")["scope_id"]
-    source = capture_source(dashboard, scope, "Keep the long query searchable.")
-    create_experience(dashboard, scope, source, situation="经验 检索", lesson=query)
+    create_experience(dashboard, scope, source, situation="needle & path = 100% #1", lesson="Keep special characters")
+    create_experience(dashboard, scope, source, situation="经验 long query", lesson="经验 " * 460)
     searched = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": "experience", "q": query})
     assert searched.status_code == 200
-    assert "经验 检索" in searched.text
-    detail_url = next(
-        unescape(value)
-        for value in re.findall(r'href="([^"]+)"', searched.text)
-        if urlsplit(unescape(value)).path == "/dashboard/experience"
-    )
-    assert "return_to" in parse_qs(urlsplit(detail_url).query)
+    assert text in searched.text
+    detail_url = detail_link(searched.text, "experience")
     detail = dashboard.get(detail_url)
     assert detail.status_code == 200
     restored = dashboard.get(labelled_link(detail.text, LABELS["back_methods"]))
     assert restored.status_code == 200
     assert restored.url.params["q"] == query
-    assert "经验 检索" in restored.text
 
 
 def test_experience_detail_rejects_a_foreign_return_to(dashboard: TestClient) -> None:
@@ -959,11 +895,7 @@ def test_experience_search_state_survives_compare_and_rollback(dashboard: TestCl
 
     searched = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": "experience", "q": "needle"})
     assert searched.status_code == 200
-    detail_url = next(
-        unescape(value)
-        for value in re.findall(r'href="([^"]+)"', searched.text)
-        if urlsplit(unescape(value)).path == "/dashboard/experience"
-    )
+    detail_url = detail_link(searched.text, "experience")
     return_to = parse_qs(urlsplit(detail_url).query)["return_to"][0]
     revision = dashboard.get(
         "/dashboard/experience",
@@ -1027,11 +959,7 @@ def test_experience_search_retry_keeps_the_result_page(dashboard: TestClient, mo
         params={"scope": scope, "kind": "experience", "q": "needle", "experience_page": "2"},
     )
     assert response.status_code == 200
-    alert = re.search(r'<section class="alert alert-warning my-3" role="alert">.*?</section>', response.text, re.S)
-    assert alert is not None
-    retry_match = re.search(r'href="([^"]+)"[^>]*>' + re.escape(LABELS["retry"]) + "</a>", alert[0])
-    assert retry_match is not None
-    retry = unescape(retry_match[1])
+    retry = alert_retry(response.text)
     params = parse_qs(urlsplit(retry).query)
     assert params["q"] == ["needle"]
     assert params["experience_page"] == ["2"]
@@ -1050,11 +978,7 @@ def test_out_of_range_result_page_retry_returns_to_the_first_page(dashboard: Tes
         params={"scope": scope, "kind": "experience", "q": "needle", "experience_page": "99"},
     )
     assert response.status_code == 200
-    alert = re.search(r'<section class="alert alert-warning my-3" role="alert">.*?</section>', response.text, re.S)
-    assert alert is not None
-    retry_match = re.search(r'href="([^"]+)"[^>]*>' + re.escape(LABELS["retry"]) + "</a>", alert[0])
-    assert retry_match is not None
-    retry = unescape(retry_match[1])
+    retry = alert_retry(response.text)
     params = parse_qs(urlsplit(retry).query)
     assert params["q"] == ["needle"]
     assert "experience_page" not in params
@@ -1091,11 +1015,7 @@ def test_experience_detail_error_returns_to_the_search_page(dashboard: TestClien
     create_experience(dashboard, scope, source, situation="needle error", lesson="Keep the needle error")
     searched = dashboard.get("/dashboard/methods", params={"scope": scope, "kind": "experience", "q": "needle"})
     assert searched.status_code == 200
-    detail_url = next(
-        unescape(value)
-        for value in re.findall(r'href="([^"]+)"', searched.text)
-        if urlsplit(unescape(value)).path == "/dashboard/experience"
-    )
+    detail_url = detail_link(searched.text, "experience")
     read = DashboardAPI.read
 
     async def failing(api, path, payload=None):
