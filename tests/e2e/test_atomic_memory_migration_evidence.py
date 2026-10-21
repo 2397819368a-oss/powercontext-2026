@@ -72,6 +72,7 @@ from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
     AtomicMemoryMigrationError,
     apply_atomic_memory_migration,
     load_owner_decisions,
+    plan_atomic_memory_migration,
     verify_atomic_memory_migration,
 )
 from powercontext.builtin.persistence.recurrence import RecurrenceRepository
@@ -501,6 +502,53 @@ def test_enforced_migration_repairs_ownerless_entry_from_explicit_decision(
         assert repeated.ready, repeated.errors
         repeated_without_file = await _migrate(config, require_owners=True)
         assert repeated_without_file.ready, repeated_without_file.errors
+
+    asyncio.run(scenario())
+
+
+def test_pending_owner_repair_blocks_plan_and_verify(migration_backend: MigrationBackend) -> None:
+    config = migration_backend.config
+
+    async def remove_owner(_contexts, connection) -> None:
+        await connection.execute(
+            text(
+                "DELETE FROM pc_access_owners WHERE owner_kind = 'artifact' AND scope_id = :scope "
+                "AND family = 'memory' AND artifact_id = :memory AND selector_entry_id = 'alpha'"
+            ),
+            {"scope": SCOPE, "memory": COLLECTION},
+        )
+
+    decisions = load_owner_decisions({
+        "format": OWNER_DECISIONS_FORMAT,
+        "decisions": [
+            {
+                "scope_id": SCOPE,
+                "memory_id": COLLECTION,
+                "entry_id": "alpha",
+                "action": "establish",
+                "owner": {"type": "user", "id": "recovered-owner"},
+                "idempotency_key": "recover-owner:alpha",
+            }
+        ],
+    })
+
+    async def scenario() -> None:
+        await _seed(config, remove_owner)
+        migrated = await _migrate(config)
+        assert migrated.ready, migrated.errors
+        async with migration_profile(config) as profile, profile.database.transaction() as connection:
+            reports = (
+                await plan_atomic_memory_migration(
+                    connection, index=migration_index(config), owner_decisions=decisions, require_owners=True
+                ),
+                await verify_atomic_memory_migration(
+                    connection, index=migration_index(config), owner_decisions=decisions, require_owners=True
+                ),
+            )
+        for report in reports:
+            assert not report.ready
+            assert report.counts["pending_owner_repairs"] == 1
+            assert report.counts["completed_owner_repairs"] == 0
 
     asyncio.run(scenario())
 

@@ -1029,7 +1029,13 @@ async def plan_atomic_memory_migration(
     )
     return AtomicMemoryMigrationReport(
         action="plan",
-        ready=verification is not None and verification.ready and not reference_errors and not owner_errors,
+        ready=(
+            verification is not None
+            and verification.ready
+            and not reference_errors
+            and not owner_errors
+            and owner_counts["pending_owner_repairs"] == 0
+        ),
         counts={
             **inventory.counts,
             **({} if verification is None else verification.counts),
@@ -1514,7 +1520,7 @@ async def verify_atomic_memory_migration(
     )
     return report.model_copy(
         update={
-            "ready": report.ready and not owner_errors,
+            "ready": report.ready and not owner_errors and owner_counts["pending_owner_repairs"] == 0,
             "counts": {**report.counts, **owner_counts},
             "errors": tuple(dict.fromkeys(report.errors + owner_errors)),
         }
