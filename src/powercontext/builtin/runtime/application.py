@@ -181,7 +181,7 @@ from powercontext.builtin.records import (
 from powercontext.builtin.review.errors import InvalidCandidateError
 from powercontext.builtin.review.generation import GeneratedCandidateResult, ReviewedGenerationService
 from powercontext.builtin.review.models import Candidate
-from powercontext.builtin.review.service import ReviewService
+from powercontext.builtin.review.service import CandidateCommitHook, ReviewService
 from powercontext.builtin.runtime._scope_cache import (
     DEFAULT_SCOPE_CACHE_SIZE,
     ScopeCache,
@@ -663,10 +663,15 @@ class ScopedRecordApplication:
         /,
         *,
         execution_context: Any = None,
+        on_commit: Callable[[Any, ArtifactCreated], Awaitable[None]] | None = None,
     ) -> ArtifactCreated:
         async with self._runtime._scope_operation(self.scope_id), self._runtime._locked(self.scope_id):
             return await self._runtime._records().create_artifact(
-                self.scope_id, family, write, execution_context=execution_context
+                self.scope_id,
+                family,
+                write,
+                execution_context=execution_context,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
     async def bind_artifact_handle(self, handle: StableHandle, target: ArtifactRef, /) -> ArtifactRef:
@@ -2322,7 +2327,13 @@ class ScopedExperienceApplication:
         self._runtime = runtime
         self.scope_id = validate_scope_id(scope_id)
 
-    async def propose(self, request: ProposeExperienceRequest, /) -> ExperienceCandidate:
+    async def propose(
+        self,
+        request: ProposeExperienceRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> ExperienceCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
             service = self._runtime._review(self.scope_id)
             return await service.propose_experience(
@@ -2331,9 +2342,16 @@ class ScopedExperienceApplication:
                 artifacts=request.artifacts,
                 target=request.target,
                 reason=request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
-    async def generate(self, request: GenerateExperienceRequest, /) -> GeneratedCandidateResult:
+    async def generate(
+        self,
+        request: GenerateExperienceRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> GeneratedCandidateResult:
         async with (
             self._runtime._scoped_operation(
                 self.scope_id,
@@ -2346,13 +2364,20 @@ class ScopedExperienceApplication:
                 artifacts=request.artifacts,
                 target=request.target,
                 reason=request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
     async def get(self, request: GetExperienceRequest, /) -> Experience:
         async with self._runtime._scoped_operation(self.scope_id):
             return await self._runtime._review(self.scope_id).get_experience(request.artifact)
 
-    async def incubate(self, /, *, limit: int | None = None) -> ExperienceIncubationResult:
+    async def incubate(
+        self,
+        /,
+        *,
+        limit: int | None = None,
+        on_commit: Callable[..., Awaitable[None]] | None = None,
+    ) -> ExperienceIncubationResult:
         """Process one independent Task Outcome Source window into Review."""
 
         incubator = self._runtime._experience_incubator
@@ -2369,7 +2394,9 @@ class ScopedExperienceApplication:
             self._runtime._locked(self.scope_id),
         ):
             with self._runtime._stage("experience.incubation", attributes={}) as span:
-                result = await incubator(self.scope_id, window_limit)
+                result = await incubator(
+                    self.scope_id, window_limit, **({"on_commit": on_commit} if on_commit is not None else {})
+                )
                 if span is not None:
                     span.set_attributes({
                         "powercontext.experience.incubation.source_count": result.source_count,
@@ -2428,7 +2455,13 @@ class ScopedSkillApplication:
         self._runtime = runtime
         self.scope_id = validate_scope_id(scope_id)
 
-    async def propose(self, request: ProposeSkillRequest, /) -> SkillCandidate:
+    async def propose(
+        self,
+        request: ProposeSkillRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> SkillCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
             service = self._runtime._review(self.scope_id)
             return await service.propose_skill(
@@ -2437,9 +2470,16 @@ class ScopedSkillApplication:
                 artifacts=request.artifacts,
                 target=request.target,
                 reason=request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
-    async def generate(self, request: GenerateSkillRequest, /) -> GeneratedCandidateResult:
+    async def generate(
+        self,
+        request: GenerateSkillRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> GeneratedCandidateResult:
         async with (
             self._runtime._scoped_operation(
                 self.scope_id,
@@ -2453,6 +2493,7 @@ class ScopedSkillApplication:
                 artifacts=request.artifacts,
                 target=request.target,
                 reason=request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
     async def get(self, request: GetSkillRequest, /) -> Skill:
@@ -2518,12 +2559,20 @@ class ScopedSkillApplication:
         reason: str | None,
         target: ArtifactRef | None,
         /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
     ) -> SkillCandidate:
         uploader = self._runtime._skill_package_uploader
         if uploader is None:
             raise _RuntimeStateError("skill-package")
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
-            return await uploader(self.scope_id, archive_bytes, reason, target)
+            return await uploader(
+                self.scope_id,
+                archive_bytes,
+                reason,
+                target,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
+            )
 
     async def record_usage(self, observation: SkillUsageCapture, /) -> SourceReceipt:
         recorder = self._runtime._skill_usage_recorder
@@ -2783,8 +2832,13 @@ class ScopedHandoffApplication:
             content_bytes=0 if content is None else len(content.encode("utf-8")),
         )
 
-    async def commit(self, prepared: PreparedHandoff, /) -> Handoff:
+    async def commit(self, prepared: PreparedHandoff, /, *, on_commit=None) -> Handoff:
         async with self._runtime._context(self.scope_id) as context, self._runtime._locked(self.scope_id):
+            if on_commit is not None:
+                committer = self._runtime._handoff_committer
+                if committer is None:
+                    raise _RuntimeStateError("handoff-commit")
+                return await committer(self.scope_id, prepared, on_commit=on_commit)
             return await context.artifacts.handoff.commit(prepared)
 
     async def continue_from(
@@ -2991,7 +3045,13 @@ class ScopedExternalSkillApplication:
                 request.fingerprint,
             )
 
-    async def import_managed(self, request: ImportExternalSkillRequest, /) -> GeneratedCandidateResult:
+    async def import_managed(
+        self,
+        request: ImportExternalSkillRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> GeneratedCandidateResult:
         importer = self._runtime._external_skill_importer
         if importer is None:
             raise ExternalSkillRegistryUnavailableError()
@@ -3008,6 +3068,7 @@ class ScopedExternalSkillApplication:
                 request.fingerprint,
                 request.mode,
                 request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
 
@@ -3680,6 +3741,8 @@ class BuiltinRuntime:
         provider: PowerContextProvider[BuiltinSources, BuiltinArtifacts, BuiltinTriggers],
         capabilities: RuntimeCapabilities,
         primary_database: AsyncDatabase | None = None,
+        owner_write_transactions: bool = False,
+        handoff_committer: Callable[..., Awaitable[Handoff]] | None = None,
         extraction_diagnostics: ExtractionDiagnostics | None = None,
         code_service: CodeService | None = None,
         source_window_limit: int = 100,
@@ -3752,6 +3815,8 @@ class BuiltinRuntime:
             raise _RuntimeConfigurationError("scope_cache_size")
         self._provider = provider
         self._primary_database = primary_database
+        self._owner_write_transactions = owner_write_transactions
+        self._handoff_committer = handoff_committer
         self._capabilities = capabilities
         self._extraction_diagnostics = extraction_diagnostics
         self._review_service = review_service
@@ -3883,6 +3948,11 @@ class BuiltinRuntime:
         if self._primary_database is None:
             raise _RuntimeStateError("database")
         return self._primary_database
+
+    @property
+    def owner_write_database(self) -> AsyncDatabase | None:
+        """Return the database when composition guarantees owner commit hooks."""
+        return self._primary_database if self._owner_write_transactions else None
 
     @asynccontextmanager
     async def read_snapshot(self, scope_id: str, *, flush_usage: bool = False) -> AsyncIterator[ScopeReadSnapshot]:

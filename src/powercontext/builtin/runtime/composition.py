@@ -772,6 +772,8 @@ async def open_builtin_runtime(
                 code_service=await resources.enter_async_context(open_code_service(config.code, config.database)),
                 provider=contexts,
                 primary_database=contexts.database,
+                owner_write_transactions=True,
+                handoff_committer=contexts.commit_handoff,
                 capabilities=RuntimeCapabilities(
                     memory_extraction=contexts.memory_extraction,
                     experience_generation=contexts.experience_generation,

@@ -182,7 +182,7 @@ from powercontext.builtin.review.generation import (
     SkillGenerationOrigin,
 )
 from powercontext.builtin.review.models import Candidate
-from powercontext.builtin.review.service import ReviewService
+from powercontext.builtin.review.service import CandidateCommitHook, ReviewService
 from powercontext.builtin.runtime._model_usage import _ModelUsageRecorder
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication
 from powercontext.builtin.runtime.atomic_memory_processing import (
@@ -420,7 +420,7 @@ class _ScopedServices:
             skill_generator=self.skill_generator,
         )
 
-    def handoff(self) -> HandoffService:
+    def handoff(self, *, on_commit=None) -> HandoffService:
         def evidence_resolver(scope_id: str) -> RelationalHandoffEvidenceResolver:
             services = self if scope_id == self.scope_id else replace(self, scope_id=scope_id)
             return RelationalHandoffEvidenceResolver(
@@ -439,6 +439,7 @@ class _ScopedServices:
                 database=self.database,
                 scope_id=self.scope_id,
                 artifacts=self.repositories.artifacts,
+                on_commit=on_commit,
             ),
             evidence_resolver=RelationalHandoffEvidenceResolver(
                 database=self.database,
@@ -1235,6 +1236,8 @@ class RelationalContexts:
         reason: str | None,
         target: ArtifactRef | None,
         /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
     ) -> Candidate[SkillContent]:
         """Canonicalize an explicit upload and create a pending exact-import Candidate."""
 
@@ -1261,6 +1264,7 @@ class RelationalContexts:
                     artifacts=artifacts,
                     target=target,
                     reason=reason,
+                    on_commit=on_commit,
                 )
             )
 
@@ -1339,6 +1343,8 @@ class RelationalContexts:
         mode: ExternalSkillImportMode,
         reason: str | None,
         /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
     ) -> GeneratedCandidateResult:
         """Snapshot an exact package, preserving import bytes or using LLM only for a fork."""
 
@@ -1370,6 +1376,7 @@ class RelationalContexts:
                         artifacts=(),
                         target=None,
                         reason=reason,
+                        on_commit=on_commit,
                     )
                 )
                 return GeneratedCandidateResult(candidate=candidate)
@@ -1379,6 +1386,7 @@ class RelationalContexts:
             artifacts=(),
             target=None,
             reason=reason,
+            on_commit=on_commit,
         )
 
     async def scope_ids(self) -> tuple[str, ...]:
@@ -1502,6 +1510,9 @@ class RelationalContexts:
                 if missing is not None:
                     message = "restored approved Artifact projection is incomplete"
                     raise RuntimeError(message)
+
+    async def commit_handoff(self, scope_id: str, prepared, *, on_commit) -> Handoff:
+        return await self._services_for(scope_id).handoff(on_commit=on_commit).commit(prepared)
 
     async def _authorize_atomic_tag_write(self, connection, scope_id: str, artifact_id: str, context=None) -> None:
         await self.atomic_memory.security.authorize(
