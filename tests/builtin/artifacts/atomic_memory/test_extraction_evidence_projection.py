@@ -25,6 +25,7 @@ from powercontext.builtin.artifacts.atomic_memory.extraction import (
     AtomicMemoryExtractionInput,
     project_atomic_memory_evidence,
 )
+from powercontext.builtin.persistence.records import _canonical_source_text
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY, CONTENT_SOURCE_ADAPTER, ContentCapture, ContentSource
 from powercontext.sources import (
@@ -40,10 +41,12 @@ BODY = f"{MARKER} Refactor the recall builder so the host skips retrieval when n
 
 
 def _source(*, wire_content: JsonValue | None = None) -> ContentSource:
+    """Mirror the writer path: ``content`` is the canonical text of ``wire_content``."""
+
     return ContentSource(
         name="turn-1",
         materialization=SourceMaterialization.CAPTURED,
-        content=BODY,
+        content=BODY if wire_content is None else _canonical_source_text(wire_content),
         metadata={"origin": "pi", "event": "user_prompt_submit", "session_id": "session-1"},
         wire_content=wire_content,
         wire_content_present=wire_content is not None,
@@ -149,18 +152,21 @@ def test_native_wire_content_duplicate_is_serialized_once() -> None:
     asyncio.run(scenario())
 
 
-def test_native_wire_content_with_other_shape_is_kept() -> None:
-    """A wire payload that differs from the body text is kept."""
+def test_native_structured_wire_content_is_serialized_once() -> None:
+    """A structured wire payload is not serialized beside its canonical text."""
 
     async def scenario() -> None:
-        wire = {"text": BODY}
+        wire = {"text": BODY, "kind": "note"}
         source = _source(wire_content=wire)
         evidence = await _evidence(source, source)
 
+        assert _serialized(evidence).count(MARKER) == 1
         metadata = evidence.source_metadata
         assert isinstance(metadata, dict)
-        assert metadata["wire_content"] == wire
-        assert metadata["wire_content_present"] is True
+        assert "wire_content" not in metadata
+        assert "wire_content_present" not in metadata
+        assert metadata["metadata"] == source.metadata
+        assert metadata["name"] == source.name
 
     asyncio.run(scenario())
 
