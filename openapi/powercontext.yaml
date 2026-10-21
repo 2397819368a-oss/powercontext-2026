@@ -8469,7 +8469,8 @@ components:
           nullable: true
           description: >-
             Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked
-            with `explain` and a channel was lost, so a response a Host injects keeps its four fields.
+            with `explain` and a channel was lost, so a response a Host injects keeps its four fields. Values reuse
+            RFC 1435 `fallback_reason` spellings, minus `none`.
     BootstrapContextItem:
       type: object
       additionalProperties: false
@@ -11845,7 +11846,7 @@ components:
       enum: [pending, injected, skipped, failed]
     PreparedContextReason:
       type: string
-      enum: [embedding_timeout, embedding_unavailable]
+      enum: [inference_timeout, inference_unavailable]
     BootstrapSkipReason:
       type: string
       enum: [disabled, no_eligible_context, already_delivered, preparation_failed]

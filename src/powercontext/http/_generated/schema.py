@@ -8338,7 +8338,14 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "injects "
                         "keeps "
                         "its four "
-                        "fields.",
+                        "fields. "
+                        "Values "
+                        "reuse "
+                        "RFC 1435 "
+                        "`fallback_reason` "
+                        "spellings, "
+                        "minus "
+                        "`none`.",
                         "nullable": True,
                     },
                 },
@@ -11566,7 +11573,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "BootstrapContextStatus": {"type": "string", "enum": ["ready", "empty", "skipped"]},
             "BootstrapContextItemKind": {"type": "string", "enum": ["atomic-memory", "handoff"]},
             "BootstrapReceiptState": {"type": "string", "enum": ["pending", "injected", "skipped", "failed"]},
-            "PreparedContextReason": {"type": "string", "enum": ["embedding_timeout", "embedding_unavailable"]},
+            "PreparedContextReason": {"type": "string", "enum": ["inference_timeout", "inference_unavailable"]},
             "BootstrapSkipReason": {
                 "type": "string",
                 "enum": ["disabled", "no_eligible_context", "already_delivered", "preparation_failed"],

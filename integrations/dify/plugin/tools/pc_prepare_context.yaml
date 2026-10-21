@@ -84,7 +84,8 @@ output_schema:
           $ref: '#/definitions/Result/properties/reason'
           description: Why this preparation lost a retrieval channel it would otherwise
             have used. Absent unless the request asked with `explain` and a channel
-            was lost, so a response a Host injects keeps its four fields.
+            was lost, so a response a Host injects keeps its four fields. Values reuse
+            RFC 1435 `fallback_reason` spellings, minus `none`.
       description: Complete successful HTTP response; empty object on error or unknown
         outcome.
   required:
@@ -118,11 +119,12 @@ output_schema:
           - allOf:
             - type: string
               enum:
-              - embedding_timeout
-              - embedding_unavailable
+              - inference_timeout
+              - inference_unavailable
             description: Why this preparation lost a retrieval channel it would otherwise
               have used. Absent unless the request asked with `explain` and a channel
-              was lost, so a response a Host injects keeps its four fields.
+              was lost, so a response a Host injects keeps its four fields. Values
+              reuse RFC 1435 `fallback_reason` spellings, minus `none`.
           - type: 'null'
       description: Complete successful HTTP response; empty object on error or unknown
         outcome.

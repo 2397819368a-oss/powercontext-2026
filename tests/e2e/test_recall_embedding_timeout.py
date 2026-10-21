@@ -148,25 +148,30 @@ def test_an_expired_budget_keeps_lexical_recall_and_reports_the_fallback(
     assert _MEMORY in (prepared.content or "")
     assert embedding.query_completed is False
     # The status alone cannot tell this apart from "nothing matched": the reason can.
-    assert prepared.reason == "embedding_timeout"
+    assert prepared.reason == "inference_timeout"
     (record,) = _fallbacks(caplog)
     _assert_fallback_record(record, "inference_timeout")
 
 
 @pytest.mark.parametrize(
-    ("error", "error_code", "reason"),
+    ("error", "expected"),
     [
-        (InferenceUnavailableError("embed"), "inference_unavailable", "embedding_unavailable"),
-        (InferenceTimeoutError("embed", 1.0), "inference_timeout", "embedding_timeout"),
+        (InferenceUnavailableError("embed"), "inference_unavailable"),
+        (InferenceTimeoutError("embed", 1.0), "inference_timeout"),
     ],
 )
 def test_a_failing_provider_keeps_lexical_recall_and_classifies_the_failure(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     error: Exception,
-    error_code: str,
-    reason: str,
+    expected: str,
 ) -> None:
+    """One classification, one spelling: the log ``error_code`` and the response ``reason`` agree.
+
+    RFC 1435 names this vocabulary ``inference_*``, and the fallback event already used it, so the
+    response reuses it instead of restating the same cause in the channel's terms.
+    """
+
     async def scenario() -> Any:
         async with _runtime(tmp_path / "failing.db", 5.0, _FailingQueryEmbedding(error)) as runtime:
             scope_id = await _scope_with_memory(runtime, "failing")
@@ -176,9 +181,9 @@ def test_a_failing_provider_keeps_lexical_recall_and_classifies_the_failure(
 
     assert prepared.status == "ready"
     assert _MEMORY in (prepared.content or "")
-    assert prepared.reason == reason
+    assert prepared.reason == expected
     (record,) = _fallbacks(caplog)
-    _assert_fallback_record(record, error_code)
+    _assert_fallback_record(record, expected)
 
 
 def test_a_sufficient_budget_waits_for_the_query_embedding(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

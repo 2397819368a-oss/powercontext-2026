@@ -2901,8 +2901,8 @@ class BootstrapReceiptState(StrEnum):
 
 
 class PreparedContextReason(StrEnum):
-    EMBEDDING_TIMEOUT = "embedding_timeout"
-    EMBEDDING_UNAVAILABLE = "embedding_unavailable"
+    INFERENCE_TIMEOUT = "inference_timeout"
+    INFERENCE_UNAVAILABLE = "inference_unavailable"
 
 
 class BootstrapSkipReason(StrEnum):
@@ -3982,7 +3982,7 @@ class PreparedContext(BaseModel):
     reason: Annotated[
         PreparedContextReason | None,
         Field(
-            description="Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields."
+            description="Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields. Values reuse RFC 1435 `fallback_reason` spellings, minus `none`."
         ),
     ] = None
 

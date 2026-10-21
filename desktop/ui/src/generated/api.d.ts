@@ -3475,7 +3475,7 @@ export interface components {
             status: components["schemas"]["PreparedContextStatus"];
             content: string | null;
             content_bytes: number;
-            /** @description Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields. */
+            /** @description Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields. Values reuse RFC 1435 `fallback_reason` spellings, minus `none`. */
             reason?: components["schemas"]["PreparedContextReason"] | null;
         };
         BootstrapContextItem: {
@@ -4787,7 +4787,7 @@ export interface components {
         /** @enum {string} */
         BootstrapReceiptState: "pending" | "injected" | "skipped" | "failed";
         /** @enum {string} */
-        PreparedContextReason: "embedding_timeout" | "embedding_unavailable";
+        PreparedContextReason: "inference_timeout" | "inference_unavailable";
         /** @enum {string} */
         BootstrapSkipReason: "disabled" | "no_eligible_context" | "already_delivered" | "preparation_failed";
         /** @enum {string} */

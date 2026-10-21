@@ -443,6 +443,10 @@ class _ScopeRecallOutcome:
     generation_calls: int = 0
 
 
+#: The one cause that outranks the others when a preparation loses several channels at once.
+_TIMEOUT_REASON = "inference_timeout"
+
+
 def _degradation(current: str | None, observed: str | None) -> str | None:
     """Fold one more observed cause into the preparation's reason.
 
@@ -453,9 +457,9 @@ def _degradation(current: str | None, observed: str | None) -> str | None:
 
     if observed is None:
         return current
-    if current == "embedding_timeout":
+    if current == _TIMEOUT_REASON:
         return current
-    return "embedding_timeout" if observed == "embedding_timeout" else (current or observed)
+    return _TIMEOUT_REASON if observed == _TIMEOUT_REASON else (current or observed)
 
 
 @dataclass(frozen=True)

@@ -93,18 +93,16 @@ from powercontext.builtin.tags import TagFilter
 
 logger = logging.getLogger(__name__)
 
-#: The log calls the provider failure an inference problem; the response calls the lost channel an
-#: embedding one. Both names come from one classification, so the two can never disagree.
-_EMBEDDING_ERROR_CODES = {
-    "embedding_timeout": "inference_timeout",
-    "embedding_unavailable": "inference_unavailable",
-}
-
 
 def _fallback_reason(error: Exception) -> str:
-    """Why an abandoned query embedding gave way to lexical retrieval, in the public vocabulary."""
+    """Why an abandoned query embedding gave way to lexical retrieval.
 
-    return "embedding_timeout" if isinstance(error, (InferenceTimeoutError, TimeoutError)) else "embedding_unavailable"
+    This is RFC 1435's ``fallback_reason`` vocabulary and the ``memory.search.embedding_fallback``
+    ``error_code`` at once: one classification, one spelling, so the event and the response cannot
+    describe the same lost channel differently.
+    """
+
+    return "inference_timeout" if isinstance(error, (InferenceTimeoutError, TimeoutError)) else "inference_unavailable"
 
 
 def _log_embedding_fallback(error: Exception) -> None:
@@ -118,7 +116,7 @@ def _log_embedding_fallback(error: Exception) -> None:
             "event": "memory.search.embedding_fallback",
             "outcome": "fallback",
             "mode": "text",
-            "error_code": _EMBEDDING_ERROR_CODES[_fallback_reason(error)],
+            "error_code": _fallback_reason(error),
             "unit": "memory",
         },
     )

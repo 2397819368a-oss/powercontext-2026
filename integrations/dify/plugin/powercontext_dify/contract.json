@@ -3318,7 +3318,7 @@
                     "$ref": "#/components/schemas/PreparedContextReason"
                   }
                 ],
-                "description": "Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields."
+                "description": "Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields. Values reuse RFC 1435 `fallback_reason` spellings, minus `none`."
               },
               {
                 "type": "null"
@@ -3330,8 +3330,8 @@
       "PreparedContextReason": {
         "type": "string",
         "enum": [
-          "embedding_timeout",
-          "embedding_unavailable"
+          "inference_timeout",
+          "inference_unavailable"
         ]
       },
       "PreparedContextSchema": {

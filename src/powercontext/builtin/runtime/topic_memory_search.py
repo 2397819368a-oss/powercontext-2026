@@ -43,13 +43,6 @@ from powercontext.builtin.inference.protocols import embed_query
 
 logger = logging.getLogger(__name__)
 
-#: The fallback event spells the failure as an inference problem; the response spells the lost
-#: channel as an embedding one. Both come from one classification.
-_FALLBACK_ERROR_CODES = {
-    "embedding_timeout": "inference_timeout",
-    "embedding_unavailable": "inference_unavailable",
-}
-
 
 class TopicMemorySearcher:
     """Own mode selection, embedding reuse, and transient default fallback.
@@ -235,10 +228,16 @@ class TopicMemorySearcher:
 
     @staticmethod
     def _fallback_reason(error: Exception) -> str:
-        """Why an abandoned embedding gave way to FTS, in the public vocabulary of ``PreparedContext.reason``."""
+        """Why an abandoned embedding gave way to FTS.
+
+        The same value is the ``topic_memory.search.embedding_fallback`` ``error_code`` and, when a
+        preparation asked for it, ``PreparedContext.reason``. RFC 1435 spells this vocabulary
+        ``inference_*`` because the failure belongs to the inference provider, not to the channel it
+        was going to feed.
+        """
 
         return (
-            "embedding_timeout" if isinstance(error, (InferenceTimeoutError, TimeoutError)) else "embedding_unavailable"
+            "inference_timeout" if isinstance(error, (InferenceTimeoutError, TimeoutError)) else "inference_unavailable"
         )
 
     def _log_fallback(self, error: Exception) -> None:
@@ -252,7 +251,7 @@ class TopicMemorySearcher:
                 "mode": "fts",
                 # Derived from the public reason so the event and the response cannot disagree
                 # about why the vector channel was lost.
-                "error_code": _FALLBACK_ERROR_CODES[self._fallback_reason(error)],
+                "error_code": self._fallback_reason(error),
                 "unit": "topic-memory",
             },
         )

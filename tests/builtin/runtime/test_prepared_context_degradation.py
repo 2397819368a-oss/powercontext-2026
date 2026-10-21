@@ -35,12 +35,12 @@ from powercontext.server.mapping import prepared_context_response
     ("current", "observed", "expected"),
     [
         (None, None, None),
-        (None, "embedding_unavailable", "embedding_unavailable"),
-        (None, "embedding_timeout", "embedding_timeout"),
-        ("embedding_timeout", None, "embedding_timeout"),
-        ("embedding_timeout", "embedding_unavailable", "embedding_timeout"),
-        ("embedding_unavailable", "embedding_timeout", "embedding_timeout"),
-        ("embedding_unavailable", "embedding_unavailable", "embedding_unavailable"),
+        (None, "inference_unavailable", "inference_unavailable"),
+        (None, "inference_timeout", "inference_timeout"),
+        ("inference_timeout", None, "inference_timeout"),
+        ("inference_timeout", "inference_unavailable", "inference_timeout"),
+        ("inference_unavailable", "inference_timeout", "inference_timeout"),
+        ("inference_unavailable", "inference_unavailable", "inference_unavailable"),
     ],
 )
 def test_a_timeout_outranks_an_unavailable_provider(
@@ -49,7 +49,7 @@ def test_a_timeout_outranks_an_unavailable_provider(
     """Raising ``recall_embedding_timeout_seconds`` fixes a timeout; nothing fixes a broken provider.
 
     Folding in arrival order would report whichever cause came last, so an operator acting on
-    ``embedding_unavailable`` would turn a knob that cannot help.
+    ``inference_unavailable`` would turn a knob that cannot help.
     """
 
     assert _degradation(current, observed) == expected
@@ -62,19 +62,19 @@ def test_a_preparation_that_kept_every_channel_carries_no_reason() -> None:
 
 
 def test_a_degraded_preparation_survives_serialization() -> None:
-    prepared = PreparedContext(status="ready", content="alpha", content_bytes=5, reason="embedding_timeout")
+    prepared = PreparedContext(status="ready", content="alpha", content_bytes=5, reason="inference_timeout")
 
-    assert prepared.model_dump(mode="json", by_alias=True)["reason"] == "embedding_timeout"
+    assert prepared.model_dump(mode="json", by_alias=True)["reason"] == "inference_timeout"
 
 
 def test_the_transport_response_publishes_the_reason() -> None:
     """A named field rather than a model dump: an omission here would drop the reason silently."""
 
-    prepared = PreparedContext(status="ready", content="alpha", content_bytes=5, reason="embedding_unavailable")
+    prepared = PreparedContext(status="ready", content="alpha", content_bytes=5, reason="inference_unavailable")
 
     published = prepared_context_response(prepared)
 
-    assert published.model_dump(mode="json", by_alias=True, exclude_unset=True)["reason"] == "embedding_unavailable"
+    assert published.model_dump(mode="json", by_alias=True, exclude_unset=True)["reason"] == "inference_unavailable"
 
 
 def test_the_transport_response_keeps_the_four_fields_a_host_validates() -> None:
@@ -94,7 +94,7 @@ def test_the_transport_response_keeps_the_four_fields_a_host_validates() -> None
     }
 
 
-@pytest.mark.parametrize("reason", ["timeout", "", "embedding_degraded"])
+@pytest.mark.parametrize("reason", ["timeout", "", "inference_degraded"])
 def test_reason_rejects_causes_outside_the_published_enum(reason: str) -> None:
     with pytest.raises(ValidationError):
         PreparedContext(status="ready", content="alpha", content_bytes=5, reason=cast("Any", reason))

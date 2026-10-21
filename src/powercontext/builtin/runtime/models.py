@@ -60,7 +60,7 @@ from powercontext.sources import ConnectorBinding, SourceObservation, SourceRef
 
 PreparedContextSchema: TypeAlias = Literal["powercontext.prepared-context.v1"]
 PreparedContextStatus: TypeAlias = Literal["ready", "empty"]
-PreparedContextReason: TypeAlias = Literal["embedding_timeout", "embedding_unavailable"]
+PreparedContextReason: TypeAlias = Literal["inference_timeout", "inference_unavailable"]
 ReviewedProposal: TypeAlias = (
     ExperienceContent
     | SkillContent
