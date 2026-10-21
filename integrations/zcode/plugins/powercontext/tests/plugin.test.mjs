@@ -35,17 +35,24 @@ let override = {}
 let dataDir
 
 test('automatic prompt privacy preserves preparation and original accepted events', async t => {
-  for (const sample of privacyCases) {
-    await t.test(sample.id, async () => {
+  const scenarios = [
+    ...privacyCases.map(sample => ({ sample, capture: true })),
+    ...privacyCases.filter(sample => sample.id.endsWith('-header')).map(sample => ({ sample, capture: false })),
+  ]
+  for (const { sample, capture } of scenarios) {
+    await t.test(`${sample.id}-capture-${capture}`, async () => {
       requests.length = 0
       const result = await invoke({
         hookEventName: 'UserPromptSubmit', cwd: dataDir, sessionId: `privacy-${sample.id}`,
         turnId: '1', prompt: sample.prompt,
-      }, { POWERCONTEXT_ZCODE_AUTHORIZATION: sample.authorization ?? '' })
+      }, {
+        POWERCONTEXT_ZCODE_AUTHORIZATION: sample.authorization ?? '',
+        POWERCONTEXT_ZCODE_CAPTURE_PROMPTS: String(capture),
+      })
       const prepares = requests.filter(item => item.path === '/v1/context/prepare')
       const captures = requests.filter(item => item.path === '/v1/sources/content')
       assert.equal(prepares.length, 1, result.stderr)
-      assert.equal(captures.length, sample.sensitive ? 0 : 1)
+      assert.equal(captures.length, sample.sensitive || !capture ? 0 : 1)
       if (sample.sensitive) {
         assert.doesNotMatch(JSON.stringify(requests), /synthetic[-_]value[-_]2084/)
         assert.doesNotMatch(JSON.stringify(result), /synthetic[-_]value[-_]2084/)

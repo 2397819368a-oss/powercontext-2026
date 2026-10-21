@@ -20,6 +20,9 @@ import re
 
 _PATTERN = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)"
+    # Headers can contain schemes, multiple cookies, and folded continuation lines.
+    r"""|(?<![\w-])["']?\b(?:authorization|proxy-authorization|cookie|set-cookie)\b["']?"""
+    r"[ \t]*[:=][ \t]*[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*"
     r"""|(?<![\w-])["']?\b(?:api[_ -]?key|access[_ -]?(?:key|token)|client[_ -]?secret"""
     r"""|secret(?:[_ -]?key)?|private[_ -]?key|password|passwd|passphrase|token|authorization|cookie)\b"""
     r"""["']?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|`[^`\r\n]*`|[^\s,;}\]]+)"""

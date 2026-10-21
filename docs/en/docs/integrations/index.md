@@ -69,6 +69,10 @@ also skips examples such as `password=example`. Ordinary words such as “token 
 The shared synthetic corpus is `tests/fixtures/automatic_prompt_privacy.json`; it defines tested examples,
 not proof that arbitrary credentials are detected.
 
+Authorization, Proxy-Authorization, Cookie and Set-Cookie assignments consume the complete header value,
+including schemes, cookie attributes and folded continuation lines, before ordinary assignments are matched.
+This conservatively removes any other prose on the same header line from the automatic query.
+
 A recognized input is skipped as a whole for capture. The adapter never redacts a Source body and then
 attaches the original event's identity or receipt to it. Accepted events keep their existing host text
 normalization and identity semantics; distinct events and retries follow the host's documented contract.

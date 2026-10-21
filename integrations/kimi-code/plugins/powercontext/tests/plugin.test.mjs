@@ -32,16 +32,20 @@ const { cases: privacyCases } = JSON.parse(await readFile(
 ))
 
 test('automatic prompt privacy preserves preparation and original accepted events', async t => {
-  for (const sample of privacyCases) {
-    await t.test(sample.id, async t => {
-      const state = await fixture(t, {}, { use_token: Boolean(sample.authorization) })
+  const scenarios = [
+    ...privacyCases.map(sample => ({ sample, capture: true })),
+    ...privacyCases.filter(sample => sample.id.endsWith('-header')).map(sample => ({ sample, capture: false })),
+  ]
+  for (const { sample, capture } of scenarios) {
+    await t.test(`${sample.id}-capture-${capture}`, async t => {
+      const state = await fixture(t, {}, { use_token: Boolean(sample.authorization), capture_prompts: capture })
       const result = await state.invoke({
         hook_event_name: 'UserPromptSubmit', cwd: state.workspace,
         session_id: `privacy-${sample.id}`, prompt: sample.prompt,
       }, sample.authorization ? { POWERCONTEXT_KIMI_TOKEN: sample.authorization.slice(7) } : {})
       const prepares = state.requests.filter(item => item.path === '/v1/context/prepare')
       assert.equal(prepares.length, 1, result.stderr)
-      assert.equal(state.captures.length, sample.sensitive ? 0 : 1)
+      assert.equal(state.captures.length, sample.sensitive || !capture ? 0 : 1)
       if (sample.sensitive) {
         assert.doesNotMatch(JSON.stringify(state.requests.map(item => item.body)), /synthetic[-_]value[-_]2084/)
         assert.doesNotMatch(JSON.stringify(result), /synthetic[-_]value[-_]2084/)

@@ -37,8 +37,13 @@ HOOKS = {
 
 
 @pytest.mark.parametrize("host", HOOKS)
-@pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
-def test_automatic_hook_skips_credentials_without_disabling_preparation(tmp_path, host, case):
+@pytest.mark.parametrize(
+    ("case", "capture_enabled"),
+    [(case, True) for case in CASES] + [(case, False) for case in CASES if case["id"].endswith("-header")],
+    ids=[case["id"] for case in CASES]
+    + [f"{case['id']}-capture-disabled" for case in CASES if case["id"].endswith("-header")],
+)
+def test_automatic_hook_skips_credentials_without_disabling_preparation(tmp_path, host, case, capture_enabled):
     requests: list[tuple[str, dict[str, object]]] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -86,7 +91,7 @@ def test_automatic_hook_skips_credentials_without_disabling_preparation(tmp_path
     prefix = f"POWERCONTEXT_{host.upper()}_"
     environment.update({
         f"{prefix}SERVER_URL": f"http://127.0.0.1:{server.server_port}",
-        f"{prefix}CAPTURE_PROMPTS": "true",
+        f"{prefix}CAPTURE_PROMPTS": str(capture_enabled).lower(),
         f"{prefix}FLUSH_ON_CAPTURE": "false",
         "POWERCONTEXT_DIAGNOSTIC_STATE_FILE": str(tmp_path / "diagnostics.json"),
         "POWERCONTEXT_BOOTSTRAP_STATE_DIR": str(tmp_path / "bootstrap"),

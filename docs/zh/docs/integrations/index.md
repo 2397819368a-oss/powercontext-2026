@@ -63,6 +63,9 @@ passphrase、authorization、cookie）、至少八个 token 字符的 Bearer 值
 普通词语不属于赋值。共享合成用例位于 `tests/fixtures/automatic_prompt_privacy.json`，它定义已测试示例，
 不能证明任意凭据都能被识别。
 
+Authorization、Proxy-Authorization、Cookie 和 Set-Cookie 赋值会先匹配完整的 header 值，包含鉴权方案、
+Cookie 属性和折行续接内容，再匹配普通赋值。这种保守处理也会从自动查询中移除同一 header 行的其他说明文字。
+
 识别到凭据时整条跳过捕获，不会修改 Source 正文后继续沿用原事件身份或回执。接受的事件保留既有宿主文本
 规范化和身份语义，不同事件与重试继续遵守各自宿主契约。本地诊断或已配置的观测只报告有界原因
 `sensitive_content`（Kimi 为 `sensitive`），不包含拒绝的文本。Pi 通过配置的诊断输出报告，`off` 表示关闭输出。

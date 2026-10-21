@@ -37,6 +37,31 @@
       "sensitive": true
     },
     {
+      "id": "authorization-header",
+      "prompt": "Authorization: Bearer synthetic-value-2084",
+      "sensitive": true
+    },
+    {
+      "id": "cookie-header",
+      "prompt": "Cookie: theme=light; session=synthetic-value-2084",
+      "sensitive": true
+    },
+    {
+      "id": "proxy-authorization-header",
+      "prompt": "Proxy-Authorization: Basic synthetic-value-2084",
+      "sensitive": true
+    },
+    {
+      "id": "set-cookie-header",
+      "prompt": "Set-Cookie: session=synthetic-value-2084; Secure; HttpOnly",
+      "sensitive": true
+    },
+    {
+      "id": "folded-authorization-header",
+      "prompt": "Authorization: Bearer\r\n synthetic-value-2084\r\nAccept: application/json",
+      "sensitive": true
+    },
+    {
       "id": "bearer",
       "prompt": "Use Bearer synthetic-value-2084 for the request.",
       "sensitive": true
