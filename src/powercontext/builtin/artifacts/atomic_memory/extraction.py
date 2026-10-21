@@ -143,16 +143,21 @@ def _is_text_evidence_projection(projection: JsonValue) -> bool:
 def _compact_source_metadata(value: Source, *, body: JsonValue, body_from_text_projection: bool) -> JsonValue:
     """Keep provenance without re-sending a body that ``content`` already carries.
 
-    Only carriers whose value equals the body are dropped; every other field, including
-    ``payload.metadata`` and unrelated projections, is kept.
+    The dropped carriers are ``content`` and the structured ``wire_content`` of a
+    ContentSource, the ``payload`` content of an observation, and the consumed
+    text-evidence projection. Every other field, including ``payload.metadata`` and
+    unrelated projections, is kept.
     """
 
     dumped = value.model_dump(mode="json", by_alias=True)
     body_text = body.get("content") if isinstance(body, dict) else None
 
     if _duplicates_body(dumped.get("content"), body_text):
+        # ``content`` carries the body, so the structured payload repeats it.
         dumped.pop("content", None)
-    if _duplicates_body(dumped.get("wire_content"), body_text):
+        dumped.pop("wire_content", None)
+        dumped.pop("wire_content_present", None)
+    elif _duplicates_body(dumped.get("wire_content"), body_text):
         dumped.pop("wire_content", None)
         dumped.pop("wire_content_present", None)
 
