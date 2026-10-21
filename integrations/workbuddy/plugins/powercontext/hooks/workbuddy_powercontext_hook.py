@@ -39,6 +39,7 @@ sys.path.insert(0, str(_HOOKS_ROOT))
 sys.path.insert(0, str(_SCRIPTS_ROOT))
 
 import prepared_context as _prepared_context  # noqa: E402
+from prompt_privacy import scrub_secrets  # noqa: E402
 from workbuddy_settings import WorkBuddyPluginSettings  # noqa: E402
 
 if (_HOOKS_ROOT / "powercontext_scope_binding.py").is_file():
@@ -106,7 +107,8 @@ def main(settings: WorkBuddyPluginSettings | None = None) -> int:
         cwd = payload.get("cwd")
         context = None
         if prompt is not None and prompt.strip() and isinstance(cwd, str):
-            query = _recall_query(prompt)
+            safe_prompt = scrub_secrets(prompt, settings.authorization)
+            query = _recall_query(safe_prompt)
             http_deadline = monotonic() + settings.http_budget_seconds
             try:
                 scope_id = resolve_scope_id(
@@ -131,7 +133,10 @@ def main(settings: WorkBuddyPluginSettings | None = None) -> int:
                             deadline=http_deadline,
                         )
 
-                if settings.capture_prompts and len(prompt) <= _MAX_SOURCE_LENGTH:
+                if safe_prompt != prompt:
+                    with suppress(Exception):
+                        _emit_context_event("skipped", event_name="capture_source", reason="sensitive_content")
+                elif settings.capture_prompts and len(prompt) <= _MAX_SOURCE_LENGTH:
                     with suppress(Exception):
                         captured = _capture_prompt(
                             payload,
@@ -549,13 +554,15 @@ def _recall_context(
 def _emit_context_event(
     outcome: str,
     *,
+    event_name: str = "context_prepare",
+    reason: str | None = None,
     http_status: int | None = None,
     context_status: str | None = None,
     content_bytes: int | None = None,
 ) -> None:
     event: dict[str, object] = {
         "component": "powercontext.workbuddy.recall",
-        "event": "context_prepare",
+        "event": event_name,
         "outcome": outcome,
     }
     if http_status is not None:
@@ -564,6 +571,8 @@ def _emit_context_event(
         event["context_status"] = context_status
     if content_bytes is not None:
         event["content_bytes"] = content_bytes
+    if reason is not None:
+        event["reason"] = reason
     sys.stderr.write(json.dumps(event, separators=(",", ":")) + "\n")
 
 

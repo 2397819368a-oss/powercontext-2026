@@ -362,3 +362,7 @@ The outer Codex hook timeout is ten seconds. Recall, capture, and flush fail ind
 the Server is unavailable or rejects authentication. Without an explicit Scope, the plugin resolves the Session
 binding, workspace binding, then Server default. Process-level settings must be present in the environment that starts
 Codex. Windows setup writes authorization to the user environment, but Desktop must be restarted to inherit it.
+
+## Automatic input privacy
+
+See [Automatic prompt privacy](index.md#automatic-prompt-privacy) for this host's capture default, disable control, credential recognition limits and independent read-only query handling. Recognized inputs are skipped for capture; accepted Source content and event identity are not rewritten.

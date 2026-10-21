@@ -905,7 +905,7 @@ toolsets = ["server-mcp", "prompt-hooks"]
 [integrations.evidence]
 implementation = ["integrations/codex/plugins/powercontext/.mcp.json", "integrations/codex/plugins/powercontext/hooks/session_binding.py", "integrations/codex/plugins/powercontext/hooks/recall.py"]
 documentation = ["docs/en/docs/integrations/codex.md", "docs/zh/docs/integrations/codex.md"]
-tests = ["tests/codex_plugin/test_bootstrap.py", "tests/codex_plugin/test_contract.py", "tests/e2e/test_bootstrap_host_service_chain.py", "tests/e2e/test_codex_service_chain.py", "tests/e2e/test_mcp_full_profile.py"]
+tests = ["tests/codex_plugin/test_bootstrap.py", "tests/codex_plugin/test_contract.py", "tests/e2e/test_bootstrap_host_service_chain.py", "tests/e2e/test_codex_service_chain.py", "tests/e2e/test_mcp_full_profile.py", "tests/test_automatic_prompt_privacy.py"]
 
 [[integrations]]
 id = "claude-code"
@@ -917,7 +917,7 @@ toolsets = ["server-mcp", "prompt-hooks"]
 [integrations.evidence]
 implementation = ["integrations/claude-code/plugins/powercontext/.mcp.json", "integrations/claude-code/plugins/powercontext/hooks/session_start.py", "integrations/claude-code/plugins/powercontext/hooks/user_prompt_submit.py"]
 documentation = ["docs/en/docs/integrations/claude-code.md", "docs/zh/docs/integrations/claude-code.md"]
-tests = ["tests/claude_code_plugin/test_bootstrap.py", "tests/claude_code_plugin/test_contract.py", "tests/e2e/test_bootstrap_host_service_chain.py", "tests/e2e/test_claude_code_service_chain.py"]
+tests = ["tests/claude_code_plugin/test_bootstrap.py", "tests/claude_code_plugin/test_contract.py", "tests/e2e/test_bootstrap_host_service_chain.py", "tests/e2e/test_claude_code_service_chain.py", "tests/test_automatic_prompt_privacy.py"]
 
 [[integrations]]
 id = "dsh"
@@ -965,7 +965,7 @@ toolsets = ["opencode-tools"]
 [integrations.evidence]
 implementation = ["integrations/opencode/plugins/powercontext/src/index.ts"]
 documentation = ["docs/en/docs/integrations/opencode.md", "docs/zh/docs/integrations/opencode.md"]
-tests = ["integrations/opencode/plugins/powercontext/tests/plugin.spec.ts"]
+tests = ["integrations/opencode/plugins/powercontext/tests/plugin.spec.ts", "integrations/opencode/plugins/powercontext/tests/prompt-privacy.spec.ts"]
 
 [[integrations]]
 id = "pi"
@@ -977,7 +977,7 @@ toolsets = ["pi-tools", "pi-command", "pi-lifecycle"]
 [integrations.evidence]
 implementation = ["integrations/pi/plugins/powercontext/src/tools.ts", "integrations/pi/plugins/powercontext/extensions/powercontext.ts"]
 documentation = ["docs/en/docs/integrations/pi.md", "docs/zh/docs/integrations/pi.md"]
-tests = ["integrations/pi/plugins/powercontext/tests/extension.spec.ts", "integrations/pi/plugins/powercontext/tests/tools.spec.ts"]
+tests = ["integrations/pi/plugins/powercontext/tests/extension.spec.ts", "integrations/pi/plugins/powercontext/tests/tools.spec.ts", "integrations/pi/plugins/powercontext/tests/prompt-privacy.spec.ts"]
 
 [[integrations]]
 id = "workbuddy"
@@ -989,7 +989,7 @@ toolsets = ["server-mcp", "prompt-hooks"]
 [integrations.evidence]
 implementation = ["integrations/workbuddy/plugins/powercontext/.mcp.json", "integrations/workbuddy/plugins/powercontext/hooks/workbuddy_powercontext_hook.py"]
 documentation = ["docs/en/docs/integrations/workbuddy.md", "docs/zh/docs/integrations/workbuddy.md"]
-tests = ["tests/test_cli_workbuddy.py"]
+tests = ["tests/test_cli_workbuddy.py", "tests/test_automatic_prompt_privacy.py"]
 
 [[integrations]]
 id = "zcode"
