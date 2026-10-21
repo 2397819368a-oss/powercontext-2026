@@ -26,17 +26,25 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import uvicorn
+from fastapi import FastAPI
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from starlette.middleware import Middleware
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from fastmcp.tools.base import ToolResult
+from mcp.types import CallToolRequestParams
+from starlette.applications import Starlette
+from starlette.middleware import Middleware as AsgiMiddleware
+from starlette.routing import Mount
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from typing_extensions import override
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.runtime.config import InferenceConfig, RuntimeConfig
@@ -66,21 +74,58 @@ VIEWER_HEADERS = {"Authorization": "Bearer eval-viewer-token"}
 
 @dataclass(frozen=True, slots=True)
 class ServedRequest:
-    """Content-free record of one HTTP request the Server routed, including MCP's internal bridge."""
+    """Content-free record of one HTTP request the Server routed, including MCP's internal bridge.
+
+    ``mcp_call`` is the index of the MCP tools/call that sent a bridge request; records written before calls were
+    correlated have none.
+    """
 
     operation_id: str
     status: int
     internal: bool
+    mcp_call: int | None = None
 
 
 @dataclass
 class RequestLog:
     requests: list[ServedRequest] = field(default_factory=list)
+    # Tool name of every MCP tools/call the Server received, indexed by ServedRequest.mcp_call.
+    mcp_calls: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> list[ServedRequest]:
         with self.lock:
             return list(self.requests)
+
+    def snapshot_mcp_calls(self) -> list[str]:
+        with self.lock:
+            return list(self.mcp_calls)
+
+
+# The MCP tools/call whose handler is running; its bridge requests run in the same context.
+_mcp_call: ContextVar[int | None] = ContextVar("eval_mcp_call", default=None)
+
+
+class _McpCallRecorder(Middleware):
+    """Number each tools/call, including one the MCP layer rejects before any bridge request."""
+
+    def __init__(self, log: RequestLog) -> None:
+        self.log = log
+
+    @override
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext[CallToolRequestParams],
+        call_next: CallNext[CallToolRequestParams, ToolResult],
+    ) -> ToolResult:
+        with self.log.lock:
+            self.log.mcp_calls.append(context.message.name)
+            index = len(self.log.mcp_calls) - 1
+        token = _mcp_call.set(index)
+        try:
+            return await call_next(context)
+        finally:
+            _mcp_call.reset(token)
 
 
 class _RequestRecorder:
@@ -95,6 +140,7 @@ class _RequestRecorder:
             await self.app(scope, receive, send)
             return
         internal = is_internal_bridge()
+        mcp_call = _mcp_call.get() if internal else None
         status = 500
 
         async def record_status(message: Message) -> None:
@@ -109,7 +155,7 @@ class _RequestRecorder:
             operation_id = getattr(scope.get("route"), "operation_id", None)
             if isinstance(operation_id, str):
                 with self.log.lock:
-                    self.log.requests.append(ServedRequest(operation_id, status, internal))
+                    self.log.requests.append(ServedRequest(operation_id, status, internal, mcp_call))
 
 
 class _TwoTokenAuthentication:
@@ -227,6 +273,12 @@ async def _seed_admin(database_url: str) -> None:
         )
 
 
+def _record_mcp_calls(app: FastAPI, log: RequestLog) -> None:
+    mount = next(route for route in app.routes if isinstance(route, Mount) and route.name == "mcp")
+    # FastMCP runs its first middleware outermost; the Server's own MCP rejections happen in inner middleware.
+    cast(Starlette, mount.app).state.fastmcp_server.middleware.insert(0, _McpCallRecorder(log))
+
+
 def canonical_sha256(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -243,9 +295,10 @@ def serve(profile: str) -> Iterator[EvalServer]:
     log = RequestLog()
     app = create_server_app(
         settings=settings,
-        middleware=(Middleware(_RequestRecorder, log=log),),
+        middleware=(AsgiMiddleware(_RequestRecorder, log=log),),
         authentication_provider=_TwoTokenAuthentication() if profile == "access" else None,
     )
+    _record_mcp_calls(app, log)
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     host, port = listener.getsockname()

@@ -36,7 +36,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from . import claude_code, codex
 from .claude_code import PluginSession
 from .proxy import Fault, Gateway, GatewayEvent, intercept
-from .report import ERROR_CODE, HTTP_STATUS, content_of, leaks, outcome, turn_rows
+from .report import ERROR_CODE, HTTP_STATUS, bind_calls, content_of, leaks, outcome, turn_rows
 from .server import EvalServer, ServedRequest, actions, observe, seed, serve
 from .summary import summarize
 from .transcript import TranscriptError
@@ -228,6 +228,7 @@ def run_case(  # noqa: PLR0913
             "prompts": prompts,
             "served_before_host": served_before_host,
             "served": [dataclasses.asdict(request) for request in server.requests.snapshot()],
+            "mcp_calls": server.requests.snapshot_mcp_calls(),
             "gateway": [dataclasses.asdict(event) for event in events],
             "final_state": observe(case.get("observe"), server, placeholders),
             "read_only_operations": sorted(tool["name"] for tool in server.tool_catalog if tool["read_only"]),
@@ -318,11 +319,16 @@ def score(case: dict[str, Any], private_dir: Path) -> dict[str, Any]:
         problems = _plugin_problems(adapter, manifest, report, turns) if plugin else []
         if problems:
             raise TranscriptError(problems)
+        bindings = bind_calls(
+            turns,
+            prefix=adapter.PREFIX,
+            served=[ServedRequest(**request) for request in observation["served"]],
+            gateway=[GatewayEvent(**event) for event in observation["gateway"]],
+            mcp_calls=observation.get("mcp_calls"),
+        )
     except TranscriptError as error:
         report.update(status="incomplete", problems=error.problems)
     else:
-        served = [ServedRequest(**request) for request in observation["served"]]
-        events = [GatewayEvent(**event) for event in observation["gateway"]]
         report.update(
             status="complete",
             turns=[
@@ -332,8 +338,7 @@ def score(case: dict[str, Any], private_dir: Path) -> dict[str, Any]:
                     read_only=frozenset(observation["read_only_operations"]),
                     case_operation=case["operation_id"],
                     expected=case["expected"],
-                    served=served,
-                    gateway=events,
+                    bindings=bindings,
                 )
                 for turn in turns
             ],

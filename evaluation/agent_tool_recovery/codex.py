@@ -328,14 +328,15 @@ def _is_error(item: dict[str, Any]) -> bool:
     )
 
 
-def _bind_call(item: dict[str, Any], at: datetime) -> ToolCall | str:
+def _bind_call(item: dict[str, Any], issued_at: datetime, at: datetime) -> ToolCall | str:
     """Bind one completed MCP or shell item, or return why it cannot count as a model-issued call."""
 
     item_id = item["id"]
     if item["type"] == "command_execution":
         failed = item.get("status") == "failed" or item.get("exit_code") not in {0, None}
         text = str(item.get("aggregated_output") or "")
-        return ToolCall(item_id, SHELL, {"command": str(item.get("command") or "")}, at, ToolResult(failed, text, at))
+        command = {"command": str(item.get("command") or "")}
+        return ToolCall(item_id, SHELL, command, issued_at, ToolResult(failed, text, at))
     arguments = item.get("arguments")
     if not isinstance(arguments, dict) or not isinstance(item.get("tool"), str):
         return f"Tool call {item_id} without tool name or object arguments"
@@ -343,7 +344,7 @@ def _bind_call(item: dict[str, Any], at: datetime) -> ToolCall | str:
     if text.startswith(HOST_REFUSALS):
         return f"Codex refused tool call {item_id} before sending it"
     name = f"mcp__{item.get('server')}__{item['tool']}"
-    return ToolCall(item_id, name, arguments, at, ToolResult(_is_error(item), text, at))
+    return ToolCall(item_id, name, arguments, issued_at, ToolResult(_is_error(item), text, at))
 
 
 def read_transcript(path: Path, prompts: list[str]) -> list[Turn]:  # noqa: C901, PLR0912
@@ -356,7 +357,8 @@ def read_transcript(path: Path, prompts: list[str]) -> list[Turn]:  # noqa: C901
     if len(receipts) != len(lines):
         raise TranscriptError([f"Receipt times do not match {len(lines)} transcript lines"])
     turn: Turn | None = None
-    started: dict[str, dict[str, Any]] = {}
+    # Receipt time of each started item; overlapping calls are ordered by when they were issued, not completed.
+    started: dict[str, datetime] = {}
     calls: dict[str, ToolCall] = {}
     completed = False
     for index, line in enumerate(lines):
@@ -399,15 +401,14 @@ def read_transcript(path: Path, prompts: list[str]) -> list[Turn]:  # noqa: C901
         item_id = item.get("id")
         if item.get("type") in {"mcp_tool_call", "command_execution"} and isinstance(item_id, str):
             if kind == "item.started":
-                started[item_id] = item
+                started[item_id] = at
                 continue
             if kind != "item.completed":
                 continue
             if item_id in calls:
                 problems.append(f"Duplicate tool call ID {item_id}")
                 continue
-            started.pop(item_id, None)
-            call = _bind_call(item, at)
+            call = _bind_call(item, started.pop(item_id, at), at)
             if isinstance(call, str):
                 problems.append(call)
                 continue
@@ -428,4 +429,6 @@ def read_transcript(path: Path, prompts: list[str]) -> list[Turn]:  # noqa: C901
         problems.append("Turn 1 has no terminal assistant response")
     if problems or turn is None:
         raise TranscriptError(problems)
+    # Items complete in result order; rows follow the order the model issued its calls.
+    turn.calls.sort(key=lambda call: call.at)
     return [turn]

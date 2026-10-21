@@ -260,3 +260,27 @@ def test_codex_binds_shell_commands_as_host_tool_calls(tmp_path: Path) -> None:
     assert [(call.name, call.arguments, call.result.is_error if call.result else None) for call in turn.calls] == [
         ("shell", {"command": "Get-Content SKILL.md"}, False)
     ]
+
+
+def test_codex_keeps_issue_times_of_overlapping_calls(tmp_path: Path) -> None:
+    def item(item_id: str, kind: str) -> dict[str, Any]:
+        event = mcp_item(kind, status="in_progress" if kind == "item.started" else "failed", error="HTTP error 503")
+        return {**event, "item": {**event["item"], "id": item_id}}
+
+    # Both calls start before either completes, and the second completes first.
+    events = [
+        {"type": "turn.started"},
+        item("item_a", "item.started"),
+        item("item_b", "item.started"),
+        item("item_b", "item.completed"),
+        item("item_a", "item.completed"),
+        MESSAGE,
+        DONE,
+    ]
+
+    turn = codex_read(codex(tmp_path, events), [PROMPT])[0]
+
+    assert [(call.call_id, call.at.second, call.result.at.second if call.result else None) for call in turn.calls] == [
+        ("item_a", 1, 4),
+        ("item_b", 2, 3),
+    ]

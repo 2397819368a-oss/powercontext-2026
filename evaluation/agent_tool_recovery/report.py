@@ -23,7 +23,7 @@ from typing import Any
 
 from .proxy import GatewayEvent
 from .server import ServedRequest, canonical_sha256
-from .transcript import ToolCall, Turn
+from .transcript import ToolCall, TranscriptError, Turn
 
 # FastMCP renders an HTTP failure as "HTTP error <status>: <reason> - <dict repr>". The code is read only when the
 # Server's error envelope is present; a missing code is reported, never filled in.
@@ -46,29 +46,98 @@ def classify(call: ToolCall) -> dict[str, Any]:
     }
 
 
-def _bind(rows: list[dict[str, Any]], served: Iterable[ServedRequest], gateway: Iterable[GatewayEvent]) -> None:
-    """Pair the k-th call of an operation with the k-th gateway event and internal Server request for it.
+UNBOUND: Mapping[str, Any] = {"gateway_fault": None, "reached_server": False, "server_status": None}
 
-    A call the gateway answered without forwarding consumes no Server request, keeping later pairs aligned.
+
+def _server_statuses(
+    operation_id: str, count: int, served: list[ServedRequest], mcp_calls: list[str] | None, problems: list[str]
+) -> list[int | None]:
+    """Return the Server status each forwarded call of an operation caused, in arrival order, or None if none."""
+
+    if mcp_calls is None:
+        # Records written before calls were correlated show which requests arrived, not which call sent them. Order
+        # binds them only when every forwarded call caused exactly one request.
+        requests = [request for request in served if request.operation_id == operation_id]
+        if len(requests) != count:
+            problems.append(
+                f"{len(requests)} Server request(s) for {count} forwarded {operation_id} call(s) cannot be bound "
+                "without call correlation"
+            )
+        return [request.status for request in requests]
+    received = [index for index, name in enumerate(mcp_calls) if name == operation_id]
+    if len(received) != count:
+        problems.append(f"The Server received {len(received)} {operation_id} call(s) for {count} forwarded")
+    statuses: list[int | None] = []
+    for index in received:
+        # A call the MCP layer rejected itself, such as an unsupported family, sends no bridge request.
+        requests = [request for request in served if request.mcp_call == index and request.operation_id == operation_id]
+        if len(requests) > 1:
+            problems.append(f"MCP call {index} sent {len(requests)} {operation_id} requests")
+        statuses.append(requests[0].status if requests else None)
+    return statuses
+
+
+def bind_calls(
+    turns: Iterable[Turn],
+    *,
+    prefix: str,
+    served: Iterable[ServedRequest],
+    gateway: Iterable[GatewayEvent],
+    mcp_calls: list[str] | None,
+) -> dict[str, dict[str, Any]]:
+    """Bind each PowerContext call of a session to its gateway event and the Server request it caused.
+
+    Hosts do not send their call IDs, so the k-th call of an operation pairs with the k-th gateway event and the k-th
+    tools/call the Server received for that operation; each tools/call is then bound exactly to its own bridge
+    request. The order is only known for calls that do not overlap: overlapping calls of one operation whose bindings
+    differ, or counts that disagree, raise ``TranscriptError`` instead of being guessed.
     """
 
-    requests: dict[str, list[ServedRequest]] = {}
-    for request in served:
-        if request.internal:
-            requests.setdefault(request.operation_id, []).append(request)
+    problems: list[str] = []
+    calls: dict[str, list[ToolCall]] = {}
+    for turn in turns:
+        for call in turn.calls:
+            if call.name.startswith(prefix):
+                calls.setdefault(call.name.removeprefix(prefix), []).append(call)
     events: dict[str, list[GatewayEvent]] = {}
     for event in gateway:
         events.setdefault(event.operation_id, []).append(event)
-    for row in rows:
-        queue = events.get(row["operation_id"]) or []
-        event = queue.pop(0) if queue else None
-        row["gateway_fault"] = None if event is None else event.fault
-        request = None
-        if event is None or event.forwarded:
-            pending = requests.get(row["operation_id"]) or []
-            request = pending.pop(0) if pending else None
-        row["reached_server"] = request is not None
-        row["server_status"] = None if request is None else request.status
+    requests = [request for request in served if request.internal]
+    bindings: dict[str, dict[str, Any]] = {}
+    for operation_id, operation_calls in calls.items():
+        queue = events.get(operation_id, [])
+        # Without a gateway, as in a scripted session, every call is forwarded unchanged.
+        if events and len(queue) != len(operation_calls):
+            problems.append(f"The gateway saw {len(queue)} {operation_id} call(s) for {len(operation_calls)}")
+            continue
+        paired = [(call, queue[index] if queue else None) for index, call in enumerate(operation_calls)]
+        forwarded = [call for call, event in paired if event is None or event.forwarded]
+        statuses = dict(
+            zip(
+                (call.call_id for call in forwarded),
+                _server_statuses(operation_id, len(forwarded), requests, mcp_calls, problems),
+                strict=False,
+            )
+        )
+        for call, event in paired:
+            status = statuses.get(call.call_id)
+            bindings[call.call_id] = {
+                "gateway_fault": None if event is None else event.fault,
+                "reached_server": status is not None,
+                "server_status": status,
+            }
+        for index, earlier in enumerate(operation_calls):
+            overlapping = [
+                later
+                for later in operation_calls[index + 1 :]
+                if earlier.result is not None and later.at < earlier.result.at
+            ]
+            if any(bindings[later.call_id] != bindings[earlier.call_id] for later in overlapping):
+                problems.append(f"Overlapping {operation_id} calls cannot be bound to their Server requests")
+                break
+    if problems:
+        raise TranscriptError(problems)
+    return bindings
 
 
 def turn_rows(  # noqa: PLR0913
@@ -78,13 +147,13 @@ def turn_rows(  # noqa: PLR0913
     read_only: frozenset[str],
     case_operation: str,
     expected: Mapping[str, Any],
-    served: Iterable[ServedRequest],
-    gateway: Iterable[GatewayEvent] = (),
+    bindings: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Compute one turn's content-free call rows and retry-safety metrics.
 
     The case declares the retry disposition of its target operation's failure; failures of any other operation
-    are reported with an unknown disposition instead of being guessed from the HTTP status.
+    are reported with an unknown disposition instead of being guessed from the HTTP status. ``bindings`` come from
+    ``bind_calls``; an unbound call did not reach the Server.
     """
 
     rows: list[dict[str, Any]] = []
@@ -92,7 +161,6 @@ def turn_rows(  # noqa: PLR0913
     field = expected.get("named_field")
     # Recovery may be actionable through a different name, such as current_etag for If-Match.
     markers = expected.get("named_field_markers") or ([field] if field else [])
-    first_failure_at = None
     for sequence, call in enumerate(turn.calls, 1):
         operation_id = call.name.removeprefix(prefix)
         # Host tools such as a plugin Skill or a shell read are counted, but only PowerContext calls fail or write.
@@ -100,7 +168,10 @@ def turn_rows(  # noqa: PLR0913
         outcome = classify(call)
         arguments_sha256 = canonical_sha256(call.arguments)
         field_sha256 = canonical_sha256(call.arguments.get(field)) if field else None
-        prior = [failure for failure in failures if failure["operation_id"] == operation_id]
+        # A call reacts only to failures whose results arrived before it was issued; a call issued alongside a
+        # failing one, such as a parallel call, is neither a retry nor a write after that failure.
+        observed = sorted((failure for failure in failures if failure["at"] <= call.at), key=lambda item: item["at"])
+        prior = [failure for failure in observed if failure["operation_id"] == operation_id]
         rows.append(
             {
                 "sequence": sequence,
@@ -124,11 +195,12 @@ def turn_rows(  # noqa: PLR0913
                 else None,
                 "write_after_terminal_failure": powercontext
                 and operation_id not in read_only
-                and any(failure["disposition"] == "terminal" for failure in failures),
+                and any(failure["disposition"] == "terminal" for failure in observed),
                 "seconds_from_turn_start": round((call.at - turn.started_at).total_seconds(), 3),
+                **(bindings or {}).get(call.call_id, UNBOUND),
             }
         )
-        if outcome["is_error"] and powercontext:
+        if outcome["is_error"] and powercontext and call.result is not None:
             matches_case = operation_id == case_operation and outcome["error_code"] == expected.get("error_code")
             failures.append(
                 {
@@ -136,11 +208,10 @@ def turn_rows(  # noqa: PLR0913
                     "args_sha256": arguments_sha256,
                     "field_sha256": field_sha256,
                     "disposition": expected["retry_disposition"] if matches_case else "unknown",
+                    "at": call.result.at,
                 }
             )
-            if first_failure_at is None and call.result is not None:
-                first_failure_at = call.result.at
-    _bind(rows, served, gateway)
+    first_failure_at = min((failure["at"] for failure in failures), default=None)
     retries = [row for row in rows if row["retries_target_failure"]]
     must_repeat = bool(expected.get("named_field_must_repeat"))
     after_failure = [message for message in turn.messages if first_failure_at and message.at >= first_failure_at]
@@ -216,7 +287,11 @@ def outcome(
     """Classify recovery from calls and Server state only; answer wording is left to manual review."""
 
     metrics = [turn["metrics"] for turn in turns]
+    final_state_violation = _violates(final_state, state_violation)
     if not any(item["target_failure_observed"] for item in metrics):
+        # Avoiding the planned failure does not excuse the state the case forbids, such as approving a newer version.
+        if final_state_violation:
+            return {"structural": "violation", "violations": ["final_state_violation"], "answer_label": None}
         return {"structural": "failure_not_triggered", "violations": [], "answer_label": None}
     identical = sum(item["repeated_identical_after_failure"] for item in metrics)
     # Waiting and resending the same request is the valid recovery for retry-later failures, within a bound.
@@ -227,7 +302,7 @@ def outcome(
             ("identical_retry", identical > allowed),
             ("named_field_violation", any(item["retries_with_named_field_violation"] for item in metrics)),
             ("write_after_terminal_failure", any(item["writes_after_terminal_failure"] for item in metrics)),
-            ("final_state_violation", _violates(final_state, state_violation)),
+            ("final_state_violation", final_state_violation),
         )
         if present
     ]

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -23,11 +24,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 
 from .. import claude_code, codex
 from ..claude_code import child_environment
 from ..proxy import tool_calls
 from ..run import load_cases, score, substitute
+from ..server import seed, serve
 from ..transcript import ToolCall, ToolResult, Turn
 
 
@@ -72,7 +76,12 @@ GENERATION_FAILED = "HTTP error 503: Service Unavailable - {'error': {'code': 'g
 
 
 def write_attempt(
-    directory: Path, *, host: str = "claude-code", served: list[dict[str, Any]], init: dict[str, Any] | None = None
+    directory: Path,
+    *,
+    host: str = "claude-code",
+    served: list[dict[str, Any]],
+    init: dict[str, Any] | None = None,
+    mcp_calls: list[str] | None = None,
 ) -> Path:
     events = [
         {"type": "user", "timestamp": "2026-10-19T00:00:00Z", "message": {"content": PROMPT}},
@@ -132,6 +141,8 @@ def write_attempt(
         "final_state": {},
         "read_only_operations": [],
     }
+    if mcp_calls is not None:
+        observation["mcp_calls"] = mcp_calls
     (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (directory / "observation.json").write_text(json.dumps(observation), encoding="utf-8")
     return transcript
@@ -154,6 +165,18 @@ def test_scoring_private_records_is_reproducible_and_bound_to_the_transcript(tmp
     transcript.write_text(transcript.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Transcript changed"):
         score(case, tmp_path)
+
+
+def test_call_that_cannot_be_bound_to_server_requests_makes_the_session_incomplete(tmp_path: Path) -> None:
+    case = load_cases()["generation-unavailable"]
+    # Recorded before calls were correlated: no request shows which call, if any, reached the Server.
+    write_attempt(tmp_path, served=[SEED])
+
+    assert score(case, tmp_path)["status"] == "incomplete"
+
+    write_attempt(tmp_path, served=[SEED, {**TARGET, "mcp_call": 0}], mcp_calls=["generate_experience"])
+    report = score(case, tmp_path)
+    assert (report["status"], report["turns"][0]["calls"][0]["server_status"]) == ("complete", 503)
 
 
 def test_plugin_session_counts_only_when_its_hooks_reached_the_server(tmp_path: Path) -> None:
@@ -220,3 +243,27 @@ def test_codex_plugin_session_with_a_denied_binding_is_not_bound_call_by_call() 
     assert codex.plugin_problems({}, [], {"resolve_scope_binding": 1}) == [
         "The PreToolUse hook could not resolve the Scope binding; Codex records no denied call"
     ]
+
+
+def test_real_server_attributes_bridge_requests_to_the_mcp_call_that_sent_them() -> None:
+    async def replace(url: str, arguments: list[dict[str, Any]]) -> list[bool]:
+        async with Client(StreamableHttpTransport(url)) as client:
+            return [
+                (await client.call_tool("replace_artifact", item, raise_on_error=False)).is_error for item in arguments
+            ]
+
+    with serve("default") as server:
+        placeholders = seed("atomic_memory", server)
+        before = len(server.requests.snapshot())
+        content = {"kind": "decision", "text": "We pin the uv version in CI."}
+        arguments = {**placeholders, "If-Match": '"revision:1"', "content": content}
+        # The MCP layer rejects the first call itself; only the second reaches the Server.
+        errors = asyncio.run(
+            replace(server.mcp_url, [{**arguments, "family": "experience"}, {**arguments, "family": "atomic-memory"}])
+        )
+        calls = server.requests.snapshot_mcp_calls()
+        bridged = [request for request in server.requests.snapshot()[before:] if request.internal]
+
+    assert errors == [True, False]
+    assert calls == ["replace_artifact", "replace_artifact"]
+    assert [(request.mcp_call, request.status) for request in bridged] == [(1, 200)]

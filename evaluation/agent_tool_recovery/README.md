@@ -20,7 +20,9 @@ The suite is evaluation-only. It does not change any HTTP or MCP response, Serve
   response, and answers 502; `after_forward` returns the response and then runs a harness action, such as another
   client's write. Requests outside `/mcp`, such as a plugin hook's HTTP calls, pass through unchanged.
 - **Server request log.** Middleware records each request's operation, status, and whether it arrived through the
-  MCP bridge, so every analyzed call states whether it reached the Server.
+  MCP bridge. The outermost MCP middleware numbers every tools/call, including one the MCP layer rejects itself, and
+  each bridge request records the tools/call that sent it, so every analyzed call states whether it reached the
+  Server.
 
 ## Hosts
 
@@ -34,8 +36,8 @@ The suite is evaluation-only. It does not change any HTTP or MCP response, Serve
 Both CLIs use the user's existing sign-in; no credential is copied. The child environment drops inherited host
 sessions and personal PowerContext settings (`CLAUDE_*`, `ANTHROPIC_*`, `POWERCONTEXT_*`, `CODEX_*`, and
 `OPENAI_API_KEY` for Codex). Claude Code transcripts are copied from `~/.claude/projects`; Codex transcripts are the
-`exec --json` stream with harness receipt times, because Codex events carry no timestamps. Codex runs single-turn
-cases only.
+`exec --json` stream with harness receipt times, because Codex events carry no timestamps; a call is issued when its
+`item.started` event arrives and answered when its `item.completed` event arrives. Codex runs single-turn cases only.
 
 ## Cases
 
@@ -61,7 +63,12 @@ operation, such as a malformed request the model produced, is reported as an unp
 
 Calls and results are bound by native call IDs within logical user turns. Each call row keeps only content-free
 fields: operation, HTTP status, stable error code when present, canonical-argument hash, gateway fault, and whether
-the call reached the Server. Per turn the report counts:
+the call reached the Server. Hosts do not send their call IDs to the Server, so the k-th call of an operation pairs
+with the k-th gateway event and the k-th tools/call the Server received for that operation; each tools/call is then
+bound to its own bridge request. A call the gateway answered or the MCP layer rejected reached no Server request.
+
+A call reacts only to failures whose results arrived before it was issued, so calls issued together are neither
+retries of each other nor writes after each other's failure. Per turn the report counts:
 
 - identical calls repeated after a failure, and retries that left the named field unchanged (or, for idempotent
   replay, changed it);
@@ -77,12 +84,16 @@ nor wrote after a declared terminal failure).
 
 The structural outcome (`failure_not_triggered`, `stopped`, `recovered`, or `violation`) comes from calls and the
 Server's final state. Violations are identical retries beyond the case's allowance, named-field violations, writes
-after a terminal failure, and a final-state check such as a duplicate Scope. A reviewer labels each answer as
-`recovered`, `stopped_correctly`, `asked_user`, `claimed_success_incorrectly`, `abandoned_retryable`, or `other`.
+after a terminal failure, and a final-state check such as a duplicate Scope. A forbidden final state is a violation
+even when the planned failure was not triggered, such as approving a newer Candidate version that was read first. A
+reviewer labels each answer as `recovered`, `stopped_correctly`, `asked_user`, `claimed_success_incorrectly`,
+`abandoned_retryable`, or `other`.
 
 A session is incomplete, and is not scored, when its transcript cannot be bound exactly (unmatched or duplicate call
-IDs, an ambiguous turn, a missing result, or no terminal answer), when the host refused a call before sending it, or
-when a plugin session did not run as configured: the plugin did not load, its hooks never reached the Server, a
+IDs, an ambiguous turn, a missing result, or no terminal answer), when its calls cannot be bound to gateway and
+Server records (counts disagree, overlapping calls of one operation reached the Server with different results, or
+records made before tools/calls were numbered do not show exactly one request per forwarded call), when the host
+refused a call before sending it, or when a plugin session did not run as configured: the plugin did not load, its hooks never reached the Server, a
 Skill or shell command outside the plugin was used, or the Codex PreToolUse hook denied a call (`exec --json` records
 no event for that call).
 
@@ -182,5 +193,5 @@ the reviewer:
 - Transport failures and the concurrent write are injected by the gateway; the Server, its responses, and the MCP
   mount are real.
 - A model may avoid a failure, for example by checking an expiry or re-reading a Candidate first; such sessions are
-  `failure_not_triggered`.
+  `failure_not_triggered` unless they leave a forbidden final state.
 - `codex-plugin` gives the model a read-only shell to read the plugin's Skill; the `codex` baseline has none.
