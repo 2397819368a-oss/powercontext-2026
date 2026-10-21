@@ -41,6 +41,7 @@ from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.dream_schema import assert_dream_schema_ready
 from powercontext.builtin.persistence.errors import PersistenceError
 from powercontext.builtin.persistence.schema import create_tables
+from powercontext.builtin.persistence.topic_memory_recovery_schema import BUDGET, prepare_topic_memory_recovery_schema
 
 _WARMUP_RETRY_SECONDS = 0.05
 _WARMUP_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
@@ -114,6 +115,10 @@ class SQLiteProfile:
         profile = cls(database=database, tables=tables)
         try:
             await assert_dream_schema_ready(engine)
+            if tables:
+                await prepare_topic_memory_recovery_schema(
+                    engine, initialize=any(table.name == BUDGET for table in tables)
+                )
             await _warm_sqlite(engine, config)
             async with database.transaction() as connection:
                 await create_tables(connection, tables)

@@ -17,9 +17,9 @@ import json
 import os
 import subprocess
 import sys
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Self
 from unittest.mock import Mock
 
@@ -703,6 +703,40 @@ def test_server_identity_reset_reports_explicit_legacy_database_required(tmp_pat
     assert "database='powercontext'" in result.stderr
     assert "Traceback" not in result.output
     assert isinstance(result.exception, SystemExit)
+
+
+def test_cli_without_distribution_metadata_keeps_core_commands(monkeypatch) -> None:
+    monkeypatch.setattr("powercontext.cli.app.requires", Mock(side_effect=PackageNotFoundError("powercontext")))
+    cli = create_cli()
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert all(command in result.output for command in ("capabilities", "candidate", "stats", "setup", "doctor"))
+    for command in ("code", "server", "service"):
+        missing = CliRunner().invoke(cli, [command, "--help"])
+        assert missing.exit_code == 2
+        assert f"No such command '{command}'" in missing.output
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "missing"),
+    [
+        ("setup", "powercontext.cli.system:setup_app", "click"),
+        ("doctor", "powercontext.cli.system:doctor_app", "click"),
+        ("server", "powercontext.server.cli:app", "missing_server_dependency"),
+        ("custom", "third_party.commands:app", "missing_plugin_dependency"),
+    ],
+)
+def test_cli_reports_broken_command_providers(monkeypatch, name: str, value: str, missing: str) -> None:
+    error = ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+    provider = SimpleNamespace(name=name, value=value, load=Mock(side_effect=error))
+    monkeypatch.setattr("powercontext.cli.app.entry_points", lambda **_kwargs: [provider])
+
+    with pytest.raises(
+        RuntimeError, match=f"Cannot load CLI command provider '{name}': missing module '{missing}'"
+    ) as exc:
+        create_cli()
+    assert exc.value.__cause__ is error
 
 
 def test_server_identity_reset_requires_offline_confirmation_and_rotates(tmp_path) -> None:
