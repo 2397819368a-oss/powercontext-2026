@@ -8463,6 +8463,13 @@ components:
         content_bytes:
           type: integer
           minimum: 0
+        reason:
+          allOf:
+            - $ref: "#/components/schemas/PreparedContextReason"
+          nullable: true
+          description: >-
+            Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked
+            with `explain` and a channel was lost, so a response a Host injects keeps its four fields.
     BootstrapContextItem:
       type: object
       additionalProperties: false
@@ -10417,6 +10424,12 @@ components:
           type: boolean
           default: false
           description: Opt into current-Scope native code evidence. No index is built during preparation.
+        explain:
+          type: boolean
+          default: false
+          description: >-
+            Opt into reporting which retrieval channel this preparation lost, as `reason` on the response. Off by
+            default, because a response a Host injects keeps its four fields.
         assembly:
           $ref: "#/components/schemas/ContextAssembly"
         bootstrap_receipt_id:
@@ -11830,6 +11843,9 @@ components:
     BootstrapReceiptState:
       type: string
       enum: [pending, injected, skipped, failed]
+    PreparedContextReason:
+      type: string
+      enum: [embedding_timeout, embedding_unavailable]
     BootstrapSkipReason:
       type: string
       enum: [disabled, no_eligible_context, already_delivered, preparation_failed]

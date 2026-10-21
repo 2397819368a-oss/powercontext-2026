@@ -1497,7 +1497,10 @@ def create_app(
     _add_route(app, SEARCH_MEMORY, search_memory)
     _add_route(app, PREPARE_BOOTSTRAP_CONTEXT, prepare_bootstrap_context)
     _add_route(app, RECORD_BOOTSTRAP_DELIVERY, record_bootstrap_delivery)
-    _add_route(app, PREPARE_CONTEXT, prepare_context)
+    # This response publishes exactly the fields it built: ``reason`` exists only when the request asked
+    # with ``explain``, and serializing the model's defaults would add a null that every Host's
+    # four-field validator rejects on an ordinary injection.
+    _add_route(app, PREPARE_CONTEXT, prepare_context, response_model_exclude_unset=True)
     _add_route(app, QUERY_CODE, query_code)
     _add_route(app, CREATE_WORK_CONTRACT, create_work_contract)
     _add_route(app, HANDOFF_CURRENT_WORK, handoff_current_work)
@@ -1508,7 +1511,8 @@ def create_app(
     _add_route(app, FINALIZE_HANDOFF, finalize_handoff)
     _add_route(app, COMMIT_HANDOFF, commit_handoff)
     _add_route(app, CONTINUE_HANDOFF, continue_handoff)
-    _add_route(app, PREPARE_HANDOFF_HINT, prepare_handoff_hint)
+    # A hint carries no retrieval, so ``reason`` stays unset and the envelope keeps its four fields.
+    _add_route(app, PREPARE_HANDOFF_HINT, prepare_handoff_hint, response_model_exclude_unset=True)
     _add_route(app, LIST_MEMORY_ENTRIES, list_memory_entries)
     _add_route(app, GET_MEMORY_CAPACITY, get_memory_capacity)
     _add_route(app, GET_MEMORY_ENTRY, get_memory_entry)
@@ -4642,6 +4646,8 @@ def _add_route(
     app: FastAPI,
     operation: Operation[_RequestT, _ResponseT],
     endpoint: Callable[..., Awaitable[_ResponseT | Response]],
+    *,
+    response_model_exclude_unset: bool = False,
 ) -> None:
     observed = _observe_application_operation(app, operation, endpoint)
     app.router.add_api_route(
@@ -4656,6 +4662,7 @@ def _add_route(
         tags=list(operation.tags),
         dependencies=[] if operation.access is None else [Depends(_authorization_dependency(operation))],
         route_class_override=_EncodedPathAPIRoute if operation.path.startswith("/v1/scopes/") else None,
+        response_model_exclude_unset=response_model_exclude_unset,
     )
 
 

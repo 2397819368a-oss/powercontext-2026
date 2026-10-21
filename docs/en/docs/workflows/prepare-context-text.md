@@ -45,11 +45,20 @@ curl --fail-with-body -sS http://127.0.0.1:8000/v1/context/prepare \
 mv "$tmp_context" context.md
 ```
 
-Authenticated Servers require the same Authorization header as other API calls. The HTTP envelope still has four
-fields: `schema`, `status`, `content`, and `content_bytes`. Write or inject `content` directly. It is already the
-final text, including the historical-evidence notice, section headings, literal bodies, exact citations, and
+Authenticated Servers require the same Authorization header as other API calls. The HTTP envelope carries
+`schema`, `status`, `content` and `content_bytes`. Write or inject `content` directly. It is already the final
+text, including the historical-evidence notice, section headings, literal bodies, exact citations, and
 truncation flags. An empty result has `status: "empty"`, `content: null`, and `content_bytes: 0`. HTTP 4xx/5xx
 responses or invalid response shapes leave the previous file untouched and return a non-zero exit code.
+
+Add `"explain": true` to the request to also learn whether the preparation lost a retrieval channel it would
+otherwise have used: the response then carries a `reason`, `embedding_timeout` when the
+`recall_embedding_timeout_seconds` budget expired and `embedding_unavailable` when the provider failed. The field
+is absent unless a channel was lost, and absent entirely from a request that does not ask, so the four fields a
+Host validates never change. It names a lost channel, not an empty scope: a keyword-only deployment that never
+asks for vectors never sets it. The same event is logged as `memory.search.embedding_fallback` or
+`topic_memory.search.embedding_fallback`, so an operator keeps the signal even for a Host that never opts in, and
+neither the log nor the reason carries the query.
 
 The equivalent Python request uses the shared Client:
 

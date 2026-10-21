@@ -47,9 +47,16 @@ mv "$tmp_context" context.md
 `--header "$POWERCONTEXT_AUTH_HEADER"`。`status: "empty"` 是成功的空结果，会生成空文件；HTTP 4xx/5xx 或响应结构错误
 会保留原有文件并返回非零退出码。
 
-HTTP 外层仍然是 `schema`、`status`、
-`content`、`content_bytes` 四个字段。直接写出或注入 `content` 即可：它已经包含历史证据提示、章节标题、按字面
-展示的正文、精确引用和截断标记。空结果为 `status: "empty"`、`content: null`、`content_bytes: 0`。
+HTTP 外层是 `schema`、`status`、`content`、`content_bytes` 四个字段。直接写出或注入 `content` 即可：它已经包含
+历史证据提示、章节标题、按字面展示的正文、精确引用和截断标记。空结果为 `status: "empty"`、`content: null`、
+`content_bytes: 0`。
+
+请求里加 `"explain": true`，就能额外知道本次准备是否丢了一条本来会用的召回通道：此时响应会带 `reason`，
+`embedding_timeout` 表示 `recall_embedding_timeout_seconds` 预算耗尽，`embedding_unavailable` 表示 provider 报错。
+没有丢通道时该字段不出现，不询问的请求更是完全没有这个键，所以 Host 校验的那四个字段永远不会变。它标记的是
+「某条通道丢了」，不是「结果为空」；纯关键词部署从不请求向量，因此永远不会出现。同一个事件也会以
+`memory.search.embedding_fallback` 或 `topic_memory.search.embedding_fallback` 写进服务端日志，所以即使 Host
+从不 opt-in，运维也拿得到这个信号，且日志与 `reason` 都不含查询文本。
 
 Python Client 的等价调用：
 

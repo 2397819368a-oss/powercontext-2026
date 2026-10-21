@@ -8310,6 +8310,37 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "status": {"$ref": "#/components/schemas/PreparedContextStatus"},
                     "content": {"type": "string", "nullable": True},
                     "content_bytes": {"type": "integer", "minimum": 0.0},
+                    "reason": {
+                        "allOf": [{"$ref": "#/components/schemas/PreparedContextReason"}],
+                        "description": "Why this "
+                        "preparation "
+                        "lost a "
+                        "retrieval "
+                        "channel "
+                        "it would "
+                        "otherwise "
+                        "have "
+                        "used. "
+                        "Absent "
+                        "unless "
+                        "the "
+                        "request "
+                        "asked "
+                        "with "
+                        "`explain` "
+                        "and a "
+                        "channel "
+                        "was "
+                        "lost, so "
+                        "a "
+                        "response "
+                        "a Host "
+                        "injects "
+                        "keeps "
+                        "its four "
+                        "fields.",
+                        "nullable": True,
+                    },
                 },
                 "additionalProperties": False,
                 "type": "object",
@@ -9786,6 +9817,37 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "built "
                         "during "
                         "preparation.",
+                        "default": False,
+                    },
+                    "explain": {
+                        "type": "boolean",
+                        "description": "Opt "
+                        "into "
+                        "reporting "
+                        "which "
+                        "retrieval "
+                        "channel "
+                        "this "
+                        "preparation "
+                        "lost, "
+                        "as "
+                        "`reason` "
+                        "on "
+                        "the "
+                        "response. "
+                        "Off "
+                        "by "
+                        "default, "
+                        "because "
+                        "a "
+                        "response "
+                        "a "
+                        "Host "
+                        "injects "
+                        "keeps "
+                        "its "
+                        "four "
+                        "fields.",
                         "default": False,
                     },
                     "assembly": {"$ref": "#/components/schemas/ContextAssembly"},
@@ -11504,6 +11566,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "BootstrapContextStatus": {"type": "string", "enum": ["ready", "empty", "skipped"]},
             "BootstrapContextItemKind": {"type": "string", "enum": ["atomic-memory", "handoff"]},
             "BootstrapReceiptState": {"type": "string", "enum": ["pending", "injected", "skipped", "failed"]},
+            "PreparedContextReason": {"type": "string", "enum": ["embedding_timeout", "embedding_unavailable"]},
             "BootstrapSkipReason": {
                 "type": "string",
                 "enum": ["disabled", "no_eligible_context", "already_delivered", "preparation_failed"],

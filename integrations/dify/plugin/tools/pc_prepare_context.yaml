@@ -80,6 +80,11 @@ output_schema:
         content_bytes:
           $ref: '#/definitions/Result/properties/content_bytes'
           type: number
+        reason:
+          $ref: '#/definitions/Result/properties/reason'
+          description: Why this preparation lost a retrieval channel it would otherwise
+            have used. Absent unless the request asked with `explain` and a channel
+            was lost, so a response a Host injects keeps its four fields.
       description: Complete successful HTTP response; empty object on error or unknown
         outcome.
   required:
@@ -108,6 +113,17 @@ output_schema:
         content_bytes:
           type: integer
           minimum: 0
+        reason:
+          anyOf:
+          - allOf:
+            - type: string
+              enum:
+              - embedding_timeout
+              - embedding_unavailable
+            description: Why this preparation lost a retrieval channel it would otherwise
+              have used. Absent unless the request asked with `explain` and a channel
+              was lost, so a response a Host injects keeps its four fields.
+          - type: 'null'
       description: Complete successful HTTP response; empty object on error or unknown
         outcome.
 extra:
