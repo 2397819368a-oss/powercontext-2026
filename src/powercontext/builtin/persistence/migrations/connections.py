@@ -29,7 +29,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from powercontext.builtin.persistence.bootstrap import database_is_available, ensure_database
+from powercontext.builtin.persistence.bootstrap import (
+    DatabaseAccessError,
+    DatabaseCreationError,
+    database_is_available,
+    ensure_database,
+)
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.oceanbase import profile as oceanbase_profile
 from powercontext.builtin.persistence.seekdb import SeekDBConfig
@@ -143,7 +148,7 @@ class MaintenanceConnections:
             try:
                 await _require_explicit_database(config, instance.connection_options())
                 if writable:
-                    await ensure_database(
+                    await _provision_database(
                         engine,
                         lambda: seekdb_profile._create_engine(
                             config.model_copy(update={"echo": False}), instance.connection_options(), database=""
@@ -231,6 +236,26 @@ class MaintenanceConnections:
                         return await connection.run_sync(execute)
         finally:
             await _dispose_engine(engine)
+
+
+async def _provision_database(
+    engine: AsyncEngine,
+    instance_engine: Callable[[], AsyncEngine],
+    *,
+    name: str,
+) -> None:
+    """Turn provisioning failures into the maintenance error contract.
+
+    The bootstrap layer already produced administrator guidance; without this
+    translation ``db-migrate`` would report a traceback instead of its documented
+    blocked JSON payload.
+    """
+    try:
+        await ensure_database(engine, instance_engine, name=name)
+    except DatabaseAccessError as error:
+        raise MigrationError("database_access_denied", str(error)) from error
+    except DatabaseCreationError as error:
+        raise MigrationError("database_creation_required", str(error)) from error
 
 
 async def _require_explicit_database(config: SeekDBConfig, options: Mapping[str, object]) -> None:

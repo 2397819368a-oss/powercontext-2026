@@ -427,3 +427,33 @@ def test_seekdb_legacy_database_refusal_is_a_maintenance_error(tmp_path: Path, m
         MaintenanceConnections(SeekDBConfig(path=path)).run(unexpected, writable=True)
     assert error.value.code == "explicit_database_required"
     assert "POWERCONTEXT_SERVER_DATABASE_DATABASE" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "code"),
+    [
+        (
+            lambda: connections.DatabaseAccessError("custom-db", "CREATE DATABASE IF NOT EXISTS `custom-db`"),
+            "database_access_denied",
+        ),
+        (
+            lambda: connections.DatabaseCreationError("custom-db", "CREATE DATABASE IF NOT EXISTS `custom-db`"),
+            "database_creation_required",
+        ),
+    ],
+)
+def test_seekdb_provisioning_failure_is_a_maintenance_error(tmp_path: Path, monkeypatch, error_factory, code) -> None:
+    path, _assert_locked = _fake_seekdb(tmp_path, monkeypatch)
+
+    async def refuse(*_args, **_options):
+        raise error_factory()
+
+    monkeypatch.setattr(connections, "ensure_database", refuse)
+
+    def unexpected(connection: Connection | None, _identity: BackendIdentity, verify: Callable[[], None]):
+        pytest.fail("a provisioning failure must not run the maintenance operation")
+
+    with pytest.raises(MigrationError) as error:
+        MaintenanceConnections(SeekDBConfig(path=path, database="custom-db")).run(unexpected, writable=True)
+    assert error.value.code == code
+    assert "administrator" in str(error.value)

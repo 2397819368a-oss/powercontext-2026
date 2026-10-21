@@ -22,13 +22,17 @@ import signal
 from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from sqlite3 import SQLITE_CANTOPEN
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Never
 
 import typer
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
-from powercontext.builtin.persistence.bootstrap import MissingDatabaseError
+from powercontext.builtin.persistence.bootstrap import (
+    DatabaseAccessError,
+    DatabaseCreationError,
+    MissingDatabaseError,
+)
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
 from powercontext.builtin.persistence.processing_migration import (
@@ -138,8 +142,16 @@ def processing_migrate(
             raise typer.BadParameter(_missing_read_only_database(error)) from error
         except (SeekDBInspectionError, LegacySeekDBDatabaseError) as error:
             raise typer.BadParameter(str(error)) from error
+        except (DatabaseAccessError, DatabaseCreationError) as error:
+            _report_database_guidance(error)
     if not ready:
         raise typer.Exit(code=1)
+
+
+def _report_database_guidance(error: DatabaseAccessError | DatabaseCreationError) -> Never:
+    """Print provisioning guidance verbatim; the rich error panel truncates long statements."""
+    typer.echo(str(error), err=True)
+    raise typer.Exit(code=2)
 
 
 def _missing_read_only_database(error: MissingDatabaseError) -> str:
@@ -223,7 +235,12 @@ def identity_reset(
     with server_settings_context(env_file=env_file) as settings:
         if isinstance(settings.database, SQLiteConfig) and not settings.database.is_persistent:
             raise typer.BadParameter("identity reset requires a persistent database")  # noqa: TRY003
-        server_id = asyncio.run(_reset_server_identity(settings))
+        try:
+            server_id = asyncio.run(_reset_server_identity(settings))
+        except LegacySeekDBDatabaseError as error:
+            raise typer.BadParameter(str(error)) from error
+        except (DatabaseAccessError, DatabaseCreationError) as error:
+            _report_database_guidance(error)
     typer.echo(server_id)
 
 
@@ -269,6 +286,8 @@ def atomic_memory_migrate(
             raise typer.BadParameter(_missing_read_only_database(error)) from error
         except (SeekDBInspectionError, LegacySeekDBDatabaseError) as error:
             raise typer.BadParameter(str(error)) from error
+        except (DatabaseAccessError, DatabaseCreationError) as error:
+            _report_database_guidance(error)
         except OperationalError as error:
             sqlite_code = getattr(error.orig, "sqlite_errorcode", None)
             if (
@@ -304,6 +323,8 @@ def atomic_memory_rebuild_projection(
             )
         except LegacySeekDBDatabaseError as error:
             raise typer.BadParameter(str(error)) from error
+        except (DatabaseAccessError, DatabaseCreationError) as error:
+            _report_database_guidance(error)
     if not ready:
         raise typer.Exit(code=1)
 
