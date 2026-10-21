@@ -26,7 +26,7 @@ from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryCont
 from powercontext.builtin.artifacts.memory.prompts import MemoryExtractionProfile
 from powercontext.builtin.inference import InvalidInferenceOutputError, StructuredGenerator, TokenEstimator
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
-from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, SourceObservation, SourceRef, TextEvidence
+from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, Source, SourceObservation, SourceRef, TextEvidence
 
 _JSON = TypeAdapter(JsonValue)
 
@@ -129,6 +129,47 @@ class AtomicMemoryGenerationPipeline:
         return output.candidates
 
 
+def _compact_source_metadata(value: Source, *, content_from_text_projection: bool) -> JsonValue:
+    """Keep Source provenance without repeating a body that ``content`` already carries.
+
+    The extraction input already supplies each body in ``content``. A full Source dump puts the same
+    text back two or three more times — ``ContentSource.content``, ``payload.content``, and the
+    text-evidence projection whose value *is* those bytes — which spends the input token budget on
+    text the model has already read. Strip only those carriers. Every other provenance key stays,
+    including ``metadata``, ``payload.metadata``, ``definition_version`` and ``working_note``.
+    """
+
+    dumped = value.model_dump(mode="json", by_alias=True)
+    if not isinstance(value, SourceObservation):
+        body = dumped.get("content")
+        dumped.pop("content", None)
+        if body is not None and dumped.get("wire_content") == body:
+            # Raw wire bytes can repeat the same body; any other value is distinct evidence.
+            dumped.pop("wire_content", None)
+            dumped.pop("wire_content_present", None)
+        return _JSON.validate_python(dumped)
+    payload = dumped.get("payload")
+    if isinstance(payload, dict):
+        payload.pop("content", None)
+    projections = dumped.get("projections")
+    if isinstance(projections, list):
+        text_evidence_key = TEXT_EVIDENCE_PROJECTION_KEY.model_dump(mode="json")
+        kept: list[JsonValue] = []
+        for projection in projections:
+            if not isinstance(projection, dict):
+                kept.append(projection)
+                continue
+            if content_from_text_projection and projection.get("key") == text_evidence_key:
+                # Its value is the ``content`` object itself, body and metadata included.
+                continue
+            projected = projection.get("value")
+            if isinstance(projected, dict):
+                projection = {**projection, "value": {key: item for key, item in projected.items() if key != "content"}}
+            kept.append(projection)
+        dumped["projections"] = kept
+    return _JSON.validate_python(dumped)
+
+
 async def project_atomic_memory_evidence(
     stored: StoredSource,
     sources: SourceRepository,
@@ -139,11 +180,13 @@ async def project_atomic_memory_evidence(
     """Expose source-provided dates in content/metadata without synthesizing time."""
 
     value = stored.value
+    content_from_text_projection = False
     if isinstance(value, SourceObservation):
         content = value.payload
         for projection in value.projections:
             if projection.key == TEXT_EVIDENCE_PROJECTION_KEY:
                 content = TextEvidence.model_validate(projection.value).model_dump(mode="json")
+                content_from_text_projection = True
                 break
     else:
         materialized = await sources.read_value(value)
@@ -155,7 +198,7 @@ async def project_atomic_memory_evidence(
         source_ref=stored.ref,
         journal_position=stored.journal_position,
         content=_JSON.validate_python(content),
-        source_metadata=_JSON.validate_python(value.model_dump(mode="json", by_alias=True)),
+        source_metadata=_compact_source_metadata(value, content_from_text_projection=content_from_text_projection),
         via_artifact=via_artifact,
     )
 
