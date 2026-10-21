@@ -1027,7 +1027,11 @@ def test_experience_search_retry_keeps_the_result_page(dashboard: TestClient, mo
         params={"scope": scope, "kind": "experience", "q": "needle", "experience_page": "2"},
     )
     assert response.status_code == 200
-    retry = page_link(response.text, LABELS["retry"])
+    alert = re.search(r'<section class="alert alert-warning my-3" role="alert">.*?</section>', response.text, re.S)
+    assert alert is not None
+    retry_match = re.search(r'href="([^"]+)"[^>]*>' + re.escape(LABELS["retry"]) + "</a>", alert[0])
+    assert retry_match is not None
+    retry = unescape(retry_match[1])
     params = parse_qs(urlsplit(retry).query)
     assert params["q"] == ["needle"]
     assert params["experience_page"] == ["2"]
@@ -1035,6 +1039,28 @@ def test_experience_search_retry_keeps_the_result_page(dashboard: TestClient, mo
     form = re.search(r'<form action="/dashboard/methods".*?</form>', response.text, re.S)
     assert form is not None
     assert 'name="experience_page"' not in form[0]
+
+
+def test_out_of_range_result_page_retry_returns_to_the_first_page(dashboard: TestClient) -> None:
+    scope = create_scope(dashboard, "Experience page range")["scope_id"]
+    source = capture_source(dashboard, scope, "Keep the page range searchable.")
+    create_experience(dashboard, scope, source, situation="needle range", lesson="Keep the needle range")
+    response = dashboard.get(
+        "/dashboard/methods",
+        params={"scope": scope, "kind": "experience", "q": "needle", "experience_page": "99"},
+    )
+    assert response.status_code == 200
+    alert = re.search(r'<section class="alert alert-warning my-3" role="alert">.*?</section>', response.text, re.S)
+    assert alert is not None
+    retry_match = re.search(r'href="([^"]+)"[^>]*>' + re.escape(LABELS["retry"]) + "</a>", alert[0])
+    assert retry_match is not None
+    retry = unescape(retry_match[1])
+    params = parse_qs(urlsplit(retry).query)
+    assert params["q"] == ["needle"]
+    assert "experience_page" not in params
+    restored = dashboard.get(retry)
+    assert restored.status_code == 200
+    assert "Keep the needle range" in restored.text
 
 
 def test_experience_search_reports_request_failures_distinctly(dashboard: TestClient, monkeypatch) -> None:
