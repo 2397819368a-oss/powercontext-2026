@@ -414,6 +414,12 @@ jobs:
       - name: Verify spawned worker lifecycle on Windows
         run: uv run --locked --no-sync pytest -q tests/builtin/runtime/test_artifact_processing.py
 
+      - name: Verify bootstrap receipt persistence and failure recovery on Windows
+        run: >-
+          uv run --locked --no-sync pytest -q
+          tests/claude_code_plugin/test_bootstrap.py
+          tests/codex_plugin/test_bootstrap.py
+
       - name: Verify unsupported native indexing is skipped on Windows
         run: >-
           uv run --locked --no-sync pytest -q
