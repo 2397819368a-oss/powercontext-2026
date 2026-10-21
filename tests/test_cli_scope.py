@@ -426,3 +426,56 @@ def test_scope_resolve_rejects_unknown_workspace_rules(monkeypatch: pytest.Monke
     assert result.exit_code != 0
     assert "Unsupported workspace integration" in unstyle(result.output)
     assert client.calls == []
+
+
+@pytest.mark.parametrize("integration", ["zcode", "bub", "codex"])
+def test_scope_resolve_explicit_id_does_not_require_workspace_rules(
+    monkeypatch: pytest.MonkeyPatch,
+    integration: str,
+) -> None:
+    client, _ = _invoke(
+        monkeypatch,
+        _descriptor(),
+        [
+            "scope",
+            "resolve",
+            "--scope-id",
+            "scp_test",
+            "--integration",
+            integration,
+            "--session-id",
+            "session-1",
+            "--no-allow-default",
+        ],
+    )
+    request = client.calls[0]
+    assert isinstance(request, ResolveScopeBindingRequest)
+    assert request.explicit_scope_id == "scp_test"
+    assert request.binding_keys == []
+    assert request.allow_default is False
+
+
+@pytest.mark.parametrize("arguments", [["--query", "Example"], ["--query-field", "title"]])
+def test_scope_list_requires_query_and_field_together(monkeypatch: pytest.MonkeyPatch, arguments: list[str]) -> None:
+    client = _recording_type(ScopePage(items=[]))()
+    monkeypatch.setattr(client_cli, "PowerContextClient", lambda *_args, **_kwargs: client)
+    result = CliRunner().invoke(create_cli([]), ["scope", "list", *arguments])
+    assert result.exit_code == 2
+    assert "--query and --query-field must be supplied together" in unstyle(result.output)
+    assert client.calls == []
+
+
+def test_scope_list_forwards_query_with_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _invoke(
+        monkeypatch,
+        ScopePage(items=[]),
+        [
+            "scope",
+            "list",
+            "--query",
+            "Example",
+            "--query-field",
+            "title",
+        ],
+    )
+    assert client.calls[0] == {"query": "Example", "query_field": "title", "limit": 50, "cursor": None}

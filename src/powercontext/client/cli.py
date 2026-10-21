@@ -427,14 +427,17 @@ def create_scope(
 @scope_app.command("list")
 def list_scopes(
     context: typer.Context,
-    query: Annotated[str | None, typer.Option(help="Bounded substring query over the selected field.")] = None,
+    query: Annotated[str | None, typer.Option(help="Bounded substring query; requires --query-field.")] = None,
     query_field: Annotated[
-        ScopeQueryField | None, typer.Option(help="Field matched by --query; defaults to Server-defined behavior.")
+        ScopeQueryField | None, typer.Option(help="Field matched by --query; requires --query.")
     ] = None,
     cursor: Annotated[str | None, typer.Option(help="Opaque cursor from the previous page.")] = None,
     limit: Annotated[int, typer.Option(min=1, max=100, help="Maximum Scopes to return.")] = 50,
 ) -> None:
     """List a bounded page of Scope descriptors."""
+
+    if (query is None) != (query_field is None):
+        raise typer.BadParameter("--query and --query-field must be supplied together")  # noqa: TRY003
 
     asyncio.run(
         _execute(
@@ -509,12 +512,13 @@ def resolve_scope(
     """Resolve a Scope the way an agent plugin does: explicit ID, then bindings, then the default."""
 
     binding_keys = []
-    if session_id is not None and session_id.strip():
-        binding_keys.append(_binding_key(integration, _BINDING_KIND_SESSION, session_id.strip()))
-    workspace = cwd if cwd is not None else Path.cwd()
-    binding_keys.append(
-        _binding_key(integration, _BINDING_KIND_WORKSPACE, _workspace_binding_external_id(workspace, integration))
-    )
+    if scope_id is None:
+        if session_id is not None and session_id.strip():
+            binding_keys.append(_binding_key(integration, _BINDING_KIND_SESSION, session_id.strip()))
+        workspace = cwd if cwd is not None else Path.cwd()
+        binding_keys.append(
+            _binding_key(integration, _BINDING_KIND_WORKSPACE, _workspace_binding_external_id(workspace, integration))
+        )
     request = ResolveScopeBindingRequest(
         explicit_scope_id=scope_id,
         binding_keys=binding_keys,
