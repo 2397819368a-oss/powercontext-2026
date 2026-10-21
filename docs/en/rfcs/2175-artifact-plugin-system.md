@@ -5,7 +5,7 @@ description: Extend Artifact types with trusted generation plugins, shared sched
 
 - Proposal Name: `artifact_plugin_framework`
 - Start Date: 2026-10-20
-- RFC PR: Not yet opened
+- RFC PR: [#2175](https://github.com/oceanbase/powercontext/pull/2175)
 
 # Summary
 

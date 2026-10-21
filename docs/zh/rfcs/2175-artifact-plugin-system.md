@@ -5,7 +5,7 @@ description: 通过可信生成插件扩展 Artifact 类型，复用调度、事
 
 - Proposal Name: `artifact_plugin_framework`
 - Start Date: 2026-10-20
-- RFC PR: 尚未创建
+- RFC PR: [#2175](https://github.com/oceanbase/powercontext/pull/2175)
 
 # 概要
 
