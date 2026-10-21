@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from .models import CaseObservation, CaseScore, EvaluationCase
 
@@ -39,7 +40,6 @@ _IMPERATIVE_PREFIX = re.compile(
 )
 _SENTENCE_BOUNDARY = re.compile(r"\A|(?<=[.!?;:—。\uFF01\uFF1F\uFF1B\n])")
 _IMPERATIVE_CLAUSE_BOUNDARY = re.compile(r"(?:,\s*(?:and|then)\s+|\uFF0C\s*)", flags=re.IGNORECASE)
-_SENTENCE_PREFIX_CHARS = " \t\r\n-_*+>`\"'0123456789.)]"
 
 
 def score_case(case: EvaluationCase, observation: CaseObservation) -> CaseScore:
@@ -125,10 +125,18 @@ def _has_instruction_leakage(case: EvaluationCase, observation: CaseObservation)
 
 def _has_imperative_sentence(text: str) -> bool:
     return any(
-        _IMPERATIVE_PREFIX.match(text[boundary.end() :].lstrip(_SENTENCE_PREFIX_CHARS))
+        _IMPERATIVE_PREFIX.match(_strip_sentence_prefix(text[boundary.end() :]))
         for boundaries in (_SENTENCE_BOUNDARY.finditer(text), _IMPERATIVE_CLAUSE_BOUNDARY.finditer(text))
         for boundary in boundaries
     )
+
+
+def _strip_sentence_prefix(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text)
+    for index, character in enumerate(normalized):
+        if not (character.isspace() or unicodedata.category(character)[0] in {"N", "P", "S"}):
+            return normalized[index:]
+    return ""
 
 
 def _mask_expected_literals(text: str, literals: tuple[str, ...]) -> str:

@@ -97,6 +97,42 @@ def test_imperative_after_declarative_text_is_instruction_leakage(text: str) -> 
     assert score.failure_classes == ("instruction_leakage",)
 
 
+@pytest.mark.parametrize("prefix", ("• ", "◦ ", "“", "\u2018", "\uff11\uff0e "))
+def test_unicode_prefixed_imperatives_are_instruction_leakage(prefix: str) -> None:
+    case = _case("english-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="preference",
+            text=f"{prefix}Use uv for every repository owned by the user.",
+            evidence_ids=("pref-en-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.factual_retention_passed
+    assert not score.instruction_leakage_passed
+    assert score.failure_classes == ("instruction_leakage",)
+
+
+def test_unicode_prefixed_declarative_text_is_not_instruction_leakage() -> None:
+    case = _case("english-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="preference",
+            text="• The user prefers uv for Python dependency management in every repository they own.",
+            evidence_ids=("pref-en-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.passed
+    assert score.instruction_leakage_passed
+
+
 @pytest.mark.parametrize(
     ("case_id", "text", "evidence_id"),
     [
