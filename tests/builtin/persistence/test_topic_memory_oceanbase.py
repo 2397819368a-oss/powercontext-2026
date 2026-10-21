@@ -22,8 +22,10 @@ from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
+from pymysql.err import OperationalError as MySQLOperationalError
 from sqlalchemy.dialects import mysql
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.schema import CreateTable
 
@@ -107,6 +109,128 @@ def test_oceanbase_impossible_topic_lexical_floor_returns_empty_before_database_
             ),
         )
         assert result.topic_fts == result.detail_fts == ()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("conflict_on", ["topics", "chunks"])
+@pytest.mark.parametrize("created_by_peer", [False, True])
+def test_oceanbase_fts_startup_recovers_from_ddl_lock_conflict(conflict_on, created_by_peer) -> None:
+    async def scenario() -> None:
+        connection = AsyncMock(spec=AsyncConnection)
+        connection.dialect = mysql.dialect()
+        created: set[str] = set()
+        conflicted = False
+
+        async def exists(_statement, parameters):
+            return int(parameters["index_name"] in created)
+
+        async def create(statement):
+            nonlocal conflicted
+            index_name = statement.split()[3]
+            # A duplicate CREATE is an error even if another initializer won.
+            assert index_name not in created
+            if conflict_on in index_name and not conflicted:
+                conflicted = True
+                if created_by_peer:
+                    created.add(index_name)
+                raise OperationalError(statement, None, MySQLOperationalError(1205, "DDL lock conflict"))
+            created.add(index_name)
+
+        connection.scalar.side_effect = exists
+        connection.exec_driver_sql.side_effect = create
+        await OceanBaseTopicMemoryFTSIndex().initialize(cast(AsyncConnection, connection))
+
+        assert created == {"ix_pc_topic_memory_active_topics_fts", "ix_pc_topic_memory_active_chunks_fts"}
+        assert conflicted
+        # The adapter must not finish its caller's transaction while recovering.
+        connection.commit.assert_not_awaited()
+        connection.rollback.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_oceanbase_fts_startup_stops_retrying_a_persistent_ddl_lock_conflict() -> None:
+    async def scenario() -> None:
+        connection = AsyncMock(spec=AsyncConnection)
+        connection.dialect = mysql.dialect()
+        connection.scalar.return_value = 0
+        error = OperationalError("CREATE FULLTEXT INDEX", None, MySQLOperationalError(1205, "DDL lock conflict"))
+        connection.exec_driver_sql.side_effect = error
+
+        # Repeated NOWAIT conflicts must fail startup within a bounded budget.
+        with pytest.raises(OperationalError) as raised:
+            await asyncio.wait_for(
+                OceanBaseTopicMemoryFTSIndex().initialize(cast(AsyncConnection, connection)), timeout=5
+            )
+        assert raised.value is error
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", [1142, 1213, "cancelled"])
+def test_oceanbase_fts_startup_preserves_other_errors_and_cancellation(failure) -> None:
+    async def scenario() -> None:
+        connection = AsyncMock(spec=AsyncConnection)
+        connection.dialect = mysql.dialect()
+        connection.scalar.return_value = 0
+        error = (
+            asyncio.CancelledError()
+            if failure == "cancelled"
+            else OperationalError("CREATE FULLTEXT INDEX", None, MySQLOperationalError(failure, "DDL failed"))
+        )
+        connection.exec_driver_sql.side_effect = [error, None]
+
+        with pytest.raises(type(error)) as raised:
+            await OceanBaseTopicMemoryFTSIndex().initialize(cast(AsyncConnection, connection))
+        assert raised.value is error
+
+    asyncio.run(scenario())
+
+
+def test_oceanbase_vector_startup_recovers_from_ddl_lock_conflict() -> None:
+    async def scenario() -> None:
+        connection = AsyncMock(spec=AsyncConnection)
+        connection.dialect = mysql.dialect()
+        connection.scalar.return_value = "VECTOR(3)"
+        connection.run_sync.side_effect = [
+            OperationalError("CREATE VECTOR INDEX", None, MySQLOperationalError(1205, "DDL lock conflict")),
+            None,
+        ]
+        profile = EmbeddingProfile(
+            profile_id="topic-test", model="test", dimension=3, distance="l2", normalization="unit"
+        )
+        await OceanBaseTopicMemoryVectorIndex(profile).initialize(cast(AsyncConnection, connection))
+        connection.commit.assert_not_awaited()
+        connection.rollback.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", [1142, 1213, "cancelled", "persistent-lock"])
+def test_oceanbase_vector_startup_preserves_failures_and_bounds_lock_retries(failure) -> None:
+    async def scenario() -> None:
+        connection = AsyncMock(spec=AsyncConnection)
+        connection.dialect = mysql.dialect()
+        connection.scalar.return_value = "VECTOR(3)"
+        error = (
+            asyncio.CancelledError()
+            if failure == "cancelled"
+            else OperationalError(
+                "CREATE VECTOR INDEX",
+                None,
+                MySQLOperationalError(1205 if failure == "persistent-lock" else failure, "DDL failed"),
+            )
+        )
+        connection.run_sync.side_effect = error if failure == "persistent-lock" else [error, None]
+        profile = EmbeddingProfile(
+            profile_id="topic-test", model="test", dimension=3, distance="l2", normalization="unit"
+        )
+        with pytest.raises(type(error)) as raised:
+            await asyncio.wait_for(
+                OceanBaseTopicMemoryVectorIndex(profile).initialize(cast(AsyncConnection, connection)), timeout=5
+            )
+        assert raised.value is error
 
     asyncio.run(scenario())
 

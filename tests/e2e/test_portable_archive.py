@@ -565,6 +565,24 @@ def test_archive_restores_package_files_and_topic_search_after_restart(
             skill = await source.records.create_artifact(
                 scope.scope_id, "skill", ArtifactWrite(content=package.as_skill_content().model_dump(mode="json"))
             )
+            experience = await source.records.create_artifact(
+                scope.scope_id,
+                "experience",
+                ArtifactWrite(
+                    content={
+                        "situation": "Portable archive recovery",
+                        "action": "Restore the archive",
+                        "outcome": "Artifacts remain searchable",
+                        "lesson": "Verify portable search after restart",
+                    }
+                ),
+            )
+            assert [
+                hit.artifact_ref.artifact_id for hit in await source.search_skills(scope.scope_id, "portable", 5)
+            ] == [skill.artifact_id]
+            assert [
+                hit.artifact_ref.artifact_id for hit in await source.search_experience(scope.scope_id, "portable", 5)
+            ] == [experience.artifact_id]
             topic = await source.records.create_artifact(
                 scope.scope_id,
                 "topic-memory",
@@ -613,9 +631,21 @@ def test_archive_restores_package_files_and_topic_search_after_restart(
         async with open_builtin_contexts(target_config) as target:
             receipt = await target.portability.restore(archive)
             assert receipt.projections_ready
+            assert [
+                hit.artifact_ref.artifact_id for hit in await target.search_skills(scope.scope_id, "portable", 5)
+            ] == [skill.artifact_id]
+            assert [
+                hit.artifact_ref.artifact_id for hit in await target.search_experience(scope.scope_id, "portable", 5)
+            ] == [experience.artifact_id]
             repeated = await target.portability.restore(archive)
             assert repeated.inserted == 0
         async with open_builtin_contexts(target_config) as target:
+            assert [
+                hit.artifact_ref.artifact_id for hit in await target.search_skills(scope.scope_id, "portable", 5)
+            ] == [skill.artifact_id]
+            assert [
+                hit.artifact_ref.artifact_id for hit in await target.search_experience(scope.scope_id, "portable", 5)
+            ] == [experience.artifact_id]
             restored = await target.skill_package(
                 scope.scope_id, ArtifactRef(family="skill", artifact_id=skill.artifact_id, revision=skill.revision)
             )

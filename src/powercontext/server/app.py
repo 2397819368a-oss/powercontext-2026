@@ -131,6 +131,17 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemoryCurrentItem,
     TopicMemorySearchResult,
 )
+from powercontext.builtin.artifacts.topic_memory.processing import (
+    TopicMemoryBlockConflictError,
+    TopicMemoryBlockNotFoundError,
+)
+from powercontext.builtin.artifacts.topic_memory.processing import (
+    TopicMemoryProcessingStatus as RuntimeTopicMemoryProcessingStatus,
+)
+from powercontext.builtin.artifacts.topic_memory.processing import (
+    TopicMemoryRetryResult as RuntimeTopicMemoryRetryResult,
+)
+from powercontext.builtin.artifacts.topic_memory.processing import TopicMemoryWorkBlock as RuntimeTopicMemoryWorkBlock
 from powercontext.builtin.catalog_changes.models import CatalogChangeCandidate as RuntimeTagCandidate
 from powercontext.builtin.code.application import CodeApplication
 from powercontext.builtin.code.errors import CodeError
@@ -647,11 +658,17 @@ from powercontext.http._generated.models import (
 from powercontext.http._generated.models import (
     ArtifactTagPage,
     ArtifactTagSet,
+    GetTopicMemoryProcessingBlockRequest,
     QueryArtifactTagsRequest,
     ReplaceArtifactTagsRequest,
+    RetryTopicMemoryProcessingRequest,
+    RetryTopicMemoryProcessingResponse,
     TaggableArtifactFamily,
     TagMatch,
     TagTargetType,
+    TopicMemoryProcessingBlock,
+    TopicMemoryProcessingStatus,
+    TopicMemoryProcessingStatusRequest,
 )
 from powercontext.http._generated.models import (
     ShareUnit as TransportShareUnit,
@@ -716,6 +733,8 @@ from powercontext.http._generated.operations import (
     GET_SOURCE,
     GET_STATS,
     GET_TOPIC_MEMORY,
+    GET_TOPIC_MEMORY_PROCESSING_BLOCK,
+    GET_TOPIC_MEMORY_PROCESSING_STATUS,
     HANDOFF_CURRENT_WORK,
     IMPORT_EXTERNAL_SKILL,
     LIST_ACCESS_AUDIT,
@@ -764,6 +783,7 @@ from powercontext.http._generated.operations import (
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
     RETIRE_MEMORY_ENTRY,
+    RETRY_TOPIC_MEMORY_PROCESSING,
     REVISE_CANDIDATE,
     REVISE_MEMORY_ENTRY,
     REVOKE_ACCESS_BINDING,
@@ -1230,6 +1250,12 @@ class _WorkApplication(Protocol):
 
 
 class _ScopedTopicMemoryApplication(Protocol):
+    async def processing_status(self) -> RuntimeTopicMemoryProcessingStatus: ...
+
+    async def get_block(self, block_id: str) -> RuntimeTopicMemoryWorkBlock: ...
+
+    async def retry(self, block_id: str) -> RuntimeTopicMemoryRetryResult: ...
+
     async def search(
         self,
         request: RuntimeSearchTopicMemoryRequest,
@@ -1485,6 +1511,9 @@ def create_app(
         execution_context=_atomic_execution_context,
     )
     _add_route(app, FLUSH_TOPIC_MEMORY, flush_topic_memory)
+    _add_route(app, GET_TOPIC_MEMORY_PROCESSING_STATUS, get_topic_memory_processing_status)
+    _add_route(app, GET_TOPIC_MEMORY_PROCESSING_BLOCK, get_topic_memory_processing_block)
+    _add_route(app, RETRY_TOPIC_MEMORY_PROCESSING, retry_topic_memory_processing)
     _add_route(app, SEARCH_TOPIC_MEMORY, search_topic_memory)
     _add_route(app, SEARCH_ARTIFACTS, search_artifacts)
     _add_route(app, GET_TOPIC_MEMORY, get_topic_memory)
@@ -2525,12 +2554,27 @@ def _artifact_handle_binding(handle: StableHandle, target: ArtifactRef) -> Artif
     )
 
 
+def _require_strict_query(
+    http_request: Request,
+    parameter_names: set[str],
+    *,
+    repeatable: set[str] | None = None,
+) -> None:
+    if set(http_request.query_params) - parameter_names:
+        raise InvalidBaseAccessRequestError("query", "contains unknown parameters")
+    singleton_names = parameter_names - (repeatable or set())
+    if any(len(http_request.query_params.getlist(name)) > 1 for name in singleton_names):
+        raise InvalidBaseAccessRequestError("query", "parameters must be provided at most once")
+
+
 def _list_artifacts_query(
+    http_request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
     tag: Annotated[list[str] | None, Query(min_length=1, max_length=16)] = None,
     tag_match: Annotated[TagMatch | None, Query()] = None,
 ) -> ListArtifactsRequest:
+    _require_strict_query(http_request, {"limit", "cursor", "tag", "tag_match"}, repeatable={"tag"})
     if tag is None and tag_match is not None:
         raise InvalidBaseAccessRequestError("tag_match", "requires at least one tag")
     return ListArtifactsRequest.model_validate({"limit": limit, "cursor": cursor, "tag": tag, "tag_match": tag_match})
@@ -2561,6 +2605,30 @@ async def list_artifacts(
         items=[_artifact_collection_item_response(item) for item in result.items],
         next_cursor=result.next_cursor,
     )
+
+
+async def get_topic_memory_processing_status(
+    request: TopicMemoryProcessingStatusRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> TopicMemoryProcessingStatus:
+    result = await application.topic_memory.for_scope(request.scope_id).processing_status()
+    return TopicMemoryProcessingStatus.model_validate(result.model_dump())
+
+
+async def get_topic_memory_processing_block(
+    request: GetTopicMemoryProcessingBlockRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> TopicMemoryProcessingBlock:
+    result = await application.topic_memory.for_scope(request.scope_id).get_block(request.block_id)
+    return TopicMemoryProcessingBlock.model_validate(result.model_dump())
+
+
+async def retry_topic_memory_processing(
+    request: RetryTopicMemoryProcessingRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> RetryTopicMemoryProcessingResponse:
+    result = await application.topic_memory.for_scope(request.scope_id).retry(request.block_id)
+    return RetryTopicMemoryProcessingResponse.model_validate(result.model_dump())
 
 
 async def flush_topic_memory(
@@ -2625,9 +2693,11 @@ async def get_topic_memory(
 
 
 def _list_artifact_revisions_query(
+    http_request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
 ) -> ListArtifactRevisionsRequest:
+    _require_strict_query(http_request, {"limit", "cursor"})
     return ListArtifactRevisionsRequest(limit=limit, cursor=cursor)
 
 
@@ -3483,11 +3553,13 @@ async def get_dream_run(
 
 
 def _list_dreams_query(
+    http_request: Request,
     status: str | None = None,
     operation: str | None = None,
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ListDreamRunsRequest:
+    _require_strict_query(http_request, {"status", "operation", "cursor", "limit"})
     return ListDreamRunsRequest.model_validate({
         "status": status,
         "operation": operation,
@@ -4718,7 +4790,7 @@ async def _authorization_payload(request: Request, operation: Operation[Any, Any
     if operation.request_type is None:
         return path_values
     if operation.request_location == "query":
-        return {**path_values, **request.query_params}
+        return {**request.query_params, **path_values}
     try:
         value = await request.json()
     except (UnicodeDecodeError, ValueError) as error:
@@ -5832,6 +5904,20 @@ def _map_report_error(error: Exception) -> tuple[int, str, str, dict[str, Any] |
 
 
 def _map_domain_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
+    if isinstance(error, TopicMemoryBlockNotFoundError):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "topic_memory_block_not_found",
+            "The Topic Memory block was not found in this Scope.",
+            None,
+        )
+    if isinstance(error, TopicMemoryBlockConflictError):
+        return (
+            status.HTTP_409_CONFLICT,
+            "topic_memory_block_conflict",
+            "The Topic Memory block no longer owns this frontier.",
+            None,
+        )
     if isinstance(error, AtomicMemoryIndexError):
         return 503, error.code, str(error), None
     if isinstance(error, AtomicMemoryError):

@@ -19,6 +19,7 @@ import os
 from contextlib import AbstractAsyncContextManager
 from types import TracebackType
 from typing import cast
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -264,6 +265,8 @@ def test_profile_rejects_legacy_identity_column_collation(monkeypatch: pytest.Mo
 
         monkeypatch.setattr(oceanbase_profile_module, "create_tables", create_no_tables)
         monkeypatch.setattr(oceanbase_profile_module, "assert_dream_schema_ready", _skip_dream_preflight)
+        # Migration acceptance tests exercise schema readiness with real database connections.
+        monkeypatch.setattr(oceanbase_profile_module, "prepare_topic_memory_recovery_schema", AsyncMock())
         with pytest.raises(IncompatibleOceanBaseSchemaError, match="utf8mb4_general_ci") as caught:
             async with OceanBaseProfile.attach(
                 cast(AsyncEngine, engine),
@@ -318,6 +321,7 @@ def test_profile_creates_tables_for_empty_or_compatible_schema(
 
         monkeypatch.setattr(oceanbase_profile_module, "create_tables", create_selected_tables)
         monkeypatch.setattr(oceanbase_profile_module, "assert_dream_schema_ready", _skip_dream_preflight)
+        monkeypatch.setattr(oceanbase_profile_module, "prepare_topic_memory_recovery_schema", AsyncMock())
         selected = (SOURCES_TABLE, *STATISTICS_TABLES)
         async with OceanBaseProfile.attach(cast(AsyncEngine, engine), tables=selected):
             pass

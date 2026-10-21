@@ -838,17 +838,22 @@ def test_an_interrupted_commit_reply_does_not_repeat_applied_usage(caplog: pytes
         async with _database() as database:
 
             def lost_reply(connection) -> None:
-                # Commit for real, then let the native deadline expire before
-                # reporting an interrupted reply. Repeating this outcome would
-                # increment an already committed record a second time.
+                # Commit for real, then report an interrupted reply. Repeating
+                # this unknown outcome would increment an already committed
+                # record a second time.
                 connection.connection.commit()
-                await_only(asyncio.sleep(0.12))
                 original = sqlite3.OperationalError("secret commit reply")
                 original.sqlite_errorcode = sqlite3.SQLITE_INTERRUPT
                 raise OperationalError("COMMIT", None, original)
 
-            event.listen(database.engine.sync_engine, "commit", lost_reply, once=True)
-            recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=0.4)
+            engine = database.engine.sync_engine
+            event.listen(engine, "commit", lost_reply, once=True)
+            recorder = _ModelUsageRecorder(
+                database,
+                StatisticsRepository(),
+                write_timeout_seconds=5.0,
+                flush_timeout_seconds=5.0,
+            )
             try:
                 _offer(recorder)
                 await recorder.flush()
@@ -858,6 +863,7 @@ def test_an_interrupted_commit_reply_does_not_repeat_applied_usage(caplog: pytes
                 await _assert_connection_restored(database)
             finally:
                 await recorder.close()
+                event.remove(engine, "commit", lost_reply)
 
     with caplog.at_level(logging.WARNING):
         asyncio.run(scenario())

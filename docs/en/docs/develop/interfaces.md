@@ -305,6 +305,12 @@ fail, and `not_ready` with HTTP 503 when the Runtime or database fails. Dependen
 `timeout`, or `misconfigured`; an intentionally unbound Runtime reports `not_ready` for the `runtime` check.
 Experience and Skill generation, exact reads, external Registry operations, and low-level proposal operations remain
 HTTP-only.
+
+MCP uses stateless Streamable HTTP and does not issue MCP session IDs. When authentication is enabled, each
+request uses its own verified identity and current group membership. Scopes, Memory, and Handoffs remain
+persisted in the Runtime. Reconnect MCP clients after upgrading; cross-request SSE stream resumption is
+unavailable.
+
 `POST /v1/context/prepare` and the matching Python Client method expose final ephemeral `PreparedContext` over HTTP;
 the Runtime recalls active Memory and approved Experience heads, owns their shared selection and total output budget,
 and intentionally does not project the operation as an MCP tool. The public schema remains

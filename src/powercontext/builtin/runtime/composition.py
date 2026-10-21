@@ -134,6 +134,7 @@ from powercontext.builtin.persistence.sqlite.topic_memory_index import (
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES, PORTABLE_RESTORE_RECEIPTS_TABLE
 from powercontext.builtin.persistence.tag_schema import ensure_topic_memory_tag_schema
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
+from powercontext.builtin.persistence.topic_memory_budget import record_topic_memory_work_failure
 from powercontext.builtin.persistence.topic_memory_index import (
     CompositeTopicMemoryIndex,
     TopicMemoryIndex,
@@ -203,6 +204,7 @@ from powercontext.builtin.runtime.topic_memory_processing import (
     run_topic_memory_worker,
     validate_topic_memory_provider_settings,
 )
+from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecoveryService
 from powercontext.builtin.runtime.topic_memory_scope import topic_memory_processing_block
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.runtime.worker_observability import worker_model_usage_collector
@@ -841,6 +843,7 @@ async def open_builtin_runtime(
                 topic_memory_get=contexts.get_topic_memory,
                 topic_memory_browse=contexts.browse_topic_memories,
                 topic_memory_flush=contexts.request_topic_memory_flush,
+                topic_memory_recovery=TopicMemoryRecoveryService(contexts.database),
                 topic_memory_embedding_model=configured_embedding,
                 topic_memory_processing_available=topic_memory_processing_available,
                 topic_memory_search_observer=topic_memory_search_observer,
@@ -1025,6 +1028,7 @@ def _artifact_processing_bindings(  # noqa: C901 - validate and assemble one reg
                 if family == "topic-memory"
                 else None,
                 worker_model_usage_observer=worker_model_usage_observer,
+                work_failure=record_topic_memory_work_failure if family == "topic-memory" else None,
             )
         )
     _validate_processing_registrations(configured)

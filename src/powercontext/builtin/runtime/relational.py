@@ -1482,7 +1482,19 @@ class RelationalContexts:
         async with self.database.transaction() as connection:
             await self.topic_memory_index.validate_current(connection)
         async with self.database.transaction() as connection:
-            await self.experience_index.initialize(connection)
+            await self.experience_index.rebuild(connection)
+            if self.experience_index.families:
+                missing = await connection.scalar(
+                    select(ARTIFACT_HEADS_TABLE.c.artifact_id)
+                    .where(
+                        ARTIFACT_HEADS_TABLE.c.scope_id.in_(scope_ids),
+                        ARTIFACT_HEADS_TABLE.c.family.in_(tuple(self.experience_index.families)),
+                        ARTIFACT_HEADS_TABLE.c.searchable_text.is_(None),
+                    )
+                    .limit(1)
+                )
+                if missing is not None:
+                    raise RuntimeError("restored approved Artifact projection is incomplete")  # noqa: TRY003
 
     async def _authorize_atomic_tag_write(self, connection, scope_id: str, artifact_id: str, context=None) -> None:
         await self.atomic_memory.security.authorize(

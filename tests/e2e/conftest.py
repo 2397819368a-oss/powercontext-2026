@@ -44,8 +44,18 @@ def migration_backend(request: pytest.FixtureRequest, short_tmp_path: Path) -> I
     if request.param == "seekdb":
         if os.environ.get("POWERCONTEXT_TEST_MIGRATION_SEEKDB") != "1":
             pytest.skip("real clean migration seekdb acceptance not enabled")
-        pytest.importorskip("pylibseekdb")
-        yield MigrationBackend(SeekDBConfig(path=short_tmp_path / "seekdb"), short_tmp_path)
+        binding = pytest.importorskip("pylibseekdb")
+        config = SeekDBConfig(path=short_tmp_path / "seekdb")
+        # Keep one real native lease across the scenario's independent SQL
+        # connections and service lifetimes. Rapid last-client exits in seekdb
+        # 1.4 can strand a background DDL runtime lock on the next open.
+        # Engine restart and cross-process exclusion are exercised separately
+        # in test_database_migration_connections.py without this fixture.
+        instance = asyncio.run(binding.aopen(str(config.path.resolve())))
+        try:
+            yield MigrationBackend(config, short_tmp_path)
+        finally:
+            instance.close()
         return
     value = os.environ.get("POWERCONTEXT_TEST_MIGRATION_OCEANBASE_URL")
     if not value:
