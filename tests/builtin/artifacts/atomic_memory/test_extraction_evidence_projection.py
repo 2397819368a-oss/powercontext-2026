@@ -29,10 +29,13 @@ from powercontext.builtin.persistence.records import _canonical_source_text
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY, CONTENT_SOURCE_ADAPTER, ContentCapture, ContentSource
 from powercontext.sources import (
+    TEXT_EVIDENCE_PROJECTION_KEY,
     Source,
+    SourceObservation,
     SourceProjectionKey,
     SourceProjectionValue,
     SourceRef,
+    TextEvidence,
     project_source_for_transport,
 )
 
@@ -51,6 +54,24 @@ def _source(*, wire_content: JsonValue | None = None) -> ContentSource:
         wire_content=wire_content,
         wire_content_present=wire_content is not None,
     )
+
+
+class _CustomSource(Source):
+    """A Source whose wire payload is independent of its text body."""
+
+    content: str
+    wire_content: JsonValue
+    wire_content_present: bool = True
+
+
+class _TextEvidenceSources:
+    """Adapter stand-in that exposes ``content`` as the evidence body."""
+
+    def __init__(self, source: _CustomSource) -> None:
+        self._source = source
+
+    async def read_value(self, *_args: object, **_kwargs: object) -> TextEvidence:
+        return TextEvidence(source_type="custom", source_id=self._source.name, content=self._source.content)
 
 
 class _InMemorySources:
@@ -227,6 +248,108 @@ def test_observation_keeps_payload_content_that_differs_from_projection() -> Non
         assert isinstance(metadata, dict)
         payload_metadata = metadata["payload"]
         assert payload_metadata["content"] == "DIFFERENT_BODY"
+        assert _serialized(evidence).count(MARKER) == 1
+
+    asyncio.run(scenario())
+
+
+def test_native_keeps_wire_evidence_that_differs_from_body() -> None:
+    """The native path keeps wire evidence that differs from the body text."""
+
+    async def scenario() -> None:
+        wire = {"constraint": "Pause when errors rise."}
+        source = _CustomSource(
+            name="deploy",
+            materialization=SourceMaterialization.CAPTURED,
+            content=BODY,
+            wire_content=wire,
+        )
+        stored = StoredSource(
+            ref=SourceRef(source_type="custom", source_id="deploy"),
+            value=source,
+            journal_position=1,
+        )
+        evidence = await project_atomic_memory_evidence(
+            stored,
+            cast("SourceRepository", _TextEvidenceSources(source)),
+            evidence_id="source:1",
+        )
+
+        metadata = evidence.source_metadata
+        assert isinstance(metadata, dict)
+        assert "content" not in metadata
+        assert metadata["wire_content"] == wire
+        assert metadata["wire_content_present"] is True
+        assert _serialized(evidence).count(MARKER) == 1
+
+    asyncio.run(scenario())
+
+
+def test_observation_payload_drops_wire_content_equal_to_body() -> None:
+    """A payload wire carrier that repeats the projected body is removed."""
+
+    async def scenario() -> None:
+        source = _source(wire_content=BODY)
+        observation = project_source_for_transport(BUILTIN_SOURCE_REGISTRY, source)
+        evidence = await _evidence(observation, source)
+
+        metadata = evidence.source_metadata
+        assert isinstance(metadata, dict)
+        payload_metadata = metadata["payload"]
+        assert isinstance(payload_metadata, dict)
+        assert "content" not in payload_metadata
+        assert "wire_content" not in payload_metadata
+        assert "wire_content_present" not in payload_metadata
+        assert _serialized(evidence).count(MARKER) == 1
+
+    asyncio.run(scenario())
+
+
+def test_observation_payload_keeps_wire_evidence_that_differs_from_body() -> None:
+    """A payload wire carrier with independent evidence survives compaction."""
+
+    async def scenario() -> None:
+        wire = {"constraint": "Pause when errors rise."}
+        observation = SourceObservation(
+            name="deploy",
+            definition_version="1",
+            materialization=SourceMaterialization.CAPTURED,
+            source_type="custom",
+            definition_fingerprint="sha256:" + "0" * 64,
+            payload={
+                "name": "deploy",
+                "definition_version": "1",
+                "materialization": "captured",
+                "description": None,
+                "content": BODY,
+                "wire_content": wire,
+                "wire_content_present": True,
+            },
+            projections=(
+                SourceProjectionValue(
+                    key=TEXT_EVIDENCE_PROJECTION_KEY,
+                    value={"source_type": "custom", "source_id": "deploy", "content": BODY, "metadata": {}},
+                ),
+            ),
+        )
+        stored = StoredSource(
+            ref=SourceRef(source_type="custom", source_id="deploy"),
+            value=observation,
+            journal_position=1,
+        )
+        evidence = await project_atomic_memory_evidence(
+            stored,
+            cast("SourceRepository", _InMemorySources(_source())),
+            evidence_id="source:1",
+        )
+
+        metadata = evidence.source_metadata
+        assert isinstance(metadata, dict)
+        payload_metadata = metadata["payload"]
+        assert isinstance(payload_metadata, dict)
+        assert "content" not in payload_metadata
+        assert payload_metadata["wire_content"] == wire
+        assert payload_metadata["wire_content_present"] is True
         assert _serialized(evidence).count(MARKER) == 1
 
     asyncio.run(scenario())
