@@ -41,6 +41,7 @@ type NoteFormProps = Props & {
     artifact: ArtifactReference,
     trigger: HTMLButtonElement,
   ) => void;
+  invalidateSaved: number;
 };
 export function NoteForm({
   state,
@@ -48,6 +49,7 @@ export function NoteForm({
   onState,
   onDirty,
   onReadSaved,
+  invalidateSaved,
 }: NoteFormProps) {
   const t = memoryMessages[language];
   const active = state?.active;
@@ -76,6 +78,11 @@ export function NoteForm({
       lifetime.current++;
     };
   }, [active?.generation]);
+  // A failed read must clear returned record bodies like any other private
+  // result, while the write outcome and its original target stay visible.
+  useEffect(() => {
+    if (invalidateSaved > 0) setSaved([]);
+  }, [invalidateSaved]);
   async function save() {
     if (!active?.scope || submitting.current || composing.current) return;
     if (!text.trim() || bytes > 8192) {
@@ -236,6 +243,7 @@ export function MemoryWorkspace(props: Props) {
   const [entry, setEntry] = useState<AtomicMemoryDetail | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [savedRead, setSavedRead] = useState(false);
+  const [invalidateSaved, setInvalidateSaved] = useState(0);
   const [busy, setBusy] = useState<"search" | "detail" | null>(null);
   const [error, setError] = useState<unknown>(null);
   const sequence = useRef(0);
@@ -301,6 +309,9 @@ export function MemoryWorkspace(props: Props) {
         setEntry(null);
         setSelected(null);
         setSavedRead(false);
+        // A failed read invalidates private result content everywhere,
+        // including returned record bodies in the save form.
+        setInvalidateSaved((value) => value + 1);
         try {
           onState(await desktopApi.state());
         } catch {
@@ -347,6 +358,7 @@ export function MemoryWorkspace(props: Props) {
         onState={onState}
         onDirty={onDirty}
         onReadSaved={(artifact, trigger) => void readSaved(artifact, trigger)}
+        invalidateSaved={invalidateSaved}
       />
       <section className="card stack">
         <h2>{t.query}</h2>

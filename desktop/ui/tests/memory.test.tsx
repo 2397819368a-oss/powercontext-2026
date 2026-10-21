@@ -122,6 +122,7 @@ function form() {
       onState={vi.fn()}
       onDirty={vi.fn()}
       onReadSaved={vi.fn()}
+      invalidateSaved={0}
     />,
   );
 }
@@ -196,6 +197,7 @@ test("Chinese save success text keeps the harness-expected 保存成功。 prefi
       onState={vi.fn()}
       onDirty={vi.fn()}
       onReadSaved={vi.fn()}
+      invalidateSaved={0}
     />,
   );
   await user.type(screen.getByLabelText("记忆内容"), "契约检查");
@@ -304,6 +306,38 @@ test("a saved record opens its exact revision through the existing reader", asyn
   await user.click(screen.getByRole("button", { name: "Close reader" }));
   await waitFor(() => expect(document.activeElement).toBe(openSaved));
 });
+
+test.each(["forbidden", "network"])(
+  "a failed %s saved-record read clears returned bodies but keeps the write outcome",
+  async (code) => {
+    const user = userEvent.setup();
+    const { outcome: saved } = makeSaved(1);
+    vi.mocked(desktopApi.remember).mockResolvedValue(saved);
+    vi.mocked(desktopApi.atomicEntry).mockRejectedValue({ code });
+    render(
+      <MemoryWorkspace
+        state={state}
+        language="en"
+        onState={vi.fn()}
+        onDirty={vi.fn()}
+      />,
+    );
+    await user.type(screen.getByLabelText("Memory text"), "private body");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getAllByText("Atomic note 0").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Open saved record" }));
+    // The saved-record list no longer exposes the returned body after the
+    // failed read, while the write outcome itself remains visible.
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.queryAllByText("Atomic note 0")).toHaveLength(0);
+    expect(
+      screen.queryByRole("button", { name: "Open saved record" }),
+    ).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(
+      "Saved successfully.",
+    );
+  },
+);
 
 test("unknown save retains the draft, names its original target, and does not replay automatically", async () => {
   const user = userEvent.setup();
