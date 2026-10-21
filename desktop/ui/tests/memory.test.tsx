@@ -172,7 +172,7 @@ test.each([1, 2])(
     await user.type(screen.getByLabelText("Memory text"), "Atomic note");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(screen.getByRole("status").textContent).toBe(
-      `Saved successfully, ${count} record${count === 1 ? "" : "s"} returned; each can open its exact revision directly.`,
+      `Saved successfully. ${count} record${count === 1 ? "" : "s"} returned; each can open its exact revision directly.`,
     );
     expect(
       screen.getAllByRole("button", { name: "Open saved record" }),
@@ -182,6 +182,28 @@ test.each([1, 2])(
     ).toBe("");
   },
 );
+test("Chinese save success text keeps the harness-expected 保存成功。 prefix", async () => {
+  // Mirrors desktop/tests/installed_*.py wait_text("保存成功。"), which
+  // asserts document.body.innerText.includes("保存成功。") after a save.
+  const user = userEvent.setup();
+  vi.mocked(desktopApi.state).mockResolvedValue(state);
+  const { outcome: saved } = makeSaved(1);
+  vi.mocked(desktopApi.remember).mockResolvedValue(saved);
+  render(
+    <NoteForm
+      state={state}
+      language="zh"
+      onState={vi.fn()}
+      onDirty={vi.fn()}
+      onReadSaved={vi.fn()}
+    />,
+  );
+  await user.type(screen.getByLabelText("记忆内容"), "契约检查");
+  await user.click(screen.getByRole("button", { name: "保存" }));
+  // jsdom has no innerText; textContent matches the harness's
+  // document.body.innerText.includes("保存成功。") semantics in WebView.
+  expect(document.body.textContent).toContain("保存成功。");
+});
 test("an Atomic save can be searched, opened and copied by exact Artifact reference", async () => {
   const user = userEvent.setup();
   const { outcome: saved } = makeSaved(1);
@@ -213,7 +235,7 @@ test("an Atomic save can be searched, opened and copied by exact Artifact refere
   await user.type(screen.getByLabelText("Memory text"), "Atomic note");
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(screen.getByRole("status").textContent).toBe(
-    "Saved successfully, 1 record returned; each can open its exact revision directly.",
+    "Saved successfully. 1 record returned; each can open its exact revision directly.",
   );
   await user.type(screen.getByLabelText("Keyword search"), "Atomic");
   await user.click(screen.getByRole("button", { name: "Search" }));

@@ -29,7 +29,7 @@ export const memoryMessages = {
     empty: "请输入非空正文。",
     savedSection: "本次保存返回的记录",
     savedReturned: (count: number) =>
-      `保存成功，返回 ${count} 条记录；每条都可以直接打开其精确版本。`,
+      `保存成功。Server 返回 ${count} 条记录，每条都可以直接打开其精确版本。`,
     openSaved: "打开保存的记录",
     noEntry: "保存成功。Server 未返回可打开的记忆；不据此认定创建了新记录。",
     unknown:
@@ -86,7 +86,7 @@ export const memoryMessages = {
     empty: "Enter nonblank text.",
     savedSection: "Records returned by this save",
     savedReturned: (count: number) =>
-      `Saved successfully, ${count} record${count === 1 ? "" : "s"} returned; each can open its exact revision directly.`,
+      `Saved successfully. ${count} record${count === 1 ? "" : "s"} returned; each can open its exact revision directly.`,
     openSaved: "Open saved record",
     noEntry:
       "Saved successfully. The Server returned no memory to open; this does not establish that a new record was created.",
