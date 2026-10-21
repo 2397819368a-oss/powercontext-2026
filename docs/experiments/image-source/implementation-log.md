@@ -824,3 +824,19 @@ Access/Atomic Memory 与 ZCode 协议、宿主联合回归 85 项通过。完整
 - Ruff、1260 文件格式检查、Linux 目标全库 ty、根 lock check、ZCode pin check 和差异检查通过。当前代码索引 query_code 返回 code_disabled，未更改 Scope 或启动索引，继续使用本地源码证据。没有操作真实 Desktop、现有实验服务或私有模型配置。
 
 提交前执行全量非类型 prek；原生 Windows 全库 ty 的既有 POSIX 限制仍通过独立 Linux 目标检查区分。推送同一草稿后以实际新 head 的完整 CI 判断结果，最终检查清单写入该忽略目录的 ci-verified.json；旧 head 的成功结果不计入新 head。本次队列与 CI 修复不替代真实 Atomic Memory/新桌面召回、配对恢复及最终完整复审。
+
+## 2026-10-21：权限事务与 Desktop 生成契约集成
+
+本轮目标属于主干集成维护：将 PR #1956 rebase 到 master 2d11abd6，保留本地写入 Owner 的原子事务、Handoff 提交及图片服务初始化，从合并后的 OpenAPI 生成 Python、JavaScript 和 Desktop 绑定，验证图片证据、权限与运行时契约后更新同一 PR。用户已明确授权解决冲突和推送；PR 保持 Ready for review，不执行合并。使用独立 worktree、临时测试数据库与资产，不接触现有桌面服务或真实模型配置。
+
+### 实施与验证
+
+- 原分支 072bcfc8 保存为 codex/backup-pr1956-072bcfc8；13 个提交全部保留并重放到 2d11abd6。运行时初始化同时保留 Owner 写入事务、Handoff committer 和图片服务；Desktop 操作摘要由合并后的 OpenAPI 重新生成。
+- 运行 Python 与 JavaScript 生成器、Desktop 官方生成器；Desktop 使用本机已有 Java 21，生成的 Rust 模型保持与主干一致。DSH 官方 build 成功且已提交 bundle 无差异。
+- 使用项目固定的 uv 0.13.4 重新生成根和 e2e/bub 锁文件，补齐 images extra 继承的 httpx 依赖；锁格式为 revision 5，未额外升级包版本。
+- `uv run --no-sync python -m pytest -n 2 -q`：Access 权限回归、图片证据／解析／恢复／产品／Dashboard、Topic Memory processing 和 API／JS／Desktop 契约集合 237 项通过。
+- `uv run --no-sync python -m pytest -q`：Atomic Memory flush 并发、调度 Scope 选择、Topic Memory 恢复、Atomic Memory reconciliation、系统 CLI 和图片诊断集合 156 项通过。
+- `pnpm --dir desktop lint`、`test`、`build` 通过，含 32 项 UI 测试。DSH build、API／JS 生成检查、根／harness lock 检查、集成 guidance／capability 文档检查通过。
+- 全量非类型 pre-commit hooks、`ty check --python-platform linux` 和 `git diff --check` 通过。Linux 目标类型检查不等于 Windows 原生全库检查。
+
+本轮证据为本地自动化测试、受控 provider 与构建；没有重新验收真实 Desktop 上传、真实模型、新桌面会话召回、跨平台采集生命周期或配对数据库／资产恢复。阶段验收状态不变。更新同一 Ready for review PR 后，以新 head 的 GitHub CI 和后续审查为准，不沿用旧提交的 CI 结论，也不执行合并。

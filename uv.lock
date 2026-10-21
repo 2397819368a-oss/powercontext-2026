@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11, <4.0"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -2866,6 +2866,7 @@ images = [
     { name = "alembic" },
     { name = "apscheduler" },
     { name = "filelock" },
+    { name = "httpx" },
     { name = "jieba" },
     { name = "jsonschema" },
     { name = "packaging" },
@@ -2988,6 +2989,7 @@ requires-dist = [
     { name = "filelock", marker = "extra == 'seekdb'", specifier = ">=3.16,<4" },
     { name = "filelock", marker = "extra == 'server'", specifier = ">=3.16,<4" },
     { name = "httpx", marker = "extra == 'builtin'", specifier = ">=0.28,<1" },
+    { name = "httpx", marker = "extra == 'images'", specifier = ">=0.28,<1" },
     { name = "httpx", marker = "extra == 'seekdb'", specifier = ">=0.28,<1" },
     { name = "httpx", marker = "extra == 'server'", specifier = ">=0.28,<1" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'cli'", specifier = ">=0.28,<1" },
