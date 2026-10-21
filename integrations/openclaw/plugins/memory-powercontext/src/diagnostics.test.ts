@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { failureEvent } from './diagnostics.js'
+import { createDiagnosticEmitter, failureEvent } from './diagnostics.js'
 import { PowerContextRequestError } from './http.js'
 
 describe('host-visible diagnostic classification', () => {
@@ -86,5 +86,19 @@ describe('host-visible diagnostic classification', () => {
       http_status: 404,
       error_code: 'invalid_request',
     })
+  })
+})
+
+describe('diagnostic cooldown', () => {
+  it('suppresses only the same event and Scope correlation', () => {
+    const lines: string[] = []
+    const emit = createDiagnosticEmitter((line) => lines.push(line), () => 1)
+
+    emit({ event: 'capture_source', outcome: 'invalid_response', host: 'openclaw' })
+    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'openclaw', scope_correlation: 'a' })
+    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'openclaw', scope_correlation: 'b' })
+    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'openclaw', scope_correlation: 'a' })
+
+    expect(lines).toHaveLength(3)
   })
 })

@@ -15,14 +15,49 @@
  */
 
 
+import { readFileSync } from "node:fs";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { describe, expect, it } from "vitest";
+import { initializeGlobalHookRunner, resetGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
+import { runAgentHarnessBeforeCompactionHook } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { afterEach, describe, expect, it } from "vitest";
 import { resolvePowerContextConfig } from "./config.js";
 import { PowerContextRequestError, type PowerContextClient } from "./http.js";
 import { registerPowerContextLifecycle } from "./lifecycle.js";
 import { scopeBindingKeys, type ScopeBindingKey } from "./scope.js";
 
 type Hook = (event: unknown, context: unknown) => unknown;
+type ConformanceCase = {
+  id: string;
+  modes: string[];
+  input: Record<string, any>;
+  expected: Record<string, any>;
+};
+
+const CONFORMANCE_CASES = (JSON.parse(readFileSync(
+  new URL("../../../../../tests/integration_conformance/cases.json", import.meta.url),
+  "utf8",
+)) as { cases: ConformanceCase[] }).cases;
+
+function conformanceCase(id: string): ConformanceCase {
+  const value = CONFORMANCE_CASES.find((item) => item.id === id && item.modes.includes("best_effort"));
+  if (!value) throw new Error(`missing best-effort conformance case: ${id}`);
+  return value;
+}
+
+function flushProgress(currentCursor: number, remainingWork = false) {
+  return {
+    status: currentCursor ? "processed" : "idle",
+    previous_cursor: 0,
+    current_cursor: currentCursor,
+    high_watermark: currentCursor,
+    processed_source_count: currentCursor ? 1 : 0,
+    remaining_work: remainingWork,
+  };
+}
+
+afterEach(() => {
+  resetGlobalHookRunner();
+});
 
 function createLifecycleHarness() {
   const hooks = new Map<string, Hook>();
@@ -30,6 +65,7 @@ function createLifecycleHarness() {
   const warnings: string[] = [];
   const flushScopes: string[] = [];
   const capturedScopes: string[] = [];
+  const capturedSourceIds: string[] = [];
   const contextQueries: string[] = [];
   const scopeResolutionRequests: Array<Record<string, unknown>> = [];
   let memoryExtraction = true;
@@ -38,6 +74,15 @@ function createLifecycleHarness() {
   const prepareRequests: Array<Record<string, unknown>> = [];
   let captureError: unknown;
   let flushError: unknown;
+  let flushResponses: unknown[] = [];
+  let flushHandler: ((scopeId: string, signal?: AbortSignal) => unknown | Promise<unknown>) | undefined;
+  let capabilitiesHandler: ((signal?: AbortSignal) => unknown | Promise<unknown>) | undefined;
+  let closingSignal = new AbortController().signal;
+  let closingSignalFactory = () => closingSignal;
+  let loggerFailure = false;
+  let nextPosition = 1;
+  const positionsBySource = new Map<string, number>();
+  const latestPositionByScope = new Map<string, number>();
   const config = resolvePowerContextConfig(undefined, {
     endpoint: "https://powercontext.test",
   });
@@ -53,13 +98,15 @@ function createLifecycleHarness() {
     }),
   );
   const client = {
-    async get<T>(path: string): Promise<T> {
+    async get<T>(path: string, signal?: AbortSignal): Promise<T> {
       if (path !== "/v1/capabilities") {
         throw new Error(`unexpected GET ${path}`);
       }
+      if (capabilitiesHandler) return await capabilitiesHandler(signal) as T;
+      if (signal?.aborted) throw signal.reason ?? new DOMException("aborted", "AbortError");
       return { memory_extraction: memoryExtraction } as T;
     },
-    async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
+    async post<T>(path: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
       if (path === "/v1/scope-bindings/resolve") {
         scopeResolutionRequests.push(body);
         const bindingKeys = body.binding_keys as ScopeBindingKey[];
@@ -72,15 +119,42 @@ function createLifecycleHarness() {
       }
       if (path === "/v1/memory/flush") {
         flushScopes.push(String(body.scope_id));
+        if (flushHandler) return await flushHandler(String(body.scope_id), signal) as T;
+        if (signal?.aborted) throw signal.reason ?? new DOMException("aborted", "AbortError");
         if (flushError !== undefined) {
           throw flushError;
         }
+        if (flushResponses.length) {
+          return flushResponses.shift() as T;
+        }
+        const current = latestPositionByScope.get(String(body.scope_id)) ?? 0;
+        return {
+          status: current ? "processed" : "idle",
+          previous_cursor: 0,
+          current_cursor: current,
+          high_watermark: current,
+          processed_source_count: current ? 1 : 0,
+          remaining_work: false,
+        } as T;
       }
       if (path === "/v1/sources/content") {
         capturedScopes.push(String(body.scope_id));
+        capturedSourceIds.push(String(body.source_id));
         if (captureError !== undefined) {
           throw captureError;
         }
+        const sourceId = String(body.source_id);
+        let position = positionsBySource.get(sourceId);
+        if (position === undefined) {
+          position = nextPosition;
+          nextPosition += 1;
+          positionsBySource.set(sourceId, position);
+        }
+        latestPositionByScope.set(
+          String(body.scope_id),
+          Math.max(latestPositionByScope.get(String(body.scope_id)) ?? 0, position),
+        );
+        return { status: "accepted", source: { source_id: sourceId }, position } as T;
       }
       if (path === "/v1/context/prepare") {
         contextQueries.push(String(body.query));
@@ -104,9 +178,11 @@ function createLifecycleHarness() {
     },
     logger: {
       warn(message: string) {
+        if (loggerFailure) throw new Error("logger unavailable");
         warnings.push(message);
       },
       debug(message: string) {
+        if (loggerFailure) throw new Error("logger unavailable");
         debugMessages.push(message);
       },
     },
@@ -115,9 +191,11 @@ function createLifecycleHarness() {
     client,
     getConfig: () => config,
     isPrivateSession: () => true,
+    createClosingSignal: () => closingSignalFactory(),
   });
   return {
     capturedScopes,
+    capturedSourceIds,
     config,
     contextQueries,
     prepareRequests,
@@ -137,30 +215,48 @@ function createLifecycleHarness() {
     setFlushError(error: unknown) {
       flushError = error;
     },
+    setFlushResponses(values: unknown[]) {
+      flushResponses = [...values];
+    },
+    setFlushHandler(handler: typeof flushHandler) {
+      flushHandler = handler;
+    },
+    setCapabilitiesHandler(handler: typeof capabilitiesHandler) {
+      capabilitiesHandler = handler;
+    },
+    setClosingSignal(signal: AbortSignal) {
+      closingSignal = signal;
+    },
+    setClosingSignalFactory(factory: () => AbortSignal) {
+      closingSignalFactory = factory;
+    },
+    setLoggerFailure(value: boolean) {
+      loggerFailure = value;
+    },
     scopeResolutionRequests,
     warnings,
   };
 }
 
 describe("PowerContext lifecycle", () => {
-  it("flushes every project observed by a session", async () => {
+  it("flushes every project with accepted pending Sources at session end", async () => {
     const harness = createLifecycleHarness();
     const sessionContext = {
       agentId: "main",
       sessionId: "session-1",
       sessionKey: "agent:main:telegram:direct:user-1",
     };
-    const beforePromptBuild = harness.hooks.get("before_prompt_build");
+    const agentEnd = harness.hooks.get("agent_end");
     const sessionEnd = harness.hooks.get("session_end");
-    expect(beforePromptBuild).toBeDefined();
+    expect(agentEnd).toBeDefined();
     expect(sessionEnd).toBeDefined();
 
-    await beforePromptBuild!(
-      { messages: [{ role: "user", content: "remember this" }], prompt: "" },
+    await agentEnd!(
+      { success: true, messages: [{ role: "user", content: "remember this" }] },
       { ...sessionContext, activeProjectKeys: ["/workspace/project-a"] },
     );
-    await beforePromptBuild!(
-      { messages: [{ role: "user", content: "and this" }], prompt: "" },
+    await agentEnd!(
+      { success: true, messages: [{ role: "user", content: "and this" }] },
       { ...sessionContext, activeProjectKeys: ["/workspace/project-b"] },
     );
     await sessionEnd!(
@@ -256,6 +352,7 @@ describe("PowerContext lifecycle", () => {
   });
 
   it("reports a flush domain failure from the actual endpoint", async () => {
+    const vector = conformanceCase("flush_failure");
     const harness = createLifecycleHarness();
     harness.setFlushError(
       new PowerContextRequestError(
@@ -265,7 +362,7 @@ describe("PowerContext lifecycle", () => {
         "conflict",
       ),
     );
-    const beforePromptBuild = harness.hooks.get("before_prompt_build");
+    const agentEnd = harness.hooks.get("agent_end");
     const sessionEnd = harness.hooks.get("session_end");
     const context = {
       agentId: "main",
@@ -274,8 +371,8 @@ describe("PowerContext lifecycle", () => {
       activeProjectKeys: ["/workspace/project"],
     };
 
-    await beforePromptBuild!(
-      { messages: [{ role: "user", content: "remember this" }], prompt: "" },
+    await agentEnd!(
+      { success: true, messages: [{ role: "user", content: "remember this" }] },
       context,
     );
     await sessionEnd!(
@@ -283,9 +380,47 @@ describe("PowerContext lifecycle", () => {
       context,
     );
 
-    expect(harness.warnings).toEqual([
-      '{"component":"powercontext.openclaw","event":"session_end_flush","outcome":"invalid_response","http_status":409,"error_code":"conflict","failed_scopes":1,"total_scopes":1}',
-    ]);
+    expect(harness.warnings).toHaveLength(1);
+    expect(JSON.parse(harness.warnings[0])).toMatchObject({
+      component: "powercontext.openclaw",
+      event: "session_end_flush",
+      outcome: "invalid_response",
+      failure_class: "invalid_response",
+      host: "openclaw",
+      lifecycle_event: "session_end",
+      target_position: vector.input.target_position,
+    });
+
+    harness.setFlushError(undefined);
+    await harness.hooks.get("gateway_stop")!({}, {});
+    expect(harness.flushScopes).toHaveLength(vector.expected.later_retry_acknowledged ? 2 : 1);
+  });
+
+  it("flushes only accepted positions at both closing boundaries", async () => {
+    const vector = conformanceCase("closing_boundaries");
+    const harness = createLifecycleHarness();
+    const agentEnd = harness.hooks.get("agent_end")!;
+    const sessionEnd = harness.hooks.get("session_end")!;
+    const gatewayStop = harness.hooks.get("gateway_stop")!;
+    const context = {
+      agentId: "main",
+      sessionId: "session-closing-one",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+
+    await sessionEnd({ sessionId: context.sessionId, messageCount: 0 }, context);
+    expect(harness.flushScopes).toHaveLength(vector.expected.uncaptured_flush_calls);
+
+    await agentEnd({ success: true, messages: [{ role: "user", content: "first" }] }, context);
+    await sessionEnd({ sessionId: context.sessionId, messageCount: 1 }, context);
+    await agentEnd(
+      { success: true, messages: [{ role: "user", content: "second" }] },
+      { ...context, sessionId: "session-closing-two" },
+    );
+    await gatewayStop({}, {});
+
+    expect(vector.input.events_by_host.openclaw).toEqual(["session_end", "gateway_stop"]);
+    expect(harness.flushScopes).toHaveLength(vector.expected.captured_flush_calls);
   });
 
   it("bounds context queries by UTF-8 bytes", async () => {
@@ -326,6 +461,390 @@ describe("PowerContext lifecycle", () => {
     expect(harness.capturedScopes).toEqual(["scp_project_a"]);
     expect(harness.flushScopes).toEqual(["scp_project_a"]);
     expect(harness.warnings).toEqual([]);
+  });
+
+  it("retries until the flush cursor acknowledges the exact captured position", async () => {
+    const vector = conformanceCase("cursor_catches_up");
+    const harness = createLifecycleHarness();
+    harness.config.flushMaxCalls = vector.expected.flush_calls;
+    harness.setFlushResponses(vector.input.flush_cursors.map((cursor: number, index: number) => (
+      flushProgress(cursor, vector.input.remaining_work[index])
+    )));
+    const beforeCompaction = harness.hooks.get("before_compaction")!;
+
+    await beforeCompaction(
+      { messages: [{ role: "user", content: "remember this" }] },
+      {
+        agentId: "main",
+        sessionId: "session-cursor",
+        sessionKey: "agent:main:telegram:direct:user-1",
+      },
+    );
+
+    expect(harness.flushScopes).toHaveLength(vector.expected.flush_calls);
+    expect(harness.warnings).toEqual([]);
+  });
+
+  it("rejects every malformed 2xx acknowledgement vector", async () => {
+    const vector = conformanceCase("malformed_acknowledgement");
+    for (const variant of vector.input.invalid_cursor_variants as string[]) {
+      const harness = createLifecycleHarness();
+      harness.config.flushMaxCalls = 1;
+      harness.setFlushResponses([
+        variant === "missing"
+          ? { ...flushProgress(1), current_cursor: undefined }
+          : { ...flushProgress(1), current_cursor: "1" },
+      ]);
+      const beforeCompaction = harness.hooks.get("before_compaction")!;
+
+      await beforeCompaction(
+        { messages: [{ role: "user", content: "do not log this transcript" }] },
+        {
+          agentId: "main",
+          sessionId: `session-malformed-${variant}`,
+          sessionKey: "agent:main:telegram:direct:user-1",
+        },
+      );
+
+      expect(harness.warnings).toHaveLength(1);
+      const diagnostic = JSON.parse(harness.warnings[0]);
+      expect(diagnostic).toMatchObject({
+        component: "powercontext.openclaw",
+        event: "pre_compaction_checkpoint",
+        outcome: "invalid_response",
+        failure_class: "invalid_response",
+        host: "openclaw",
+        lifecycle_event: "before_compaction",
+        target_position: vector.input.target_position,
+      });
+      expect(diagnostic.scope_correlation).toMatch(/^[0-9a-f]{16}$/);
+      expect(harness.warnings[0]).not.toContain("do not log this transcript");
+      expect(harness.warnings[0]).not.toContain("scp_default");
+    }
+  });
+
+  it("reuses Source identity for duplicate delivery and distinguishes a later event", async () => {
+    const vector = conformanceCase("duplicate_delivery");
+    const harness = createLifecycleHarness();
+    const beforeCompaction = harness.hooks.get("before_compaction")!;
+    const context = {
+      agentId: "main",
+      sessionId: "session-duplicate",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+    const first = { messages: vector.input.duplicate_event };
+    const reordered = {
+      messages: vector.input.duplicate_event.map((message: { role: string; content: string }) => ({
+        content: message.content,
+        role: message.role,
+      })),
+    };
+
+    await beforeCompaction(first, context);
+    await beforeCompaction(reordered, context);
+    await beforeCompaction({ messages: vector.input.later_event }, context);
+
+    expect(first.messages).toHaveLength(vector.input.later_event.length);
+    expect(harness.capturedSourceIds[0]).toBe(harness.capturedSourceIds[1]);
+    expect(harness.capturedSourceIds[2]).not.toBe(harness.capturedSourceIds[1]);
+  });
+
+  it("distinguishes equal-marker events whose canonical payloads differ outside the tail", async () => {
+    const harness = createLifecycleHarness();
+    const beforeCompaction = harness.hooks.get("before_compaction")!;
+    const context = {
+      agentId: "main",
+      sessionId: "session-middle-difference",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+    const sharedTail = [
+      { role: "assistant", content: "same one" },
+      { role: "user", content: "continue" },
+      { role: "assistant", content: "same two" },
+      { role: "user", content: "finish" },
+    ];
+
+    await beforeCompaction({
+      messageCount: 5,
+      compactingCount: 2,
+      messages: [{ role: "user", content: "middle a" }, ...sharedTail],
+    }, context);
+    await beforeCompaction({
+      messageCount: 5,
+      compactingCount: 2,
+      messages: [{ content: "middle b", role: "user" }, ...sharedTail],
+    }, context);
+
+    expect(harness.capturedSourceIds).toHaveLength(2);
+    expect(harness.capturedSourceIds[1]).not.toBe(harness.capturedSourceIds[0]);
+  });
+
+  it("clears an acknowledged position when a later bounded flush call is cancelled", async () => {
+    const harness = createLifecycleHarness();
+    harness.config.flushMaxCalls = 2;
+    let calls = 0;
+    harness.setFlushHandler(() => {
+      calls += 1;
+      if (calls === 1) return flushProgress(1, true);
+      throw new DOMException("cancelled", "AbortError");
+    });
+    const context = {
+      agentId: "main",
+      sessionId: "session-ack-then-cancel",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+
+    await harness.hooks.get("before_compaction")!(
+      { messages: [{ role: "user", content: "remember this" }] },
+      context,
+    );
+    expect(harness.flushScopes).toHaveLength(2);
+
+    await harness.hooks.get("session_end")!(
+      { sessionId: context.sessionId, messageCount: 1 },
+      context,
+    );
+
+    expect(harness.flushScopes).toHaveLength(2);
+    expect(harness.warnings).toEqual([]);
+  });
+
+  it("serializes overlapping closing boundaries without flushing a cleared position", async () => {
+    const harness = createLifecycleHarness();
+    const context = {
+      agentId: "main",
+      sessionId: "session-overlap",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+    await harness.hooks.get("agent_end")!(
+      { success: true, messages: [{ role: "user", content: "remember this" }] },
+      context,
+    );
+    let releaseCapabilities: (() => void) | undefined;
+    let capabilitiesStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { capabilitiesStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseCapabilities = resolve; });
+    harness.setCapabilitiesHandler(async () => {
+      capabilitiesStarted?.();
+      await blocked;
+      return { memory_extraction: true };
+    });
+
+    const sessionEnd = harness.hooks.get("session_end")!(
+      { sessionId: context.sessionId, messageCount: 1 },
+      context,
+    ) as Promise<void>;
+    await started;
+    const gatewayStop = harness.hooks.get("gateway_stop")!({}, {}) as Promise<void>;
+    expect(harness.flushScopes).toEqual([]);
+    releaseCapabilities?.();
+    await Promise.all([sessionEnd, gatewayStop]);
+
+    expect(harness.flushScopes).toEqual(["scp_default"]);
+  });
+
+  it("starts a closing deadline only after the task leaves the flush queue", async () => {
+    const harness = createLifecycleHarness();
+    harness.config.flushMaxCalls = 1;
+    const base = {
+      agentId: "main",
+      sessionId: "session-queued-deadline",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+    await harness.hooks.get("agent_end")!(
+      { success: true, runId: "run-pending", messages: [{ role: "user", content: "scope b" }] },
+      { ...base, activeProjectKeys: ["/workspace/project-b"] },
+    );
+
+    let releaseFirstFlush: (() => void) | undefined;
+    let firstFlushStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { firstFlushStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseFirstFlush = resolve; });
+    let flushCalls = 0;
+    harness.setFlushHandler(async (scopeId, signal) => {
+      flushCalls += 1;
+      if (flushCalls === 1) {
+        firstFlushStarted?.();
+        await blocked;
+      }
+      if (signal?.aborted) throw signal.reason ?? new DOMException("aborted", "AbortError");
+      return flushProgress(scopeId === "scp_project_a" ? 2 : scopeId === "scp_project_b" ? 1 : 3);
+    });
+
+    const beforeCompaction = harness.hooks.get("before_compaction")!(
+      {
+        messageCount: 1,
+        compactingCount: 1,
+        messages: [{ role: "user", content: "scope a" }],
+      },
+      { ...base, activeProjectKeys: ["/workspace/project-a"] },
+    ) as Promise<void>;
+    await started;
+    const queuedBeforeCompaction = harness.hooks.get("before_compaction")!(
+      {
+        messageCount: 1,
+        compactingCount: 1,
+        messages: [{ role: "user", content: "scope default" }],
+      },
+      base,
+    ) as Promise<void>;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    let signalCreations = 0;
+    harness.setClosingSignalFactory(() => {
+      signalCreations += 1;
+      return AbortSignal.timeout(20);
+    });
+    const gatewayStop = harness.hooks.get("gateway_stop")!({}, {}) as Promise<void>;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(signalCreations).toBe(0);
+
+    releaseFirstFlush?.();
+    await Promise.all([beforeCompaction, queuedBeforeCompaction, gatewayStop]);
+
+    expect(signalCreations).toBe(1);
+    expect(harness.flushScopes).toEqual(["scp_project_a", "scp_project_b", "scp_default"]);
+  });
+
+  it("does not let one Scope cursor acknowledge another Scope", async () => {
+    const vector = conformanceCase("scope_isolation");
+    const harness = createLifecycleHarness();
+    harness.config.flushMaxCalls = 1;
+    harness.setFlushResponses(vector.input.scopes.map((scope: { cursor: number }) => flushProgress(scope.cursor)));
+    const beforeCompaction = harness.hooks.get("before_compaction")!;
+    const base = {
+      agentId: "main",
+      sessionId: "session-scopes",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+
+    await beforeCompaction(
+      { messages: [{ role: "user", content: "scope a" }] },
+      { ...base, activeProjectKeys: ["/workspace/project-a"] },
+    );
+    await beforeCompaction(
+      { messages: [{ role: "user", content: "scope b" }] },
+      { ...base, activeProjectKeys: ["/workspace/project-b"] },
+    );
+
+    expect(harness.flushScopes).toEqual(["scp_project_a", "scp_project_b"]);
+    expect(harness.warnings).toHaveLength(vector.expected.pending_scopes);
+    expect(JSON.parse(harness.warnings[0])).toMatchObject({ target_position: 2, observed_cursor: 1 });
+  });
+
+  it("uses real AbortSignals before and after acknowledgement", async () => {
+    const vector = conformanceCase("cancellation_boundaries");
+    const harness = createLifecycleHarness();
+    harness.config.flushMaxCalls = 1;
+    const agentEnd = harness.hooks.get("agent_end")!;
+    const gatewayStop = harness.hooks.get("gateway_stop")!;
+
+    await agentEnd(
+      { success: true, messages: [{ role: "user", content: "remember this" }] },
+      {
+        agentId: "main",
+        sessionId: "session-cancel",
+        sessionKey: "agent:main:telegram:direct:user-1",
+      },
+    );
+
+    const before = new AbortController();
+    before.abort(new DOMException("cancelled", "AbortError"));
+    harness.setClosingSignal(before.signal);
+    await gatewayStop({}, {});
+    expect(harness.flushScopes).toHaveLength(0);
+
+    const after = new AbortController();
+    harness.setClosingSignal(after.signal);
+    harness.setFlushHandler(() => {
+      after.abort(new DOMException("cancelled", "AbortError"));
+      return flushProgress(vector.input.target_position);
+    });
+    await gatewayStop({}, {});
+    const callsAfterAcknowledgement = harness.flushScopes.length;
+    await gatewayStop({}, {});
+
+    expect(callsAfterAcknowledgement).toBe(1);
+    expect(vector.expected.pending_before).toBe(1);
+    expect(vector.expected.pending_after).toBe(0);
+    expect(harness.flushScopes).toHaveLength(callsAfterAcknowledgement);
+  });
+
+  it("continues through the real OpenClaw harness when a before-compaction hook fails", async () => {
+    const vector = conformanceCase("best_effort_fail_open");
+    let hookCalls = 0;
+    initializeGlobalHookRunner({
+      hooks: [],
+      plugins: [{ id: "powercontext-test", status: "loaded" }],
+      typedHooks: [{
+        pluginId: "powercontext-test",
+        hookName: "before_compaction",
+        handler: async () => {
+          hookCalls += 1;
+          throw new Error("checkpoint failed");
+        },
+        source: "test",
+      }],
+    } as never);
+
+    await expect(runAgentHarnessBeforeCompactionHook({
+      sessionFile: "/tmp/session.jsonl",
+      messages: [],
+      ctx: {},
+    } as never)).resolves.toBeUndefined();
+    expect(hookCalls).toBe(1);
+    expect(vector.expected.host_continues).toBe(true);
+  });
+
+  it("continues flushing pending Scopes when operational logging throws", async () => {
+    const harness = createLifecycleHarness();
+    harness.config.flushMaxCalls = 1;
+    const agentEnd = harness.hooks.get("agent_end")!;
+    const context = {
+      agentId: "main",
+      sessionId: "session-logging",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+    await agentEnd(
+      { success: true, messages: [{ role: "user", content: "scope a" }] },
+      { ...context, activeProjectKeys: ["/workspace/project-a"] },
+    );
+    await agentEnd(
+      { success: true, messages: [{ role: "user", content: "scope b" }] },
+      { ...context, activeProjectKeys: ["/workspace/project-b"] },
+    );
+    harness.setFlushError(new Error("flush failed"));
+    harness.setLoggerFailure(true);
+
+    await expect(harness.hooks.get("session_end")!(
+      { sessionId: context.sessionId, messageCount: 2 },
+      context,
+    )).resolves.toBeUndefined();
+
+    expect(harness.flushScopes).toEqual(["scp_project_a", "scp_project_b"]);
+  });
+
+  it("keeps a boundary capture pending when extraction is unavailable", async () => {
+    const vector = conformanceCase("extraction_unavailable");
+    const harness = createLifecycleHarness();
+    harness.setMemoryExtraction(vector.input.memory_extraction);
+    const beforeCompaction = harness.hooks.get("before_compaction")!;
+
+    await beforeCompaction(
+      { messages: [{ role: "user", content: "remember this" }] },
+      {
+        agentId: "main",
+        sessionId: "session-extraction",
+        sessionKey: "agent:main:telegram:direct:user-1",
+      },
+    );
+
+    expect(harness.capturedSourceIds).toHaveLength(vector.expected.capture_accepted ? 1 : 0);
+    expect(harness.flushScopes).toHaveLength(vector.expected.flush_calls_by_host.openclaw);
+    expect(JSON.parse(harness.warnings[0])).toMatchObject({
+      event: "pre_compaction_checkpoint",
+      outcome: "extraction_unavailable",
+      target_position: vector.input.target_position,
+    });
   });
 
   it("defers flush without dropping captured sources when extraction is unavailable", async () => {

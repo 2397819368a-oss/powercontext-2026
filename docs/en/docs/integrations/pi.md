@@ -50,6 +50,24 @@ Scope ID. Keep the explicit variable unset unless the host must force one existi
 
 With these capabilities enabled, Pi satisfies the repository's Full core integration profile.
 
+### Pre-compaction checkpoint
+
+The package implements **best-effort** checkpointing on Pi's public `session_before_compact` event. Eligible prompts
+are captured with deterministic Source IDs before the agent turn, and the event flushes their accepted journal
+positions. A position is removed from the pending set only after a complete, valid flush response reports
+`current_cursor` at or beyond that exact position. A 2xx response, malformed cursor, or cursor from another Scope
+cannot acknowledge it.
+
+The boundary makes at most `POWERCONTEXT_PI_FLUSH_MAX_CALLS` calls (default `4`, valid range `1`–`16`) within a
+shared closing budget of at most one second. A behind cursor or `remaining_work` consumes another bounded call.
+Failures and cancellation before acknowledgement retain pending work; cancellation after acknowledgement does not
+revoke it. `session_before_switch` and `session_shutdown` flush only already accepted pending positions.
+
+Pi's real `ExtensionRunner` continues after thrown handler errors unless a handler explicitly returns
+`{ cancel: true }`. This package never returns that result, so checkpoint failure does not block compaction and the
+integration is not `required_capable`. Optional diagnostics are content-free and use a hashed Scope correlation,
+target and observed positions, lifecycle event, host, and stable failure class.
+
 ## Control prompt capture
 
 Prompt capture is enabled by default. Disable it before starting Pi when current work must not be recorded:

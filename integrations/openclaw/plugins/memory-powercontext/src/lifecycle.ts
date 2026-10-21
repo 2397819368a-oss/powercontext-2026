@@ -15,6 +15,7 @@
  */
 
 
+import { createHash } from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { PowerContextConfig } from "./config.js";
 import { opaqueSessionId } from "./config.js";
@@ -22,6 +23,7 @@ import {
   captureTranscript,
   deterministicSourceId,
   escapePowerContextBoundary,
+  lifecycleEventIdentity,
   latestUserText,
   truncateUtf8,
 } from "./content.js";
@@ -34,12 +36,80 @@ type LifecycleDependencies = {
   client: PowerContextClient;
   getConfig: () => PowerContextConfig;
   isPrivateSession: (agentId: string, sessionKey: string | undefined) => boolean;
+  createClosingSignal?: () => AbortSignal;
 };
 
 const MAX_SESSION_SCOPES = 32;
+const CLOSING_BUDGET_MS = 1000;
+
+type FlushProgress = {
+  currentCursor: number;
+  remainingWork: boolean;
+};
+
+type CheckpointResult = {
+  acknowledged: boolean;
+  observedCursor?: number;
+  error?: unknown;
+};
+
+function nonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function sourcePosition(value: unknown): number {
+  if (!value || typeof value !== "object") {
+    throw new Error("PowerContext returned an invalid Source capture payload");
+  }
+  const position = (value as { position?: unknown }).position;
+  if (!nonNegativeInteger(position) || position < 1) {
+    throw new Error("PowerContext returned an invalid Source position");
+  }
+  return position;
+}
+
+function flushProgress(value: unknown): FlushProgress {
+  if (!value || typeof value !== "object") {
+    throw new Error("PowerContext returned an invalid flush payload");
+  }
+  const result = value as Record<string, unknown>;
+  if (
+    !["idle", "processed"].includes(String(result.status))
+    || !nonNegativeInteger(result.previous_cursor)
+    || !nonNegativeInteger(result.current_cursor)
+    || !nonNegativeInteger(result.high_watermark)
+    || !nonNegativeInteger(result.processed_source_count)
+    || (result.remaining_work !== undefined && typeof result.remaining_work !== "boolean")
+  ) {
+    throw new Error("PowerContext returned an invalid flush payload");
+  }
+  return {
+    currentCursor: result.current_cursor,
+    remainingWork: result.remaining_work === true,
+  };
+}
+
+function scopeCorrelation(scopeId: string): string {
+  return createHash("sha256").update(scopeId).digest("hex").slice(0, 16);
+}
 
 export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: LifecycleDependencies) {
-  const emitDiagnostic = createDiagnosticEmitter((line) => api.logger.warn(line));
+  const safeWarn = (message: string) => {
+    try {
+      api.logger.warn(message);
+    } catch {
+      // Operational logging must not change lifecycle behavior.
+    }
+  };
+  const safeDebug = (message: string) => {
+    try {
+      api.logger.debug?.(message);
+    } catch {
+      // Operational logging must not change lifecycle behavior.
+    }
+  };
+  const emitDiagnostic = createDiagnosticEmitter(safeWarn);
+  const createClosingSignal = deps.createClosingSignal ?? (() => AbortSignal.timeout(CLOSING_BUDGET_MS));
   const reportFailure = (event: string, error: unknown, extra: Record<string, unknown> = {}) => {
     const failure = failureEvent(event, error);
     if (!failure) {
@@ -48,10 +118,44 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     emitDiagnostic({
       component: "powercontext.openclaw",
       ...failure,
+      ...(extra.lifecycle_event ? { failure_class: failure.outcome } : {}),
       ...extra,
     });
   };
   const sessionScopes = new Map<string, Set<string>>();
+  const pendingPositions = new Map<string, number>();
+  type QueuedFlush = {
+    run: () => Promise<void>;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  };
+  const normalFlushQueue: QueuedFlush[] = [];
+  const closingFlushQueue: QueuedFlush[] = [];
+  let flushQueueRunning = false;
+  const drainFlushQueue = async () => {
+    if (flushQueueRunning) return;
+    flushQueueRunning = true;
+    try {
+      while (closingFlushQueue.length || normalFlushQueue.length) {
+        const queued = closingFlushQueue.shift() ?? normalFlushQueue.shift()!;
+        try {
+          await queued.run();
+          queued.resolve();
+        } catch (error) {
+          queued.reject(error);
+        }
+      }
+    } finally {
+      flushQueueRunning = false;
+    }
+  };
+  const enqueueFlush = (task: () => Promise<void>, priority: "normal" | "closing" = "normal"): Promise<void> => {
+    const result = new Promise<void>((resolve, reject) => {
+      (priority === "closing" ? closingFlushQueue : normalFlushQueue).push({ run: task, resolve, reject });
+    });
+    void drainFlushQueue();
+    return result;
+  };
   const readAgentId = (agentId: string | undefined): string | undefined => {
     const value = agentId?.trim();
     return value || undefined;
@@ -71,7 +175,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       if (oldest) {
         scopes.delete(oldest);
       }
-      api.logger.warn(
+      safeWarn(
         `memory-powercontext: session scope history exceeded ${MAX_SESSION_SCOPES}; oldest scope was dropped`,
       );
     }
@@ -95,7 +199,9 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     activeProjectKeys?: readonly string[];
     channel?: string;
     messages: unknown[];
-  }, resolvedScopeId?: string) => {
+    eventIdentity: string;
+    signal?: AbortSignal;
+  }, resolvedScopeId?: string): Promise<number | undefined> => {
     const config = deps.getConfig();
     if (
       !config.endpoint ||
@@ -112,10 +218,11 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     const sourceId = deterministicSourceId({
       agentId: params.agentId,
       opaqueSessionId: sessionIdentity,
+      eventIdentity: params.eventIdentity,
       content,
     });
     const scopeId = resolvedScopeId ?? await resolveScope(params);
-    await deps.client.post("/v1/sources/content", {
+    const response = await deps.client.post<unknown>("/v1/sources/content", {
       scope_id: scopeId,
       source_id: sourceId,
       content,
@@ -126,19 +233,51 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         ...(params.channel ? { channel: params.channel } : {}),
         privacy_class: "private",
       },
-    });
+    }, params.signal);
+    const position = sourcePosition(response);
+    pendingPositions.set(scopeId, Math.max(pendingPositions.get(scopeId) ?? 0, position));
+    return position;
   };
 
-  const flush = async (scopeId: string) => {
-    await deps.client.post("/v1/memory/flush", { scope_id: scopeId });
+  const flush = async (scopeId: string, targetPosition: number, signal?: AbortSignal): Promise<CheckpointResult> => {
+    let acknowledged = false;
+    let observedCursor: number | undefined;
+    let failure: unknown;
+    const config = deps.getConfig();
+    for (let attempt = 0; attempt < config.flushMaxCalls; attempt += 1) {
+      try {
+        const response = await deps.client.post<unknown>("/v1/memory/flush", { scope_id: scopeId }, signal);
+        const progress = flushProgress(response);
+        observedCursor = Math.max(observedCursor ?? 0, progress.currentCursor);
+        acknowledged ||= progress.currentCursor >= targetPosition;
+        if (acknowledged && !progress.remainingWork) {
+          break;
+        }
+      } catch (error) {
+        failure = error;
+        break;
+      }
+    }
+    if (acknowledged) {
+      const pending = pendingPositions.get(scopeId);
+      if (pending !== undefined && observedCursor !== undefined && observedCursor >= pending) {
+        pendingPositions.delete(scopeId);
+      }
+      return { acknowledged: true, ...(observedCursor === undefined ? {} : { observedCursor }) };
+    }
+    return {
+      acknowledged: false,
+      ...(observedCursor === undefined ? {} : { observedCursor }),
+      error: failure ?? new Error("PowerContext did not acknowledge the captured Source position"),
+    };
   };
-  const canExtractMemory = async () => {
-    const capabilities = await deps.client.get<unknown>("/v1/capabilities");
+  const canExtractMemory = async (signal?: AbortSignal) => {
+    const capabilities = await deps.client.get<unknown>("/v1/capabilities", signal);
     if (!isPowerContextCapabilities(capabilities)) {
       throw new Error("PowerContext returned an invalid Capabilities payload");
     }
     if (!capabilities.memory_extraction) {
-      api.logger.debug?.(
+      safeDebug(
         "memory-powercontext: memory flush deferred because extraction is unavailable; captured sources remain pending",
       );
       return false;
@@ -215,6 +354,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         activeProjectKeys: ctx.activeProjectKeys,
         channel: ctx.channel ?? ctx.messageProvider,
         messages: event.messages,
+        eventIdentity: lifecycleEventIdentity(event.messages, { runId: event.runId }),
       });
     } catch (error) {
       reportFailure("capture_source", error);
@@ -238,27 +378,72 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       reportFailure("scope_binding", error);
       return;
     }
+    let capturedPosition: number | undefined;
     if (event.messages?.length) {
       try {
-        await capture({
+        capturedPosition = await capture({
           agentId,
           sessionId: ctx.sessionId,
           sessionKey: ctx.sessionKey,
           activeProjectKeys: ctx.activeProjectKeys,
           channel: ctx.channel ?? ctx.messageProvider,
           messages: event.messages,
+          eventIdentity: lifecycleEventIdentity(event.messages, {
+            messageCount: event.messageCount,
+            compactingCount: event.compactingCount,
+          }),
         }, scopeId);
       } catch (error) {
-        reportFailure("capture_source", error);
+        reportFailure("capture_source", error, {
+          host: "openclaw",
+          lifecycle_event: "before_compaction",
+          scope_correlation: scopeCorrelation(scopeId),
+        });
       }
     }
-    try {
-      if (await canExtractMemory()) {
-        await flush(scopeId);
-      }
-    } catch (error) {
-      reportFailure("pre_compaction_flush", error);
+    const targetPosition = capturedPosition ?? pendingPositions.get(scopeId);
+    if (targetPosition === undefined) {
+      return;
     }
+    await enqueueFlush(async () => {
+      const currentTarget = pendingPositions.get(scopeId);
+      if (currentTarget === undefined) {
+        return;
+      }
+      const signal = createClosingSignal();
+      try {
+        if (await canExtractMemory(signal)) {
+          const result = await flush(scopeId, Math.max(targetPosition, currentTarget), signal);
+          if (!result.acknowledged) {
+            reportFailure("pre_compaction_checkpoint", result.error, {
+              host: "openclaw",
+              lifecycle_event: "before_compaction",
+              scope_correlation: scopeCorrelation(scopeId),
+              target_position: Math.max(targetPosition, currentTarget),
+              ...(result.observedCursor === undefined ? {} : { observed_cursor: result.observedCursor }),
+            });
+          }
+        } else {
+          emitDiagnostic({
+            component: "powercontext.openclaw",
+            event: "pre_compaction_checkpoint",
+            outcome: "extraction_unavailable",
+            failure_class: "extraction_unavailable",
+            host: "openclaw",
+            lifecycle_event: "before_compaction",
+            scope_correlation: scopeCorrelation(scopeId),
+            target_position: Math.max(targetPosition, currentTarget),
+          });
+        }
+      } catch (error) {
+        reportFailure("pre_compaction_checkpoint", error, {
+          host: "openclaw",
+          lifecycle_event: "before_compaction",
+          scope_correlation: scopeCorrelation(scopeId),
+          target_position: Math.max(targetPosition, currentTarget),
+        });
+      }
+    }, "normal");
   });
 
   api.on("session_end", async (event, ctx) => {
@@ -269,33 +454,74 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     }
     const observedScopes = sessionScopes.get(event.sessionId);
     sessionScopes.delete(event.sessionId);
-    try {
-      const scopes = observedScopes?.size
-        ? [...observedScopes]
-        : [await resolveScope({
-            agentId,
-            sessionId: event.sessionId,
-            sessionKey,
-          })];
-      if (!(await canExtractMemory())) {
+    const scopes = observedScopes?.size ? [...observedScopes] : [];
+    await enqueueFlush(async () => {
+      const pendingScopes = scopes.filter((scopeId) => pendingPositions.has(scopeId));
+      if (!pendingScopes.length) {
         return;
       }
-      const failures: unknown[] = [];
-      for (const scopeId of scopes) {
-        try {
-          await flush(scopeId);
-        } catch (error) {
-          failures.push(error);
+      const signal = createClosingSignal();
+      try {
+        if (!(await canExtractMemory(signal))) {
+          return;
         }
-      }
-      if (failures.length) {
-        reportFailure("session_end_flush", failures[0], {
-          failed_scopes: failures.length,
-          total_scopes: scopes.length,
+        for (const scopeId of pendingScopes) {
+          const targetPosition = pendingPositions.get(scopeId);
+          if (targetPosition === undefined) {
+            continue;
+          }
+          const result = await flush(scopeId, targetPosition, signal);
+          if (!result.acknowledged) {
+            reportFailure("session_end_flush", result.error, {
+              host: "openclaw",
+              lifecycle_event: "session_end",
+              scope_correlation: scopeCorrelation(scopeId),
+              target_position: targetPosition,
+              ...(result.observedCursor === undefined ? {} : { observed_cursor: result.observedCursor }),
+            });
+          }
+        }
+      } catch (error) {
+        reportFailure("session_end_flush", error, {
+          host: "openclaw",
+          lifecycle_event: "session_end",
         });
       }
-    } catch (error) {
-      reportFailure("session_end_flush", error);
-    }
+    }, "closing");
+  });
+
+  api.on("gateway_stop", async () => {
+    await enqueueFlush(async () => {
+      if (!pendingPositions.size) {
+        return;
+      }
+      const signal = createClosingSignal();
+      try {
+        if (!(await canExtractMemory(signal))) {
+          return;
+        }
+        for (const [scopeId, targetPosition] of [...pendingPositions]) {
+          const currentTarget = pendingPositions.get(scopeId);
+          if (currentTarget === undefined) {
+            continue;
+          }
+          const result = await flush(scopeId, Math.max(targetPosition, currentTarget), signal);
+          if (!result.acknowledged) {
+            reportFailure("shutdown_flush", result.error, {
+              host: "openclaw",
+              lifecycle_event: "gateway_stop",
+              scope_correlation: scopeCorrelation(scopeId),
+              target_position: Math.max(targetPosition, currentTarget),
+              ...(result.observedCursor === undefined ? {} : { observed_cursor: result.observedCursor }),
+            });
+          }
+        }
+      } catch (error) {
+        reportFailure("shutdown_flush", error, {
+          host: "openclaw",
+          lifecycle_event: "gateway_stop",
+        });
+      }
+    }, "closing");
   });
 }

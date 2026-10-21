@@ -18,7 +18,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { diagnosticWriter, failureEvent } from '../src/diagnostics.ts'
+import { createDiagnosticEmitter, diagnosticWriter, failureEvent } from '../src/diagnostics.ts'
 import { ServerResponseError } from '../src/errors.ts'
 
 describe('host-visible diagnostic classification', () => {
@@ -147,5 +147,19 @@ describe('diagnostic sink', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('diagnostic cooldown', () => {
+  it('suppresses only the same event and Scope correlation', () => {
+    const lines: string[] = []
+    const emit = createDiagnosticEmitter((line) => lines.push(line), () => 1)
+
+    emit({ event: 'capture_source', outcome: 'invalid_response', host: 'pi' })
+    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'pi', scope_correlation: 'a' })
+    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'pi', scope_correlation: 'b' })
+    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'pi', scope_correlation: 'a' })
+
+    expect(lines).toHaveLength(3)
   })
 })
