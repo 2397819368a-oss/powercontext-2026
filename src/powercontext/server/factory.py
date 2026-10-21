@@ -79,6 +79,7 @@ from powercontext.server.context import current_principal, current_request_id
 from powercontext.server.cursor_secret import resolve_cursor_secret
 from powercontext.server.dashboard import mount_dashboard
 from powercontext.server.dream_access import DreamAccess
+from powercontext.server.http_limits import HttpResourceLimitsMiddleware
 from powercontext.server.identity import ServerIdentityRepository
 from powercontext.server.info import server_info
 from powercontext.server.logging import WorkerLogging
@@ -328,6 +329,14 @@ def create_server_app(  # noqa: C901
             ),
         )
 
+    configured_middleware.insert(
+        0,
+        Middleware(
+            HttpResourceLimitsMiddleware,
+            max_request_body_bytes=resolved.http.max_request_body_bytes,
+            max_concurrent_requests=resolved.http.max_concurrent_requests,
+        ),
+    )
     app = create_app(
         lifespan=lifespan,
         readiness_probe=readiness_probe,
@@ -371,6 +380,7 @@ def create_server_app(  # noqa: C901
             access_log=resolved.logging.access,
             metrics=metrics,
             tracing=resolved_tracing,
+            stateless_http=resolved.mcp.stateless_http,
         )
     if resolved.dashboard.enabled:
         mount_dashboard(app)

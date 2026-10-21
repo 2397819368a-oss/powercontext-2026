@@ -88,13 +88,40 @@ Older libraries are rejected before database initialization or accepting writes.
 
 Server settings use the `POWERCONTEXT_SERVER_` prefix.
 
+Each Server process admits at most 64 concurrent external HTTP requests, including REST, MCP, Dashboard, and health
+requests. A request occupies a slot while its body is read and until its response finishes, including streaming
+responses. Saturation returns `503` with error code `server_overloaded` and `Retry-After: 1` immediately, without
+queueing or reading the rejected request body. Exceptions and cancellation release the slot. Trusted in-process
+MCP-to-HTTP projections reuse the external request's admission.
+
+Before downstream parsing, the Server checks the actual body against a 16 MiB limit, including chunked uploads.
+An oversized declared `Content-Length` is rejected early; an absent or smaller declared length cannot bypass the
+actual-byte check. Oversized requests return `413` with error code `request_too_large`, and reading stops at the
+first excess chunk. This deployment-level cap is configurable and does not change domain field limits. The default
+fits the current 5 MiB Skill archive limit, whose base64 representation takes at most 6,990,508 characters, plus its
+JSON envelope. Lower caps can reject otherwise valid operations. Both HTTP limits must be positive integers.
+Size them for available memory: 64 requests retaining 16 MiB each already represent 1 GiB of body data, before
+parsing and application overhead; replay briefly copies each accepted body once before releasing its input buffer.
+Reverse proxies own request-rate quotas, upload timeouts, connection limits,
+and aggregate limits across Server processes.
+
+MCP uses stateful HTTP by default. The pinned FastMCP 3.4.4 composition API does not expose an idle session timeout, so
+idle sessions can remain retained after their HTTP requests finish; the concurrency cap does not bound that retained
+session state. For tools-only deployments that do not need session streams or resumability, set
+`POWERCONTEXT_SERVER_MCP_STATELESS_HTTP=true`. This explicitly opts out of retained transport sessions.
+A long-lived stateful GET stream occupies an HTTP slot; allow additional slots for concurrent POST requests.
+A limit of one supports sequential requests without a concurrent GET stream.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `POWERCONTEXT_SERVER_HTTP_HOST` | `127.0.0.1` | Listener address |
 | `POWERCONTEXT_SERVER_HTTP_PORT` | `8000` | Listener port; the configuration wizard suggests `17429` for new setups |
+| `POWERCONTEXT_SERVER_HTTP_MAX_REQUEST_BODY_BYTES` | `16777216` | Maximum external HTTP body bytes before parsing, including chunked uploads |
+| `POWERCONTEXT_SERVER_HTTP_MAX_CONCURRENT_REQUESTS` | `64` | Per-process external HTTP requests in flight, including full streaming responses |
 | `POWERCONTEXT_SERVER_WORKSPACE` | Server startup directory | Resolution root for local project Agent Skill folders |
 | `POWERCONTEXT_SERVER_MCP_ENABLED` | `true` | Enable Streamable HTTP MCP |
 | `POWERCONTEXT_SERVER_MCP_PATH` | `/mcp` | MCP path |
+| `POWERCONTEXT_SERVER_MCP_STATELESS_HTTP` | `false` | Opt into stateless MCP HTTP for tools-only deployments without session streams or resumability |
 | `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `false` | Personal and demonstration Dashboard; local `ACCESS_MODE=disabled` needs no token, while `enforced` requires a static Bearer token; injected authentication or authorization Providers are unsupported |
 | `POWERCONTEXT_SERVER_AUTH_ENABLED` | `false` | Legacy static bearer switch; `true` maps to `ACCESS_MODE=enforced` and requires `AUTH_TOKEN` |
 | `POWERCONTEXT_SERVER_AUTH_TOKEN` | unset | Legacy static bearer token; used as compatibility authentication and mapped to the built-in administrator when no Authentication Provider is injected |
