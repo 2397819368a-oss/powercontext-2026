@@ -16,6 +16,7 @@ limitations under the License.
 {% from 'components/page-heading.html' import page_heading %}
 {% from 'components/pagination.html' import pagination %}
 {{ page_heading(t.topic_memory, t.topics_subtitle) }}
+{% include 'components/topic-processing.html' %}
 
 <form class="mb-4" action="/dashboard/topics" method="get" role="search" aria-label="{{ t.search_topic_memory }}">
   <input type="hidden" name="scope" value="{{ scope }}"><input type="hidden" name="period" value="{{ period }}">

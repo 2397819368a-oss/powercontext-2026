@@ -68,6 +68,37 @@ Sources appear after the record's text and can be opened directly from an experi
 
 Source text can be long. Size its reading area to the viewport, keep the heading and close control reachable, and let the text scroll within that area. Opening a source should not lengthen the whole page until the user loses their place. If one source fails to load, the open record remains readable.
 
+## Processing evidence coverage
+
+The first processing-status section covers the Topic Memory Source-window path.
+Other paths remain follow-up work for [#2130](https://github.com/oceanbase/powercontext/issues/2130).
+
+| Page / path | Current inspection coverage | Evidence and limits |
+| --- | --- | --- |
+| Topic Memory / Source window | Selected-Scope status and details drawer | Journal head, binding cursor, retained target and current retained block; durable records only. |
+| Memories, Profile, Experience / Source consumption | Not yet displayed | Their progress and intent records require path-specific mappings. |
+| Skills, Prompts, other explicit/Dream paths | Not yet displayed | Source-window progress is not applicable; use corresponding operation records where available. |
+| Handoff | Not yet displayed | Only a corresponding existing operation can establish an outcome. |
+
+Topic inspection runs after Scope authorization in the existing consistent read
+snapshot. Four bounded SELECTs read the cursor, head, target and a retained block
+joined to the current frontier's allowance and attempt. Retried or superseded
+blocks are not current failures. The snapshot timestamp is the read time; a
+block's first-observed timestamp is not its failure time. Missing exact attempt
+ranges and error codes remain unknown.
+
+The public Topic processing-status operation can materialize legacy block
+diagnostics. This view instead uses a SELECT-only projection and never creates
+diagnostics, changes allowances, requests retries, activates a worker, probes
+readiness, or calls a model. Without a current retained block, an unconsumed
+frontier is pending even if legacy allowance rows are exhausted. Its execution
+and unresolved-block diagnosis remain unknown until a diagnostic is retained.
+Current execution is always explicitly unknown here, including external workers;
+family-wide Supervisor counts are not Scope evidence. A caught-up cursor does
+not establish artifact publication or a known no-change outcome. There is no
+artifact-completion percentage or inferred per-Source outcome. An unavailable
+inspection leaves saved Topic Memory independently readable.
+
 ## Scope, authority, and read results
 
 Without an explicit Scope selection, the page uses the default Scope. Changing the default binding affects subsequent requests once the current request has selected its Scope. Viewing another Scope does not change the default. Default selection requires `server.observe`; reading its content still requires content authority. Observer authority alone does not grant content access.

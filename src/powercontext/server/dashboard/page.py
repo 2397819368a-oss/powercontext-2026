@@ -258,6 +258,11 @@ async def load_builtin_page(api, request, ctx) -> bool:  # noqa: C901 - Keep the
         async with _snapshot(runtime, request, ctx, default_scope=default_scope) as (snapshot, _execution):
             if not ctx["record_only"]:
                 set_scope(ctx, await snapshot.scope())
+                if ctx["page"] == "topics":
+                    try:
+                        ctx["data"]["topic_processing"] = await snapshot.topic_memory_processing_status()
+                    except Exception as error:
+                        ctx["errors"]["topic_processing"] = ReadError.from_exception(error)
         # Each detail, history and mutation keeps its own current authorization.
         # Finish the metadata snapshot before a transport adapter can make reads.
         if ctx["page"] == "review":

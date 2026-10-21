@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from powercontext.builtin.artifacts.topic_memory.processing import (
     TopicMemoryBlockConflictError,
     TopicMemoryBlockNotFoundError,
+    TopicMemoryProcessingStatus,
     TopicMemoryWorkBlock,
 )
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
@@ -45,6 +46,53 @@ from powercontext.builtin.persistence.topic_memory_budget import (
     exhausted_reason,
     load_topic_memory_work_budget,
 )
+
+
+async def read_topic_memory_processing_status(
+    connection: AsyncConnection, scope_id: str, binding_name: str
+) -> TopicMemoryProcessingStatus:
+    """Inspect one snapshot without observing blocks or locking processing state.
+
+    Only a retained block for the current allowance proves a known block. An
+    exhausted allowance without that diagnostic remains pending; this read
+    cannot establish whether its final attempt is still executing.
+    """
+    cursor = await SourceCursorRepository().load(connection, scope_id, binding_name)
+    after = 0 if cursor is None else cursor.cursor.sequence
+    head = await connection.scalar(select(HEADS.c.position).where(HEADS.c.scope_id == scope_id)) or 0
+    target = await connection.scalar(
+        select(TARGETS.c.source_through).where(TARGETS.c.scope_id == scope_id, TARGETS.c.binding_name == binding_name)
+    )
+    row = (
+        (
+            await connection.execute(
+                select(BLOCKS)
+                .join(
+                    BUDGETS,
+                    (BLOCKS.c.scope_id == BUDGETS.c.scope_id)
+                    & (BLOCKS.c.binding_name == BUDGETS.c.binding_name)
+                    & (BLOCKS.c.source_after == BUDGETS.c.source_after)
+                    & (BLOCKS.c.attempt_id == BUDGETS.c.attempt_id),
+                )
+                .where(
+                    BLOCKS.c.scope_id == scope_id,
+                    BLOCKS.c.binding_name == binding_name,
+                    BLOCKS.c.source_after == after,
+                    BLOCKS.c.retried_at.is_(None),
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    block = None if row is None else _block(row)
+    return TopicMemoryProcessingStatus(
+        state="blocked" if block is not None else "idle" if after >= head and target is None else "pending",
+        source_cursor=after,
+        source_head=head,
+        target_source_through=target,
+        block=block,
+    )
 
 
 async def observe_topic_memory_block(
