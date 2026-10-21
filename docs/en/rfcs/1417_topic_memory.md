@@ -403,7 +403,10 @@ projection preparation. Recognizable numbered placeholder bodies and identity-co
 the whole Window. The checks use cited canonical evidence, selected exact history and server-issued IDs; identifiers
 alone, short text, stopwords, and lexical dissimilarity are not rejection criteria. Ordinary identity-preservation rules need no literal match to evidence. Template detection additionally requires
 generated section labels or supplied internal IDs within the bounded boilerplate vocabulary; coordination language
-alone is insufficient. Common sentence endings and paired Markdown emphasis do not exempt numbered templates. For quoted templates, summary and detail may match different cited Sources or the selected
+alone is insufficient. Common sentence endings, paired emphasis, whole-field inline code, and block quotes do not exempt numbered
+placeholder templates. Quote support first checks the original field, then permits removal of these outer display
+wrappers without deleting punctuation or joining evidence fields. Known stage IDs, including work, component, and
+temporary proposal IDs, remain available to admission after compaction and reconciliation. For quoted templates, summary and detail may match different cited Sources or the selected
 exact history. Titles need no special keywords; uncited Sources and unselected history cannot supply quote support.
 Pure numbered placeholder bodies are still rejected. This is not a general grounding verifier or a proof of semantic quality.
 

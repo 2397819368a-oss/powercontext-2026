@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -34,14 +35,25 @@ from powercontext.builtin.artifacts.topic_memory.generation import (
     TopicMemoryProbeOutput,
     TopicMemoryProposal,
     TopicMemoryReconcileOutput,
+    TopicMemoryReductionOutput,
+    TopicMemoryTemporaryOutput,
 )
+from powercontext.builtin.inference import TokenEstimator, character_token_estimator
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
+from powercontext.builtin.persistence.sources import SourceRepository
 from powercontext.builtin.persistence.supervision import ArtifactProcessingLeaseRepository
 from powercontext.builtin.persistence.topic_memory_budget import require_topic_memory_work_available
 from powercontext.builtin.runtime.topic_memory_processing import TopicMemoryAtomicPublisher, TopicMemoryProcessor
+from powercontext.builtin.sources import CONTENT_SOURCE_ADAPTER, ContentCapture
 from powercontext.sources import SourceMaterialization
-from tests.builtin.persistence.contract import NoteSource
-from tests.builtin.runtime.test_topic_memory_processing import _assignment, _budget_row, _repositories, _stages
+from tests.builtin.persistence.contract import SOURCE_ADAPTERS, NoteSource
+from tests.builtin.runtime.test_topic_memory_processing import (
+    _assignment,
+    _budget_row,
+    _QueueGenerator,
+    _repositories,
+    _stages,
+)
 
 
 def _placeholder():
@@ -215,11 +227,13 @@ def test_rejected_content_recovers_or_exhausts_the_original_budget(recover):
 
 @pytest.mark.parametrize("path", ["create", "update", "reconcile"])
 @pytest.mark.parametrize(
-    "material", ["policy", "paraphrased-policy", "business-coordination", "split-quotes", "joined-quotes"]
+    "material",
+    ["policy", "paraphrased-policy", "business-coordination", "split-quotes", "joined-quotes", "captured-multiline"],
 )
 def test_grounded_identity_content_publishes_with_exact_sources(path, material):
     async def scenario():
         manager, profile, sources, topics = await _repositories()
+        sources = SourceRepository((*SOURCE_ADAPTERS, CONTENT_SOURCE_ADAPTER))
         try:
             content = (
                 TopicMemoryContent(
@@ -237,6 +251,13 @@ def test_grounded_identity_content_publishes_with_exact_sources(path, material):
                     title="Customer import identity policy",
                     summary="Reconcile existing identities.",
                     detail="Reconciliation preserving distinct historical identities.",
+                )
+            if material == "captured-multiline":
+                content = content.model_copy(
+                    update={
+                        "summary": "S-19 coordinated\nwithout merging historical identities.",
+                        "detail": "D-19 coordinated detail\npreserving distinct historical identity.",
+                    }
                 )
             bodies = (
                 (f"{content.title}: {content.summary} {content.detail}",)
@@ -278,7 +299,11 @@ def test_grounded_identity_content_publishes_with_exact_sources(path, material):
                         await sources.add(
                             connection,
                             "scope-a",
-                            NoteSource(
+                            await CONTENT_SOURCE_ADAPTER.resolve(
+                                ContentCapture(source_id=f"policy-{index}", content=body)
+                            )
+                            if material == "captured-multiline"
+                            else NoteSource(
                                 name=f"policy-{index}", materialization=SourceMaterialization.CAPTURED, body=body
                             ),
                         )
@@ -324,6 +349,126 @@ def test_grounded_identity_content_publishes_with_exact_sources(path, material):
             assert published.topic.lineage.sources == tuple(item.ref for item in stored)
             assert cursor is not None and cursor.cursor.sequence == len(stored)
             assert await _budget_row(profile) is None
+        finally:
+            await manager.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("identifier", [None, "proposal-0002", "component-0001", "work-0001", "temp-0001-0001-0000"])
+def test_generation_retains_stage_ids_and_merged_inputs(identifier):
+    boilerplate = identifier is not None
+
+    async def scenario():
+        manager, profile, sources, topics = await _repositories()
+        try:
+            leases = ArtifactProcessingLeaseRepository()
+            prior = TopicMemoryContent(
+                title="Zircon import", summary="Zircon import is pending.", detail="Check the import dashboard."
+            )
+            valid = TopicMemoryContent(
+                title="Zircon import",
+                summary="Zircon import succeeded.",
+                detail="The dashboard confirms the Zircon import succeeded.",
+            )
+            async with profile.database.transaction() as connection:
+                old = await topics.publish_create(
+                    connection,
+                    "scope-a",
+                    "topic-old",
+                    TopicMemoryDraft(content=prior),
+                    prepare_topic_memory_projection(prior),
+                )
+                await sources.add(
+                    connection,
+                    "scope-a",
+                    NoteSource(name="result", materialization=SourceMaterialization.CAPTURED, body=valid.detail),
+                )
+                term = await leases.start_single_process_term(connection, "holder")
+            content = (
+                TopicMemoryContent(
+                    title="Zircon import",
+                    summary=f"Coordinated with {identifier} without merging identities.",
+                    detail=f"Coordination details preserving the distinct historical identity of {identifier}.",
+                )
+                if boilerplate
+                else valid
+            )
+            provisional = TopicMemoryProposal(content=valid, evidence_ids=("evidence-0001",))
+            planned = identifier in {"work-0001", "temp-0001-0001-0000"}
+            compacted = identifier == "temp-0001-0001-0000"
+            estimator = (
+                TokenEstimator(
+                    character_token_estimator().profile,
+                    lambda text: (
+                        100
+                        if (
+                            ('"work_id"' in text and '"temporary":[]' in text)
+                            or ('"proposal_id":"temp-' in text and ('"work_id"' in text or '"temporary"' not in text))
+                        )
+                        else 1
+                    ),
+                )
+                if compacted
+                else None
+            )
+            stages = _stages(
+                probe=TopicMemoryProbeOutput(
+                    probes=(TopicMemoryProbe(query="zircon", evidence_ids=("evidence-0001",)),)
+                ),
+                global_output=TopicMemoryGlobalOutput(ambiguous=planned, proposals=(provisional, provisional)),
+                planner=TopicMemoryPlannerOutput(items=(TopicMemoryPlanItem(probe_ids=("probe-0001",)),)),
+                evolve=(TopicMemoryEvolveOutput(proposal=provisional.model_copy(update={"content": content})),),
+                temporary=(TopicMemoryTemporaryOutput(proposals=(provisional,)),),
+                estimator=estimator,
+                limit=10 if compacted else 100_000,
+                reconcile=(
+                    TopicMemoryReconcileOutput(
+                        proposals=(
+                            TopicMemoryProposal(
+                                proposal_id="proposal-0001",
+                                candidate_id="candidate-0001",
+                                content=content,
+                                evidence_ids=("evidence-0001",),
+                            ),
+                        )
+                    ),
+                ),
+            )
+            if compacted:
+                stages = replace(
+                    stages,
+                    reducer=_QueueGenerator(TopicMemoryReductionOutput(covered_indices=(0,), temporary=provisional)),
+                )
+            processor = TopicMemoryProcessor(
+                database=profile.database,
+                sources=sources,
+                topics=topics,
+                stages=stages,
+                publisher=TopicMemoryAtomicPublisher(profile.database, sources, topics, leases=leases),
+            )
+            assignment = _assignment(term.fence("single-process"))
+            if boilerplate:
+                with pytest.raises(TopicMemoryGenerationError, match="invalid_topic_coordination_content"):
+                    await processor.process(assignment)
+                assert (await _budget_row(profile))["failure_code"] == "invalid_topic_coordination_content"
+            else:
+                assert (await processor.process(assignment)).outcome.value == "succeeded"
+                assert await _budget_row(profile) is None
+            async with profile.database.transaction() as connection:
+                heads = await topics.browse_current(connection, "scope-a", limit=10)
+                assert len(heads) == 1
+                assert heads[0].artifact_ref.revision == (1 if boilerplate else 2)
+                assert (await topics.get_exact(connection, "scope-a", old.topic.as_ref())).topic.content == prior
+                published = await topics.get_exact(connection, "scope-a", heads[0].artifact_ref)
+                assert published.topic.content == (prior if boilerplate else valid)
+                hits = await topics.search(connection, "scope-a", "zircon", limit=10, mode="fts")
+                assert [hit.artifact_ref for hit in hits.hits] == [heads[0].artifact_ref]
+                cursor = await SourceCursorRepository().load(connection, "scope-a", TOPIC_MEMORY_SOURCE_WINDOW_BINDING)
+                if boilerplate:
+                    assert cursor is None
+                else:
+                    assert cursor is not None and cursor.cursor.sequence == 1
         finally:
             await manager.__aexit__(None, None, None)
 

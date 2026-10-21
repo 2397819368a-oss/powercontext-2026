@@ -210,7 +210,9 @@ def _topic_memory_global(value: TopicMemoryGlobalInput, output: TopicMemoryGloba
         if proposal.proposal_id is not None:
             _require(proposal.proposal_id not in proposal_ids)
             proposal_ids.add(proposal.proposal_id)
-    _admit_topic_proposals(value.evidence, output.proposals, value.historical)
+    _admit_topic_proposals(
+        value.evidence, output.proposals, value.historical, stage_ids=(item.probe_id for item in value.probes)
+    )
 
 
 def _topic_memory_planner(value: TopicMemoryPlannerInput, output: TopicMemoryPlannerOutput) -> None:
@@ -260,6 +262,7 @@ def _topic_memory_evolve(value: TopicMemoryEvolveInput, output: TopicMemoryEvolv
             (proposal,),
             () if value.historical is None else (value.historical,),
             value.temporary,
+            stage_ids=(value.work_id,),
         )
 
 
@@ -272,7 +275,7 @@ def _topic_memory_temporary(value: TopicMemoryTemporaryInput, output: TopicMemor
         if proposal.proposal_id is not None:
             _require(proposal.proposal_id not in proposal_ids)
             proposal_ids.add(proposal.proposal_id)
-    _admit_topic_proposals(value.evidence, output.proposals)
+    _admit_topic_proposals(value.evidence, output.proposals, stage_ids=(value.work_id,))
 
 
 def _topic_memory_reduce(value: TopicMemoryReductionInput, output: TopicMemoryReductionOutput) -> None:
@@ -314,7 +317,7 @@ def _topic_memory_reconcile(value: TopicMemoryReconcileInput, output: TopicMemor
             )
     for item in outputs:
         _require(set(item.evidence_ids) <= input_evidence)
-    _admit_topic_proposals((), outputs, value.historical, inputs)
+    _admit_topic_proposals((), outputs, value.historical, inputs, stage_ids=(value.component_id,))
 
 
 def _admit_topic_proposals(
@@ -322,13 +325,15 @@ def _admit_topic_proposals(
     proposals: Iterable[TopicMemoryProposal],
     historical: Iterable[TopicMemoryHistoricalSlot] = (),
     intermediate: Iterable[TopicMemoryProposal] = (),
+    *,
+    stage_ids: Iterable[str] = (),
 ) -> None:
     """Apply runtime content admission to custom demonstrations without changing their JSON."""
     material = {item.evidence_id: item.content for item in evidence}
     proposals = tuple(proposals)
     # Intermediate outputs carry references, not canonical Source bodies. They
     # identify internal IDs but cannot establish support for their own content.
-    internal_ids: set[str] = set()
+    internal_ids = set(stage_ids)
     for item in (*intermediate, *proposals):
         internal_ids.update(item.evidence_ids)
         if item.proposal_id is not None:

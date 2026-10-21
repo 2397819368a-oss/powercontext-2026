@@ -387,3 +387,29 @@ def test_topic_template_quotes_require_explicit_sources_or_selected_history(supp
         assert (
             definition.resolve("scope-a", Prompt(artifact_id=key, revision=1, content=content)).selection == "artifact"
         )
+
+
+@pytest.mark.parametrize(
+    "stage,identifier", [("evolve", "work-0001"), ("temporary", "work-0001"), ("reconcile", "component-0001")]
+)
+def test_topic_demonstrations_reject_boilerplate_using_stage_ids(stage, identifier):
+    proposal = {
+        "content": {
+            "title": "Import",
+            "summary": f"Coordinated with {identifier} without merging identities.",
+            "detail": f"Coordination details preserving the distinct historical identity of {identifier}.",
+        },
+        "evidence_ids": ["e1"],
+    }
+    evidence = [{"evidence_id": "e1", "source_type": "content", "content": "Import succeeded."}]
+    if stage == "reconcile":
+        proposal["proposal_id"] = "proposal-0001"
+        value = {"component_id": identifier, "proposals": [proposal]}
+        output = {"proposals": [proposal]}
+    else:
+        value = {"work_id": identifier, "evidence": evidence}
+        output = {"proposal": proposal} if stage == "evolve" else {"proposals": [proposal]}
+    content = _with_demonstration({"input": value, "expected_output": output})
+    definition = PromptRegistry(builtin_prompt_definitions()).get(f"topic_memory.{stage}")
+    with pytest.raises(PromptError):
+        definition.validate(content)

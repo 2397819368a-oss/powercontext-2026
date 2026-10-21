@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from powercontext.builtin.artifacts.topic_memory.admission import TopicMemoryContentAdmission
@@ -184,3 +186,60 @@ def test_placeholder_formatting_cannot_bypass_admission(marker, ending):
         TopicMemoryContentAdmission({"e1": "Check dashboard"}, {}).rejection(content, ("e1",))
         == "invalid_topic_placeholder"
     )
+
+
+@pytest.mark.parametrize(
+    "material,expected",
+    [
+        (
+            {
+                "content": "S-19 coordinated\nwithout merging historical identities.",
+                "metadata": {"detail": "D-19 coordinated detail\npreserving distinct historical identity."},
+            },
+            None,
+        ),
+        (
+            {
+                "content": "S-19 coordinated\nwithout merging historical identities.",
+                "parts": ["D-19 coordinated detail", "preserving distinct historical identity."],
+            },
+            "invalid_topic_coordination_content",
+        ),
+        (
+            {
+                "content": r"S-19 coordinated\nwithout merging historical identities.",
+                "detail": r"D-19 coordinated detail\npreserving distinct historical identity.",
+            },
+            "invalid_topic_coordination_content",
+        ),
+    ],
+)
+def test_canonical_evidence_decodes_strings_once_without_joining_fields(material, expected):
+    content = _content(
+        title="Placeholder investigation",
+        summary="S-19 coordinated\nwithout merging historical identities.",
+        detail="D-19 coordinated detail\npreserving distinct historical identity.",
+    )
+    admission = TopicMemoryContentAdmission({"e1": json.dumps(material)}, {})
+    assert admission.rejection(content, ("e1",)) == expected
+
+
+@pytest.mark.parametrize("wrapper", ["**{}**", "_{}_", "`{}`", "> {}"])
+@pytest.mark.parametrize("numbered", [False, True])
+def test_display_wrappers_preserve_quote_support_but_not_numbered_placeholders(wrapper, numbered):
+    original = _content(title="T-19" if numbered else "Placeholder investigation")
+    content = original.model_copy(
+        update={
+            "summary": wrapper.format(original.summary),
+            "detail": wrapper.format(original.detail),
+        }
+    )
+    admission = TopicMemoryContentAdmission({"e1": original.summary, "e2": original.detail}, {})
+    assert admission.rejection(content, ("e1", "e2")) == ("invalid_topic_placeholder" if numbered else None)
+    assert admission.rejection(content, ("e1",)) is not None
+
+
+def test_display_normalization_preserves_punctuation_and_field_boundaries():
+    content = _content(title="Placeholder investigation")
+    admission = TopicMemoryContentAdmission({"e1": content.summary.rstrip("."), "e2": content.detail}, {})
+    assert admission.rejection(content, ("e1", "e2")) == "invalid_topic_coordination_content"

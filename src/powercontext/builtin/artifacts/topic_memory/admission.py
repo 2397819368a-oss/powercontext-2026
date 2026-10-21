@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping
 
@@ -96,16 +97,54 @@ def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-def _template_text(value: str) -> str:
-    """Ignore sentence endings and paired emphasis only for template recognition."""
+def _evidence_texts(value: str) -> tuple[str, ...]:
+    """Decode canonical JSON string values once, preserving field boundaries."""
+    try:
+        payload = json.loads(value)
+    except (ValueError, RecursionError):
+        return (value,)
+    if not isinstance(payload, dict):
+        return (value,)
+    texts: list[str] = []
+    pending: list[object] = [payload]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            texts.append(item)
+        elif isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return tuple(texts)
+
+
+def _display_text(value: str) -> str:
+    """Remove whole-field display wrappers, preserving punctuation and line breaks."""
+    value = value.strip()
     while True:
-        value = value.rstrip(" .!?。！？")  # noqa: RUF001 - recognize Chinese sentence endings
-        for marker in ("**", "__", "*", "_"):
-            if len(value) > 2 * len(marker) and value.startswith(marker) and value.endswith(marker):
-                value = value[len(marker) : -len(marker)].strip()
-                break
+        lines = value.splitlines()
+        if lines and all(not line.strip() or line.lstrip().startswith(">") for line in lines):
+            value = "\n".join(re.sub(r"^\s*> ?", "", line) if line.strip() else line for line in lines).strip()
+            continue
+        for marker in ("**", "__", "*", "_", "`"):
+            if len(value) <= 2 * len(marker) or not (value.startswith(marker) and value.endswith(marker)):
+                continue
+            inner = value[len(marker) : -len(marker)]
+            if marker == "`" and "`" in inner:
+                continue
+            value = inner.strip()
+            break
         else:
             return value
+
+
+def _template_text(value: str) -> str:
+    """Ignore sentence endings only for template recognition, not quote support."""
+    while True:
+        plain = _display_text(value).rstrip(" .!?。！？")  # noqa: RUF001 - Chinese sentence endings
+        if plain == value:
+            return plain
+        value = plain
 
 
 def _coordination_only(value: str, internal_ids: frozenset[str]) -> bool:
@@ -147,7 +186,9 @@ class TopicMemoryContentAdmission:
         *,
         internal_ids: Iterable[str] = (),
     ) -> None:
-        self._evidence = {key: _normalize(value) for key, value in evidence.items()}
+        self._evidence = {
+            key: tuple(_normalize(text) for text in _evidence_texts(value)) for key, value in evidence.items()
+        }
         self._historical = {
             key: _normalize(f"{value.title}\n{value.summary}\n{value.detail}") for key, value in historical.items()
         }
@@ -160,9 +201,10 @@ class TopicMemoryContentAdmission:
         candidate_id: str | None = None,
     ) -> str | None:
         """Return a content-free rejection code, or admit a potentially meaningful Topic."""
-        title, summary, detail = (_normalize(value) for value in (content.title, content.summary, content.detail))
-        template_sections = tuple(_template_text(value) for value in (summary, detail))
-        numbered = _TITLE_LABEL.fullmatch(_template_text(title))
+        summary, detail = (_normalize(value) for value in (content.summary, content.detail))
+        display_sections = tuple(_normalize(_display_text(value)) for value in (content.summary, content.detail))
+        template_sections = tuple(_template_text(value) for value in display_sections)
+        numbered = _TITLE_LABEL.fullmatch(_normalize(_template_text(content.title)))
         coordinated = tuple(_coordination_only(value, self._internal_ids) for value in template_sections)
         labels = tuple(_SECTION_LABEL.match(value) for value in template_sections)
         empty_sections = tuple(not _SECTION_LABEL.sub("", value) for value in template_sections)
@@ -176,11 +218,13 @@ class TopicMemoryContentAdmission:
             return "invalid_topic_placeholder"
         if not all(coordinated):
             return None
-        context = [self._evidence[key] for key in evidence_ids if key in self._evidence]
+        context = [text for key in evidence_ids for text in self._evidence.get(key, ())]
         if candidate_id in self._historical:
             context.append(self._historical[candidate_id])
         # Each quoted field may be supported by a different cited record; do not
         # manufacture matches by concatenating record boundaries.
         if all(any(section in text for text in context) for section in (summary, detail)):
+            return None
+        if all(any(section in text for text in context) for section in display_sections):
             return None
         return "invalid_topic_coordination_content"
