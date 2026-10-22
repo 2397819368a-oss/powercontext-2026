@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from copy import copy
@@ -25,6 +26,7 @@ from typing import Any, Generic, Literal, Self, TypeVar, cast
 from pydantic import BaseModel, Field
 from typing_extensions import override
 
+from powercontext._logging import log_safely
 from powercontext.builtin.artifacts.memory.canonical import canonical_embedding
 from powercontext.builtin.artifacts.memory.models import EmbeddingProfile
 from powercontext.builtin.artifacts.prompt.service import current_prompt
@@ -82,7 +84,15 @@ try:
         UsageLimitExceeded,
         UserError,
     )
-    from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
+    from pydantic_ai.messages import (
+        ModelMessage,
+        ModelRequest,
+        ModelResponse,
+        ModelResponsePart,
+        PartEndEvent,
+        PartStartEvent,
+        UserPromptPart,
+    )
     from pydantic_ai.models import Model, ModelRequestParameters
     from pydantic_ai.models.wrapper import WrapperModel
     from pydantic_ai.settings import ModelSettings, merge_model_settings
@@ -95,6 +105,8 @@ except ModuleNotFoundError as error:  # pragma: no cover - exercised in a depend
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
+
+logger = logging.getLogger(__name__)
 
 
 class InferenceLimits(BaseModel):
@@ -120,6 +132,76 @@ class _CompleteResponseModel(WrapperModel):
         response = await self.wrapped.request(messages, model_settings, model_request_parameters)
         if response.state != "complete":
             raise InvalidInferenceOutputError("generate", "provider continuation is not allowed")
+        return response
+
+
+class StreamingAggregateModel(WrapperModel):
+    """Stream one request and aggregate the chunks into a complete response.
+
+    Gateways in front of non-streaming inference endpoints may drop an idle
+    HTTP exchange long before the configured generation timeout. Streaming the
+    same request keeps the connection active, while a chunk-arrival watchdog
+    bounds silent stalls. The wall-clock budget stays owned by the calling
+    generator; this wrapper only watches the gap between chunks.
+
+    The complete-state guard only rejects provider continuations (separately
+    billed follow-up requests). A stream that breaks mid-flight is caught by
+    the transport error the stream itself raises, not by this guard.
+    """
+
+    def __init__(self, wrapped: Model, *, idle_timeout_seconds: float = 60.0) -> None:
+        if idle_timeout_seconds <= 0:
+            raise InferenceConfigurationError("stream-idle-timeout-seconds")
+        super().__init__(wrapped)
+        self._idle_timeout_seconds = idle_timeout_seconds
+
+    @override
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        parts: dict[int, ModelResponsePart] = {}
+        async with self.wrapped.request_stream(messages, model_settings, model_request_parameters) as stream:
+            events = stream.__aiter__()
+            while True:
+                try:
+                    # Watch the gap between chunks instead of the whole exchange.
+                    event = await asyncio.wait_for(anext(events), timeout=self._idle_timeout_seconds)
+                except StopAsyncIteration:
+                    break
+                if isinstance(event, PartStartEvent):
+                    parts.setdefault(event.index, event.part)
+                elif isinstance(event, PartEndEvent):
+                    parts[event.index] = event.part
+            response = ModelResponse(
+                parts=[parts[index] for index in sorted(parts)],
+                usage=stream.usage,
+                model_name=stream.model_name,
+                provider_name=stream.provider_name,
+                provider_url=stream.provider_url,
+                provider_details=stream.provider_details,
+                provider_response_id=stream.provider_response_id,
+                finish_reason=stream.finish_reason,
+                state=stream.state,
+            )
+        if response.state != "complete":
+            raise InvalidInferenceOutputError("generate", "provider continuation is not allowed")
+        if response.usage.input_tokens == 0 and response.usage.output_tokens == 0:
+            # Some gateways stream the response without a final usage chunk; usage
+            # statistics for this request will be missing. Warn without failing: the
+            # aggregated response itself is valid.
+            log_safely(
+                logger,
+                logging.WARNING,
+                "Streamed generation completed without provider usage; usage statistics will be incomplete",
+                extra={
+                    "event": "inference.generation.usage_missing",
+                    "operation": "generate",
+                    "unit": "inference",
+                },
+            )
         return response
 
 
@@ -426,5 +508,6 @@ __all__ = [
     "PydanticAIConfigurationError",
     "PydanticAIEmbeddingModel",
     "PydanticAIStructuredGenerator",
+    "StreamingAggregateModel",
     "probe_pydantic_ai_model",
 ]
