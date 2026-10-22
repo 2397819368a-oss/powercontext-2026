@@ -74,7 +74,12 @@ from powercontext.server.authz import (
     access_control_for_mode,
 )
 from powercontext.server.authz.composition import open_builtin_access_control
-from powercontext.server.authz.owner_recovery import OwnerRecovery, owner_recovery_session, owner_write_access
+from powercontext.server.authz.owner_recovery import (
+    OwnerRecovery,
+    flush_owner_writes,
+    owner_recovery_session,
+    owner_write_access,
+)
 from powercontext.server.authz.repository import RelationalAccessRepository
 from powercontext.server.context import current_principal, current_request_id
 from powercontext.server.cursor_secret import resolve_cursor_secret
@@ -553,9 +558,14 @@ def _scheduled_profile_runner(settings, access, *, enabled, legacy_static_princi
             else OwnerRecovery(profiles.database, access)
         )
         async with owner_recovery_session(recovery):
-            return await profiles.flush(
+            result = await profiles.flush(
                 scope_id, high_watermark=high, authorize_snapshot=authorize_snapshot, on_commit=on_commit
             )
+            await flush_owner_writes(
+                artifact=resource,
+                candidate=None if result.candidate_id is None else (scope_id, result.candidate_id),
+            )
+            return result
 
     return run
 

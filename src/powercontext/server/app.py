@@ -2512,6 +2512,10 @@ async def flush_profile(
     result = await application.profiles.flush(
         request.scope_id, authorize_snapshot=authorize_snapshot, on_commit=on_commit
     )
+    await flush_owner_writes(
+        artifact=resource,
+        candidate=None if result.candidate_id is None else (request.scope_id, result.candidate_id),
+    )
     return FlushProfileResponse.model_validate(result.model_dump(mode="json"))
 
 

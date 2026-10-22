@@ -276,6 +276,74 @@ def test_idempotent_retry_requires_the_original_owner_audit_to_complete(tmp_path
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    ("activation_mode", "failure"),
+    [("automatic", "relationship"), ("automatic", "audit"), ("review_required", "relationship")],
+)
+def test_profile_flush_retry_completes_the_original_ownership_intent(tmp_path, monkeypatch, activation_mode, failure):
+    class Generator:
+        async def generate(self, _value):
+            return "# Profile\n\n- Preserve the original owner."
+
+    async def scenario():
+        async with _server(tmp_path) as (app, client, access):
+            scope_id = await _scope(client)
+            policy = await client.put(
+                f"/v1/scopes/{scope_id}/profile-policy",
+                json={"generation_enabled": True, "activation_mode": activation_mode, "expected_version": 0},
+            )
+            assert policy.status_code == 200, policy.text
+            source = await client.post(
+                f"/v1/scopes/{scope_id}/sources", json={"content": "Keep the accepted ownership identity."}
+            )
+            assert source.status_code == 201, source.text
+            app.state.application.profiles.generator = Generator()
+
+            async def unavailable(_event):
+                raise AccessUnavailableError("external_audit_unavailable")
+
+            with monkeypatch.context() as patch:
+                if failure == "audit":
+                    patch.setattr(access.audit, "append_audit_once", unavailable)
+                else:
+                    patch.setattr(access.relationships, "unavailable", True)
+                failed = await client.post(
+                    "/v1/profile/flush",
+                    json={"scope_id": scope_id},
+                    headers={"X-PowerContext-Request-ID": "accepted-profile-owner"},
+                )
+                assert failed.status_code == 503, failed.text
+                original_request_id = failed.headers["X-PowerContext-Request-ID"]
+                pending = await app.state.owner_recovery.pending(scope_id=scope_id)
+                assert len(pending) == 1 and pending[0].principal == ALICE
+                retried = await client.post("/v1/profile/flush", json={"scope_id": scope_id})
+                assert retried.status_code == 503, retried.text
+                assert await app.state.owner_recovery.pending(scope_id=scope_id) == pending
+            retried = await client.post("/v1/profile/flush", json={"scope_id": scope_id})
+            assert retried.status_code == 200, retried.text
+            assert await app.state.owner_recovery.pending(scope_id=scope_id) == ()
+            if activation_mode == "review_required":
+                assert retried.json()["status"] == "review_pending"
+                assert retried.json()["candidate_id"] == pending[0].candidate_id
+                attestation = await access.candidate_owner(scope_id, pending[0].candidate_id)
+                assert attestation is not None and attestation.proposed_owner == ALICE
+            else:
+                assert retried.json()["status"] == "noop"
+                resource = ResourceRef.artifact(scope_id, family="profile", artifact_id="profile")
+                relation = await access.artifact_owner(resource)
+                assert relation is not None and relation.owner == ALICE
+                audit = await access.audit.list_audit(resource=resource, limit=100)
+                owners = [item for item in audit if item.reason_code == "artifact-owner-established"]
+                assert len(owners) == 1 and owners[0].request_id == original_request_id
+                records = await app.state.application.records.for_scope(scope_id).logical_artifacts()
+                assert len(records) == 1
+            repeated = await client.post("/v1/profile/flush", json={"scope_id": scope_id})
+            assert repeated.json() == retried.json()
+            assert await app.state.owner_recovery.pending(scope_id=scope_id) == ()
+
+    asyncio.run(scenario())
+
+
 def test_unknown_historical_owner_inventory_never_returns_content_or_assigns_a_caller(tmp_path):
     async def scenario():
         async with _server(tmp_path) as (app, client, access):

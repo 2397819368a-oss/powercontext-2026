@@ -407,7 +407,7 @@ async def owner_recovery_session(recovery: OwnerRecovery | None) -> AsyncIterato
         _SESSION.reset(token)
 
 
-async def flush_owner_writes(*, artifact: ResourceRef | None = None) -> None:
+async def flush_owner_writes(*, artifact: ResourceRef | None = None, candidate: tuple[str, str] | None = None) -> None:
     session = _SESSION.get()
     if session is not None:
         while session.operation_ids:
@@ -417,6 +417,11 @@ async def flush_owner_writes(*, artifact: ResourceRef | None = None) -> None:
             # Idempotent domain retries can return before their commit hook.
             # Replay only the original persisted intent, never the retry identity.
             await session.recovery.replay(_key(session.recovery.access.deployment_id, "artifact", artifact.key))
+        if candidate is not None:
+            scope_id, candidate_id = candidate
+            await session.recovery.replay(
+                _key(session.recovery.access.deployment_id, "candidate", f"{scope_id}\0{candidate_id}")
+            )
 
 
 def owner_recovery_available(access: AccessControlService, database: AsyncDatabase) -> bool:
