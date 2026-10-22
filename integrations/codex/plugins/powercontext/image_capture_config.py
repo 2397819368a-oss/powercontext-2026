@@ -22,6 +22,7 @@ import os
 import sys
 import tempfile
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from time import monotonic, time_ns
 from typing import Any
@@ -104,16 +105,27 @@ def plugin_enabled() -> bool:
     return isinstance(plugin, dict) and plugin.get("enabled", True) is True
 
 
-def write_profile(cwd: str | Path, *, server_url: str, scope_id: str, enabled: bool) -> None:
+def write_profile(
+    cwd: str | Path,
+    *,
+    server_url: str,
+    scope_id: str,
+    enabled: bool,
+    activate: Callable[[], None] | None = None,
+) -> None:
+    """Persist consent and restore its exact epoch if lifecycle activation fails."""
     # The CLI is the only writer; the lock also makes simultaneous setup safe.
     from diagnostics import _locked
 
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _locked(path.with_suffix(".lock")):
-        value = load_config()
+        previous_config = load_config()
+        value = {**previous_config, "workspaces": dict(previous_config["workspaces"])}
         key = workspace_key(cwd)
         previous = value["workspaces"].get(key, {})
+        if not isinstance(previous, dict):
+            previous = {}
         epoch = (
             previous.get("epoch")
             if previous.get("enabled") is enabled
@@ -128,16 +140,26 @@ def write_profile(cwd: str | Path, *, server_url: str, scope_id: str, enabled: b
             "epoch": epoch or time_ns(),
             "workspace": str(normalized_path(cwd).resolve(strict=True)),
         }
-        descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".image-config-")
-        temporary = Path(name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump(value, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        _save_config(path, value)
+        if activate is not None:
+            try:
+                activate()
+            except BaseException:
+                _save_config(path, previous_config)
+                raise
+
+
+def _save_config(path: Path, value: dict[str, Any]) -> None:
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".image-config-")
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def configure_capture(action: str, workspace: str, scope_id, settings) -> None:
@@ -162,12 +184,13 @@ def configure_capture(action: str, workspace: str, scope_id, settings) -> None:
         # a resolved default. Image-only turns can then capture before SessionStart completes.
         bind_scope(workspace, scope, settings=settings, deadline=monotonic() + 6)
         # Setup records consent; capture still resolves the authoritative session binding.
-        write_profile(workspace, server_url=settings.server_url, scope_id=scope, enabled=True)
         from collector_service import install
 
-        install()
+        write_profile(workspace, server_url=settings.server_url, scope_id=scope, enabled=True, activate=install)
     elif action == "disable":
         previous = load_config()["workspaces"].get(workspace_key(workspace), {})
+        if not isinstance(previous, dict):
+            previous = {}
         write_profile(
             workspace,
             server_url=settings.server_url,

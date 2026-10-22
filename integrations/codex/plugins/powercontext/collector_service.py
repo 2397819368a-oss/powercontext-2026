@@ -23,6 +23,7 @@ import os
 import plistlib
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from time import sleep, time
 from typing import Any
@@ -256,11 +257,18 @@ def run() -> None:
 
     path = codex_home() / "powercontext/collector-supervisor.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with _locked(path):
-            delay = 1
-            while any_enabled() and plugin_enabled():
-                started = time()
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_locked(path))
+        except OSError:
+            return  # An existing supervisor owns this client.
+        delay = 1
+        while True:
+            started = time()
+            try:
+                if not any_enabled() or not plugin_enabled():
+                    return
+                settings = CodexPluginSettings()
                 child = subprocess.Popen(  # noqa: S603 - fixed packaged reader.
                     [sys.executable, str(ROOT / "hooks/image_desktop_watch.py"), str(started)],
                     stdin=subprocess.DEVNULL,
@@ -269,7 +277,6 @@ def run() -> None:
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 try:
-                    settings = CodexPluginSettings()
                     while child.poll() is None and any_enabled() and plugin_enabled():
                         sleep(1)
                         heartbeat = watch_status(settings.server_url).get("updated_at", started)
@@ -283,10 +290,12 @@ def run() -> None:
                         except subprocess.TimeoutExpired:
                             child.kill()
                             child.wait(timeout=5)
-                delay = 1 if time() - started > 30 else min(30, delay * 2)
-                sleep(delay)
-    except (OSError, ValueError):
-        return  # A duplicate owner or invalid consent/configuration must stop collection.
+            except (OSError, ValueError, subprocess.SubprocessError):
+                # Pause collection while configuration or process creation is unavailable.
+                # Keep the login supervisor alive so a repaired configuration can recover.
+                pass
+            delay = 1 if time() - started > 30 else min(30, delay * 2)
+            sleep(delay)
 
 
 if __name__ == "__main__":

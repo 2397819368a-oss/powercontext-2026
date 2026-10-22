@@ -369,6 +369,6 @@ Images are off by default and available in the ordinary configuration wizard. Th
 
 Start Server normally, then run `powercontext setup codex`. Setup records consent for this workspace and manages the client collector automatically. No separate collector command is needed. Check Scope, collector and Server status with `powercontext doctor codex`. Trust new or changed hooks in Codex when requested.
 
-The Dashboard Image materials page shows originals and parsing status before Memory exists. Generated Memory links to its exact historical material. Disabling images keeps retained materials readable. Run `powercontext setup codex --no-capture-images` to revoke capture consent; editing .env alone does not revoke saved consent.
+The Dashboard Image materials page shows originals and parsing status before Memory exists. Generated Memory links to its exact historical material. Disabling images keeps retained materials readable. Run `powercontext setup codex --no-capture-images` to revoke capture consent. Setting `POWERCONTEXT_CODEX_CAPTURE_IMAGES=true` authorizes capture during setup; an absent or false value preserves saved consent, including when setup runs again.
 
 Automatic capture accepts verified record formats only: CLI exec 0.141.0, 0.162.0-alpha.2 and 0.162.0-alpha.17.2; Desktop engines 0.162.0-alpha.2 and 0.162.0-alpha.17.2. Unknown versions fail closed with diagnostics; interactive CLI TUI is not enabled. Native lifecycle execution is verified on Windows; other platforms need separate acceptance.

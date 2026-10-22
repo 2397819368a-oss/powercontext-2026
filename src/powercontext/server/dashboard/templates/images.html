@@ -35,7 +35,7 @@ limitations under the License.
     </div>
   </div></article>
 {% else %}
-  <div class="empty"><p class="empty-title">{{ t.images_empty }}</p><p class="empty-subtitle">{{ t.images_empty_help }}</p></div>
+  <div class="col-12"><div class="empty"><p class="empty-title">{{ t.images_empty }}</p><p class="empty-subtitle">{{ t.images_empty_help if image_status and image_status.enabled and image_status.available and image_status.vision_configured and image_status.worker_running and not image_status.error_code else t.images_setup_help }}</p></div></div>
 {% endfor %}
 </div>
 {{ pagination(image_pager, t) }}

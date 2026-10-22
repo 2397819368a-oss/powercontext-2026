@@ -572,6 +572,7 @@ def clear_scope_binding(
     request = ClearScopeBindingRequest(key=_binding_key(integration, kind, external_id))
     asyncio.run(_execute(context, lambda client: client.clear_scope_binding(request)))
 
+
 image_app = typer.Typer(
     name="image",
     context_settings={"help_option_names": HELP_OPTION_NAMES},
@@ -596,7 +597,7 @@ def upload_image(
         with file.open("rb") as handle:
             data = handle.read(8 * 1024 * 1024 + 1)
         if len(data) > 8 * 1024 * 1024:
-            raise ValueError("image exceeds 8 MiB")  # noqa: TRY003, TRY301
+            _raise_bad_parameter("image exceeds 8 MiB", parameter="file")
         if media_type is None:
             media_type = {
                 ".png": ExperimentalImageMediaType.IMAGE_PNG,
@@ -604,7 +605,7 @@ def upload_image(
                 ".jpeg": ExperimentalImageMediaType.IMAGE_JPEG,
             }.get(file.suffix.lower())
         if media_type is None:
-            raise ValueError("specify --media-type image/png or image/jpeg")  # noqa: TRY003, TRY301
+            _raise_bad_parameter("specify --media-type image/png or image/jpeg", parameter="--media-type")
         request = ExperimentalCaptureImageRequest.model_validate({
             "scope_id": scope_id,
             "capture_key": capture_key,
@@ -664,7 +665,10 @@ def show_image_task(
     task_id: Annotated[str, typer.Argument(help="Exact image task ID.")],
     scope_id: Annotated[str, typer.Option()],
 ) -> None:
-    request = ExperimentalGetImageTaskRequest(scope_id=scope_id, task_id=task_id)
+    try:
+        request = ExperimentalGetImageTaskRequest(scope_id=scope_id, task_id=task_id)
+    except ValidationError as error:
+        _raise_invalid_request("image task", error)
     asyncio.run(_execute(context, lambda client: client.get_image_task(request)))
 
 
@@ -674,7 +678,10 @@ def show_image_source(
     analysis_source_id: Annotated[str, typer.Argument(help="Exact analysis Source ID from an Artifact citation.")],
     scope_id: Annotated[str, typer.Option()],
 ) -> None:
-    request = ExperimentalGetImageTaskRequest(scope_id=scope_id, analysis_source_id=analysis_source_id)
+    try:
+        request = ExperimentalGetImageTaskRequest(scope_id=scope_id, analysis_source_id=analysis_source_id)
+    except ValidationError as error:
+        _raise_invalid_request("image source", error)
     asyncio.run(_execute(context, lambda client: client.get_image_task(request)))
 
 
@@ -685,7 +692,10 @@ def retry_image(
     scope_id: Annotated[str, typer.Option()],
     retry_key: Annotated[str, typer.Option(help="Stable key for this explicit retry.")],
 ) -> None:
-    request = ExperimentalRetryImageTaskRequest(scope_id=scope_id, task_id=task_id, retry_key=retry_key)
+    try:
+        request = ExperimentalRetryImageTaskRequest(scope_id=scope_id, task_id=task_id, retry_key=retry_key)
+    except ValidationError as error:
+        _raise_invalid_request("image retry", error)
     asyncio.run(_execute(context, lambda client: client.retry_image_task(request)))
 
 
@@ -697,12 +707,15 @@ def reparse_image(
     reparse_key: Annotated[str, typer.Option(help="Stable key; first acceptance pins the current profile.")],
     expected_profile_digest: Annotated[str | None, typer.Option()] = None,
 ) -> None:
-    request = ExperimentalReparseImageRequest.model_validate({
-        "scope_id": scope_id,
-        "original": {"source_type": "experimental.image.original", "source_id": original_source_id},
-        "reparse_key": reparse_key,
-        "expected_profile_digest": expected_profile_digest,
-    })
+    try:
+        request = ExperimentalReparseImageRequest.model_validate({
+            "scope_id": scope_id,
+            "original": {"source_type": "experimental.image.original", "source_id": original_source_id},
+            "reparse_key": reparse_key,
+            "expected_profile_digest": expected_profile_digest,
+        })
+    except ValidationError as error:
+        _raise_invalid_request("image reparse", error)
     asyncio.run(_execute(context, lambda client: client.reparse_image(request)))
 
 
@@ -713,9 +726,11 @@ def download_image(
     scope_id: Annotated[str, typer.Option()],
     output: Annotated[Path, typer.Option(help="New output file; an existing file is never overwritten.")],
 ) -> None:
-    asyncio.run(
-        _download_image(context, ExperimentalGetImageAssetRequest(scope_id=scope_id, asset_id=asset_id), output)
-    )
+    try:
+        request = ExperimentalGetImageAssetRequest(scope_id=scope_id, asset_id=asset_id)
+    except ValidationError as error:
+        _raise_invalid_request("image download", error)
+    asyncio.run(_download_image(context, request, output))
 
 
 async def _download_image(context: typer.Context, request: ExperimentalGetImageAssetRequest, output: Path) -> None:
@@ -756,7 +771,6 @@ def _save_image_download(output: Path, data: bytes) -> Path:
     finally:
         temporary.unlink(missing_ok=True)
     return output.resolve()
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -2558,11 +2572,8 @@ def register_commands(cli: typer.Typer) -> set[str]:
         "experience",
         "skill",
         "external-skill",
-
         "scope",
-
         "image",
-
     }
 
 

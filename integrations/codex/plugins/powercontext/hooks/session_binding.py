@@ -103,9 +103,11 @@ def main(settings: CodexPluginSettings | None = None) -> int:  # noqa: C901 - Ke
         if not isinstance(source, str) or source not in _LIFECYCLES:
             settings = CodexPluginSettings() if settings is None else settings
             if settings.capture_images:
-                from image_desktop_watch import launch_watch
+                # Optional capture recovery must not interrupt binding or bootstrap delivery.
+                with suppress(Exception):
+                    from image_desktop_watch import launch_watch
 
-                launch_watch()
+                    launch_watch()
             resolve_scope_id(
                 cwd,
                 session_id=session_id,
@@ -118,9 +120,11 @@ def main(settings: CodexPluginSettings | None = None) -> int:  # noqa: C901 - Ke
         try:
             settings = CodexPluginSettings() if settings is None else settings
             if settings.capture_images:
-                from image_desktop_watch import launch_watch
+                # Optional capture recovery must not interrupt binding or bootstrap delivery.
+                with suppress(Exception):
+                    from image_desktop_watch import launch_watch
 
-                launch_watch()
+                    launch_watch()
         except Exception:
             _clear_observed_receipt(session_id, previous_receipt)
             return 0

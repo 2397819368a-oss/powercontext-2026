@@ -102,9 +102,10 @@ def test_server_defaults_to_persistent_user_storage(
 
 
 @pytest.mark.parametrize("capture_images", [None, True, False])
+@pytest.mark.parametrize("capture_declaration", [None, "false", "true"])
 @pytest.mark.parametrize("already_disabled", [False, True])
 def test_setup_codex_installs_or_preserves_native_disablement(
-    tmp_path: Path, monkeypatch, installed_agent_checks, already_disabled, capture_images
+    tmp_path: Path, monkeypatch, installed_agent_checks, already_disabled, capture_images, capture_declaration
 ) -> None:
     data_dir = tmp_path / "data"
     monkeypatch.setenv("POWERCONTEXT_HOME", str(data_dir))
@@ -133,6 +134,9 @@ def test_setup_codex_installs_or_preserves_native_disablement(
     from powercontext.cli import codex_images
 
     monkeypatch.delenv("POWERCONTEXT_CODEX_CAPTURE_IMAGES", raising=False)
+    if capture_declaration is not None:
+        monkeypatch.setenv("POWERCONTEXT_CODEX_CAPTURE_IMAGES", capture_declaration)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_IMAGES_ENABLED", "true")
     monkeypatch.setattr(codex_images, "run_image_config", lambda root, action: {"enabled": action == "setup"})
     arguments = [] if capture_images is None else ["--capture-images" if capture_images else "--no-capture-images"]
     result = CliRunner().invoke(
@@ -149,13 +153,16 @@ def test_setup_codex_installs_or_preserves_native_disablement(
         ],
     )
     assert result.exit_code == 0, result.output
+    expected_capture = (
+        capture_images if capture_images is not None else (True if capture_declaration == "true" else None)
+    )
     assert json.loads(result.output)["hosts"]["codex"]["result"] == {
         "marketplace": "powercontext",
         "plugin": "powercontext",
         "plugin_version": "0.1.0",
         "data_dir": str(data_dir),
         "authorization_state": "not_configured",
-        **({"image_capture": {"enabled": capture_images}} if capture_images is not None else {}),
+        **({"image_capture": {"enabled": expected_capture}} if expected_capture is not None else {}),
     }
     assert record["installed"] is True
     assert record["enabled"] is not already_disabled

@@ -840,3 +840,29 @@ Access/Atomic Memory 与 ZCode 协议、宿主联合回归 85 项通过。完整
 - 全量非类型 pre-commit hooks、`ty check --python-platform linux` 和 `git diff --check` 通过。Linux 目标类型检查不等于 Windows 原生全库检查。
 
 本轮证据为本地自动化测试、受控 provider 与构建；没有重新验收真实 Desktop 上传、真实模型、新桌面会话召回、跨平台采集生命周期或配对数据库／资产恢复。阶段验收状态不变。更新同一 Ready for review PR 后，以新 head 的 GitHub CI 和后续审查为准，不沿用旧提交的 CI 结论，也不执行合并。
+
+
+## 2026-10-22：隔离安装、主干同步与完整代码审查
+
+本轮目标属于集成维护：将 PR #1956 rebase 到 upstream/master 0bc42d0b，修复最新 P1 的 builtin/images 安装依赖和 CI，使用 Open Code Review 审查并修复有效问题，再提交更新同一 PR。用户已明确授权 rebase、提交和推送；不执行合并。使用独立 worktree pr1956-fix-1022 和临时测试数据库、资产，不接触现有运行服务。修复前 Python 3.11 的真实 wheel 隔离安装已复现 platformdirs 导入失败；后续验证覆盖修复后的隔离安装、冲突涉及的行为及生成契约。
+
+### 实施与验证
+
+- 14 个提交重放到 master `0bc42d0bc978ded22db1901305280c5b840d6533`。冲突解决保留主干的 Source 元数据压缩、Scope CLI 和 Windows bootstrap receipt 修复，同时保留图片证据投影；Desktop 摘要使用官方生成器生成。
+- builtin extra 补充直接导入所需的 platformdirs；根与 e2e/bub 锁文件同步，没有升级依赖版本。CI 隔离安装矩阵增加 images，沿用实际 Runtime 写入、关闭、重开和搜索检查，没有删除原检查。
+- 从真实 wheel 在四个独立环境运行 `python -I scripts/ci_role_smoke.py`：Python 3.11、3.14 的 builtin 和 images 均通过。依赖安装不借用开发环境。
+- 冲突相关 Atomic Memory 证据／投影、图片 CLI、API／JS／Desktop 契约及图片证据集合 83 项通过；图片投影元数据断言补充后，相关 14 项通过。
+- 扩展行为集合共 567 项，首次 545 通过、6 跳过、16 因 Windows 默认临时目录路径超过 260 字符失败；改用短 `--basetemp` 重跑这 16 项全部通过，没有更改生产逻辑或放宽断言。
+- 生命周期错误先由回归测试复现，再修复：watcher 启动失败不影响 Session 绑定和 bootstrap；监督进程对临时配置／启动错误退避恢复；注册失败恢复原授权及 epoch。相关采集／投递／观察／生命周期／诊断／标准集成集合 100 项通过，模拟管理器故障不等于实际 macOS／Linux 验收。
+- 普通 setup 的默认 false 不再撤销已保存授权，显式关闭标志仍生效；远程客户端向导保留已有选择，双语文档同步。CLI/setup/诊断集合 136 项通过，新增错误身份／摘要参数检查与 setup 组合 25 项通过。
+- 最终向导、图片 CLI 和生命周期集合 60 项通过，包含客户端向导回车保留已保存图片选择的回归；这些集合有重叠，不合计宣称独立测试总数。
+- Dashboard 避免重复证据链接，材料编号只计可读 Source，关闭或未就绪时的空态提供配置指引。Dashboard 及 Profile/Handoff 集合 92 项通过；空态修改后图片 Dashboard 的 5 项再次通过。
+- Desktop lint、32 项 UI 测试、build 通过；DSH 官方 build 无 bundle 漂移。Python／JS／Desktop 生成契约、集成 guidance／capability 文档、两份 lock 检查通过。全量非类型 prek 和 `ty check --python-platform linux` 通过；Windows 原生全库 ty 仍有主干既有 POSIX API 类型限制。
+
+### Open Code Review
+
+执行完整范围 `ocr review --audience agent --from upstream/master --to HEAD`，会话 `e5bfb18a-c93c-4605-9702-c14462f50679`。选择结果为 130 个差异文件，其中 72 个可审查文件、58 个按插件默认规则排除的文档／测试／锁文件等。外部模型完成 56 个，16 个因工具轮次或超时未完成；这 16 个使用插件 delegate preview/rule 流程逐项阅读完整差异与相关上下文补审。可审查文件最终 72/72 已覆盖、0 跳过；本次修复差异另作 delegate 复查。逐文件清单、原始结果和规则保存在工作树忽略目录 `.powercontext/ocr-*`，不把外部模型摘要中的“72 reviewed”误称为外部模型全部完成。
+
+17 条原始意见已逐条核实。有效修复包括上述生命周期、授权、Dashboard、CLI 参数和向导默认值；本地损坏的 workspace profile 可由显式 setup/disable 修复。注册失败后残留的原生登记不会获得新授权，关闭失败也不会恢复已撤销授权；原生管理器不可用仍明确报错并允许后续重试。未采纳移除 context Source 读取权限的建议：合同要求同 Scope 已有 Source 且有读取权限，两次检查对应不同权限。单 Worker 预算、未承诺的内部脚本 status 命令及已通过 Ruff 的导入布局不作无关变更。
+
+本轮没有重新执行真实 Desktop 上传、真实模型推理、新会话召回、配对数据库／资产恢复或原生 macOS／Linux 生命周期。既有验收限制保持明确；本地模拟与类型检查不替代这些验证。推送同一 Ready for review PR 后检查新 head 的 GitHub CI，不沿用旧 head 的结果，也不执行合并。

@@ -1069,7 +1069,7 @@ def _client_image_consent(state: Wizard) -> None:
             state.ui.confirm(
                 "Authorize images for this workspace during Codex setup? The Server must have image parsing enabled.",
                 "在 Codex setup 时授权采集本项目图片？远程 Server 须已开启图片识别。",
-                default=False,
+                default=state.values.get("POWERCONTEXT_CODEX_CAPTURE_IMAGES") == "true",
             )
         ).lower()
 

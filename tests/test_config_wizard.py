@@ -521,6 +521,18 @@ def test_custom_topic_memory_does_not_require_embedding(tmp_path: Path) -> None:
     assert "Embedding connection" not in result.output
 
 
+def test_client_only_wizard_preserves_image_opt_in_by_default(tmp_path: Path) -> None:
+    output = tmp_path / "client.env"
+    output.write_text("POWERCONTEXT_CODEX_CAPTURE_IMAGES=true\n")
+    result = CliRunner().invoke(
+        app,
+        ["init", "--language", "en", "--output", str(output)],
+        input="remote\nhttps://memory.example.com\n\ncodex\ndefault\nnone\n\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert parse_environment(output.read_text())["POWERCONTEXT_CODEX_CAPTURE_IMAGES"] == "true"
+
+
 def test_client_only_output_cannot_reuse_server_secrets_file(tmp_path: Path) -> None:
     output = tmp_path / "server.env"
     original = "POWERCONTEXT_SERVER_DATABASE_KIND=sqlite\nOPENAI_API_KEY=example-test-key\n"

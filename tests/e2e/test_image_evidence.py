@@ -72,6 +72,8 @@ class MemoryGenerator:
             assert "Machine interpretation" in projected["content"]
             assert "E429" in projected["content"]
             assert "bytes_base64" not in json.dumps(projected) and "base_url" not in json.dumps(projected)
+            assert evidence.source_metadata == projected["metadata"]
+            assert "base_url" not in json.dumps(evidence.source_metadata)
         return GenerationResult(
             output=AtomicMemoryExtractionOutput(
                 candidates=(

@@ -9,6 +9,7 @@
   "images_open": "查看原图与解析",
   "images_empty": "当前 Scope 暂无图片材料",
   "images_empty_help": "在已授权的项目中新建 Codex 会话并发送图片；使用 powercontext doctor codex 检查采集器与模型。",
+  "images_setup_help": "启用图片识别并配置 Vision 连接，再执行 powercontext setup codex --capture-images 授权当前项目。使用 powercontext doctor codex 检查是否就绪。",
   "home": "首页",
   "handoff": "交接",
   "notes": "记忆",

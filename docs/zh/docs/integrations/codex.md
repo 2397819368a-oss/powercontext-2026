@@ -329,6 +329,6 @@ Codex 的环境中；Windows setup 会把鉴权写入用户环境，但 Desktop 
 
 Server 正常启动后执行常规 `powercontext setup codex`，setup 会保存当前项目授权并自动管理客户端采集器；无须另开采集脚本。用 `powercontext doctor codex` 检查当前 Scope、采集器和图片服务。首次或 Hook 定义改变时，在 Codex 审阅信任新 Hooks。
 
-Dashboard 的“图片材料”可在 Memory 生成前查看原图、解析状态和结果；生成 Memory 后，可以通过“原始材料”回到准确历史图片。功能关闭仍允许读取历史材料。关闭授权执行 `powercontext setup codex --no-capture-images`，仅修改 .env 不撤销已经保存的授权。
+Dashboard 的“图片材料”可在 Memory 生成前查看原图、解析状态和结果；生成 Memory 后，可以通过“原始材料”回到准确历史图片。功能关闭仍允许读取历史材料。关闭授权执行 `powercontext setup codex --no-capture-images`。设置 `POWERCONTEXT_CODEX_CAPTURE_IMAGES=true` 会在 setup 时授权采集；未设置或值为 false 时保留已保存的授权，重新运行 setup 也不会撤销。
 
 自动采集限已验证记录格式：CLI exec 0.141.0／0.162.0-alpha.2／0.162.0-alpha.17.2，Desktop 内核 0.162.0-alpha.2／0.162.0-alpha.17.2。未知版本拒绝并报告诊断；CLI TUI 尚未开放自动适配。Windows 原生生命周期已验证，其他平台需要独立验收。配置说明见[配置模型](../get-started/configure-models.md)。

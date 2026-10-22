@@ -218,6 +218,7 @@ async def project_atomic_memory_evidence(
 
     value = stored.value
     body_from_text_projection = False
+    source_metadata: JsonValue | None = None
     if isinstance(value, SourceObservation):
         content = value.payload
         for projection in value.projections:
@@ -242,7 +243,7 @@ async def project_atomic_memory_evidence(
         content=body,
         source_metadata=(
             _JSON.validate_python(source_metadata)
-            if isinstance(value, ImageAnalysisSource)
+            if source_metadata is not None
             else _compact_source_metadata(value, body=body, body_from_text_projection=body_from_text_projection)
         ),
         via_artifact=via_artifact,

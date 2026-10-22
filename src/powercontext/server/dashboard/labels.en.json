@@ -9,6 +9,7 @@
   "images_open": "View original and analysis",
   "images_empty": "No image materials in this Scope",
   "images_empty_help": "Send an image in a new Codex session in an authorized workspace. Check collector and model with powercontext doctor codex.",
+  "images_setup_help": "Enable image parsing and configure a Vision connection, then authorize this workspace with powercontext setup codex --capture-images. Check readiness with powercontext doctor codex.",
   "home": "Home",
   "handoff": "Handoffs",
   "notes": "Memories",

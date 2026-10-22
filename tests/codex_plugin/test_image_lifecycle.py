@@ -186,3 +186,73 @@ def test_image_consent_does_not_override_ordinary_scope_settings(image_capture_m
     assert restored.capture_images and restored.scope_id is None
     monkeypatch.setenv("POWERCONTEXT_CODEX_SCOPE_ID", "explicit-session-scope")
     assert image_capture_module.CodexPluginSettings().scope_id == "explicit-session-scope"
+
+
+@pytest.mark.parametrize("previously_enabled", [False, True])
+def test_failed_setup_restores_existing_consent(image_capture_module, monkeypatch, tmp_path, previously_enabled):
+    config, _, _, settings, _, _, _ = _setup(image_capture_module, monkeypatch, tmp_path)
+    service = importlib.import_module("collector_service")
+    scope = importlib.import_module("scope_binding")
+    config.write_profile(tmp_path, server_url=settings.server_url, scope_id="original", enabled=previously_enabled)
+    before = config.load_config()
+    monkeypatch.setattr(scope, "bind_scope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        scope,
+        "_post_json",
+        lambda *args, **kwargs: dict.fromkeys(("enabled", "available", "vision_configured", "worker_running"), True),
+    )
+
+    def failed_install():
+        raise ValueError("image_collector_manager_unavailable")
+
+    monkeypatch.setattr(service, "install", failed_install)
+    with pytest.raises(ValueError, match="image_collector_manager_unavailable"):
+        config.configure_capture("setup", str(tmp_path), "replacement", settings)
+    assert config.load_config() == before
+
+
+@pytest.mark.parametrize("failure_at", ["consent", "settings", "spawn"])
+def test_supervisor_recovers_after_transient_startup_failure(image_capture_module, monkeypatch, tmp_path, failure_at):
+    manager = importlib.import_module("collector_service")
+    settings_module = importlib.import_module("settings")
+    settings_type = settings_module.CodexPluginSettings
+    failed = False
+    launched = False
+    pauses = []
+
+    def fail_once(boundary):
+        nonlocal failed
+        if boundary == failure_at and not failed:
+            failed = True
+            raise OSError("injected")
+
+    def consent():
+        fail_once("consent")
+        return not launched
+
+    def settings():
+        fail_once("settings")
+        return settings_type()
+
+    class Child:
+        def poll(self):
+            return 0
+
+    def spawn(*args, **kwargs):
+        nonlocal launched
+        fail_once("spawn")
+        launched = True
+        return Child()
+
+    def pause(seconds):
+        pauses.append(seconds)
+        assert len(pauses) < 5, "supervisor did not recover"
+
+    monkeypatch.setattr(sys, "argv", ["collector_service.py", "run", str(tmp_path), str(tmp_path)])
+    monkeypatch.setattr(manager, "any_enabled", consent)
+    monkeypatch.setattr(manager, "plugin_enabled", lambda: True)
+    monkeypatch.setattr(settings_module, "CodexPluginSettings", settings)
+    monkeypatch.setattr(manager.subprocess, "Popen", spawn)
+    monkeypatch.setattr(manager, "sleep", pause)
+    manager.run()
+    assert failed and launched and pauses

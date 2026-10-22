@@ -87,9 +87,16 @@ def configure_images(root: Path, selected: bool | None = None) -> dict[str, Any]
 
     values = setup_environment() | dict(os.environ)
     declaration = values.get("POWERCONTEXT_CODEX_CAPTURE_IMAGES")
-    if selected is None and declaration is None:
-        return None  # Existing setup without an image choice must not change consent.
-    selected = parse_client_boolean(declaration) if selected is None else selected
+    if selected is None:
+        try:
+            requested = parse_client_boolean(declaration) if declaration is not None else False
+        except ValueError as error:
+            from powercontext.cli.system import SetupError
+
+            raise SetupError("POWERCONTEXT_CODEX_CAPTURE_IMAGES must be a boolean") from error  # noqa: TRY003
+        if not requested:
+            return None  # Default-off configuration must not revoke saved consent.
+        selected = True
     if selected and values.get("POWERCONTEXT_SERVER_IMAGES_ENABLED", "true").lower() in {"false", "0", "no", "off"}:
         from powercontext.cli.system import SetupError
 

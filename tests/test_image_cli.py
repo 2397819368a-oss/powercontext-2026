@@ -53,3 +53,20 @@ def test_image_inspection_prints_result_in_default_mode(command, monkeypatch):
     assert result.exit_code == 0, result.output
     value = json.loads(result.output)
     assert value["model_id"] == "test-model" if command == "status" else value["items"] == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["task", "invalid"],
+        ["source", "invalid"],
+        ["retry", "invalid", "--retry-key", "retry"],
+        ["reparse", "original", "--reparse-key", "reparse", "--expected-profile-digest", "invalid"],
+        ["download", "invalid", "--output", "unused.png"],
+    ],
+)
+def test_invalid_image_identity_reports_usage_error(arguments):
+    result = CliRunner().invoke(create_cli([]), ["image", *arguments, "--scope-id", "test-scope"])
+    assert result.exit_code == 2, result.output
+    assert "Invalid" in result.output
+    assert "Traceback" not in result.output
