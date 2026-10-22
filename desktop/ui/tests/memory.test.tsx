@@ -206,6 +206,31 @@ test("Chinese save success text keeps the harness-expected 保存成功。 prefi
   // document.body.innerText.includes("保存成功。") semantics in WebView.
   expect(document.body.textContent).toContain("保存成功。");
 });
+test("saved records never use the memory-hits class the search harness counts", async () => {
+  // installed_boundaries.exercise_search_limit counts
+  // document.querySelectorAll(".memory-hits li") to assert search result
+  // counts. The saved-record list must not contribute to that selector.
+  const user = userEvent.setup();
+  vi.mocked(desktopApi.state).mockResolvedValue(state);
+  const { outcome: saved } = makeSaved(1);
+  vi.mocked(desktopApi.remember).mockResolvedValue(saved);
+  render(
+    <NoteForm
+      state={state}
+      language="en"
+      onState={vi.fn()}
+      onDirty={vi.fn()}
+      onReadSaved={vi.fn()}
+      invalidateSaved={0}
+    />,
+  );
+  await user.type(screen.getByLabelText("Memory text"), "contract");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(
+    screen.getByRole("button", { name: "Open saved record" }),
+  ).toBeTruthy();
+  expect(document.querySelectorAll(".memory-hits li")).toHaveLength(0);
+});
 test("an Atomic save can be searched, opened and copied by exact Artifact reference", async () => {
   const user = userEvent.setup();
   const { outcome: saved } = makeSaved(1);

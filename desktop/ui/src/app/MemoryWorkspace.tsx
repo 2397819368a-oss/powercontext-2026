@@ -210,7 +210,7 @@ export function NoteForm({
       )}
       {saved.length > 0 && (
         <div className="stack">
-          <ul className="memory-hits">
+          <ul className="saved-hits">
             {saved.map((record) => {
               const key = JSON.stringify(record.artifact);
               const title = record.text.split("\n", 1)[0] || record.text;
