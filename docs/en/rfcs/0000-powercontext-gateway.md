@@ -152,9 +152,69 @@ gateway or automatically given Agent context.
 
 ## 2. Components and calls
 
-[![PowerContext Gateway components and calls: gateway execution, Core organization and checks, provider-owned KV.](../../assets/rfcs/powercontext-gateway-components-en.svg)](../../assets/rfcs/powercontext-gateway-components-en.svg)
+```mermaid
+%%{init: {"theme":"base","look":"classic","themeVariables":{"fontFamily":"Arial, Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#64748b","edgeLabelBackground":"#ffffff"},"flowchart":{"curve":"basis","nodeSpacing":28,"rankSpacing":24,"wrappingWidth":210,"padding":16,"htmlLabels":true}}}%%
+flowchart TB
+    H["<b>Agent / SDK</b><br/>Client history and tools"]
+    T["<b>Third-party gateway (optional)</b><br/>Final-boundary integration"]
+    subgraph PC["PowerContext Server · one process by default"]
+        A["<b>Existing authentication and authorization</b><br/>Principal / Scope / execution permission"]
+        subgraph GW["Optional Gateway · protocol and execution"]
+            subgraph GW_FLOW[" "]
+                direction LR
+                P["<b>Protocol ingress</b><br/>Chat / Responses<br/>Validated carriers"]
+                L["<b>Conversation handling</b><br/>Classify · inject · exact replay<br/>Single writer"]
+                N["<b>Upstream adapter</b><br/>Approved route · cache parameters<br/>Final rendering"]
+                X["<b>Execution boundary</b><br/>Admit → send<br/>Buffer → release"]
+                S[("Gateway-local SQLite<br/>Conversations + replay blocks")]
+                O["<b>Existing observations</b><br/>Bounded metadata<br/>Incomplete usage"]
+                P --> L
+                L <--> S
+                L --> N
+                N --> X
+                X -.-> O
+            end
+        end
+        subgraph CORE["Existing Core + RFC 2086 · context and checks"]
+            subgraph CORE_FLOW[" "]
+                direction LR
+                C["<b>Scoped context application</b><br/>prepare / assembly<br/>PreparedContextBuilder"]
+                I["<b>Input and output checks</b><br/>Privacy · target · full budget<br/>Output release"]
+                D[("Existing Scope / Source / Artifact<br/>Work / Bootstrap / Handoff")]
+                Q["<b>Existing policy and inference</b><br/>Rules and algorithms"]
+                C --> D
+                Q -.-> C
+                Q -.-> I
+            end
+        end
+        A --> GW
+    end
+    U["<b>Approved actual model endpoint</b><br/>Native KV cache · provider usage"]
+    H --> A
+    GW <-->|"Send boundary: admitted send / raw response"| U
+    T -. "Authenticated prepare / check contracts" .-> CORE
+    GW <-->|"Conversation handling → prepare<br/>Send / release boundary ⇄ input / output checks"| CORE
 
-Open the image for the full-size SVG. Blue lines are model traffic; green lines are Core calls; dashed lines are rules, state, observations, and optional integration.
+    classDef client fill:#f1f5f9,stroke:#94a3b8,color:#0f172a,stroke-width:1.2px
+    classDef auth fill:#334155,stroke:#334155,color:#ffffff,stroke-width:1.5px
+    classDef gateway fill:#ffffff,stroke:#60a5fa,color:#1e3a5f,stroke-width:1.5px
+    classDef core fill:#ffffff,stroke:#5eaaa0,color:#164e48,stroke-width:1.5px
+    classDef store fill:#fff8eb,stroke:#d4a65a,color:#684b1b,stroke-width:1.2px
+    classDef support fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:4 3
+    class H,T,U client
+    class A auth
+    class P,L,N,X gateway
+    class C,I core
+    class S,D store
+    class O,Q support
+    style PC fill:#f8fafc,stroke:#94a3b8,stroke-width:1.5px
+    style GW fill:#eff6ff,stroke:#93c5fd,stroke-width:1.5px
+    style CORE fill:#f0fdfa,stroke:#83c5b9,stroke-width:1.5px
+    style GW_FLOW fill:transparent,stroke:transparent
+    style CORE_FLOW fill:transparent,stroke:transparent
+```
+
+Blue groups show Gateway protocol and execution; green groups show Core context and checks; warm nodes show persistent state. Dashed lines mark policy, observations, and optional third-party integration. Links between groups name the actual callers and entry points.
 
 Core and Gateway are responsibility boundaries, not two required services. Embedded calls use the same application and
 check algorithms through Server's authenticated authorization executor. Sharing a process does not permit repository

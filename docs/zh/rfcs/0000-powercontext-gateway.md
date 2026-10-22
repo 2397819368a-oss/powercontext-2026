@@ -135,9 +135,69 @@ Core 后台的 Embedding/rerank/提取仍由自己的 inference 边界负责，�
 
 ## 2. 组件和调用关系
 
-[![PowerContext Gateway 组件、调用与职责边界：网关执行、Core 组织与检查、模型服务维护 KV。](../../assets/rfcs/powercontext-gateway-components-zh.svg)](../../assets/rfcs/powercontext-gateway-components-zh.svg)
+```mermaid
+%%{init: {"theme":"base","look":"classic","themeVariables":{"fontFamily":"Arial, Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#64748b","edgeLabelBackground":"#ffffff"},"flowchart":{"curve":"basis","nodeSpacing":28,"rankSpacing":24,"wrappingWidth":210,"padding":16,"htmlLabels":true}}}%%
+flowchart TB
+    H["<b>Agent / SDK</b><br/>客户端历史 · 客户端工具"]
+    T["<b>第三方网关（可选）</b><br/>最终调用边界接入"]
+    subgraph PC["PowerContext Server · 默认同进程"]
+        A["<b>复用认证与授权</b><br/>Principal / Scope / 执行许可"]
+        subgraph GW["可选 Gateway 组件 · 协议与执行"]
+            subgraph GW_FLOW[" "]
+                direction LR
+                P["<b>协议入口</b><br/>Chat / Responses<br/>已验证载体"]
+                L["<b>会话处理</b><br/>分类 · 注入 · 精确重放<br/>单写者"]
+                N["<b>Upstream adapter</b><br/>获准路由 · 缓存参数适配<br/>最终渲染"]
+                X["<b>发送与放行边界</b><br/>准入 → 发送<br/>缓冲 → 放行"]
+                S[("网关本地 SQLite<br/>会话状态 + 重放块")]
+                O["<b>复用现有观测</b><br/>受限元数据 · 不完整用量"]
+                P --> L
+                L <--> S
+                L --> N
+                N --> X
+                X -.-> O
+            end
+        end
+        subgraph CORE["现有 Core + RFC 2086 · 上下文与检查"]
+            subgraph CORE_FLOW[" "]
+                direction LR
+                C["<b>Scope 上下文组织</b><br/>prepare / assembly<br/>PreparedContextBuilder"]
+                I["<b>输入 / 输出检查</b><br/>隐私 · 目标 · 完整预算<br/>输出放行"]
+                D[("现有 Scope / Source / Artifact<br/>Work / Bootstrap / Handoff")]
+                Q["<b>复用策略与 inference</b><br/>规则与算法"]
+                C --> D
+                Q -.-> C
+                Q -.-> I
+            end
+        end
+        A --> GW
+    end
+    U["<b>获准的实际模型端点</b><br/>原生 KV Cache · provider 用量"]
+    H --> A
+    GW <-->|"发送边界：获准发送 / 原始响应"| U
+    T -. "认证后的 prepare / 检查契约" .-> CORE
+    GW <-->|"会话处理 → prepare<br/>发送 / 放行边界 ⇄ 输入 / 输出检查"| CORE
 
-点击图片可查看完整 SVG。蓝线表示模型调用，绿线表示 Core 能力调用，虚线表示规则、状态、观测与可选接入。
+    classDef client fill:#f1f5f9,stroke:#94a3b8,color:#0f172a,stroke-width:1.2px
+    classDef auth fill:#334155,stroke:#334155,color:#ffffff,stroke-width:1.5px
+    classDef gateway fill:#ffffff,stroke:#60a5fa,color:#1e3a5f,stroke-width:1.5px
+    classDef core fill:#ffffff,stroke:#5eaaa0,color:#164e48,stroke-width:1.5px
+    classDef store fill:#fff8eb,stroke:#d4a65a,color:#684b1b,stroke-width:1.2px
+    classDef support fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:4 3
+    class H,T,U client
+    class A auth
+    class P,L,N,X gateway
+    class C,I core
+    class S,D store
+    class O,Q support
+    style PC fill:#f8fafc,stroke:#94a3b8,stroke-width:1.5px
+    style GW fill:#eff6ff,stroke:#93c5fd,stroke-width:1.5px
+    style CORE fill:#f0fdfa,stroke:#83c5b9,stroke-width:1.5px
+    style GW_FLOW fill:transparent,stroke:transparent
+    style CORE_FLOW fill:transparent,stroke:transparent
+```
+
+蓝色分组为网关协议与执行，绿色分组为 Core 上下文与检查，暖色节点为持久状态；虚线表示策略、观测和第三方可选接入。分组间连线标明实际调用方与入口。
 
 图中 Core 与网关是职责边界，不是两个必需服务。内嵌路径调用相同 application/检查算法，
 仍经过 Server 的认证授权执行器；不能因为同进程就直接取 repository 绕过资源授权。
