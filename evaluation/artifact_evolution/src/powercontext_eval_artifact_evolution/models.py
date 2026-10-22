@@ -21,14 +21,14 @@ task, or evidence bodies. They are evaluation artifacts, not Runtime records.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from powercontext_eval_artifact_evolution.privacy import digest_json
+from powercontext_eval_artifact_evolution.privacy import digest_json, redact_payload
 
 BUNDLE_SCHEMA = "powercontext.artifact-evolution/v1"
-SHA256_LENGTH = 64
+Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
 class _ContractModel(BaseModel):
@@ -53,7 +53,7 @@ class CapturePolicy(_ContractModel):
 
 
 class Budget(_ContractModel):
-    """Declared evaluation limits, kept separate from live Runtime budgets."""
+    """Enforced evaluation limits, kept separate from live Runtime budgets."""
 
     max_proposal_attempts: int = Field(ge=1)
     max_model_calls: int = Field(ge=1)
@@ -67,22 +67,21 @@ class Workload(_ContractModel):
     """Scope-safe workload identity and exact Dream input binding."""
 
     experiment_id: str = Field(min_length=1)
-    scope_digest: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+    scope_digest: Digest
     operation: Literal["refine_experience"]
     target_artifact_ref: str | None = None
     expected_head: str | None = None
-    fixture_digest: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+    fixture_digest: Digest
     treatment: str = Field(min_length=1)
     upstream_task_ref: str | None = None
     evidence_refs: tuple[str, ...] = ()
     declared_budget: Budget
 
-    @field_validator("scope_digest", "fixture_digest")
-    @classmethod
-    def _require_sha256(cls, value: str) -> str:
-        if any(character not in "0123456789abcdef" for character in value.lower()):
-            raise ValueError("digest must be lowercase hexadecimal")
-        return value.lower()
+    @model_validator(mode="after")
+    def _validate_v1_head_alias(self) -> Workload:
+        if self.target_artifact_ref != self.expected_head:
+            raise ValueError("v1 workload target does not match expected head")
+        return self
 
 
 class DecisionRequest(_ContractModel):
@@ -90,16 +89,9 @@ class DecisionRequest(_ContractModel):
 
     decision_id: str = Field(min_length=1)
     trajectory_id: str = Field(min_length=1)
-    observations_digest: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+    observations_digest: Digest
     action_signature: str = Field(min_length=1)
     ordering: int = Field(ge=0)
-
-    @field_validator("observations_digest")
-    @classmethod
-    def _require_sha256(cls, value: str) -> str:
-        if any(character not in "0123456789abcdef" for character in value.lower()):
-            raise ValueError("observations_digest must be lowercase hexadecimal")
-        return value.lower()
 
     @property
     def key(self) -> tuple[str, str, str, str, int]:
@@ -132,27 +124,38 @@ class ValidationResult(_ContractModel):
     details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class CandidateOutput(_ContractModel):
+    """Content-free identity of the Candidate produced by the live Dream run."""
+
+    candidate_id: str = Field(min_length=1)
+    candidate_version: int = Field(ge=1)
+
+
 class AttemptResult(_ContractModel):
-    """Typed terminal result with a digest of any generated output."""
+    """Typed result with stable output identity and optional retained-payload identity."""
 
     outcome: Literal["proposed", "no_change", "needs_evidence", "error"]
-    output_digest: str | None = Field(default=None, min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+    output: CandidateOutput | None = None
+    output_digest: Digest | None = None
     output_payload: dict[str, JsonValue] | None = None
+    payload_digest: Digest | None = None
     error_code: str | None = None
-
-    @field_validator("output_digest")
-    @classmethod
-    def _require_sha256(cls, value: str | None) -> str | None:
-        if value is not None and any(character not in "0123456789abcdef" for character in value.lower()):
-            raise ValueError("output_digest must be lowercase hexadecimal")
-        return None if value is None else value.lower()
 
     @model_validator(mode="after")
     def _validate_result(self) -> AttemptResult:
-        if self.outcome == "proposed" and self.output_digest is None:
-            raise ValueError("proposed results require output_digest")
+        if self.outcome == "proposed":
+            if self.output is None or self.output_digest is None:
+                raise ValueError("proposed results require typed output and output_digest")
+            if self.output_digest != digest_json(self.output):
+                raise ValueError("output_digest does not match typed output")
+        elif self.output is not None or self.output_digest is not None:
+            raise ValueError("only proposed results may contain typed output or output_digest")
         if self.outcome == "error" and not self.error_code:
             raise ValueError("error results require error_code")
+        if self.output_payload is None and self.payload_digest is not None:
+            raise ValueError("payload_digest requires output_payload")
+        if self.output_payload is not None and self.payload_digest is None:
+            raise ValueError("output_payload requires payload_digest")
         return self
 
 
@@ -190,6 +193,8 @@ class ProposalAttempt(_ContractModel):
     decision: DecisionRequest
     parent_dream_run_ref: DreamRunRef
     input_refs: tuple[str, ...] = ()
+    target_artifact_ref: str | None = None
+    expected_head: str | None = None
     generation: GenerationIdentity
     result: AttemptResult
     validators: tuple[ValidationResult, ...] = ()
@@ -215,42 +220,90 @@ class ArtifactEvolutionBundle(_ContractModel):
         if len(decisions) != len(self.requested_decisions):
             raise ValueError("requested_decisions must have unique keys")
         decision_ids = {decision.decision_id for decision in self.requested_decisions}
+        if len(decision_ids) != len(self.requested_decisions):
+            raise ValueError("requested_decisions must have unique decision ids")
         trajectories = {trajectory.trajectory_id: trajectory for trajectory in self.requested_trajectories}
         if len(trajectories) != len(self.requested_trajectories):
             raise ValueError("requested_trajectories must have unique ids")
+        decision_trajectory_ids = {decision.trajectory_id for decision in self.requested_decisions}
+        if decision_trajectory_ids != set(trajectories):
+            raise ValueError("requested_trajectories must exactly cover requested decision trajectories")
         for trajectory in self.requested_trajectories:
-            if any(decision_id not in decision_ids for decision_id in trajectory.decision_ids):
-                raise ValueError(f"trajectory {trajectory.trajectory_id!r} references an unknown decision")
-            if any(
-                decisions[key].trajectory_id != trajectory.trajectory_id
-                for key in decisions
-                if decisions[key].decision_id in trajectory.decision_ids
-            ):
-                raise ValueError(f"trajectory {trajectory.trajectory_id!r} contains a decision from another trajectory")
+            expected_ids = tuple(
+                decision.decision_id
+                for decision in sorted(self.requested_decisions, key=lambda value: value.ordering)
+                if decision.trajectory_id == trajectory.trajectory_id
+            )
+            if trajectory.decision_ids != expected_ids:
+                raise ValueError(
+                    f"trajectory {trajectory.trajectory_id!r} must list every requested decision in ordering order"
+                )
+        if any(decision.observations_digest != self.workload.fixture_digest for decision in self.requested_decisions):
+            raise ValueError("requested decision observations must match workload fixture_digest")
         seen_attempts: set[tuple[str, str, str, str, int]] = set()
+        attempt_ids: set[str] = set()
         for attempt in self.attempts:
             if attempt.decision.key not in decisions:
                 raise ValueError(f"attempt {attempt.attempt_id!r} is not bound to a requested decision")
             if attempt.decision.key in seen_attempts:
                 raise ValueError(f"duplicate attempt for decision {attempt.decision.decision_id!r}")
             seen_attempts.add(attempt.decision.key)
+            if attempt.attempt_id in attempt_ids:
+                raise ValueError(f"duplicate attempt_id {attempt.attempt_id!r}")
+            attempt_ids.add(attempt.attempt_id)
+            if digest_json(attempt.parent_dream_run_ref.scope_id) != self.workload.scope_digest:
+                raise ValueError(f"attempt {attempt.attempt_id!r} Scope does not match workload")
+            if attempt.input_refs != self.workload.evidence_refs:
+                raise ValueError(f"attempt {attempt.attempt_id!r} input_refs do not match workload")
+            if attempt.target_artifact_ref != self.workload.target_artifact_ref:
+                raise ValueError(f"attempt {attempt.attempt_id!r} target does not match workload")
+            if attempt.expected_head != self.workload.expected_head:
+                raise ValueError(f"attempt {attempt.attempt_id!r} expected head does not match workload")
+            if attempt.result.output is not None:
+                expected_candidate_ref = (
+                    f"{attempt.result.output.candidate_id}@{attempt.result.output.candidate_version}"
+                )
+                if attempt.nomination.candidate_ref != expected_candidate_ref:
+                    raise ValueError(f"attempt {attempt.attempt_id!r} Candidate ref does not match typed output")
+            elif attempt.nomination.candidate_ref is not None:
+                raise ValueError(f"attempt {attempt.attempt_id!r} has a Candidate ref without typed output")
             if self.capture_policy.payloads == "none" and attempt.result.output_payload is not None:
                 raise ValueError("output_payload requires an approved or redacted capture policy")
-            if attempt.result.output_payload is not None and attempt.result.output_digest != digest_json(
+            if attempt.result.output_payload is not None and attempt.result.payload_digest != digest_json(
                 attempt.result.output_payload
             ):
-                raise ValueError(f"attempt {attempt.attempt_id!r} output_digest does not match output_payload")
+                raise ValueError(f"attempt {attempt.attempt_id!r} payload_digest does not match output_payload")
             if (
                 self.capture_policy.payloads == "redacted"
                 and attempt.result.output_payload is not None
-                and attempt.result.output_payload != _redact_for_validation(attempt.result.output_payload)
+                and attempt.result.output_payload != redact_payload(attempt.result.output_payload)
             ):
                 raise ValueError("redacted payloads must not contain sensitive values")
+        self._validate_budget()
         return self
 
+    def _validate_budget(self) -> None:
+        budget = self.workload.declared_budget
+        if len(self.attempts) > budget.max_proposal_attempts:
+            raise ValueError("recorded attempts exceed declared max_proposal_attempts")
+        if sum(attempt.cost.model_calls for attempt in self.attempts) > budget.max_model_calls:
+            raise ValueError("recorded model calls exceed declared max_model_calls")
+        _validate_optional_total(self.attempts, "input_tokens", budget.max_input_tokens)
+        _validate_optional_total(self.attempts, "output_tokens", budget.max_output_tokens)
+        _validate_optional_total(self.attempts, "wall_time_ms", budget.max_wall_time_ms)
+        if any(attempt.cost.concurrency > budget.max_concurrency for attempt in self.attempts):
+            raise ValueError("recorded concurrency exceeds declared max_concurrency")
 
-def _redact_for_validation(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    # Imported lazily to keep the contract module's public imports small.
-    from powercontext_eval_artifact_evolution.privacy import redact_payload
 
-    return redact_payload(value)
+def _validate_optional_total(
+    attempts: tuple[ProposalAttempt, ...],
+    field: Literal["input_tokens", "output_tokens", "wall_time_ms"],
+    limit: int | None,
+) -> None:
+    if limit is None:
+        return
+    values = tuple(getattr(attempt.cost, field) for attempt in attempts)
+    if any(value is None for value in values):
+        raise ValueError(f"recorded {field} is required when max_{field} is declared")
+    if sum(value for value in values if value is not None) > limit:
+        raise ValueError(f"recorded {field} exceeds declared max_{field}")

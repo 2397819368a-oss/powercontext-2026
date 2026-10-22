@@ -23,10 +23,14 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError
 
-from powercontext_eval_artifact_evolution.bundle import BundleIOError, load_bundle, write_bundle
+from powercontext_eval_artifact_evolution.bundle import (
+    BundleIOError,
+    load_bundle,
+    validation_error_summary,
+    write_bundle,
+)
 from powercontext_eval_artifact_evolution.models import DecisionRequest
 from powercontext_eval_artifact_evolution.recording import (
-    DreamRecordingError,
     DreamRunSnapshot,
     decision_for_dream_run,
     record_dream_attempt,
@@ -87,7 +91,10 @@ def replay_bundle(
         )
         result = ReplayEngine(bundle).replay(request)
     except ValidationError as error:
-        typer.echo(f"Artifact-evolution replay failed: invalid decision request ({error.errors()[0]['msg']})", err=True)
+        typer.echo(
+            f"Artifact-evolution replay failed: invalid decision request ({validation_error_summary(error)})",
+            err=True,
+        )
         raise typer.Exit(code=1) from None
     payload: dict[str, object] = {"status": result.status}
     if result.reason is not None:
@@ -165,7 +172,10 @@ def record_bundle(
             runtime_version=runtime_version,
         )
         path = write_bundle(recorded, output_path)
-    except (BundleIOError, DreamRecordingError, ValidationError, OSError, ValueError) as error:
+    except ValidationError as error:
+        typer.echo(f"Artifact-evolution record failed: {validation_error_summary(error)}", err=True)
+        raise typer.Exit(code=1) from None
+    except (ValueError, OSError) as error:
         typer.echo(f"Artifact-evolution record failed: {error}", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(json.dumps({"status": "recorded", "output": str(path)}, ensure_ascii=False, sort_keys=True))

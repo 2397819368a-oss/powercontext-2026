@@ -22,10 +22,44 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-_SENSITIVE_KEY = re.compile(
-    r"(?:prompt|task|evidence|authorization|token|secret|password|credential|api[_-]?key)",
-    re.IGNORECASE,
+_SENSITIVE_KEYS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "authorization",
+        "authorization_header",
+        "client_secret",
+        "credential",
+        "credentials",
+        "evidence",
+        "evidence_body",
+        "password",
+        "prompt",
+        "prompt_body",
+        "refresh_token",
+        "secret",
+        "task",
+        "task_body",
+        "token",
+        "token_value",
+    }
 )
+_SENSITIVE_SUFFIXES = frozenset(
+    {
+        "api_key",
+        "authorization",
+        "credential",
+        "credentials",
+        "evidence",
+        "password",
+        "prompt",
+        "secret",
+        "task",
+        "token",
+    }
+)
+_CONTENT_QUALIFIERS = frozenset({"body", "content", "description", "payload", "text", "value"})
+_CONTENT_KEYS = frozenset({"evidence", "prompt", "task", "token"})
 _SECRET_VALUE = re.compile(r"(?:Bearer\s+\S+|sk-[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+)")
 REDACTED = "[REDACTED]"
 
@@ -50,12 +84,20 @@ def redact_payload(value: Any, *, _sensitive: bool = False) -> Any:
     if _sensitive:
         return REDACTED
     if isinstance(value, Mapping):
-        return {
-            str(key): redact_payload(item, _sensitive=bool(_SENSITIVE_KEY.search(str(key))))
-            for key, item in value.items()
-        }
+        return {str(key): redact_payload(item, _sensitive=_is_sensitive_key(str(key))) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [redact_payload(item) for item in value]
     if isinstance(value, str):
         return _SECRET_VALUE.sub(REDACTED, value)
     return value
+
+
+def _is_sensitive_key(value: str) -> bool:
+    normalized = value.lower().replace("-", "_")
+    if normalized in _SENSITIVE_KEYS or any(normalized.endswith(f"_{key}") for key in _SENSITIVE_SUFFIXES):
+        return True
+    segments = normalized.split("_")
+    return any(
+        segments[index] in _CONTENT_KEYS and segments[index + 1] in _CONTENT_QUALIFIERS
+        for index in range(len(segments) - 1)
+    )

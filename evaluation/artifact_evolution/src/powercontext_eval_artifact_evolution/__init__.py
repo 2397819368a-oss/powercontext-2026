@@ -23,6 +23,7 @@ from powercontext_eval_artifact_evolution.bundle import (
 )
 from powercontext_eval_artifact_evolution.models import (
     ArtifactEvolutionBundle,
+    CandidateOutput,
     DecisionRequest,
     DreamRunRef,
     ProposalAttempt,
@@ -43,6 +44,7 @@ __all__ = [
     "ArtifactEvolutionBundle",
     "BundleIOError",
     "BundleValidationError",
+    "CandidateOutput",
     "DecisionRequest",
     "DreamRecordingError",
     "DreamRunRef",

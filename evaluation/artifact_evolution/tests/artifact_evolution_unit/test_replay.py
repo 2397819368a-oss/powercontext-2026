@@ -22,7 +22,7 @@ from typer.testing import CliRunner
 
 from powercontext_eval_artifact_evolution.bundle import write_bundle
 from powercontext_eval_artifact_evolution.cli import app
-from powercontext_eval_artifact_evolution.models import ArtifactEvolutionBundle, AttemptCost, TrajectoryRequest
+from powercontext_eval_artifact_evolution.models import ArtifactEvolutionBundle, AttemptCost, Budget, TrajectoryRequest
 from powercontext_eval_artifact_evolution.replay import ReplayEngine
 
 from .test_bundle import DIGEST, attempt, bundle, decision
@@ -85,6 +85,9 @@ def test_coverage_keeps_unsupported_decisions_and_trajectories_in_denominator() 
     second = decision(decision_id="decision-2", action="refine-experience:second", trajectory_id="trajectory-2")
     expanded = bundle().model_copy(
         update={
+            "workload": bundle().workload.model_copy(
+                update={"declared_budget": Budget(max_proposal_attempts=2, max_model_calls=2)}
+            ),
             "requested_decisions": (decision(), second),
             "requested_trajectories": (
                 TrajectoryRequest(trajectory_id="trajectory-1", decision_ids=("decision-1",)),
@@ -108,13 +111,16 @@ def test_coverage_keeps_unsupported_decisions_and_trajectories_in_denominator() 
 
 def test_coverage_preserves_known_partial_token_costs() -> None:
     second = decision(decision_id="decision-2", action="refine-experience:second", trajectory_id="trajectory-2")
-    partial = attempt(second).model_copy(
+    partial = attempt(second, attempt_id="attempt-2").model_copy(
         update={
             "cost": AttemptCost(model_calls=1, retries=0, input_tokens=None, output_tokens=10),
         }
     )
     expanded = bundle().model_copy(
         update={
+            "workload": bundle().workload.model_copy(
+                update={"declared_budget": Budget(max_proposal_attempts=2, max_model_calls=2)}
+            ),
             "requested_decisions": (decision(), second),
             "requested_trajectories": (
                 TrajectoryRequest(trajectory_id="trajectory-1", decision_ids=("decision-1",)),

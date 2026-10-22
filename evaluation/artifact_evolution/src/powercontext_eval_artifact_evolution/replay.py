@@ -81,10 +81,7 @@ class ReplayEngine:
         complete_trajectories = 0
         for trajectory in self._bundle.requested_trajectories:
             trajectory_decisions = {
-                decision.key
-                for decision in decisions
-                if decision.trajectory_id == trajectory.trajectory_id
-                and decision.decision_id in trajectory.decision_ids
+                decision.key for decision in decisions if decision.trajectory_id == trajectory.trajectory_id
             }
             if trajectory_decisions and trajectory_decisions <= self._attempts.keys():
                 complete_trajectories += 1

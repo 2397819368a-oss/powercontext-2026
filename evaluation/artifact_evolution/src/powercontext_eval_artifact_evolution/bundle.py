@@ -43,18 +43,10 @@ def load_bundle(path: Path) -> ArtifactEvolutionBundle:
         raw = resolved.read_bytes()
     except OSError as error:
         raise BundleIOError(f"cannot read artifact-evolution bundle: {resolved}") from error
-    if not raw.strip():
-        raise BundleValidationError(f"artifact-evolution bundle is blank: {resolved}")
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BundleValidationError("artifact-evolution bundle must be UTF-8 JSON") from error
-    if not isinstance(value, dict):
-        raise BundleValidationError("artifact-evolution bundle must be a JSON object")
     try:
         return ArtifactEvolutionBundle.model_validate_json(raw)
     except ValidationError as error:
-        raise BundleValidationError(f"invalid artifact-evolution bundle: {error}") from error
+        raise BundleValidationError(f"invalid artifact-evolution bundle: {validation_error_summary(error)}") from error
 
 
 def write_bundle(bundle: ArtifactEvolutionBundle, path: Path) -> Path:
@@ -64,7 +56,9 @@ def write_bundle(bundle: ArtifactEvolutionBundle, path: Path) -> Path:
     try:
         bundle = ArtifactEvolutionBundle.model_validate(bundle.model_dump(mode="python", by_alias=True))
     except ValidationError as error:
-        raise BundleValidationError(f"cannot write invalid artifact-evolution bundle: {error}") from error
+        raise BundleValidationError(
+            f"cannot write invalid artifact-evolution bundle: {validation_error_summary(error)}"
+        ) from error
     temporary: Path | None = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +97,7 @@ def record_attempt(bundle: ArtifactEvolutionBundle, attempt: ProposalAttempt) ->
         attempt = attempt.model_copy(
             update={
                 "result": attempt.result.model_copy(
-                    update={"output_payload": payload, "output_digest": digest_json(payload)}
+                    update={"output_payload": payload, "payload_digest": digest_json(payload)}
                 )
             }
         )
@@ -114,3 +108,11 @@ def record_attempt(bundle: ArtifactEvolutionBundle, attempt: ProposalAttempt) ->
 def _render(bundle: ArtifactEvolutionBundle) -> str:
     payload = bundle.model_dump(mode="json", by_alias=True, exclude_none=True)
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def validation_error_summary(error: ValidationError) -> str:
+    """Return one content-safe validation error without echoing rejected input."""
+
+    first = error.errors(include_url=False, include_context=False, include_input=False)[0]
+    location = ".".join(str(part) for part in first["loc"]) or "bundle"
+    return f"{location}: {first['msg']}"
