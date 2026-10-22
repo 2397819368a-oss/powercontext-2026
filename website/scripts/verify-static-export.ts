@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { access, readdir, readFile } from 'node:fs/promises';
+import { access, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { absoluteSiteUrl, basePath, withBasePath } from '../src/lib/urls';
 
@@ -127,7 +127,18 @@ for (const [route, document] of exportedDocuments) {
       continue;
     }
     const targetRoute = normalizeRoute(targetPath.slice(basePath.length) || '/');
-    if (!exportedDocuments.has(targetRoute)) brokenLinks.add(`${route} -> ${targetRoute}`);
+    if (exportedDocuments.has(targetRoute)) continue;
+
+    // Image and download links may point to exported public files.
+    const publicFile = path.resolve(outputDirectory, `.${targetPath.slice(basePath.length)}`);
+    if (!targetPath.endsWith('/') && publicFile.startsWith(`${outputDirectory}${path.sep}`)) {
+      try {
+        if ((await stat(publicFile)).isFile()) continue;
+      } catch {
+        // Report unavailable public files through the same broken-link result.
+      }
+    }
+    brokenLinks.add(`${route} -> ${targetRoute}`);
   }
 
   for (const match of document.matchAll(/<(?:img|script)\b[^>]*\bsrc="([^"]+)"|<link\b[^>]*\bhref="([^"]+)"/g)) {

@@ -135,44 +135,9 @@ Core 后台的 Embedding/rerank/提取仍由自己的 inference 边界负责，�
 
 ## 2. 组件和调用关系
 
-```mermaid
-flowchart LR
-    H["Agent / SDK<br/>Client history and client tools"]
-    T["Third-party gateway<br/>Optional final-boundary integration"]
-    subgraph PC["PowerContext Server - one process by default"]
-        A["Existing authentication and authorization<br/>Principal / Scope / execution permission"]
-        subgraph GW["Optional Gateway component"]
-            P["Protocol ingress<br/>Chat / Responses / validated carriers"]
-            L["Conversation handling<br/>classify / inject / exact replay / single writer"]
-            N["Upstream adapter<br/>approved route / native cache / final rendering"]
-            X["Execution boundary<br/>admit / send / buffer / release"]
-            S[("Gateway-local SQLite<br/>conversations + replay blocks")]
-            O["Existing observations<br/>bounded metadata / incomplete usage"]
-        end
-        subgraph CORE["Existing Core and RFC 2086"]
-            C["Scoped context application<br/>prepare / assembly / Builder"]
-            I["Input and output checks<br/>privacy / target / full budget / release"]
-            D[("Existing Scope / Source / Artifact<br/>Work / Bootstrap / Handoff")]
-            Q["Existing policy and inference components"]
-        end
-        A --> P
-        P --> L
-        L <--> S
-        L --> C
-        C --> D
-        Q -.-> C
-        Q -.-> I
-        L --> N
-        N --> X
-        X <-->|"Final request / complete raw result"| I
-        X -.-> O
-    end
-    U["Approved actual model endpoint<br/>Native KV cache and provider usage"]
-    H --> A
-    X <-->|"Admitted send / raw response"| U
-    T -. "Authenticated prepare contract" .-> C
-    T -. "Authenticated check contracts" .-> I
-```
+[![PowerContext Gateway 组件、调用与职责边界：网关执行、Core 组织与检查、模型服务维护 KV。](../../assets/rfcs/powercontext-gateway-components-zh.svg)](../../assets/rfcs/powercontext-gateway-components-zh.svg)
+
+点击图片可查看完整 SVG。蓝线表示模型调用，绿线表示 Core 能力调用，虚线表示规则、状态、观测与可选接入。
 
 图中 Core 与网关是职责边界，不是两个必需服务。内嵌路径调用相同 application/检查算法，
 仍经过 Server 的认证授权执行器；不能因为同进程就直接取 repository 绕过资源授权。

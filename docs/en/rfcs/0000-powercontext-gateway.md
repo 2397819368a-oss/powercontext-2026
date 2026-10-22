@@ -152,44 +152,9 @@ gateway or automatically given Agent context.
 
 ## 2. Components and calls
 
-```mermaid
-flowchart LR
-    H["Agent / SDK<br/>Client history and client tools"]
-    T["Third-party gateway<br/>Optional final-boundary integration"]
-    subgraph PC["PowerContext Server - one process by default"]
-        A["Existing authentication and authorization<br/>Principal / Scope / execution permission"]
-        subgraph GW["Optional Gateway component"]
-            P["Protocol ingress<br/>Chat / Responses / validated carriers"]
-            L["Conversation handling<br/>classify / inject / exact replay / single writer"]
-            N["Upstream adapter<br/>approved route / native cache / final rendering"]
-            X["Execution boundary<br/>admit / send / buffer / release"]
-            S[("Gateway-local SQLite<br/>conversations + replay blocks")]
-            O["Existing observations<br/>bounded metadata / incomplete usage"]
-        end
-        subgraph CORE["Existing Core and RFC 2086"]
-            C["Scoped context application<br/>prepare / assembly / Builder"]
-            I["Input and output checks<br/>privacy / target / full budget / release"]
-            D[("Existing Scope / Source / Artifact<br/>Work / Bootstrap / Handoff")]
-            Q["Existing policy and inference components"]
-        end
-        A --> P
-        P --> L
-        L <--> S
-        L --> C
-        C --> D
-        Q -.-> C
-        Q -.-> I
-        L --> N
-        N --> X
-        X <-->|"Final request / complete raw result"| I
-        X -.-> O
-    end
-    U["Approved actual model endpoint<br/>Native KV cache and provider usage"]
-    H --> A
-    X <-->|"Admitted send / raw response"| U
-    T -. "Authenticated prepare contract" .-> C
-    T -. "Authenticated check contracts" .-> I
-```
+[![PowerContext Gateway components and calls: gateway execution, Core organization and checks, provider-owned KV.](../../assets/rfcs/powercontext-gateway-components-en.svg)](../../assets/rfcs/powercontext-gateway-components-en.svg)
+
+Open the image for the full-size SVG. Blue lines are model traffic; green lines are Core calls; dashed lines are rules, state, observations, and optional integration.
 
 Core and Gateway are responsibility boundaries, not two required services. Embedded calls use the same application and
 check algorithms through Server's authenticated authorization executor. Sharing a process does not permit repository
