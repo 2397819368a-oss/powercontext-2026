@@ -42,7 +42,7 @@ Core 负责上下文选择、获准表示、稳定复用边界、刷新条件及
 | 缓存职责 | Core 提供复用约束；最终执行侧 adapter 生成目标相关原生配置，供应商提供用量证据。 |
 | 网关边界 | 预留 PowerContext Gateway 和第三方网关接入，不设计或交付网关组件。 |
 | 公共接口 | 复用上下文/连续性 API；prepare 按需返回复用元信息，仅新增一个分阶段检查操作。 |
-| 存储 | v1 零张新增表、零个新 Artifact 家族，不增加推理迁移或通用缓存库。 |
+| 存储 | 本 RFC 的算法/检查零新增表；可选 Gateway 在 Server 同库的两张表由 #2199 单独定义，无新 Artifact 家族。 |
 | 默认优化方向 | 既有有界选择、精确准备值复用、获准结构编码、缓存兼容和显式输出限制。 |
 | v1 隐私处理 | 语义内容原样通过，或阻断/暂缓；不自动通用脱敏或恢复秘密。 |
 | 验收口径 | 泄露反例、误阻断、任务质量、完整用量/费用、端到端延迟及明确覆盖范围。 |
@@ -162,7 +162,7 @@ flowchart TB
     end
 
     subgraph EXTERNAL["外部可选接入方：组件设计不在本 RFC 范围"]
-        PCGW["PowerContext Gateway"]
+        PCGW["可选 Rust PowerContext Gateway<br/>同端口 UDS，组件设计见 RFC 2199"]
         THIRD["第三方网关 / 执行适配插件"]
     end
     MODEL["实际模型服务<br/>原生缓存与用量证据"]
@@ -174,7 +174,7 @@ flowchart TB
     SDK <-->|"获准请求 / 原始响应"| MODEL
     HOST --> PCGW
     HOST --> THIRD
-    PCGW -. "同一接入契约" .-> API
+    PCGW -. "同一 DTO / UDS 调用" .-> API
     THIRD -. "同一接入契约" .-> API
     PCGW <-->|"外部执行"| MODEL
     THIRD <-->|"外部执行"| MODEL
@@ -662,11 +662,21 @@ Core 阶段表示优化在最终 provider 渲染前完成，之后必须检查�
 
 ### 自有与第三方网关的接入方式
 
-**PowerContext Gateway：** 作为外部调用者使用现有 prepare/连续性入口和同一检查操作的两个阶段，
-采用同一 Scope、可信委托、策略、目标 profile、准入绑定和 usage 契约。
-它的内部实现及交付计划由单独设计决定；本 RFC 的完成不依赖网关存在。
+**PowerContext Gateway：** [RFC 2199](https://github.com/oceanbase/powercontext/pull/2199) 的 Rust 组件
+通过 HTTP over UDS 调用现有 prepare 和同一检查操作的两个阶段；显式远端/第三方走 HTTPS，
+使用相同 schema、Scope/可信委托、目标 profile、绑定、失败与 usage 契约。
+Rust 保留准备值与绑定，在实际 provider adapter 完成原生缓存配置和最终渲染后提交检查。
+UDS 不代替当前认证，Rust 不复制 Python 上下文/隐私算法；网关启停、原端口归属和私有状态 IPC 由 #2199 定义。
 
-**第三方网关最终边界插件：** 在最后一次协议映射之后、真实发送之前调用 `check_context(phase=before_send)`，
+算法与检查本身不要求网关或新增表。可选 Gateway 的两张专用表在 Server 选定的同一个
+SQLite / SeekDB / OceanBase 数据库中，由 Server 既有后端/迁移设施承载。
+同库不将它们变成 Source/Artifact，不使 check 产生状态写入；
+组件状态命令和迁移资源归 #2199，不扩充本 RFC 的检查职责。
+
+**第三方网关最终边界插件（预留）：** 已有网关可直接使用 Core，无需部署 Rust Gateway。
+插件复用公开 get_capabilities、prepare/check 与原认证/委托，不取得 Gateway 私有状态/数据库权限。
+这是稳定接入契约与一致性样例，具体品牌插件按需求单独交付；不建设通用插件平台。
+在最后一次协议映射之后、真实发送之前调用 `check_context(phase=before_send)`，
 在任何原始响应内容/工具参数/错误正文首次交付之前调用 `check_context(phase=before_release)`。
 每个真实尝试提供实际目标，目标或载荷变化重新准入，传播取消并报告可取得的用量和缺失覆盖。
 插件必须真正执行这些动作，调用过检查 API 本身不是执行证明。
@@ -769,13 +779,17 @@ Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈�
 使用原宿主历史和显式 Handoff，基础规则随现有进程运行，不新增运行时服务、表、Artifact 家族或会话初始化。
 在已验证的进程内模型适配路径验证原生缓存适配，单独记录缓存计量与实际延迟。
 
-### P1：远端接入契约与一致性
+### P1：跨进程/远端契约与一致性
 
-按远端需求暴露一个分阶段 `check_context`，并在现有 prepare 上提供显式 opt-in 复用 envelope，完成 Scope/可信委托、真实内容、实际目标、
+提供一个分阶段 `check_context` 与现有 prepare 的显式 opt-in 复用 envelope，支持 UDS/HTTPS。
+这些 schema、绑定、当前授权和版本协商是 Rust Gateway 首期的前置条件，不能延后到远端部署再补。
+Core 无网关切片可独立交付；网关交付必须等待本节验收。完成 Scope/可信委托、真实内容、实际目标、
 策略/有效期绑定、unknown 与最终准入/释放的契约验证。
 用受控外部调用适配器验证与进程内路径一致的 Core 决策，并验证只接上下文时的有限能力声明。
 这不是 PowerContext Gateway 组件或第三方网关的交付；测试适配器不能证明某个真实网关已经兼容。
-网关内部功能与品牌/版本接入在独立工作中验收。
+网关内部功能、同端口代理、三后端组件状态与品牌/版本插件由 #2199 单独验收。
+UDS 与 HTTPS 使用同一组当前授权、过期/篡改、多历史块与 block/withhold 样例；
+私有 Gateway 状态 IPC 不作为新增公开 context 操作。
 
 ### 隐私与行为验收
 
@@ -792,6 +806,8 @@ Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈�
 - 验证远端检查与进程内相同策略的决策一致，并拒绝伪造计划/hash、失效约束或不透明目标带来的覆盖升级。
 - 验证默认四字段与 opt-in envelope 的严格分支、能力协商和不支持选项的明确拒绝。
 - 验证错误 phase、缺失/过期/跨请求 request_binding、历史块缺失/错误位置与多块绑定，不能以 HTTP 200 绕过决策；检查不重复召回。
+
+- 验证 Rust UDS 与 Python 进程内/HTTPS 相同 DTO 的决策一致，Core 重启后旧 generation 不授予权限；不透明第三方转换不能提升覆盖声明。
 
 ### Token 效率与完整任务实验
 

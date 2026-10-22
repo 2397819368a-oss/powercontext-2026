@@ -47,7 +47,7 @@ privacy interception, complete-request checks, native cache adapters or measured
 | Cache ownership | Core supplies reuse constraints; the final execution adapter generates target-specific native settings; the provider supplies usage evidence. |
 | Gateway boundary | Reserve PowerContext Gateway and third-party integration; do not design or deliver a gateway component. |
 | Public API | Reuse context/continuity APIs; opt-in prepare metadata and only one phased check operation. |
-| Storage | Zero new tables, zero new Artifact families, no inference migration or generic cache store in v1. |
+| Storage | Algorithms/checks in this RFC add no tables; #2199 separately defines two optional Gateway tables in Server's database, with no new Artifact families. |
 | Default optimization | Existing bounded selection, exact prepared-value reuse, approved structural encoding, cache compatibility and explicit output limits. |
 | V1 privacy behavior | Allow unchanged semantic content or block/withhold; no automatic general redaction or secret restoration. |
 | Acceptance | Disclosure counterexamples, false blocks, task quality, complete usage/cost, end-to-end latency and explicit coverage. |
@@ -176,7 +176,7 @@ flowchart TB
     end
 
     subgraph EXTERNAL["Optional external integrations: component design outside this RFC"]
-        PCGW["PowerContext Gateway"]
+        PCGW["Optional Rust PowerContext Gateway<br/>Same-port UDS; component design in RFC 2199"]
         THIRD["Third-party gateway / execution adapter plugin"]
     end
     MODEL["Actual model service<br/>Native cache and usage evidence"]
@@ -188,7 +188,7 @@ flowchart TB
     SDK <-->|"Admitted request / raw response"| MODEL
     HOST --> PCGW
     HOST --> THIRD
-    PCGW -. "Same integration contract" .-> API
+    PCGW -. "Same DTOs over UDS" .-> API
     THIRD -. "Same integration contract" .-> API
     PCGW <-->|"External execution"| MODEL
     THIRD <-->|"External execution"| MODEL
@@ -720,11 +720,22 @@ failed or shorter optimization candidates cannot create a security bypass.
 
 ### First-party and third-party gateway integration
 
-**PowerContext Gateway:** an external caller of existing prepare/continuity operations and both phases of the same check operation, using the same
-Scope, trusted delegation, policy, target profile, admission binding and usage contracts. Its internals and delivery plan
-belong to a separate design. Completion of this RFC does not depend on a gateway.
+**PowerContext Gateway:** the Rust component in [RFC 2199](https://github.com/oceanbase/powercontext/pull/2199)
+calls existing prepare and both phases of the same check over HTTP over UDS. Explicit remote/third-party paths use HTTPS,
+with identical schemas, Scope/trusted delegation, target profiles, bindings, failures and usage.
+Rust retains exact prepared values/bindings and calls checks after its actual provider adapter finishes native cache
+settings/final rendering. UDS does not replace current authentication, and Rust duplicates no Python selection/privacy
+algorithms. #2199 owns lifecycle, the existing public port and private state IPC.
 
-**Third-party final-boundary plugin:** invoke `check_context(phase=before_send)` after the final protocol mapping and before actual sending;
+Algorithms/checks themselves require neither Gateway nor new tables. Optional Gateway's two dedicated tables share
+Server's selected SQLite / SeekDB / OceanBase database through its backend/migration infrastructure.
+Sharing storage does not turn records into Source/Artifact or make checks write Gateway state.
+Component state commands/migration resources belong to #2199, not this check operation.
+
+**Third-party final-boundary plugin (reserved):** existing gateways can consume Core without Rust Gateway.
+Plugins reuse public get_capabilities, prepare/check and supported authentication/delegation, without private Gateway
+state/database access. This is a stable contract/conformance fixture set; ship concrete integrations only on demand,
+without a generic plugin platform. Invoke `check_context(phase=before_send)` after the final protocol mapping and before actual sending;
 invoke `check_context(phase=before_release)` before any raw response content, tool arguments or error body first reaches a recipient.
 Report the actual target for each attempt, re-admit changed targets/payloads, propagate cancellation and report available
 usage and missing coverage. The plugin must perform these actions; calling a check API alone proves no enforcement.
@@ -838,14 +849,19 @@ hypothesis. Use host-owned history and explicit Handoff; basic rules run in exis
 table, Artifact family or session initialization. Verify native cache adaptation through a verified in-process model
 adapter, recording cache accounting separately from actual latency.
 
-### P1: remote integration contracts and conformance
+### P1: cross-process/remote contracts and conformance
 
-Expose one phased `check_context` and explicit opt-in reuse envelopes on existing prepare for remote use. Verify Scope/trusted delegation,
+Expose one phased `check_context` and explicit opt-in reuse envelopes on existing prepare over UDS/HTTPS.
+These schemas, bindings, current authorization and negotiation are Rust Gateway's initial prerequisites, not deferred
+remote-deployment work. The gateway-free Core slice can ship independently; Gateway waits for this acceptance.
+Verify Scope/trusted delegation,
 actual content and target, policy/expiry binding, unknown handling and final admission/release.
 Use a controlled external calling adapter to verify the same Core decisions as in-process access, including limited
 claims for context-only integration. This delivers neither PowerContext Gateway nor a third-party gateway. A test adapter
 does not establish compatibility with any actual gateway. Internal gateway features and product/version integrations
-receive separate acceptance.
+receive separate acceptance under #2199, including same-port routing, shared three-backend component state and concrete
+plugin versions. UDS/HTTPS use identical current-auth, expired/tampered, multiple-block and block/withhold samples.
+Private Gateway state IPC is not another public context operation.
 
 ### Privacy and behavior acceptance
 
@@ -863,6 +879,8 @@ receive separate acceptance.
 - Verify matching remote/in-process decisions under the same policy; forged plan/hash claims, expired constraints and opaque targets cannot upgrade coverage.
 - Verify strict default four-field versus opt-in envelope branches, capability negotiation and explicit rejection of unsupported opt-in.
 - Reject wrong phases, missing/expired/cross-request request bindings and missing/mislocated historical blocks; verify multiple bindings, no HTTP-200 bypass and no repeated recall in checks.
+
+- Verify Rust UDS and Python in-process/HTTPS decisions for identical DTOs, obsolete generations after Core restart, and no coverage upgrade through opaque third-party mutations.
 
 ### Token efficiency and complete-task experiments
 
