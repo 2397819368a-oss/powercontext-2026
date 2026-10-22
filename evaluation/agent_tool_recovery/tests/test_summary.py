@@ -289,8 +289,8 @@ UNAVAILABLE = "HTTP error 503: Service Unavailable - {'error': {'code': 'search_
 START = datetime(2026, 10, 19, tzinfo=UTC)
 
 
-def search(call_id: str, query: str, issued: int, answered: int) -> ToolCall:
-    result = ToolResult(True, UNAVAILABLE, START + timedelta(seconds=answered))
+def search(call_id: str, query: str, issued: int, answered: int, *, error: bool = True) -> ToolCall:
+    result = ToolResult(error, UNAVAILABLE if error else "{}", START + timedelta(seconds=answered))
     return ToolCall(
         call_id, "mcp__powercontext__search_memory", {"query": query}, START + timedelta(seconds=issued), result
     )
@@ -322,3 +322,25 @@ def test_calls_issued_together_are_not_remediation_retries() -> None:
         "repeated_calls": 1,
         "retries_after_change": 0,
     }
+
+
+def test_every_call_sent_after_a_failure_answers_it() -> None:
+    # After the failure returns at t=2, a changed call and, before it returns, an unchanged resend.
+    calls = (search("t1", "q", 1, 2), search("t2", "r", 3, 6), search("t3", "q", 4, 5))
+
+    assert evidence(*calls) == {"repeated_calls": 1, "retries_after_change": 1}
+
+
+def test_a_success_seen_after_the_failure_leaves_nothing_to_answer() -> None:
+    calls = (search("t1", "q", 1, 2), search("t2", "r", 3, 4, error=False), search("t3", "q", 5, 6))
+
+    assert evidence(*calls) == {"repeated_calls": 0, "retries_after_change": 1}
+
+
+def test_reports_scored_before_failure_links_must_be_rescored(tmp_path: Path) -> None:
+    stale = report(violations=["identical_retry"], transcript="a")
+    for row in stale["turns"][0]["calls"]:
+        del row["responds_to_failure"]
+
+    with pytest.raises(ValueError, match="rescore"):
+        summarize([write_run(tmp_path, [stale])], {"permission-denied": CASE})

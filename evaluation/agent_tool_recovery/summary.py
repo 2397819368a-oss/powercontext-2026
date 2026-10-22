@@ -35,6 +35,10 @@ def load_reports(run_dir: Path) -> list[dict[str, Any]]:
     reports = []
     for path in sorted(run_dir.glob("*/attempt-*/report.json")):
         report = json.loads(path.read_text(encoding="utf-8"))
+        rows = [row for turn in report.get("turns", []) for row in turn["calls"]]
+        if any("responds_to_failure" not in row for row in rows):
+            message = f"{path} was scored before calls were linked to the failures they answer; rescore {run_dir} first"
+            raise ValueError(message)
         report["_answer_label"] = labels.get(f"{report['case_id']}/{path.parent.name}", "unreviewed")
         reports.append(report)
     return reports
@@ -160,12 +164,13 @@ def _problems(case: dict[str, Any], summary: dict[str, Any]) -> list[str]:
 
 
 def retry_counts(reports: list[dict[str, Any]], operation_id: str, error_code: str | None) -> dict[str, int]:
-    """Classify the agent's call that answers each failure of an operation with one error code.
+    """Classify each call that answers a failure of an operation with one error code.
 
-    A call answers a failure only if it was issued after that failure's result arrived (``responds_to_failure``), so
-    calls issued together are never retries of each other. Within a turn of the scored reports, an answering call
-    with the same canonical arguments is a repeated call and one with different arguments a retry after a change.
-    ``error_code`` is ``None`` for failures without a Server code, such as an injected transport fault.
+    A call answers a failure when that failure was the latest result of its operation seen when the call was issued
+    (``responds_to_failure``), so calls issued together before any result are never retries of each other. Within a
+    turn of the scored reports, an answering call with the same canonical arguments is a repeated call and one with
+    different arguments a retry after a change. ``error_code`` is ``None`` for failures without a Server code, such
+    as an injected transport fault.
     """
 
     repeated = changed = 0

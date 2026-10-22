@@ -158,7 +158,8 @@ def turn_rows(  # noqa: PLR0913
 
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    answered: set[int] = set()
+    # Every PowerContext result, failed or not, with the time it arrived.
+    results: list[dict[str, Any]] = []
     field = expected.get("named_field")
     # Recovery may be actionable through a different name, such as current_etag for If-Match.
     markers = expected.get("named_field_markers") or ([field] if field else [])
@@ -173,10 +174,11 @@ def turn_rows(  # noqa: PLR0913
         # failing one, such as a parallel call, is neither a retry nor a write after that failure.
         observed = sorted((failure for failure in failures if failure["at"] <= call.at), key=lambda item: item["at"])
         prior = [failure for failure in observed if failure["operation_id"] == operation_id]
-        # The call answers the operation's latest observed failure unless an earlier call already answered it.
-        responds_to = prior[-1]["sequence"] if prior and prior[-1]["sequence"] not in answered else None
-        if responds_to is not None:
-            answered.add(responds_to)
+        # The call answers a failure only when it is the latest result of the operation seen when the call was issued;
+        # calls sent together after one failure all answer it, and a success seen in between leaves nothing to answer.
+        seen = [result for result in results if result["operation_id"] == operation_id and result["at"] <= call.at]
+        latest = max(seen, key=lambda result: result["at"], default=None)
+        responds_to = latest["sequence"] if latest is not None and latest["is_error"] else None
         rows.append(
             {
                 "sequence": sequence,
@@ -216,7 +218,15 @@ def turn_rows(  # noqa: PLR0913
                     "field_sha256": field_sha256,
                     "disposition": expected["retry_disposition"] if matches_case else "unknown",
                     "at": call.result.at,
+                }
+            )
+        if powercontext and call.result is not None:
+            results.append(
+                {
+                    "operation_id": operation_id,
+                    "at": call.result.at,
                     "sequence": sequence,
+                    "is_error": outcome["is_error"],
                 }
             )
     first_failure_at = min((failure["at"] for failure in failures), default=None)

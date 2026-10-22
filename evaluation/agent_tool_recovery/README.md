@@ -171,6 +171,8 @@ uv run python -m evaluation.agent_tool_recovery.run summarize \
   --run-dir <run-dir> --run-dir <run-dir> --output-dir evaluation/agent_tool_recovery/results
 ```
 
+`summarize` rejects a report scored before each call recorded the failure it answers; rescore that run first.
+
 `summarize` reports each case per host and emits one remediation row per problematic case. Reviewer findings that
 recommend the same change for an operation become one row pooling every run that cited them.
 
@@ -181,11 +183,12 @@ diagnosis is in `problems` and the report. The evidence is computed from the cit
 the reviewer:
 
 - `runs` and `transcript_hashes`: the cited sessions;
-- `repeated_calls`: failures of the operation with `observed_error_code` answered, in the same turn, by a call of the
-  same operation with the same canonical arguments. A call answers the latest failure of its operation whose result
-  arrived before the call was issued, unless an earlier call already answered it; calls issued together answer none;
-- `retries_after_change`: such failures answered by a call with different arguments, such as a blind retry after a
-  failure that names no field.
+- `repeated_calls`: calls that answer, in the same turn, a failure of the operation with `observed_error_code` and
+  repeat its canonical arguments. A call answers a failure when that failure is the latest result of its operation
+  to arrive at or before the moment the call was issued. Calls issued together before any result answer none;
+  several calls sent after one failure all answer it;
+- `retries_after_change`: such answering calls with different arguments, such as a blind retry after a failure that
+  names no field.
 
 ## Limitations
 
