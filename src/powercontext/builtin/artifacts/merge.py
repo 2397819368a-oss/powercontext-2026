@@ -648,6 +648,7 @@ class ArtifactMergeService:
                     restoration_outcome=outcome,
                 ),
             ),
+            apply_definition=True,
         )
         return outcome, source.ref
 

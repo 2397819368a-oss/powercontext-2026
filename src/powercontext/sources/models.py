@@ -15,11 +15,21 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    GetCoreSchemaHandler,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    field_validator,
+)
+from pydantic_core import CoreSchema, core_schema
+from typing_extensions import override
 
 from powercontext.errors import InvalidSourceReferenceError
-from powercontext.limits import MAX_SOURCE_ID_LENGTH, MAX_SOURCE_TYPE_LENGTH
+from powercontext.limits import MAX_SOURCE_ID_LENGTH, MAX_SOURCE_TYPE_LENGTH, MAX_VERSION_LENGTH
 
 
 class SourceMaterialization(StrEnum):
@@ -27,6 +37,44 @@ class SourceMaterialization(StrEnum):
 
     CAPTURED = "captured"
     REFERENCED = "referenced"
+
+
+class MemoryEvidenceAuthority(StrEnum):
+    """The declared authority class of evidence produced by a Source Definition."""
+
+    UNTRUSTED = "untrusted"
+    USER_ASSERTED = "user_asserted"
+    REPOSITORY_ATTESTED = "repository_attested"
+    SYSTEM_ATTESTED = "system_attested"
+
+
+class MemoryEvidenceVerification(StrEnum):
+    """Whether a Source Definition's authority declaration has been verified."""
+
+    UNKNOWN = "unknown"
+    VERIFIED = "verified"
+    NOT_VERIFIED = "not_verified"
+
+
+class MemoryEvidenceDeclaration(BaseModel):
+    """A versioned, reconstructible declaration for Memory evidence.
+
+    This is Definition-owned metadata, not a claim inferred from a ``SourceRef``
+    or from Source content. Its neutral default deliberately contributes no
+    ranking preference until a later policy opts in.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    authority: MemoryEvidenceAuthority = MemoryEvidenceAuthority.UNTRUSTED
+    verification: MemoryEvidenceVerification = MemoryEvidenceVerification.UNKNOWN
+    declaration_version: str = "1"
+
+    @field_validator("declaration_version")
+    @classmethod
+    def validate_declaration_version(cls, value: str) -> str:
+        _validate_reference_part("declaration_version", value)
+        return value
 
 
 class SourceRef(BaseModel):
@@ -57,6 +105,26 @@ class SourceProjectionKey(BaseModel):
         return value
 
 
+# Fields a Source carries for its Definition's benefit rather than as captured content.
+# They are stamped from the Definition, so they belong to the observation envelope
+# and the manifest, and must stay out of both the payload a worker generates and the
+# input contract that payload is validated against.
+DECLARATION_OWNED_FIELDS = frozenset({"memory_evidence"})
+
+
+def _serialize_source(source: Source, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> Any:
+    value = handler(source)
+    if isinstance(value, dict) and isinstance(info.context, dict) and info.context.get("source_transport_payload"):
+        by_alias = info.by_alias
+        if by_alias is None:
+            by_alias = type(source).model_config.get("serialize_by_alias", False)
+        for name in DECLARATION_OWNED_FIELDS:
+            field = type(source).model_fields[name]
+            key = (field.serialization_alias or field.alias or name) if by_alias else name
+            value.pop(key, None)
+    return value
+
+
 class Source(BaseModel):
     """Base value for an adapter-owned Source description."""
 
@@ -64,6 +132,19 @@ class Source(BaseModel):
     definition_version: str = "1"
     materialization: SourceMaterialization
     description: str | None = None
+    memory_evidence: MemoryEvidenceDeclaration = MemoryEvidenceDeclaration()
+
+    @classmethod
+    @override
+    def __get_pydantic_core_schema__(cls, source: type[Any], handler: GetCoreSchemaHandler) -> CoreSchema:
+        schema = handler(source).copy()
+        # Keep the reference on the outer schema so recursive Sources also pass
+        # through this boundary, after any subclass's custom serializer.
+        serializer_schema = cast(CoreSchema, {key: value for key, value in schema.items() if key != "ref"})
+        schema["serialization"] = core_schema.wrap_serializer_function_ser_schema(
+            _serialize_source, info_arg=True, schema=serializer_schema
+        )
+        return schema
 
     @field_validator("definition_version")
     @classmethod
@@ -77,6 +158,20 @@ def _validate_reference_part(field: str, value: object) -> None:
         raise InvalidSourceReferenceError(field, "must be a non-empty string")
     if value != value.strip():
         raise InvalidSourceReferenceError(field, "must not contain leading or trailing whitespace")
-    maximum = MAX_SOURCE_TYPE_LENGTH if field == "source_type" else MAX_SOURCE_ID_LENGTH
+    maximum = _reference_part_limit(field)
     if len(value) > maximum:
         raise InvalidSourceReferenceError(field, f"must not exceed {maximum} characters")
+
+
+def _reference_part_limit(field: str) -> int:
+    """Return the length the contract allows for one reference part.
+
+    A version travels through the transport model and a bounded identity column, so
+    a value accepted here has to stay usable across both. Admitting a longer value
+    would let a Definition or Source register locally and then fail when it is
+    converted for transport.
+    """
+
+    if field in {"declaration_version", "definition_version"}:
+        return MAX_VERSION_LENGTH
+    return MAX_SOURCE_TYPE_LENGTH if field == "source_type" else MAX_SOURCE_ID_LENGTH

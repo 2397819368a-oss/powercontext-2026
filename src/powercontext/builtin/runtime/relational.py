@@ -897,7 +897,7 @@ class RelationalContexts:
                 )
         except RepositoryNotFoundError:
             raise SourceDefinitionNotFoundError(observation.source_type, observation.definition_version) from None
-        _validate_source_observation(observation, manifest)
+        observation = _validate_source_observation(observation, manifest)
         services = self._services_for(request.scope_id)
         source_store, source_catalog = services.sources()
         stored = await source_store.add(observation)
@@ -1232,7 +1232,7 @@ class RelationalContexts:
         )
         async with self.database.transaction() as connection:
             await self.repositories.skill_packages.add(connection, scope, package)
-            stored = await self.repositories.sources.add(connection, scope, source)
+            stored = await self.repositories.sources.add(connection, scope, source, apply_definition=True)
             artifacts = () if target is None else (target,)
             return (
                 await self
@@ -1267,7 +1267,7 @@ class RelationalContexts:
                 raise ValueError("usage package digest does not match the Skill Revision")  # noqa: TRY003
             if observation.task_source is not None:
                 await self.repositories.sources.get(connection, scope, observation.task_source)
-            stored = await self.repositories.sources.add(connection, scope, source)
+            stored = await self.repositories.sources.add(connection, scope, source, apply_definition=True)
             return SourceReceipt(source_ref=stored.ref, sequence=stored.journal_position)
 
     def external_skills(self, scope_id: str, /) -> ExternalSkillRegistryService:
@@ -1337,7 +1337,9 @@ class RelationalContexts:
         )
         async with self.database.transaction() as connection:
             await self.repositories.skill_packages.add(connection, scope, capture.package)
-            stored, created = await self.repositories.sources.add_with_status(connection, scope, source)
+            stored, created = await self.repositories.sources.add_with_status(
+                connection, scope, source, apply_definition=True
+            )
             if created:
                 await self.repositories.processing_pending.raise_source(
                     connection,
@@ -1889,17 +1891,31 @@ def _validate_source_definition_manifest(
             )
 
 
-def _validate_source_observation(source: SourceObservation, manifest: SourceDefinitionManifest) -> None:
+def _validate_source_observation(source: SourceObservation, manifest: SourceDefinitionManifest) -> SourceObservation:
+    """Validate one observation and stamp the Definition-owned evidence declaration.
+
+    The declaration is Definition-owned metadata, so the registered manifest is
+    authoritative for it: an observation cannot manufacture a stronger attestation
+    than the Definition it was produced by. A remote worker does not necessarily
+    read the registered manifest, so a declaration that contradicts it is rejected
+    rather than silently rewritten. An omitted field resolves to the manifest's
+    declaration instead, which is what makes the check impossible to bypass by
+    leaving the field out.
+    """
+
     if source.source_type != manifest.name or source.definition_version != manifest.version:
         raise InvalidSourceObservationError("definition", "does not match the registered manifest identity")
     if source.definition_fingerprint != manifest.fingerprint:
         raise InvalidSourceObservationError("fingerprint", "does not match the registered manifest")
-    if len(source.model_dump_json().encode()) > MAX_SOURCE_OBSERVATION_BYTES:
+    if "memory_evidence" in source.__pydantic_fields_set__ and source.memory_evidence != manifest.memory_evidence:
+        raise InvalidSourceObservationError("memory_evidence", "does not match the registered manifest")
+    stamped = source.model_copy(update={"memory_evidence": manifest.memory_evidence})
+    if len(stamped.model_dump_json().encode()) > MAX_SOURCE_OBSERVATION_BYTES:
         raise InvalidSourceObservationError("size", "must not exceed 4 MiB")
-    _validate_schema_value(manifest.name, manifest.source_schema, source.payload)
+    _validate_schema_value(manifest.name, manifest.source_schema, stamped.payload)
 
     declarations = {projection.key: projection for projection in manifest.projections}
-    supplied = {projection.key: projection.value for projection in source.projections}
+    supplied = {projection.key: projection.value for projection in stamped.projections}
     if declarations.keys() != supplied.keys():
         raise InvalidSourceObservationError("projections", "must exactly match the registered manifest")
     for key, declaration in declarations.items():
@@ -1907,11 +1923,12 @@ def _validate_source_observation(source: SourceObservation, manifest: SourceDefi
         _validate_schema_value(key.name, declaration.schema_, value)
         if key == TEXT_EVIDENCE_PROJECTION_KEY:
             evidence = TextEvidence.model_validate(value)
-            if evidence.source_type != source.source_type or evidence.source_id != source.name:
+            if evidence.source_type != stamped.source_type or evidence.source_id != stamped.name:
                 raise InvalidSourceObservationError(
                     "text-evidence",
                     "source identity does not match the observation envelope",
                 )
+    return stamped
 
 
 def _json_schema_validator(name: str, schema: Mapping[str, Any]) -> Validator:

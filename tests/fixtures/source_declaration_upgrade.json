@@ -1,0 +1,778 @@
+{
+  "nested": {
+    "manifest": {
+      "name": "contract-nested",
+      "version": "1",
+      "fingerprint": "sha256:388066571c143240354fdab663935a1822388378912b163992227c2f52a8addd",
+      "source_schema": {
+        "$defs": {
+          "CapturedAudit": {
+            "additionalProperties": false,
+            "properties": {
+              "memory_evidence": {
+                "title": "Memory Evidence",
+                "type": "string"
+              },
+              "summary": {
+                "title": "Summary",
+                "type": "string"
+              }
+            },
+            "required": [
+              "memory_evidence",
+              "summary"
+            ],
+            "title": "AuditSource",
+            "type": "object"
+          },
+          "CapturedBundle": {
+            "additionalProperties": false,
+            "properties": {
+              "child": {
+                "$ref": "#/$defs/ChildSource"
+              },
+              "memory_evidence": {
+                "title": "Memory Evidence",
+                "type": "string"
+              }
+            },
+            "required": [
+              "child",
+              "memory_evidence"
+            ],
+            "title": "CapturedBundle",
+            "type": "object"
+          },
+          "ChildSource": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "definition_version": {
+                "default": "1",
+                "title": "Definition Version",
+                "type": "string"
+              },
+              "materialization": {
+                "$ref": "#/$defs/SourceMaterialization"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "content": {
+                "title": "Content",
+                "type": "string"
+              },
+              "children": {
+                "items": {
+                  "$ref": "#/$defs/ChildSource"
+                },
+                "title": "Children",
+                "type": "array"
+              }
+            },
+            "required": [
+              "name",
+              "materialization",
+              "content"
+            ],
+            "title": "ChildSource",
+            "type": "object"
+          },
+          "SourceMaterialization": {
+            "description": "Describe where the value read for a Source comes from.",
+            "enum": [
+              "captured",
+              "referenced"
+            ],
+            "title": "SourceMaterialization",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "definition_version": {
+            "default": "1",
+            "title": "Definition Version",
+            "type": "string"
+          },
+          "materialization": {
+            "$ref": "#/$defs/SourceMaterialization"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "child": {
+            "$ref": "#/$defs/ChildSource"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/$defs/ChildSource"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "by_name": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ChildSource"
+            },
+            "title": "By Name",
+            "type": "object"
+          },
+          "optional": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ChildSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "choice": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ChildSource"
+              },
+              {
+                "$ref": "#/$defs/CapturedAudit"
+              }
+            ],
+            "title": "Choice"
+          },
+          "bundle": {
+            "$ref": "#/$defs/CapturedBundle"
+          }
+        },
+        "required": [
+          "name",
+          "materialization",
+          "child",
+          "children",
+          "by_name",
+          "optional",
+          "choice",
+          "bundle"
+        ],
+        "title": "BundleSource",
+        "type": "object"
+      },
+      "projections": []
+    },
+    "observation": {
+      "name": "bundle",
+      "definition_version": "1",
+      "materialization": "captured",
+      "description": null,
+      "source_type": "contract-nested",
+      "definition_fingerprint": "sha256:388066571c143240354fdab663935a1822388378912b163992227c2f52a8addd",
+      "payload": {
+        "name": "bundle",
+        "definition_version": "1",
+        "materialization": "captured",
+        "description": null,
+        "child": {
+          "name": "child",
+          "definition_version": "1",
+          "materialization": "captured",
+          "description": null,
+          "content": "Child evidence.",
+          "children": [
+            {
+              "name": "child",
+              "definition_version": "1",
+              "materialization": "captured",
+              "description": null,
+              "content": "Child evidence.",
+              "children": []
+            }
+          ]
+        },
+        "children": [
+          {
+            "name": "child",
+            "definition_version": "1",
+            "materialization": "captured",
+            "description": null,
+            "content": "Child evidence.",
+            "children": []
+          }
+        ],
+        "by_name": {
+          "child": {
+            "name": "child",
+            "definition_version": "1",
+            "materialization": "captured",
+            "description": null,
+            "content": "Child evidence.",
+            "children": []
+          }
+        },
+        "optional": {
+          "name": "child",
+          "definition_version": "1",
+          "materialization": "captured",
+          "description": null,
+          "content": "Child evidence.",
+          "children": []
+        },
+        "choice": {
+          "memory_evidence": "captured evidence",
+          "summary": "An audit report."
+        },
+        "bundle": {
+          "child": {
+            "name": "child",
+            "definition_version": "1",
+            "materialization": "captured",
+            "description": null,
+            "content": "Child evidence.",
+            "children": []
+          },
+          "memory_evidence": "captured bundle evidence"
+        }
+      },
+      "projections": []
+    }
+  },
+  "title_collision": {
+    "manifest": {
+      "name": "contract-title_collision",
+      "version": "1",
+      "fingerprint": "sha256:a8556c2eb9c363f0da45f80fddb25ddec0d4674dba6e8689b5967740ba8f488a",
+      "source_schema": {
+        "$defs": {
+          "CapturedAudit": {
+            "additionalProperties": false,
+            "properties": {
+              "memory_evidence": {
+                "title": "Memory Evidence",
+                "type": "string"
+              },
+              "summary": {
+                "title": "Summary",
+                "type": "string"
+              }
+            },
+            "required": [
+              "memory_evidence",
+              "summary"
+            ],
+            "title": "AuditSource",
+            "type": "object"
+          },
+          "SourceMaterialization": {
+            "description": "Describe where the value read for a Source comes from.",
+            "enum": [
+              "captured",
+              "referenced"
+            ],
+            "title": "SourceMaterialization",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "definition_version": {
+            "default": "1",
+            "title": "Definition Version",
+            "type": "string"
+          },
+          "materialization": {
+            "$ref": "#/$defs/SourceMaterialization"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "audit": {
+            "$ref": "#/$defs/CapturedAudit"
+          }
+        },
+        "required": [
+          "name",
+          "materialization",
+          "audit"
+        ],
+        "title": "AuditSource",
+        "type": "object"
+      },
+      "projections": []
+    },
+    "observation": {
+      "name": "audit",
+      "definition_version": "1",
+      "materialization": "captured",
+      "description": null,
+      "source_type": "contract-title_collision",
+      "definition_fingerprint": "sha256:a8556c2eb9c363f0da45f80fddb25ddec0d4674dba6e8689b5967740ba8f488a",
+      "payload": {
+        "name": "audit",
+        "definition_version": "1",
+        "materialization": "captured",
+        "description": null,
+        "audit": {
+          "memory_evidence": "captured evidence",
+          "summary": "An audit report."
+        }
+      },
+      "projections": []
+    }
+  },
+  "reference_collision": {
+    "manifest": {
+      "name": "contract-reference_collision",
+      "version": "1",
+      "fingerprint": "sha256:73686a0afda11f31bee74ed39008c36c224779539008bb7a77e6ec773e5a208f",
+      "source_schema": {
+        "$defs": {
+          "MemoryEvidenceDeclaration": {
+            "additionalProperties": false,
+            "description": "Ordinary captured data sharing the library declaration's class name.",
+            "properties": {
+              "detail": {
+                "title": "Detail",
+                "type": "string"
+              }
+            },
+            "required": [
+              "detail"
+            ],
+            "title": "MemoryEvidenceDeclaration",
+            "type": "object"
+          },
+          "SourceMaterialization": {
+            "description": "Describe where the value read for a Source comes from.",
+            "enum": [
+              "captured",
+              "referenced"
+            ],
+            "title": "SourceMaterialization",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "definition_version": {
+            "default": "1",
+            "title": "Definition Version",
+            "type": "string"
+          },
+          "materialization": {
+            "$ref": "#/$defs/SourceMaterialization"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "captured": {
+            "$ref": "#/$defs/MemoryEvidenceDeclaration"
+          }
+        },
+        "required": [
+          "name",
+          "materialization",
+          "captured"
+        ],
+        "title": "CollisionSource",
+        "type": "object"
+      },
+      "projections": []
+    },
+    "observation": {
+      "name": "collision",
+      "definition_version": "1",
+      "materialization": "captured",
+      "description": null,
+      "source_type": "contract-reference_collision",
+      "definition_fingerprint": "sha256:73686a0afda11f31bee74ed39008c36c224779539008bb7a77e6ec773e5a208f",
+      "payload": {
+        "name": "collision",
+        "definition_version": "1",
+        "materialization": "captured",
+        "description": null,
+        "captured": {
+          "detail": "Captured declaration-shaped data."
+        }
+      },
+      "projections": []
+    }
+  },
+  "custom_serializer": {
+    "manifest": {
+      "name": "contract-custom_serializer",
+      "version": "1",
+      "fingerprint": "sha256:638a407f6d6f6a97cd920d7dcea9d9e6b281cc897a6187316ed4855a5d3115c1",
+      "source_schema": {
+        "$defs": {
+          "SerializedChildSource": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "definition_version": {
+                "default": "1",
+                "title": "Definition Version",
+                "type": "string"
+              },
+              "materialization": {
+                "$ref": "#/$defs/SourceMaterialization"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "content": {
+                "title": "Content",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "materialization",
+              "content"
+            ],
+            "title": "SerializedChildSource",
+            "type": "object"
+          },
+          "SourceMaterialization": {
+            "description": "Describe where the value read for a Source comes from.",
+            "enum": [
+              "captured",
+              "referenced"
+            ],
+            "title": "SourceMaterialization",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "definition_version": {
+            "default": "1",
+            "title": "Definition Version",
+            "type": "string"
+          },
+          "materialization": {
+            "$ref": "#/$defs/SourceMaterialization"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "child": {
+            "$ref": "#/$defs/SerializedChildSource"
+          }
+        },
+        "required": [
+          "name",
+          "materialization",
+          "child"
+        ],
+        "title": "SerializedBundleSource",
+        "type": "object"
+      },
+      "projections": []
+    },
+    "observation": {
+      "name": "serialized-bundle",
+      "definition_version": "1",
+      "materialization": "captured",
+      "description": null,
+      "source_type": "contract-custom_serializer",
+      "definition_fingerprint": "sha256:638a407f6d6f6a97cd920d7dcea9d9e6b281cc897a6187316ed4855a5d3115c1",
+      "payload": {
+        "name": "serialized-bundle",
+        "definition_version": "1",
+        "materialization": "captured",
+        "description": null,
+        "child": {
+          "name": "serialized-child",
+          "definition_version": "1",
+          "materialization": "captured",
+          "description": null,
+          "content": "Child evidence."
+        }
+      },
+      "projections": []
+    }
+  },
+  "aliased_declaration": {
+    "manifest": {
+      "name": "contract-aliased_declaration",
+      "version": "1",
+      "fingerprint": "sha256:9ad60876425877b581f4e7711839dad7f141fd964671afd13c8f06e6d956a4a3",
+      "source_schema": {
+        "$defs": {
+          "AliasedChildSource": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "definition_version": {
+                "default": "1",
+                "title": "Definition Version",
+                "type": "string"
+              },
+              "materialization": {
+                "$ref": "#/$defs/SourceMaterialization"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "content": {
+                "title": "Content",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "materialization",
+              "content"
+            ],
+            "title": "AliasedChildSource",
+            "type": "object"
+          },
+          "SourceMaterialization": {
+            "description": "Describe where the value read for a Source comes from.",
+            "enum": [
+              "captured",
+              "referenced"
+            ],
+            "title": "SourceMaterialization",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "definition_version": {
+            "default": "1",
+            "title": "Definition Version",
+            "type": "string"
+          },
+          "materialization": {
+            "$ref": "#/$defs/SourceMaterialization"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "child": {
+            "$ref": "#/$defs/AliasedChildSource"
+          }
+        },
+        "required": [
+          "name",
+          "materialization",
+          "child"
+        ],
+        "title": "AliasedBundleSource",
+        "type": "object"
+      },
+      "projections": []
+    },
+    "observation": {
+      "name": "aliased-bundle",
+      "definition_version": "1",
+      "materialization": "captured",
+      "description": null,
+      "source_type": "contract-aliased_declaration",
+      "definition_fingerprint": "sha256:9ad60876425877b581f4e7711839dad7f141fd964671afd13c8f06e6d956a4a3",
+      "payload": {
+        "name": "aliased-bundle",
+        "definition_version": "1",
+        "materialization": "captured",
+        "description": null,
+        "child": {
+          "name": "aliased-child",
+          "definition_version": "1",
+          "materialization": "captured",
+          "description": null,
+          "content": "Child evidence."
+        }
+      },
+      "projections": []
+    }
+  },
+  "aliased_default": {
+    "manifest": {
+      "name": "contract-aliased_default",
+      "version": "1",
+      "fingerprint": "sha256:5902db8163d8ddcf40e4dd3a305970aae4d8f3309c641bfa77eaaf2942bf903d",
+      "source_schema": {
+        "$defs": {
+          "AliasedCapture": {
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "title": "Body",
+                "type": "string"
+              }
+            },
+            "required": [
+              "body"
+            ],
+            "title": "AliasedCapture",
+            "type": "object"
+          },
+          "SourceMaterialization": {
+            "description": "Describe where the value read for a Source comes from.",
+            "enum": [
+              "captured",
+              "referenced"
+            ],
+            "title": "SourceMaterialization",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "definition_version": {
+            "default": "1",
+            "title": "Definition Version",
+            "type": "string"
+          },
+          "materialization": {
+            "$ref": "#/$defs/SourceMaterialization"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "captured": {
+            "$ref": "#/$defs/AliasedCapture",
+            "default": {
+              "body": "Captured evidence."
+            }
+          }
+        },
+        "required": [
+          "name",
+          "materialization"
+        ],
+        "title": "DefaultAliasSource",
+        "type": "object"
+      },
+      "projections": []
+    },
+    "observation": {
+      "name": "aliased-default",
+      "definition_version": "1",
+      "materialization": "captured",
+      "description": null,
+      "source_type": "contract-aliased_default",
+      "definition_fingerprint": "sha256:5902db8163d8ddcf40e4dd3a305970aae4d8f3309c641bfa77eaaf2942bf903d",
+      "payload": {
+        "name": "aliased-default",
+        "definition_version": "1",
+        "materialization": "captured",
+        "description": null,
+        "captured": {
+          "body": "Captured evidence."
+        }
+      },
+      "projections": []
+    }
+  }
+}

@@ -252,7 +252,9 @@ class RelationalRecordService:
     ) -> SourceRecord:
         try:
             async with self._database.transaction() as connection:
-                stored, created = await self._sources.add_with_status(connection, scope_id, source)
+                stored, created = await self._sources.add_with_status(
+                    connection, scope_id, source, apply_definition=True
+                )
                 if created and self._processing_pending is not None:
                     for binding_name in self._source_processing_bindings:
                         await self._processing_pending.raise_source(
@@ -387,7 +389,7 @@ class RelationalRecordService:
         )
         try:
             async with self._database.transaction() as connection:
-                stored = await self._sources.add(connection, scope_id, source)
+                stored = await self._sources.add(connection, scope_id, source, apply_definition=True)
                 artifact = await writer.create(connection, scope_id, artifact_id, prepared, stored.ref)
                 if on_commit is not None:
                     await on_commit(connection, _artifact_created(scope_id, artifact))
@@ -431,7 +433,7 @@ class RelationalRecordService:
                         ),
                     ),
                 )
-                stored = await self._sources.add(connection, scope_id, source)
+                stored = await self._sources.add(connection, scope_id, source, apply_definition=True)
                 artifact = await writer.create(connection, scope_id, artifact_id, value, stored.ref)
                 created.append(_artifact_created(scope_id, artifact))
         return tuple(created)
@@ -731,7 +733,7 @@ class RelationalRecordService:
                     ),
                 )
                 try:
-                    stored = await self._sources.add(connection, scope_id, source)
+                    stored = await self._sources.add(connection, scope_id, source, apply_definition=True)
                     token = await _bind_rollback(
                         self._artifacts,
                         connection,

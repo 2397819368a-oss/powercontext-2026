@@ -26,6 +26,7 @@ SUITES = (
     "tests/e2e/test_atomic_memory_migration_evidence.py",
     "tests/e2e/test_atomic_memory_grant_migration.py",
     "tests/e2e/test_atomic_memory_migration_vector.py",
+    "tests/e2e/test_source_declaration_contract.py",
 )
 
 

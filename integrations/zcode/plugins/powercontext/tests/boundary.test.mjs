@@ -167,8 +167,16 @@ test('pause publication survives process interruption and legacy partial pauses 
       // one; a flush refuses a claim in a slot's last second.
       await leaseWindow()
       const first = cases.shift()
-      assert.equal((await flushBoundary(first.input, settings, first.keys, async () => ({ scopeId: 'scope-crash' }),
-        AbortSignal.timeout(800), first.data)).state, 'cursor_reached')
+      let firstResult = await flushBoundary(first.input, settings, first.keys, async () => ({ scopeId: 'scope-crash' }),
+        AbortSignal.timeout(800), first.data)
+      // A Windows child can finish just across the five-second lease boundary; let
+      // the expired lease become observable before asserting the actual flush result.
+      if (firstResult.state === 'skipped') {
+        await new Promise(resolve => setTimeout(resolve, 150))
+        firstResult = await flushBoundary(first.input, settings, first.keys, async () => ({ scopeId: 'scope-crash' }),
+          AbortSignal.timeout(800), first.data)
+      }
+      assert.equal(firstResult.state, 'cursor_reached')
       assert.equal(flushes, 1)
       for (const [index, owner] of cases.entries()) {
         const pause = join(owner.data, 'pending', owner.pauseName)

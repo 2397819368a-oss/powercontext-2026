@@ -3340,6 +3340,15 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** @enum {string} */
+        MemoryEvidenceAuthority: "untrusted" | "user_asserted" | "repository_attested" | "system_attested";
+        /** @enum {string} */
+        MemoryEvidenceVerification: "unknown" | "verified" | "not_verified";
+        MemoryEvidenceDeclaration: {
+            authority: components["schemas"]["MemoryEvidenceAuthority"];
+            verification: components["schemas"]["MemoryEvidenceVerification"];
+            declaration_version: string;
+        };
         SourceDefinitionManifest: {
             name: string;
             version: string;
@@ -3348,6 +3357,7 @@ export interface components {
                 [key: string]: unknown;
             };
             projections: components["schemas"]["SourceProjectionManifest"][];
+            memory_evidence?: components["schemas"]["MemoryEvidenceDeclaration"];
         };
         RegisterSourceDefinitionRequest: {
             manifest: components["schemas"]["SourceDefinitionManifest"];
@@ -3377,6 +3387,7 @@ export interface components {
             description?: string | null;
             source_type: string;
             definition_fingerprint: string;
+            memory_evidence?: components["schemas"]["MemoryEvidenceDeclaration"];
             payload: {
                 [key: string]: unknown;
             };
