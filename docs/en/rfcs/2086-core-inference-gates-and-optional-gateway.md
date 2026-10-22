@@ -29,7 +29,7 @@ The execution adapter controlling the final model request maps those constraints
 model, API and deployment. It enforces required checks after final rendering and before sending, and before raw results
 are released. The inference service owns the actual KV cache.
 
-This RFC defines existing entry points, in-process access and two optional remote check operations.
+This RFC reuses existing preparation, defines opt-in reuse metadata and one phased check operation, and supports in-process access without HTTP.
 **PowerContext Gateway and third-party gateways are optional external integrations. Gateway implementation, language,
 routing, rate limits, shared caches and operational governance are outside this RFC.** PowerContext-owned background
 calls or a host's explicitly integrated in-process model adapter can enforce complete checks without a gateway.
@@ -46,7 +46,7 @@ privacy interception, complete-request checks, native cache adapters or measured
 | Security checkpoints | Before sending each complete supported request and before raw-response release, including auxiliary model boundaries. |
 | Cache ownership | Core supplies reuse constraints; the final execution adapter generates target-specific native settings; the provider supplies usage evidence. |
 | Gateway boundary | Reserve PowerContext Gateway and third-party integration; do not design or deliver a gateway component. |
-| Public API | Reuse context/continuity APIs; at most two remote check operations, with no HTTP required for embedded use. |
+| Public API | Reuse context/continuity APIs; opt-in prepare metadata and only one phased check operation. |
 | Storage | Zero new tables, zero new Artifact families, no inference migration or generic cache store in v1. |
 | Default optimization | Existing bounded selection, exact prepared-value reuse, approved structural encoding, cache compatibility and explicit output limits. |
 | V1 privacy behavior | Allow unchanged semantic content or block/withhold; no automatic general redaction or secret restoration. |
@@ -164,7 +164,7 @@ flowchart TB
         POLICY["Existing DecisionPolicy / Assessment / projection<br/>Policy versions, coverage and consumer failure actions"]
         DATA["Existing Source / Artifact / Bootstrap / Work / Handoff"]
         USAGE["Existing usage / statistics / bounded observations"]
-        API["Integration contracts<br/>Existing context entry points + two optional checks"]
+        API["Integration contracts<br/>prepare + phased check_context"]
         AUTH -.-> CONTEXT
         AUTH -.-> CHECK
         CONTEXT --> DATA
@@ -407,10 +407,10 @@ region/cache-sharing boundaries, supported modes/breakpoints/retention semantics
 generates settings within those approved capabilities. Caller-reported profiles or capabilities are not trusted
 authorization; unsupported targets must be explicit.
 
-Reuse constraints are bounded transient metadata attached to existing preparation/check paths, not a ContextPlan or
-cache resource. The public PreparedContext default shape is unchanged. Remote callers needing Core constraints obtain
-them through a preflight on the same input/check operation. An adapter with valid constraints and final rendering may
-submit the final check directly; an extra planning RPC every turn is not required.
+Reuse constraints come from explicit `include_reuse=true` on existing prepare, not a ContextPlan or cache resource.
+Without opt-in, retain the public PreparedContext default shape; opt-in returns versioned `context + reuse` metadata.
+Adapters retain metadata, complete target-specific native cache planning and final rendering, then check before sending.
+No planning preflight or repeated recall RPC is required.
 
 Adapters preserve roles, tool order, content blocks and reusable boundaries. Do not insert random IDs/timestamps into
 stable prompts, arbitrarily merge old messages or strip native cache controls. One owner optimizes representation and
@@ -450,7 +450,7 @@ complete cost per successful task and end-to-end latency.
 
 ### Provenance and index compatibility
 
-The public PreparedContext remains an ephemeral four-field value: `schema`, `status`, `content`, `content_bytes`.
+The public PreparedContext default result remains an ephemeral four-field value: `schema`, `status`, `content`, `content_bytes`.
 It is not a full prompt, trusted origin manifest, authorization token, or injection proof. Automatic cross-Scope frozen
 replay requires a verified provenance/reauthorization mechanism before it is supported. Do not infer permission from
 citation text or treat a revoked historical projection as permanently permitted.
@@ -481,7 +481,7 @@ preserves portable history/Handoff, never private KV or opaque reasoning state; 
 | Explicit Handoff | `/v1/handoff/prepare`, `/v1/handoff/finalize`, `/v1/handoff/commit`, `/v1/handoff/continue` |
 | Work observations | `/v1/work/contracts/create`, `/v1/work/outcomes/record` |
 
-Context preparation retains its current request and default result shape:
+Without reuse opt-in, context preparation retains its current request and default result shape:
 
 ```json
 {
@@ -496,52 +496,195 @@ No invocation/session/branch creation, context-plan API, policy-runtime API, or 
 `assembly`, `include_code` and bootstrap receipt settings retain their supported behavior. Normal automatic recall must
 not repeat prepare solely to execute a check or opt into diagnostic receipts.
 
-### Two remote check operations when needed
+### Opt-in reuse metadata on existing prepare
 
-| Proposed POST path | operationId | Behavior |
+`POST /v1/context/prepare` / `prepare_context` gains optional request field `include_reuse`, default `false`.
+Without it, retain the existing strict four-field result. Explicit, supported opt-in returns a versioned
+`context + reuse` envelope. Do not append fields directly to `PreparedContext`: its contract has
+`additionalProperties: false`.
+
+```json
+{
+  "scope_id": "project:powercontext",
+  "query": "Fix the API client",
+  "max_bytes": 8000,
+  "include_code": false,
+  "include_reuse": true
+}
+```
+
+```json
+{
+  "schema": "powercontext.prepared-context-with-reuse.v1",
+  "context": {
+    "schema": "powercontext.prepared-context.v1",
+    "status": "ready",
+    "content": "Context",
+    "content_bytes": 7
+  },
+  "reuse": {
+    "schema": "powercontext.context-reuse.v1",
+    "constraints": {
+      "preserve": ["content", "citations", "trust", "order"],
+      "refresh_on": ["permission_change", "source_ineligible", "context_boundary"]
+    },
+    "expires_at": "2026-10-23T01:30:00Z",
+    "binding": "<authenticated encrypted preparation binding>"
+  }
+}
+```
+
+Values and expiry illustrate shape, not defaults or usable credentials. `context` remains the original four-field object.
+`status=empty` retains its meaning; privacy refusal or uncertain provenance must not become empty.
+Implementation must strictly discriminate response branches by `schema`; SDK/MCP retain flat operation `prepare_context`.
+Existing `get_capabilities` advertises opt-in, schemas, supported families/carriers and count/size bounds.
+Unsupported opt-in is explicitly rejected, never silently downgraded to an ordinary result with a replay claim.
+
+Core produces complete bounded dependencies after actual selection/rendering/fitting: exact resources/versions, Scope,
+content binding, eligibility/freshness and retention conditions. `origins/lineages` alone are not complete proof.
+`reuse.constraints` governs preservation and refresh of this prepared content, not the entire host prompt or provider KV.
+`reuse.binding` is a short-lived, versioned, authenticated encrypted envelope binding deployment, actor/delegation,
+Scope, exact content digest, complete private dependencies and expiry. Bound its length/count and validate key version,
+audience and tampering. It is not bearer permission, injection proof or a durable receipt; no new table or plan API.
+Families, code or references without complete dependencies cannot claim frozen replay support.
+
+Embedded calls receive an immutable internal result with the same semantics, without HTTP or private Builder access.
+Gateways/hosts retain exact prepared content and metadata across tool rounds; checks do not repeat prepare, search or
+Embedding. Invalid, expired or unverifiable dependencies stop old reuse. The host explicitly refreshes into a new
+context boundary rather than rewriting a historical injection.
+
+### One check operation with two explicit phases
+
+| Proposed POST path | operationId | Phase |
 | --- | --- | --- |
-| `/v1/inference/input/check` | `check_inference_input` | Inspect privacy, target and complete-input budget; optionally return reuse constraints, with final admission bound to the actual payload and target. |
-| `/v1/inference/output/check` | `check_inference_output` | Reuse the same boundary algorithms to inspect a complete raw response and decide release. |
+| `/v1/context/check` | `check_context` | `before_send` admits the complete final request; `before_release` admits delivery of the complete raw response. |
 
-These operations expose integrated algorithms to first-party and third-party integrations; they are not gateway proxy
-APIs. No gateway configuration, routing, cache management, ContextPlan or generic observe API is added.
-Embedded execution calls algorithms directly with existing bound Scope/caller context. HTTP handlers translate DTOs into the same behavior;
-no `application.gates` facade or forwarding runtime is required. The checks do not send a provider request, perform a
-second context recall, append Source, or commit Artifact.
+One public operation serves two separately evaluated checkpoints; sending approval does not replace response checking.
+The operation only decides: no retrieval, content mutation, optimization candidates, native cache planning, model call
+or Source/Artifact commit. Algorithms remain in existing context, policy and stage/inference components, with the same
+rules called directly in process and no new runtime facade.
+Remote requests use strict DTOs discriminated by `phase`; fields from the wrong phase are rejected.
 
-Remote DTOs require `scope_id`. Reuse current scope-mode/access declarations, Server authentication/delegation, registered
-Scope validation and current `scope.read`; actual paid execution and profile selection additionally require trusted
-execution authority. Embedded `for_scope` binds a partition, not authentication. A shared admin credential plus arbitrary
-caller Scope IDs is not isolation. Context references and exact Artifact reads still receive their actual authorization.
+Illustrative request before sending:
 
-Policy configuration cannot be weakened by untrusted model-body fields. Profile/stage/Principal/delegation bindings are
-verified at the owning boundary; native provider session IDs or user-supplied correlation IDs grant no authority.
-Every remote check binds Principal/delegation from the current authenticated request and validates resource Scope,
-rather than reusing stale authority from a connection or previous check. Preserve the existing rule that path parameters
-take precedence over same-named query parameters; conflicting inputs cannot redirect resource ownership.
+```json
+{
+  "scope_id": "project:powercontext",
+  "phase": "before_send",
+  "target_profile": "coding-default",
+  "payload": {
+    "schema": "powercontext.model-json-payload.v1",
+    "headers": {"content-type": "application/json"},
+    "body": "<complete final provider request JSON>"
+  },
+  "prepared_contexts": []
+}
+```
 
-### Transient values and binding
+`payload.body` is a string preserving original UTF-8 JSON text, not an already normalized JSON object.
+Replace placeholders with complete actual bodies, never summaries or hashes.
+The carrier schema defines relevant headers, original-representation checks, strict parsing and byte/depth bounds;
+escape decoding, duplicate keys or reserialization must not conceal prohibited content. Reject unsupported carriers.
+`target_profile` names trusted configuration; a caller-supplied alias grants no authority. The executor must match the
+actual model/API/endpoint, account/region, renderer, cache settings and output limits.
+Opaque downstream rewriting cannot receive full coverage.
 
-Input check values carry the complete target payload, trusted invocation identity, relevant layout and output limits.
-Results carry `allow`, `block` or `withhold`, content-free reasons, coverage, current policy/profile identity, and final
-body/target binding. Optional `reuse_constraints` express only reusable regions, preservation invariants, refresh/
-retention limits and supported coverage, bound to the same semantic input with short validity. The final execution
-adapter chooses native cache settings. Layout metadata proves neither provenance, injection nor permission.
-Output requests carry that input binding, complete raw response, actual target/completion state and available usage;
-results bind the permitted release to the inspected content and current policy.
+When replaying prepared content, `prepared_contexts` must include every complete historical block's `binding` and
+`location`. A location uses a versioned protocol carrier locator: a JSON pointer into a supported text field, with
+`start_byte` / `end_byte` as a UTF-8 byte half-open interval in the decoded string, on character boundaries.
+Core validates exact complete content, trust/placement/order in the actual payload and current dependencies.
+A locator/hash alone proves nothing. The bounded array supports multiple historical blocks, not only the latest prepare.
+A pure check without PowerContext prepared blocks may use an empty array. Enhanced requests requiring bindings cannot
+omit them or their locations and downgrade to pure checking.
 
-A local immutable value or a bounded authenticated remote envelope needs no persisted row. It binds caller, Scope,
-concrete target, protocol/profile, final bytes, relevant headers, limits, policy and expiry. It does not provide durable
-single-use permission or exactly-once execution. A check-only API cannot prove an untrusted caller sent or received the
-claimed content; managed-executor coverage requires actual transport integration.
+Illustrative locator for one replay block, where the native message field contains exactly `Context`:
 
-When reuse constraints need preflight, return withhold and bounded constraints. The adapter renders within actual target
-capabilities, then submits the final payload to the same input/check. Without preflight, check the final request directly.
-Preserve semantic content and prepared context; v1 permits at most one rerender. Only final admission permits sending. Any later body/target/settings change requires fresh admission. Unsupported formats/versions, missing required
-coverage and expired policy do not silently downgrade to allow.
+```json
+{
+  "binding": "<reuse.binding from prepare>",
+  "location": {
+    "schema": "powercontext.model-json-text-location.v1",
+    "pointer": "/messages/1/content",
+    "start_byte": 0,
+    "end_byte": 7
+  }
+}
+```
 
-Implement new HTTP paths in `openapi/powercontext.yaml`, generate clients and run `make contract-test` when implementing;
-this RFC changes no runtime or generated API. Keep existing flat client operation names and scoped domain semantics.
+Illustrative request before release:
+
+```json
+{
+  "scope_id": "project:powercontext",
+  "phase": "before_release",
+  "target_profile": "coding-default",
+  "request_binding": "<binding returned by before_send allow>",
+  "payload": {
+    "schema": "powercontext.model-json-payload.v1",
+    "headers": {"content-type": "application/json"},
+    "body": "<complete raw provider response JSON>"
+  },
+  "completion": "complete"
+}
+```
+
+`request_binding` correlates this actual sent request; an arbitrary historical approval cannot replace it.
+`strict` releases no model content, tool arguments or exposable error body until complete-response checking passes.
+Incomplete, oversized or unavailable checks withhold delivery. Available usage may accompany the request through typed
+fields; unknown values are not zero.
+
+Illustrative common decision:
+
+```json
+{
+  "schema": "powercontext.context-check.v1",
+  "phase": "before_send",
+  "decision": "allow",
+  "reason_codes": [],
+  "coverage": {"profile": "text-and-tools.v1", "complete": true},
+  "policy_version": "privacy.v1",
+  "valid_until": "2026-10-23T01:01:00Z",
+  "correlate_until": "2026-10-23T01:05:00Z",
+  "binding": "<short-lived payload-bound and target-bound result>"
+}
+```
+
+Only `allow` returns a usable binding for that phase. `block` means explicitly prohibited; `withhold` means inadequate
+coverage, refresh required or uncertain current conditions. Neither permits proceeding. Reason codes exclude sensitive
+content. Decisions contain no reuse/cache plan: adapters first consume `reuse.constraints` and approved target
+capabilities to render native requests, then check the final payload. Any change to body, relevant headers, target or
+settings requires rechecking; no semantic optimization follows approval.
+
+Bindings include current identity/delegation, Scope, phase, actual target, exact body/relevant headers, limits and policy.
+Sending approval exposes `valid_until` and `correlate_until` for separate sending and bounded response-correlation
+deadlines; the latter never extends permission to resend. Release approval returns only its own `valid_until`,
+checks current policy and creates no new request-correlation permission. This is not a durable single-use permit, model exactly-once guarantee or
+response recovery mechanism. Remote checking cannot prove an untrusted executor sends the inspected bytes;
+complete protection requires integration at the actual final transport boundary.
+
+| HTTP result | Caller behavior |
+| --- | --- |
+| `200 + allow` | Validate phase, coverage, current binding and deadline; continue only the corresponding step. |
+| `200 + block/withhold` | Evaluation completed, but sending/release is forbidden; HTTP success alone is insufficient. |
+| `401/403` | Authentication, Scope or resource authorization failed; stop. |
+| `422` | Invalid phase, schema, required binding, location or carrier contract; stop. |
+| `413`, check timeout or `503` | Oversized or unavailable checking; do not send or release. |
+
+Reuse root `scope_id`, `current` Scope mode, existing `scope.read` / resource authorization and trusted delegation.
+Request bodies cannot weaken mandatory policy, and readable Scope does not grant model execution/spending permission.
+Both phases use current authorization/content rules; tool execution permissions, quality checks and domain commits
+remain with their owning boundaries.
+
+Each check binds Principal/delegation from the current authenticated request. A shared administrator key plus arbitrary
+Scope IDs is not isolation. Embedded `for_scope` only binds a partition, not authentication; resource and context-reference
+access remain domain-authorized. Preserve path-parameter precedence and conflict rejection; old approvals or persistent
+connections confer no permanent access.
+The JSON example does not establish support for every carrier. SSE/other native outputs require separately versioned
+carriers and conformance; summaries that discard original events cannot represent a complete raw response.
+
+This RFC changes design only, not runtime or generated contracts. Implementation adds explicit prepare response branches
+and check DTOs to `openapi/powercontext.yaml`, runs `make api-generate` / `make contract-test`, and preserves flat
+operations and scoped domain semantics.
 
 ### One managed context invocation
 
@@ -553,21 +696,17 @@ sequenceDiagram
     participant U as Actual upstream model
     opt Context lifecycle boundary
         H->>C: Existing prepare / Bootstrap / Handoff
-        C-->>H: Existing bounded context
+        C-->>H: Bounded context + reuse metadata when requested
     end
     H->>E: Complete authorized input
     E->>E: Resolve approved actual target and capabilities
-    opt Reuse constraints needed
-        E->>C: Same input/check preflight
-        C-->>E: withhold + bounded reuse constraints
-    end
     E->>E: Native cache adaptation and final rendering
-    E->>C: Final input/check or in-process equivalent
+    E->>C: check_context before_send or in-process equivalent
     C->>C: Current privacy + target + complete budget checks
     C-->>E: Payload-bound and target-bound admission
     E->>U: Send admitted request
     U-->>E: Complete raw response and available usage
-    E->>C: output/check or in-process equivalent
+    E->>C: check_context before_release or in-process equivalent
     C->>C: Current raw-output release checks
     C-->>E: Content-bound release decision
     E-->>H: Checked result or explicit refusal
@@ -581,12 +720,12 @@ failed or shorter optimization candidates cannot create a security bypass.
 
 ### First-party and third-party gateway integration
 
-**PowerContext Gateway:** an external caller of existing prepare/continuity operations and the two checks, using the same
+**PowerContext Gateway:** an external caller of existing prepare/continuity operations and both phases of the same check operation, using the same
 Scope, trusted delegation, policy, target profile, admission binding and usage contracts. Its internals and delivery plan
 belong to a separate design. Completion of this RFC does not depend on a gateway.
 
-**Third-party final-boundary plugin:** invoke input/check after the final protocol mapping and before actual sending;
-invoke output/check before any raw response content, tool arguments or error body first reaches a recipient.
+**Third-party final-boundary plugin:** invoke `check_context(phase=before_send)` after the final protocol mapping and before actual sending;
+invoke `check_context(phase=before_release)` before any raw response content, tool arguments or error body first reaches a recipient.
 Report the actual target for each attempt, re-admit changed targets/payloads, propagate cancellation and report available
 usage and missing coverage. The plugin must perform these actions; calling a check API alone proves no enforcement.
 
@@ -701,7 +840,7 @@ adapter, recording cache accounting separately from actual latency.
 
 ### P1: remote integration contracts and conformance
 
-Expose two remote checks and bounded reuse constraints when remote use requires them. Verify Scope/trusted delegation,
+Expose one phased `check_context` and explicit opt-in reuse envelopes on existing prepare for remote use. Verify Scope/trusted delegation,
 actual content and target, policy/expiry binding, unknown handling and final admission/release.
 Use a controlled external calling adapter to verify the same Core decisions as in-process access, including limited
 claims for context-only integration. This delivers neither PowerContext Gateway nor a third-party gateway. A test adapter
@@ -722,6 +861,8 @@ receive separate acceptance.
 
 - Verify one optimization/send owner when SDK and external adapters compose. A caller claiming prior optimization cannot skip checks or trigger a second prepare.
 - Verify matching remote/in-process decisions under the same policy; forged plan/hash claims, expired constraints and opaque targets cannot upgrade coverage.
+- Verify strict default four-field versus opt-in envelope branches, capability negotiation and explicit rejection of unsupported opt-in.
+- Reject wrong phases, missing/expired/cross-request request bindings and missing/mislocated historical blocks; verify multiple bindings, no HTTP-200 bypass and no repeated recall in checks.
 
 ### Token efficiency and complete-task experiments
 

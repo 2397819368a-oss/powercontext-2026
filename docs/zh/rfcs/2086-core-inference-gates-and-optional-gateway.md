@@ -26,7 +26,7 @@ Core 负责上下文选择、获准表示、稳定复用边界、刷新条件及
 控制最终模型请求的执行适配器根据实际模型、API 和部署能力落实原生缓存设置，
 并在最终渲染后、发送前，以及原始结果释放前执行必需检查。实际 KV Cache 属于推理服务。
 
-本 RFC 定义既有入口、嵌入式调用和两个按需远端检查操作的接入契约。
+本 RFC 复用既有准备入口，定义按需复用元信息和一个分阶段检查操作；内嵌调用无需 HTTP。
 **PowerContext Gateway 与第三方网关都是外部可选接入方；网关组件的实现、语言、路由、限流、共享缓存和运行治理不在本 RFC 范围内。**
 没有网关也可在 PowerContext 自身后台调用，或宿主显式接入的进程内模型适配器中执行完整检查；
 只通过 SDK 获取上下文片段的接入不能声称控制完整请求。
@@ -41,7 +41,7 @@ Core 负责上下文选择、获准表示、稳定复用边界、刷新条件及
 | 安全检查点 | 完整受支持请求发送前、原始响应释放前；辅助模型调用也遵守各自边界。 |
 | 缓存职责 | Core 提供复用约束；最终执行侧 adapter 生成目标相关原生配置，供应商提供用量证据。 |
 | 网关边界 | 预留 PowerContext Gateway 和第三方网关接入，不设计或交付网关组件。 |
-| 公共接口 | 复用上下文/连续性 API；远端至多新增两个检查操作，嵌入式无需 HTTP。 |
+| 公共接口 | 复用上下文/连续性 API；prepare 按需返回复用元信息，仅新增一个分阶段检查操作。 |
 | 存储 | v1 零张新增表、零个新 Artifact 家族，不增加推理迁移或通用缓存库。 |
 | 默认优化方向 | 既有有界选择、精确准备值复用、获准结构编码、缓存兼容和显式输出限制。 |
 | v1 隐私处理 | 语义内容原样通过，或阻断/暂缓；不自动通用脱敏或恢复秘密。 |
@@ -150,7 +150,7 @@ flowchart TB
         POLICY["现有 DecisionPolicy / Assessment / projection<br/>策略版本、覆盖与消费者失败动作"]
         DATA["既有 Source / Artifact / Bootstrap / Work / Handoff"]
         USAGE["既有 usage / 统计 / 有界 observations"]
-        API["接入契约<br/>既有上下文入口 + 两个按需检查操作"]
+        API["接入契约<br/>prepare + 分阶段 check_context"]
         AUTH -.-> CONTEXT
         AUTH -.-> CHECK
         CONTEXT --> DATA
@@ -373,9 +373,9 @@ Core 不输出套用于所有模型的原生缓存参数。获准 `UpstreamProfi
 支持模式/断点/保留语义，以及可取得的用量字段。适配器只能在获准能力内生成配置。
 客户端自报 profile 或缓存能力不是可信授权；不支持的目标要显式标记。
 
-复用约束是附着于现有准备/检查链路的有界临时元信息，不是新的 ContextPlan 或缓存资源。
-公共 PreparedContext 默认形状不变。远端需要 Core 约束时，通过同一 input/check 预检取得；
-适配器已经具有有效约束且最终渲染完成时直接提交最终检查，不要求每轮额外规划 RPC。
+复用约束通过现有 prepare 的显式 `include_reuse=true` 返回，不是新的 ContextPlan 或缓存资源。
+未请求时保持公共 PreparedContext 默认形状；请求时返回版本化的 `context + reuse`。
+适配器保留元信息，完成目标特定的缓存规划和最终渲染，再调用发送前检查；不增加规划预检或每轮召回 RPC。
 
 适配器保留角色、工具顺序、内容块和可复用边界，不向稳定 prompt 插入随机 ID/时间戳，
 不任意合并旧消息或丢弃原生缓存控制。一次调用只有一个表示优化与发送所有者。
@@ -408,7 +408,7 @@ TTL 字段是否表达最短计费覆盖、保留提示或删除期限，由获�
 
 ### 来源与索引兼容
 
-公共 PreparedContext 保持临时四字段：`schema`、`status`、`content`、`content_bytes`。
+公共 PreparedContext 的默认结果保持临时四字段：`schema`、`status`、`content`、`content_bytes`。
 它不是完整 prompt、可信来源清单、授权 token 或注入证明。
 自动跨 Scope 冻结重放在获得经过验证的来源/重新授权机制前不受支持，不能从引用文本推导权限或永久使用已撤销投影。
 
@@ -435,7 +435,7 @@ rollover 按 [RFC 1783](1783-handoff-session-rollover.md) 仍归宿主。
 | 显式 Handoff | `/v1/handoff/prepare`、`/v1/handoff/finalize`、`/v1/handoff/commit`、`/v1/handoff/continue` |
 | 工作观察 | `/v1/work/contracts/create`、`/v1/work/outcomes/record` |
 
-上下文准备保留当前请求与默认结果形状：
+未请求复用元信息时，上下文准备保持当前请求与默认结果形状：
 
 ```json
 {
@@ -450,48 +450,184 @@ rollover 按 [RFC 1783](1783-handoff-session-rollover.md) 仍归宿主。
 现有 `assembly`、`include_code` 和 bootstrap receipt 设置保留原支持行为。
 普通自动召回不能仅为检查而重复 prepare，也不为此启用诊断 receipt。
 
-### 按需提供两个远端检查操作
+### 在现有 prepare 上按需取得复用元信息
 
-| 提议的 POST 路径 | operationId | 行为 |
+`POST /v1/context/prepare` / `prepare_context` 增加可选请求字段 `include_reuse`，默认 `false`。
+未请求时保持现有严格四字段结果；显式请求且能力受支持时，返回版本化的 `context + reuse` envelope。
+不向现有 `PreparedContext` 直接追加字段，因为其契约是 `additionalProperties: false`。
+
+```json
+{
+  "scope_id": "project:powercontext",
+  "query": "Fix the API client",
+  "max_bytes": 8000,
+  "include_code": false,
+  "include_reuse": true
+}
+```
+
+```json
+{
+  "schema": "powercontext.prepared-context-with-reuse.v1",
+  "context": {
+    "schema": "powercontext.prepared-context.v1",
+    "status": "ready",
+    "content": "Context",
+    "content_bytes": 7
+  },
+  "reuse": {
+    "schema": "powercontext.context-reuse.v1",
+    "constraints": {
+      "preserve": ["content", "citations", "trust", "order"],
+      "refresh_on": ["permission_change", "source_ineligible", "context_boundary"]
+    },
+    "expires_at": "2026-10-23T01:30:00Z",
+    "binding": "<authenticated encrypted preparation binding>"
+  }
+}
+```
+
+示例值和期限仅说明形状，不是默认配置或可使用的凭据。`context` 仍是原四字段对象；
+`status=empty` 保留原含义，隐私拒绝或来源无法确认不能伪装成 empty。
+实现时两个响应分支以 `schema` 严格区分，SDK/MCP 继续使用扁平 `prepare_context` 操作。
+现有 `get_capabilities` 声明 opt-in、schema、支持 family/carrier 与数量/大小上限；
+不支持时明确拒绝该选项，不能静默返回普通结果并声称支持复用。
+
+Core 在实际 select/render/fit 完成后生成完整、有界依赖：
+准确资源/版本、Scope、内容绑定、资格/新鲜度与保留条件。`origins/lineages` 不能直接当作完整证明。
+`reuse.constraints` 只约束此次准备内容的保持与刷新，不规划整个宿主 prompt 或供应商 KV。
+`reuse.binding` 是短期、有版本、可认证且加密的封装，绑定部署、主体/委托、Scope、
+准确内容摘要、完整私有依赖和期限；限制长度与数量，校验 key version、audience 和篡改。
+它不是 bearer 权限、已注入证明或永久 receipt，不新增表或 plan API。
+未建立完整依赖的 family、代码或 reference 不能声明支持冻结重放。
+
+内嵌调用取得同一语义的不可变内部结果，无需 HTTP 或私有 Builder API。
+网关/宿主在工具轮次保留准确准备值及其元信息；检查不重新 prepare、搜索或 Embedding。
+依赖失效、过期或不能确认时停止旧复用，由宿主显式刷新并建立新上下文边界，不能原地改写旧注入。
+
+### 一个检查操作，两个明确阶段
+
+| 提议的 POST 路径 | operationId | 阶段 |
 | --- | --- | --- |
-| `/v1/inference/input/check` | `check_inference_input` | 检查完整输入的隐私、目标与预算；可返回复用约束，最终结果绑定实际载荷和目标。 |
-| `/v1/inference/output/check` | `check_inference_output` | 复用相同边界算法检查完整原始响应，决定释放。 |
+| `/v1/context/check` | `check_context` | `before_send`：完整最终请求的发送准入；`before_release`：完整原始响应的交付准入。 |
 
-这是对内置算法的远端访问，也是自有或第三方网关的共同接入点，不是网关代理 API。
-不新增网关配置、路由、缓存管理、ContextPlan 或通用 observe API。
-嵌入式执行直接使用既有 Scope/调用者绑定上下文调用算法，HTTP handlers 将 DTO 翻译到相同行为；
-不要求 `application.gates` 门面或只做转发的运行时。
-检查不代发 provider、不二次召回上下文、不追加 Source、不提交 Artifact。
+两个时机共用一个公开操作，仍分别检查；不能用发送批准代替响应检查。
+该操作只返回决策，不检索、不改写内容、不返回优化候选、不规划原生缓存、不调用模型、不提交 Source/Artifact。
+算法仍归现有 context、policy、stage/inference 组件，进程内直接调用同一规则，无需新运行时门面。
+远端请求以 `phase` 区分严格 DTO；错误阶段的字段不能混用。
 
-远端 DTO 必填 `scope_id`，沿用现有 scope-mode/access 声明、Server 认证/委托、已注册 Scope 校验和当前 `scope.read`。
-实际付费执行及 profile 选择还需可信执行权限。嵌入式 `for_scope` 绑定分区，不执行认证。
-共享管理员凭据加调用方任意 Scope ID 不是隔离；context references 和精确 Artifact 读取仍按实际资料授权。
+发送前请求示意：
 
-不可信模型请求字段不能削弱策略配置。Profile/stage/Principal/委托绑定由所属边界校验，
-provider session ID 或用户关联 ID 不能授予权限。
-每次远端检查均从当前已认证请求绑定 Principal/委托并校验资源 Scope，不能复用长连接或旧检查结果中的旧授权。
-保留现有路径参数优先于同名查询参数的规则，冲突输入不得重定向资源归属。
+```json
+{
+  "scope_id": "project:powercontext",
+  "phase": "before_send",
+  "target_profile": "coding-default",
+  "payload": {
+    "schema": "powercontext.model-json-payload.v1",
+    "headers": {"content-type": "application/json"},
+    "body": "<complete final provider request JSON>"
+  },
+  "prepared_contexts": []
+}
+```
 
-### 临时值与绑定
+`payload.body` 是保留原始 UTF-8 JSON 文本的字符串，不是已被归一化的 JSON 对象。
+示例占位值必须替换为完整真实正文，不能用摘要或 hash 代替。
+carrier schema 定义相关 headers、原始表示检查、严格解析和大小/深度上限；
+后续转义解码、重复键或重新序列化不能隐藏禁止内容。不支持的 carrier 明确拒绝。
+`target_profile` 是可信配置别名；调用者自报值不授予权限，执行器必须匹配实际
+模型/API/endpoint、账号/区域、renderer、缓存设置和输出限制，不透明的下游改写不能取得完整覆盖。
 
-输入检查值包含完整目标载荷、可信调用身份、相关布局和输出限制。
-结果包含 `allow`、`block` 或 `withhold`、无正文原因、覆盖、当前策略/profile 身份和最终正文/目标绑定。
-可选 `reuse_constraints` 只表达可复用区段、保持不变量、刷新/保留限制和支持覆盖，绑定同一语义输入并短期有效；
-原生缓存配置由最终执行 adapter 决定。布局元数据不能证明资料来源、注入或权限。
-输出请求包含对应输入绑定、完整原始响应、实际目标/完成状态和可用 usage；
-结果将允许的释放绑定到检查过的内容与当前策略。
+重放准备内容时，`prepared_contexts` 必须列出每个完整历史块的 `binding` 和 `location`。
+`location` 使用版本化的协议载体定位：JSON pointer 指向受支持的文本字段，
+`start_byte` / `end_byte` 是解码后字符串的 UTF-8 字节半开区间，必须落在字符边界。
+Core 对实际载荷中的准确完整块、信任/位置/顺序以及当前依赖重新验证；locator/hash 本身不是证明。
+有界数组支持多个历史块，不能仅校验最新一次 prepare。
+没有 PowerContext 准备块的纯检查可为空；需绑定的增强请求缺失绑定或位置时拒绝，不能降级为纯检查。
 
-本地不可变值或有界且可认证的远端 envelope 不需要持久化行。
-它绑定调用者、Scope、具体目标、协议/profile、最终字节、相关请求头、限制、策略和有效期，
-不提供持久的单次许可或恰好一次执行。Check-only API 不能证明不可信调用者实际发送/接收了所声称的内容，
-托管执行覆盖必须来自真实传输接入。
+单个重放块的定位示例（原生消息该字段准确包含 `Context` 时）：
 
-需要复用约束预检时，先返回 withhold 与有界约束；adapter 在实际目标能力内渲染，再调用同一 input/check 检查最终载荷。
-没有预检需求时直接检查最终请求。保持语义内容与准备结果，v1 最多重渲染一次，只有最终准入才允许发送。
-之后正文/目标/设置变化都需重新准入；不支持格式/版本、必需覆盖缺失或策略过期不能静默降级为 allow。
+```json
+{
+  "binding": "<reuse.binding from prepare>",
+  "location": {
+    "schema": "powercontext.model-json-text-location.v1",
+    "pointer": "/messages/1/content",
+    "start_byte": 0,
+    "end_byte": 7
+  }
+}
+```
 
-实现新 HTTP 路径时修改 `openapi/powercontext.yaml`、生成客户端并运行 `make contract-test`；
-本 RFC 不改运行时或生成 API。保留现有扁平客户端操作名与 scoped 领域语义。
+交付前请求示意：
+
+```json
+{
+  "scope_id": "project:powercontext",
+  "phase": "before_release",
+  "target_profile": "coding-default",
+  "request_binding": "<binding returned by before_send allow>",
+  "payload": {
+    "schema": "powercontext.model-json-payload.v1",
+    "headers": {"content-type": "application/json"},
+    "body": "<complete raw provider response JSON>"
+  },
+  "completion": "complete"
+}
+```
+
+`request_binding` 关联此次真实发送请求，不能拿任意历史批准替代。
+`strict` 在完整响应检查通过前不释放模型内容、工具参数或可暴露的错误正文；
+不完整、超限、检查不可用时暂缓交付。可取得的 usage 按类型附带，未知值不能记为零。
+
+统一决策结果示意：
+
+```json
+{
+  "schema": "powercontext.context-check.v1",
+  "phase": "before_send",
+  "decision": "allow",
+  "reason_codes": [],
+  "coverage": {"profile": "text-and-tools.v1", "complete": true},
+  "policy_version": "privacy.v1",
+  "valid_until": "2026-10-23T01:01:00Z",
+  "correlate_until": "2026-10-23T01:05:00Z",
+  "binding": "<short-lived payload-bound and target-bound result>"
+}
+```
+
+只有 `allow` 返回可用于该阶段的绑定；`block` 表示明确禁止，`withhold` 表示覆盖不足、
+需刷新或当前条件无法确认，二者都不允许继续。原因码不得含敏感正文。
+结果不携带复用/缓存规划；适配器先消费 `reuse.constraints` 和获准目标能力完成原生渲染，再检查最终载荷。
+任何正文、相关 headers、目标或设置变化都需重新检查，批准后不再做语义优化。
+
+绑定包含当前身份/委托、Scope、phase、实际目标、准确正文/相关 headers、限制与策略。
+发送批准的 `valid_until` 与 `correlate_until` 分别给出发送期限和有界响应关联期限；后者不能延长再次发送权限。
+交付批准只返回本阶段的 `valid_until`，仍按当前策略检查；不返回新的请求关联许可。
+这不是持久单次许可证、模型恰好一次或响应恢复机制。
+远端检查不能证明不可信执行器确实发送了受检字节；完整保护需要真实最终传输边界接入。
+
+| HTTP 结果 | 调用者处理 |
+| --- | --- |
+| `200 + allow` | 验证阶段、覆盖、当前绑定与期限后，仅继续对应步骤。 |
+| `200 + block/withhold` | 判断已完成，但禁止发送/交付；不能只判断 HTTP 成功。 |
+| `401/403` | 认证、Scope 或资料授权失败，不继续。 |
+| `422` | phase、schema、必需绑定、位置或载体契约不合法，不继续。 |
+| `413`、检查超时或 `503` | 超限或检查不可用，不发送、不交付。 |
+
+沿用根级 `scope_id`、`current` Scope 模式，以及现有 `scope.read` / 资料权限与可信委托。
+请求体不能降低强制策略，也不能以 Scope 可读权限代替模型执行/付费权限。
+两个阶段复用当前授权与内容规则，工具执行权限、质量校验和领域提交仍由原边界负责。
+
+每次检查从当前认证请求重新绑定 Principal/委托；共享管理员密钥加任意 Scope ID 不是隔离。
+内嵌 `for_scope` 只绑定分区，不执行认证；资料和 context references 仍由所属领域授权。
+保留路径参数优先及冲突拒绝规则，旧检查或长连接不能提供永久权限。
+JSON 示例不代表所有协议载体均受支持；SSE/其他原生输出需独立版本化 carrier 和一致性验收，
+不能把丢失原始事件的摘要包装成完整原始响应。
+
+本 RFC 只改设计，不修改运行时或生成契约。实现时将 prepare 的显式响应分支及 check DTO 写入
+`openapi/powercontext.yaml`，运行 `make api-generate` / `make contract-test`，保留扁平操作与 scoped 领域语义。
 
 ### 一次受管理的上下文调用
 
@@ -503,21 +639,17 @@ sequenceDiagram
     participant U as Actual upstream model
     opt Context lifecycle boundary
         H->>C: Existing prepare / Bootstrap / Handoff
-        C-->>H: Existing bounded context
+        C-->>H: Bounded context + reuse metadata when requested
     end
     H->>E: Complete authorized input
     E->>E: Resolve approved actual target and capabilities
-    opt Reuse constraints needed
-        E->>C: Same input/check preflight
-        C-->>E: withhold + bounded reuse constraints
-    end
     E->>E: Native cache adaptation and final rendering
-    E->>C: Final input/check or in-process equivalent
+    E->>C: check_context before_send or in-process equivalent
     C->>C: Current privacy + target + complete budget checks
     C-->>E: Payload-bound and target-bound admission
     E->>U: Send admitted request
     U-->>E: Complete raw response and available usage
-    E->>C: output/check or in-process equivalent
+    E->>C: check_context before_release or in-process equivalent
     C->>C: Current raw-output release checks
     C-->>E: Content-bound release decision
     E-->>H: Checked result or explicit refusal
@@ -530,12 +662,12 @@ Core 阶段表示优化在最终 provider 渲染前完成，之后必须检查�
 
 ### 自有与第三方网关的接入方式
 
-**PowerContext Gateway：** 作为外部调用者使用现有 prepare/连续性入口和两个检查操作，
+**PowerContext Gateway：** 作为外部调用者使用现有 prepare/连续性入口和同一检查操作的两个阶段，
 采用同一 Scope、可信委托、策略、目标 profile、准入绑定和 usage 契约。
 它的内部实现及交付计划由单独设计决定；本 RFC 的完成不依赖网关存在。
 
-**第三方网关最终边界插件：** 在最后一次协议映射之后、真实发送之前调用 input/check，
-在任何原始响应内容/工具参数/错误正文首次交付之前调用 output/check。
+**第三方网关最终边界插件：** 在最后一次协议映射之后、真实发送之前调用 `check_context(phase=before_send)`，
+在任何原始响应内容/工具参数/错误正文首次交付之前调用 `check_context(phase=before_release)`。
 每个真实尝试提供实际目标，目标或载荷变化重新准入，传播取消并报告可取得的用量和缺失覆盖。
 插件必须真正执行这些动作，调用过检查 API 本身不是执行证明。
 
@@ -639,7 +771,7 @@ Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈�
 
 ### P1：远端接入契约与一致性
 
-按远端需求暴露两个检查操作及有界复用约束，完成 Scope/可信委托、真实内容、实际目标、
+按远端需求暴露一个分阶段 `check_context`，并在现有 prepare 上提供显式 opt-in 复用 envelope，完成 Scope/可信委托、真实内容、实际目标、
 策略/有效期绑定、unknown 与最终准入/释放的契约验证。
 用受控外部调用适配器验证与进程内路径一致的 Core 决策，并验证只接上下文时的有限能力声明。
 这不是 PowerContext Gateway 组件或第三方网关的交付；测试适配器不能证明某个真实网关已经兼容。
@@ -658,6 +790,8 @@ Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈�
 - 验证普通检查不创建 Source/Artifact 正文，已有领域提交保留校验、事务和精确读取。
 - 覆盖 SDK 与外部适配器组合时唯一优化/发送所有者；客户端声称“已优化”不能跳过检查，也不能触发二次 prepare。
 - 验证远端检查与进程内相同策略的决策一致，并拒绝伪造计划/hash、失效约束或不透明目标带来的覆盖升级。
+- 验证默认四字段与 opt-in envelope 的严格分支、能力协商和不支持选项的明确拒绝。
+- 验证错误 phase、缺失/过期/跨请求 request_binding、历史块缺失/错误位置与多块绑定，不能以 HTTP 200 绕过决策；检查不重复召回。
 
 ### Token 效率与完整任务实验
 
