@@ -146,6 +146,31 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/role-venv/bin/python" sqlalchemy fastapi
           "$RUNNER_TEMP/role-venv/bin/python" -I scripts/ci_role_smoke.py cli
 
+  docs-tests:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').docs_tests) }}
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.12"
+
+      - name: Test documentation contracts
+        run: |
+          uv run --locked python -m pytest -q -ra \
+            tests/test_release_version.py \
+            tests/test_full_capability_docs.py \
+            tests/test_integration_guidance_evaluation.py \
+            tests/test_docs_remote_access_contract.py \
+            tests/e2e/test_mcp_full_profile.py
+
   worker-observability:
     timeout-minutes: 15
     runs-on: ubuntu-latest

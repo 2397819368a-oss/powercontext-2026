@@ -63,6 +63,35 @@ entry 迁移后同样没有 Owner。同一 entry 有多个 Owner 或 Owner 不�
 共享按精确 entry 资源转换，保留原 binding_id、主体、角色、有效期、撤销信息、授权来源和幂等字段。
 不带 entry selector 的旧 Memory 授权不是当前支持的共享格式，会明确阻断。
 
+启用强制鉴权时，每个没有 Owner 的旧 entry 都必须通过 `--owner-decisions` 提供操作者的明确证明。
+迁移不会从集合 Owner、授权关系或执行维护命令的调用者猜测身份。每条决策精确指定一个
+`(scope_id, memory_id, entry_id)`，以及迁移后 Atomic Memory 的用户或服务 Owner：
+
+```json
+{
+  "format": "powercontext.atomic-memory-owner-decisions.v1",
+  "decisions": [
+    {
+      "scope_id": "team-a",
+      "memory_id": "legacy-memory",
+      "entry_id": "entry-1",
+      "action": "establish",
+      "owner": {"type": "user", "id": "alice"},
+      "idempotency_key": "recover-owner:team-a:legacy-memory:entry-1"
+    }
+  ]
+}
+```
+
+```shell
+powercontext server atomic-memory-migrate --action plan --env-file .env --owner-decisions owners.json
+powercontext server atomic-memory-migrate --action apply --env-file .env --maintenance-confirmed --owner-decisions owners.json
+powercontext server atomic-memory-migrate --action verify --env-file .env --owner-decisions owners.json
+```
+
+未知 entry、重复决策、已有正式旧 Owner 的 entry，以及与已映射 Owner 冲突的决策都会被拒绝。
+中断后可重复使用同一文件：已建立的 Owner 必须同时匹配 principal 与幂等键。应将决策文件与维护审计记录一同保存。
+
 创建授权的幂等回执包含资源身份，迁移时会核对原请求摘要，并将其转换为新身份对应的摘要。
 原请求使用相同幂等键重试时仍返回同一条授权；更换主体、角色、有效期、理由或资源会继续报冲突。
 撤销和替换授权的回执不含资源身份，保持原值。回执缺失、关联不符或摘要无法核实时会阻断迁移。
@@ -213,10 +242,27 @@ active 行，不使用进度表续跑。`--batch-size` 控制每批读取的身�
 `legacy_collection_payload_bytes` 和 `atomic_content_payload_bytes` 是正文 payload 字节数，不包含索引、
 权限记录、数据库页和复制开销；实际并存空间应由数据库监控记录。
 
-plan、apply 和 verify 读取保留的全部旧历史和 Source/任务快照，首版将这些记录保存在进程内。
-这会随历史规模增加读取量和内存消耗。应在备份副本上记录读量、内存峰值、embedding 调用量和总停服
-时长，再安排正式维护窗口；这里不声称已经验证生产规模成本。普通启动的残留检查只统计公共表中的
-旧对象，不读取旧历史，工作量取决于这些表的数据量和执行计划。
+plan、apply 和 verify 读取保留的全部旧历史和 Source/任务快照。处理快照默认按每张表设置 256 MiB
+工作集准入预算。读取正文前，先在数据库内统计标量字节数，估算 JSON 转义、保留行和最大单行编码的
+中间对象开销；编码过程中再检查累计保留字节数。超限时返回 `ready: false`，不返回快照摘要；
+初始预算检查失败发生在迁移写入之前。SQLite apply 先通过只读连接检查已有数据库，再打开写连接，
+因此初始拒绝也不会改变 journal mode。
+
+预算保留原有摘要定义：完整 canonical JSON 行按字节字典序排序。它不会将 Source 正文写入临时文件。
+这是保守的准入估算，不是整个进程 RSS 的硬上限；数据库驱动缓冲、保留的旧历史、embedding 和迁移
+其他步骤不属于这项预算。整个维护过程都要停写，包括预检与 apply 之间。在备份副本上测量部署可用
+内存后，如有必要，可显式提高预算：
+
+```shell
+powercontext server atomic-memory-migrate --action plan --env-file .env --snapshot-budget-mib 512
+powercontext server atomic-memory-migrate --action apply --env-file .env --maintenance-confirmed --snapshot-budget-mib 512
+powercontext server atomic-memory-migrate --action verify --env-file .env --snapshot-budget-mib 512
+```
+
+取消执行或内存分配失败不会产生核验成功的结果。保持维护状态，解决资源限制后重复执行命令。读取量
+和内存峰值仍会随历史规模增加；应在备份副本上记录读量、内存峰值、embedding 调用量和总停服时长，
+再安排正式维护窗口。这里不声称已经验证生产规模成本。普通启动的残留检查只统计公共表中的旧对象，
+不读取旧历史，工作量取决于这些表的数据量和执行计划。
 
 本分支开发过程中创建的 current 表（含读取授权副本或 Owner 列）不属于任何发布版本，初始化时会被
 明确拒绝。迁移尚未完成时，apply 会删除并重建这张派生表，结果报告提示随后执行投影重建；迁移已完成

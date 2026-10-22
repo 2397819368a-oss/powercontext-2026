@@ -44,6 +44,67 @@ def maintenance_cli(monkeypatch):
     return create_cli([app])
 
 
+@pytest.mark.parametrize("action", ["plan", "apply", "verify"])
+@pytest.mark.parametrize("uri", [False, True])
+@pytest.mark.parametrize("access_mode", ["disabled", "enforced"])
+def test_snapshot_budget_rejection_preserves_existing_database(
+    tmp_path, monkeypatch, maintenance_cli, action, uri, access_mode
+):
+    from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+    from powercontext.builtin.sources.content import ContentSource
+    from powercontext.sources import SourceMaterialization
+
+    database = tmp_path / "snapshot budget%.db"
+
+    async def seed():
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"))
+        ) as contexts:
+            await contexts.get("scope")
+            async with contexts.database.transaction() as connection:
+                for index in range(8):
+                    await contexts.repositories.sources.add(
+                        connection,
+                        "scope",
+                        ContentSource(
+                            name=f"source-{index}",
+                            content="x" * 65536,
+                            materialization=SourceMaterialization.CAPTURED,
+                        ),
+                    )
+
+    asyncio.run(seed())
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        assert connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0] == "delete"
+    original = database.read_bytes()
+    url = f"sqlite+aiosqlite:///{database.as_uri()}?mode=rw&uri=true" if uri else f"sqlite+aiosqlite:///{database}"
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", url)
+    monkeypatch.setenv("POWERCONTEXT_SERVER_ACCESS_MODE", access_mode)
+    arguments = ["server", "atomic-memory-migrate", "--action", action]
+    if action == "apply":
+        arguments.append("--maintenance-confirmed")
+
+    result = CliRunner().invoke(maintenance_cli, [*arguments, "--snapshot-budget-mib", "1"])
+
+    assert result.exit_code == 1, result.output
+    report = json.loads(result.output)
+    assert report["ready"] is False
+    assert report["processing_snapshot_hash"] is None
+    assert any("snapshot" in error and "budget" in error for error in report["errors"])
+    assert database.read_bytes() == original
+    assert set(tmp_path.iterdir()) == {database}
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert connection.execute("SELECT COUNT(*) FROM pc_sources").fetchone()[0] == 8
+
+    retried = CliRunner().invoke(maintenance_cli, [*arguments, "--snapshot-budget-mib", "8"])
+    assert retried.exit_code == 0, retried.output
+    accepted = json.loads(retried.output)
+    assert accepted["ready"] is True
+    assert accepted["processing_snapshot_hash"] is not None
+
+
 @pytest.mark.parametrize("action", ["plan", "verify"])
 @pytest.mark.parametrize("uri", [False, True])
 def test_inspection_preserves_sqlite_bytes_and_delete_journal_mode(tmp_path, monkeypatch, maintenance_cli, action, uri):
@@ -168,6 +229,38 @@ def test_apply_and_rebuild_retain_writable_sqlite_initialization(tmp_path, monke
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {"pc_atomic_memory_current", "pc_atomic_memory_current_fts"} <= tables
         assert "pc_atomic_memory_states" not in tables
+
+
+def test_owner_decision_file_is_loaded_and_unknown_entry_is_rejected(tmp_path, monkeypatch, maintenance_cli):
+    database = tmp_path / "maintenance.db"
+    with closing(sqlite3.connect(database)):
+        pass
+    decisions = tmp_path / "owners.json"
+    decisions.write_text(
+        json.dumps({
+            "format": "powercontext.atomic-memory-owner-decisions.v1",
+            "decisions": [
+                {
+                    "scope_id": "scope-a",
+                    "memory_id": "memory-a",
+                    "entry_id": "entry-a",
+                    "action": "establish",
+                    "owner": {"type": "user", "id": "owner-a"},
+                    "idempotency_key": "recover-owner:entry-a",
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", f"sqlite+aiosqlite:///{database}")
+
+    result = CliRunner().invoke(
+        maintenance_cli,
+        ["server", "atomic-memory-migrate", "--action", "plan", "--owner-decisions", str(decisions)],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "owner decision targets unknown legacy entry scope-a/memory-a/entry-a" in result.output
 
 
 def test_rebuild_upgrades_old_revision_schema_without_backfilling_history(tmp_path, monkeypatch, maintenance_cli):

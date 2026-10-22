@@ -845,16 +845,16 @@ def _kimi_installation(home: Path) -> dict[str, object]:
     for path in sorted((home / "plugins").rglob("*")):
         if path.is_file():
             text = path.read_text(encoding="utf-8")
-            if path.relative_to(home).as_posix() == (
-                "plugins/managed/powercontext/skills/powercontext-project-context/SKILL.md"
+            if (
+                path.relative_to(home).as_posix()
+                == "plugins/managed/powercontext/skills/powercontext-project-context/SKILL.md"
             ):
+                # Each installation must point at its own installed script before paths are normalized for comparison.
                 script = home / "plugins/managed/powercontext/scripts/scope.mjs"
                 encoded_script = json.dumps(str(script), ensure_ascii=False)
                 assert script.is_file()
                 assert encoded_script in text
-                assert "__POWERCONTEXT_" not in text
-                # Validate each installation's path before comparing their different roots.
-                text = text.replace(encoded_script, '"<installed-scope-script>"')
+                assert "__POWERCONTEXT_SCOPE_SCRIPT_JSON__" not in text
             if path.suffix == ".json":
                 files[path.relative_to(home).as_posix()] = json.loads(text)
             else:
