@@ -562,8 +562,7 @@ async def open_builtin_runtime(
                 prompt_demonstrators=prompt_demonstrators,
             )
             if (
-                config.inference.generation_model is not None
-                or profile_generator is None
+                profile_generator is None
                 or candidate_pipeline is None
                 or experience_pipeline is None
                 or experience_generator is None
