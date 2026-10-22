@@ -1012,34 +1012,42 @@ def test_structured_generator_keeps_transient_provider_conflicts_unavailable(sta
     asyncio.run(scenario())
 
 
-def test_usage_limit_is_classified_as_usage_accounting() -> None:
+def test_usage_limit_maps_to_the_originating_generation_stage() -> None:
     mapped = _map_error(UsageLimitExceeded("request limit"), operation="generate", timeout_seconds=1.0)
 
     assert mapped is not None
     diagnostics = classify_processing_error(mapped)
 
     assert diagnostics is not None
-    assert diagnostics.stage is ProcessingStage.USAGE_ACCOUNTING
+    assert diagnostics.stage is ProcessingStage.GENERATION
     assert diagnostics.reason is ProcessingFailureReason.USAGE_LIMIT
     assert diagnostics.cause_exception_type == "UsageLimitExceeded"
 
 
-def test_embedding_validation_error_is_not_classified_as_output_parsing() -> None:
-    class Payload(BaseModel):
-        value: int
+def test_usage_limit_public_generate_path_reports_generation_stage() -> None:
+    async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del messages, info
+        return ModelResponse(parts=[TextPart('{"value":"stable"}')], usage=RequestUsage(output_tokens=11))
 
-    mapped = None
-    try:
-        Payload.model_validate({"value": "not-an-integer"})
-    except ValidationError as error:
-        mapped = _map_error(error, operation="embed", timeout_seconds=1.0)
+    async def scenario() -> None:
+        generator = PydanticAIStructuredGenerator(
+            model=FunctionModel(respond),
+            instructions="Return a value.",
+            input_type=Question,
+            output_type=Answer,
+            limits=InferenceLimits(output_tokens_limit=10),
+        )
 
-    assert mapped is not None
-    diagnostics = classify_processing_error(mapped)
+        with pytest.raises(InvalidInferenceOutputError) as error:
+            await generator.generate(Question("bounded evidence"))
 
-    assert diagnostics is not None
-    assert diagnostics.stage is ProcessingStage.EMBEDDING
-    assert diagnostics.reason is ProcessingFailureReason.INVALID_OUTPUT
+        diagnostics = classify_processing_error(error.value)
+        assert diagnostics is not None
+        assert diagnostics.stage is ProcessingStage.GENERATION
+        assert diagnostics.reason is ProcessingFailureReason.USAGE_LIMIT
+        assert diagnostics.cause_exception_type == "UsageLimitExceeded"
+
+    asyncio.run(scenario())
 
 
 def test_a_413_without_context_evidence_is_not_context_overflow() -> None:
@@ -1077,5 +1085,31 @@ def test_non_length_incomplete_response_does_not_claim_truncation() -> None:
         assert diagnostics is not None
         assert diagnostics.reason is None
         assert diagnostics.finish_reason == "content_filter"
+
+    asyncio.run(scenario())
+
+
+def test_embedding_public_path_maps_validation_error_to_invalid_output() -> None:
+    class Payload(BaseModel):
+        value: int
+
+    with pytest.raises(ValidationError) as captured:
+        Payload.model_validate({"value": "not-an-integer"})
+    validation_error = captured.value
+
+    async def scenario() -> None:
+        adapter = PydanticAIEmbeddingModel(
+            embedder=Embedder(ResultEmbeddingModel((), error=validation_error)),
+            profile=TEST_PROFILE,
+        )
+
+        with pytest.raises(InvalidInferenceOutputError) as error:
+            await adapter.embed(("bounded text",))
+
+        diagnostics = classify_processing_error(error.value)
+        assert diagnostics is not None
+        assert diagnostics.stage is ProcessingStage.EMBEDDING
+        assert diagnostics.reason is ProcessingFailureReason.INVALID_OUTPUT
+        assert diagnostics.cause_exception_type == "ValidationError"
 
     asyncio.run(scenario())

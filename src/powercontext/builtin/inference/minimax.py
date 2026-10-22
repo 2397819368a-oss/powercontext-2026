@@ -100,7 +100,9 @@ class MiniMaxEmbeddingModel:
 
         return await self._embed(texts, embedding_type=_MINIMAX_QUERY_TYPE)
 
-    async def _embed(self, texts: tuple[str, ...], *, embedding_type: str) -> EmbeddingResult:
+    async def _embed(  # noqa: C901 - bounded transport and HTTP status mapping
+        self, texts: tuple[str, ...], *, embedding_type: str
+    ) -> EmbeddingResult:
         """Embed one MiniMax document or query batch."""
 
         if not texts:
@@ -133,16 +135,22 @@ class MiniMaxEmbeddingModel:
                 ),
             ) from error
         except httpx.HTTPStatusError as error:
-            rate_limited = error.response.status_code == 429
+            status = error.response.status_code
+            if status == 429:
+                reason = ProcessingFailureReason.RATE_LIMIT
+            elif status in {408, 504}:
+                reason = ProcessingFailureReason.TIMEOUT
+            elif status in {401, 403}:
+                reason = ProcessingFailureReason.CONFIGURATION
+            elif status in {409, 425} or status >= 500:
+                reason = ProcessingFailureReason.PROVIDER_UNAVAILABLE
+            else:
+                reason = None
             raise attach_diagnostics(
                 InferenceUnavailableError("embed"),
                 ProcessingDiagnostics(
                     stage=ProcessingStage.EMBEDDING,
-                    reason=(
-                        ProcessingFailureReason.RATE_LIMIT
-                        if rate_limited
-                        else ProcessingFailureReason.PROVIDER_UNAVAILABLE
-                    ),
+                    reason=reason,
                     cause_exception_type=type(error).__name__,
                 ),
             ) from error

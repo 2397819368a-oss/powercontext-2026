@@ -43,7 +43,7 @@ in its processing path.
 
 | Family | Generation | Embedding | Output parsing | Business validation | Persistence | Usage accounting |
 |---|---|---|---|---|---|---|
-| Memory / Atomic Memory | Partial | Covered | Partial | Covered | Partial | Partial |
+| Memory / Atomic Memory | Partial | Covered | Partial | Covered | Partial | Missing |
 | Topic Memory | Partial | Partial | Partial | Missing | Missing | Missing |
 | Experience | Partial | N/A | Partial | Missing | Missing | Missing |
 | Profile | Partial | N/A | Partial | Missing | Missing | Missing |
@@ -63,7 +63,7 @@ Memory / Atomic Memory is tracked at operation granularity while it is the activ
 | `atomic-memory.reconcile` | Business validation | Covered | Reconciliation output and content rules carry `business_validation` / `invalid_output`. |
 | Embedding (extract, reconcile, query) | Embedding | Covered | Provider status, wrong vector count/order/type, and embedding profile/input failures are classified. |
 | Publish / index | Persistence | Partial | `AtomicMemoryIndexError` codes are mapped; other storage failures keep unknown. |
-| Usage accounting | Usage accounting | Partial | `UsageLimitExceeded` is classified; accounting write failures are not. |
+| Usage accounting | Usage accounting | Missing | Usage-reporting and persistence failures are not classified; inference usage limits are reported in their originating generation stage, and the same reason is available when an embedding adapter reports the limit. |
 
 The first rollout slice covers Memory / Atomic Memory: provider failures, budget exhaustion, and
 extraction/reconciliation validation are classified, and safe accounting fields travel from the

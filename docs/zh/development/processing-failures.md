@@ -37,7 +37,7 @@ telemetry 系统。
 
 | Family | Generation | Embedding | Output parsing | Business validation | Persistence | Usage accounting |
 |---|---|---|---|---|---|---|
-| Memory / Atomic Memory | Partial | Covered | Partial | Covered | Partial | Partial |
+| Memory / Atomic Memory | Partial | Covered | Partial | Covered | Partial | Missing |
 | Topic Memory | Partial | Partial | Partial | Missing | Missing | Missing |
 | Experience | Partial | N/A | Partial | Missing | Missing | Missing |
 | Profile | Partial | N/A | Partial | Missing | Missing | Missing |
@@ -57,7 +57,7 @@ Memory / Atomic Memory 作为当前切片，按 operation 粒度跟踪：
 | `atomic-memory.reconcile` | Business validation | Covered | 对账输出与内容规则输出 `business_validation` / `invalid_output`。 |
 | Embedding（提取、对账、查询） | Embedding | Covered | provider 状态、向量数量/顺序/类型错误、profile/input 失败均已分类。 |
 | Publish / index | Persistence | Partial | `AtomicMemoryIndexError` 的 code 已映射；其他存储失败保持 unknown。 |
-| Usage accounting | Usage accounting | Partial | `UsageLimitExceeded` 已分类；账务写入失败未覆盖。 |
+| Usage accounting | Usage accounting | Missing | 尚未分类账务上报与持久化失败；推理用量限制归入其来源的 generation 阶段，embedding adapter 上报同一限制时使用相同 reason。 |
 
 第一个落地切片覆盖 Memory / Atomic Memory：provider 失败、预算耗尽、提取/对账校验均有分类，安全计数字段
 可从子 Worker 传播到 supervisor 日志。其他 Family 在各自切片落地前保持现有行为；每次切片在同一变更中更新

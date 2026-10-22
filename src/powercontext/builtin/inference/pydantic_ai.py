@@ -402,6 +402,13 @@ class PydanticAIEmbeddingModel:
             raise
         except InvalidInferenceOutputError:
             raise
+        except ValidationError as error:
+            # Malformed provider output is an invalid-output failure, not a
+            # transient availability failure; match the structured mapping.
+            mapped = _map_error(error, operation="embed", timeout_seconds=self._limits.timeout_seconds)
+            if mapped is None:
+                raise
+            raise mapped from error
         except ValueError as error:
             raise InferenceUnavailableError("embed") from error
         except Exception as error:
@@ -587,7 +594,7 @@ def _map_error(  # noqa: C901 - bounded mapping across status codes and provider
         return attach_diagnostics(
             InvalidInferenceOutputError(operation, "provider did not return a valid result"),
             ProcessingDiagnostics(
-                stage=ProcessingStage.USAGE_ACCOUNTING,
+                stage=stage or ProcessingStage.GENERATION,
                 reason=ProcessingFailureReason.USAGE_LIMIT,
                 failure_location="inference-limits",
                 cause_exception_type=cause_type,
