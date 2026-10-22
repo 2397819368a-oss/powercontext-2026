@@ -113,11 +113,10 @@ class CreateDreamRunRequest(BaseModel):
                 "sources or artifacts must select at least 1 reference (at most 32 references with Sources)",
             )
         if len(artifacts) + len(value) > 32:
-            raise PydanticCustomError(
-                "evidence_limit_exceeded",
-                "artifacts and sources must select at most 32 references in total "
-                "(1 to 20 Artifacts, at most 32 references with Sources)",
-            )
+            message = "artifacts and sources must select at most 32 references in total"
+            if info.data.get("operation") != "revise_tags":
+                message += " (1 to 20 Artifacts, at most 32 references with Sources)"
+            raise PydanticCustomError("evidence_limit_exceeded", message)
         return value
 
     @model_validator(mode="after")

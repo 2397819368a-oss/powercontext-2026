@@ -121,3 +121,33 @@ def test_revise_tags_requires_at_least_one_reference() -> None:
     assert error["loc"] == ("sources",)
     assert error["type"] == "evidence_selection_required"
     assert "at most 32 references with Sources" in error["msg"]
+
+
+def test_revise_tags_reports_only_the_combined_limit() -> None:
+    with pytest.raises(ValidationError) as raised:
+        CreateDreamRunRequest(
+            operation="revise_tags",
+            tag_target=_tag_target(),
+            artifacts=_artifacts(21),
+            sources=_sources(12),
+            idempotency_key="tag-limit",
+        )
+
+    [error] = raised.value.errors()
+    assert error["loc"] == ("sources",)
+    assert error["type"] == "evidence_limit_exceeded"
+    assert "at most 32 references" in error["msg"]
+    assert "20 Artifacts" not in error["msg"]
+
+
+def test_revise_tags_allows_twenty_one_artifacts_below_the_combined_limit() -> None:
+    request = CreateDreamRunRequest(
+        operation="revise_tags",
+        tag_target=_tag_target(),
+        artifacts=_artifacts(21),
+        sources=_sources(11),
+        idempotency_key="tag-at-the-limit",
+    )
+
+    assert len(request.artifacts) == 21
+    assert len(request.sources) == 11
