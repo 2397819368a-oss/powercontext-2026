@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
 from hashlib import sha256
@@ -29,6 +30,7 @@ from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncConnection
 from typing_extensions import override
 
+from powercontext._logging import log_safely
 from powercontext.artifacts import ArtifactRef, ArtifactSearchContractError, ArtifactSearchMatch
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.errors import (
@@ -90,6 +92,27 @@ from powercontext.builtin.persistence.tags import tag_predicate
 from powercontext.builtin.records import BaseOperationNotSupportedError, InvalidBaseAccessRequestError
 from powercontext.builtin.runtime.artifact_merge import ArtifactMergeAccess, merge_artifact_tags
 from powercontext.builtin.tags import TagFilter
+
+logger = logging.getLogger(__name__)
+
+
+def _log_embedding_fallback(error: Exception) -> None:
+    """Record that a bounded query embedding gave way to lexical retrieval; the query itself is never logged."""
+
+    log_safely(
+        logger,
+        logging.WARNING,
+        "Memory search fell back to lexical retrieval",
+        extra={
+            "event": "memory.search.embedding_fallback",
+            "outcome": "fallback",
+            "mode": "text",
+            "error_code": "inference_timeout"
+            if isinstance(error, (InferenceTimeoutError, TimeoutError))
+            else "inference_unavailable",
+            "unit": "memory",
+        },
+    )
 
 
 class AtomicMemoryAccess(ArtifactMergeAccess):
@@ -193,7 +216,7 @@ class AtomicMemorySearchPage:
     rerank: AtomicMemoryRerankTrace | None = None
     recoverable: bool = False
     matches: tuple[ArtifactSearchMatch, ...] = ()
-    artifacts: tuple[AtomicMemory, ...] | None = None
+    artifacts: tuple[AtomicMemory, ...] = ()
 
 
 class AtomicMemoryApplication:
@@ -589,7 +612,7 @@ class ScopedAtomicMemory:
                 if artifact_request is None:
                     raise
                 raise ArtifactSearchContractError("atomic-memory", "Selected exact revision is unavailable") from exc
-            artifacts = validated if artifact_request is not None else None
+            artifacts = validated if artifact_request is not None else ()
             recoverable = recovery_admission is not None and await application.index.probe_recoverable(
                 connection, self.scope_id, request, recovery_admission
             )
@@ -669,34 +692,34 @@ class ScopedAtomicMemory:
             "profile_fingerprint",
             "projection_format",
         )
-        projected = {
-            row["artifact_id"]: row
+        heads = ARTIFACT_HEADS_TABLE
+        rows = {
+            row["projection_artifact_id"]: row
             for row in (
                 await connection.execute(
-                    select(*(table.c[name] for name in columns)).where(
-                        table.c.scope_id == self.scope_id, table.c.artifact_id.in_(ids)
-                    )
+                    with_artifact_content(
+                        select(heads, *(table.c[name].label(f"projection_{name}") for name in columns)).select_from(
+                            table.outerjoin(
+                                heads,
+                                and_(
+                                    heads.c.scope_id == table.c.scope_id,
+                                    heads.c.family == "atomic-memory",
+                                    heads.c.artifact_id == table.c.artifact_id,
+                                ),
+                            )
+                        )
+                    ).where(table.c.scope_id == self.scope_id, table.c.artifact_id.in_(ids))
                 )
             ).mappings()
         }
-        heads = {
-            row["artifact_id"]: row
-            for row in (
-                await connection.execute(
-                    select(ARTIFACT_HEADS_TABLE).where(
-                        ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id,
-                        ARTIFACT_HEADS_TABLE.c.family == "atomic-memory",
-                        ARTIFACT_HEADS_TABLE.c.artifact_id.in_(ids),
-                    )
-                )
-            ).mappings()
-        }
+        projected = {identity: {name: row[f"projection_{name}"] for name in columns} for identity, row in rows.items()}
         for hit in hits:
             identity = hit.artifact_ref.artifact_id
-            projection, head = projected.get(identity), heads.get(identity)
+            projection, head = projected.get(identity), rows.get(identity)
             if (
                 projection is None
                 or head is None
+                or head["artifact_id"] is None
                 or hit.artifact_ref.family != "atomic-memory"
                 or head["revision"] != hit.artifact_ref.revision
                 or projection["revision"] != hit.artifact_ref.revision
@@ -707,8 +730,8 @@ class ScopedAtomicMemory:
                 or head["governance_generation"] != hit.state_version
             ):
                 raise AtomicMemoryIndexError("stale-projection", "Atomic Memory projection identity is inconsistent")
-        artifacts = await application.artifacts.get_many(
-            connection, self.scope_id, tuple(hit.artifact_ref for hit in hits)
+        artifacts = await application.artifacts.decode_many(
+            connection, self.scope_id, tuple(rows[hit.artifact_ref.artifact_id] for hit in hits)
         )
         for hit, artifact in zip(hits, artifacts, strict=True):
             if not isinstance(artifact, AtomicMemory):
@@ -763,6 +786,7 @@ class ScopedAtomicMemory:
                 raise InferenceUnavailableError("embedding", "Atomic query embedding timed out") from exc
             if requested_mode != "auto" or not capabilities.fts:
                 raise
+            _log_embedding_fallback(exc)
             return "text", None, None, 1
         if len(result.vectors) != 1:
             raise AtomicMemoryIndexError("embedding-result", "Expected one query vector")
@@ -823,7 +847,7 @@ class ScopedAtomicMemory:
         context,
         *,
         artifact_request=None,
-        artifacts=None,
+        artifacts=(),
     ):
         application = self.application
         reranker = application.reranker
@@ -833,7 +857,7 @@ class ScopedAtomicMemory:
                 candidates[:limit],
                 query_embedding,
                 embedding_calls,
-                artifacts=(() if artifacts is None else artifacts) if artifact_request is not None else None,
+                artifacts=artifacts,
             )
         # Reauthorize the exact candidate bodies immediately before an external rank model.
         try:
@@ -848,12 +872,9 @@ class ScopedAtomicMemory:
                 (),
                 query_embedding,
                 embedding_calls,
-                artifacts=() if artifact_request is not None else None,
             )
         complete_artifacts = []
         if artifact_request is not None:
-            if artifacts is None:
-                raise ArtifactSearchContractError("atomic-memory", "Selected exact Artifacts are unavailable")
             artifacts_by_ref = {_artifact_key(artifact.as_ref()): artifact for artifact in artifacts}
             complete_artifacts = [
                 artifacts_by_ref[_artifact_key(candidate.hit.artifact_ref)] for candidate in candidates
@@ -888,7 +909,7 @@ class ScopedAtomicMemory:
             embedding_calls,
             1,
             rerank=trace,
-            artifacts=tuple(complete_artifacts[rank - 1] for rank in ranks) if artifact_request is not None else None,
+            artifacts=tuple(complete_artifacts[rank - 1] for rank in ranks) if artifact_request is not None else (),
         )
 
     async def merge(

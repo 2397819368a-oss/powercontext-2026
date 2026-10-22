@@ -13,6 +13,9 @@ Install the built-in implementation:
 uv add "powercontext[builtin]"
 ```
 
+This extra supports in-process Runtime initialization, writes, and reads without the `server` extra.
+Install the `server` extra to use the Server's optional Casbin authorization provider.
+
 SQLite is the default. `open_builtin_runtime()` owns the selected database profile and returns the same
 `BuiltinRuntime` interface for either database:
 

@@ -29,7 +29,7 @@ kimi
 
 source 仅支持本地 checkout 或其中未配置的插件目录，不能将已配置的受管理副本当作更新源。Kimi 和 Node 需在 PATH；KIMI_CLI_BIN 可指向真实二进制或构建后的 main.mjs，用于诊断和验收。KIMI_CODE_HOME 指定宿主目录，默认 ~/.kimi-code。
 
-安装器将副本放到 <Kimi home>/plugins/managed/powercontext，注册到 plugins/installed.json；保留模型配置、其他插件和已有插件/MCP 禁用状态，发布失败时恢复原插件与注册记录。回滚本身被拒绝时，会将原插件保留在 plugins/managed/.powercontext-kimi-backup 并报告恢复路径，需先恢复再重试。重复 setup 更新插件，省略的 endpoint、Scope 和采集参数保留已安装设置。修改源文件后需要重新安装，宿主运行的是受管理副本。
+安装器将副本放到 <Kimi home>/plugins/managed/powercontext，注册到 plugins/installed.json；保留模型配置、其他插件和已有插件/MCP 禁用状态，发布失败时恢复原插件与注册记录。回滚本身被拒绝时，会报告原内容的保留路径，需按报错恢复对应目标后再重试。重复 setup 更新插件，省略的 endpoint、Scope 和采集参数保留已安装设置。修改源文件后需要重新安装，宿主运行的是受管理副本。
 
 安装或改配置后开启**新会话**；现有会话可能保留旧 Skill/MCP 配置。插件对用户全局生效，不限当前仓库。setup 不创建 Scope、不修改绑定。支持 HTTPS 和环回 HTTP，拒绝非环回明文 HTTP。
 

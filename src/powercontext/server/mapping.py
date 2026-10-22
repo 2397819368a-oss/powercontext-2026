@@ -344,8 +344,6 @@ from powercontext.sources import SourceRef
 def artifact_search_response(outcome: ArtifactSearchOutcome, /, *, include_scores: bool) -> SearchArtifactsResponse:
     """Serialize actual Artifact content while retaining the Family's final match order."""
 
-    if outcome.artifacts is None:
-        raise ValueError("public Artifact search requires complete Artifacts")  # noqa: TRY003
     results: list[dict[str, Any]] = []
     for match, artifact in zip(outcome.matches, outcome.artifacts, strict=True):
         item: dict[str, Any] = {

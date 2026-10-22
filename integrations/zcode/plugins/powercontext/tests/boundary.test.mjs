@@ -280,8 +280,14 @@ test('pending preserves concurrent receipts and pauses unknown writes', { timeou
     const unknownData = join(root, 'unknown')
     const unknown = await beginCaptureTracking(input, settings, keys, 'scope-boundary', unknownData)
     await unknown.accepted(3)
-    delay = 1200
-    const result = await flushBoundary(input, settings, keys, resolveCurrent, AbortSignal.timeout(800), unknownData)
+    // Abort only after the fixture receives the request so pre-dispatch work cannot turn this into `failed`.
+    const cancel = new AbortController()
+    responseGate = new Promise(resolve => { releaseResponse = resolve })
+    received = () => cancel.abort()
+    const result = await flushBoundary(input, settings, keys, resolveCurrent, cancel.signal, unknownData)
+    received = undefined
+    releaseResponse()
+    responseGate = undefined
     assert.equal(result.state, 'unknown')
     const afterUnknown = flushes
     t.mock.timers.tick(5100)

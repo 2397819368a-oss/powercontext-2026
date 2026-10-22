@@ -537,7 +537,9 @@ class AtomicMemorySourceWindowProcessor:
                         or record.artifact.content.text != hit.text
                     ):
                         _conflict("Related memory changed before comparison")
+
                     content = record.artifact.content.without_creation()
+
                     supported = AtomicMemoryArtifactEvidence(
                         evidence_id=f"artifact:{record.ref.artifact_id}@{record.ref.revision}",
                         artifact_ref=record.ref,
