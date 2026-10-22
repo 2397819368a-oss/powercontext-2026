@@ -44,6 +44,7 @@ from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
     ATOMIC_MEMORY_RECONCILIATION_INSTRUCTIONS,
     AtomicMemoryReconciliationInput,
     AtomicMemoryReconciliationOutput,
+    validate_reconciliation_decision,
 )
 from powercontext.builtin.artifacts.experience import ExperienceCandidatePipeline, ExperienceGenerator
 from powercontext.builtin.artifacts.experience.merge import ExperienceMergeAdapter
@@ -1508,6 +1509,7 @@ async def _generation_pipelines(
             model_settings=generation_request_settings,
             name="atomic_memory_reconciliation",
             prompt_key="atomic_memory.reconcile",
+            output_check=validate_reconciliation_decision,
         )
         experience_generator = PydanticAIStructuredGenerator(
             model=generation_model,
