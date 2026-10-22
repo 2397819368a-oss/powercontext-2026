@@ -258,7 +258,17 @@ def test_artifact_rollback_preserves_source_declaration_and_revision_metadata(
 
         async with open_builtin_contexts(config) as contexts:
             context = await contexts.get(scope.scope_id)
-            assert await contexts.records.get_artifact(scope.scope_id, "profile", "profile") == restored
+            reread = await contexts.records.get_artifact(scope.scope_id, "profile", "profile")
+            assert reread.scope_id == restored.scope_id
+            assert reread.family == restored.family
+            assert reread.artifact_id == restored.artifact_id
+            assert reread.revision == restored.revision
+            assert reread.content == restored.content
+            assert reread.sources == restored.sources
+            assert reread.content_digest == restored.content_digest
+            assert reread.created_by == restored.created_by
+            assert reread.restored_from_revision == restored.restored_from_revision
+            assert reread.reason == restored.reason
             sources = {source.name: source for source in await context.sources.list()}
             assert all(sources[ref.source_id].memory_evidence == declaration for ref in restored.sources)
 
