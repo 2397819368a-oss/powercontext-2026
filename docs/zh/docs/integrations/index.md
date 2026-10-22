@@ -42,6 +42,11 @@ powercontext setup
 
 使用与 Server 相同的 ref。`powercontext setup codex dsh` 会安装、配置并诊断两个 Agent。更新已安装连接时使用 `powercontext config agent codex dsh`，不会重新安装或启用插件；原生要求见各 Agent 文档。
 
+## 实验性 MCP 接入
+
+[Cindy](cindy.md)通过原生自定义 MCP 客户端访问统一 Server 工具，目前用于评估，不计入已验证 Agent Host 列表。
+可选的独立 Ghost 适配器提供自动召回和原始 Prompt 采集，用户无需安装 DSH。
+
 ## Python Agent 框架
 
 这 3 个适配器均为 `community`，安装到应用环境中，不使用 `powercontext setup <host>`：

@@ -45,6 +45,12 @@ powercontext setup
 
 Use the same ref as the Server. `powercontext setup codex dsh` installs, configures, and diagnoses both agents. Use `powercontext config agent codex dsh` to update installed connections without reinstalling or enabling them; consult each Agent guide for native requirements.
 
+## Experimental MCP connections
+
+[Cindy](cindy.md) uses its native custom MCP client to access the shared Server tools. It is under evaluation and
+is not counted in the qualified Agent Host list. An optional standalone Ghost adapter adds automatic recall and
+original-prompt capture without requiring DSH.
+
 ## Python Agent frameworks
 
 All 3 adapters are `community`. Install them in the application environment; do not use

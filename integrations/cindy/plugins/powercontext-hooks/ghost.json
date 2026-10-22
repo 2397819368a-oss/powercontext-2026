@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 3,
+  "minCindyVersion": "0.1.104",
+  "id": "powercontext-hooks",
+  "name": "PowerContext automatic memory",
+  "description": "Prepare bounded project history and capture original user prompts before local Cindy messages are dispatched.",
+  "whenToUse": "Enable for automatic project context and original-prompt Source capture. Explicit business tools use the native PowerContext MCP connection.",
+  "version": "0.1.0",
+  "kind": "chip",
+  "entry": "main.js",
+  "icon": "assets/icon.png",
+  "launch": "resident",
+  "settingsHtml": "settings.html",
+  "subscribe": {
+    "hooks": [
+      "will-user-message"
+    ]
+  },
+  "node": {
+    "entry": "node/worker.cjs",
+    "protocol": "json-rpc-stdio",
+    "lifecycle": "on-demand",
+    "secretBindings": [
+      {
+        "key": "server_credential",
+        "label": "PowerContext Server credential",
+        "hint": "Saved with its Server URL and injected only into automatic hook requests.",
+        "methods": [
+          "powercontext/authenticated-hook"
+        ]
+      }
+    ]
+  },
+  "tools": [
+    {
+      "name": "status",
+      "description": "Read the latest local hook outcome. This does not establish Server readiness or successful model use of recalled context.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
+}

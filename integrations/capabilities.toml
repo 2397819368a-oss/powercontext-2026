@@ -16,6 +16,7 @@ schema_version = 1
 
 # Every integrations/*/ directory must be declared below or explicitly excluded.
 [directory_exclusions]
+cindy = "Native MCP plus a standalone will-user-message Ghost adapter under evaluation with Cindy 0.1.104; desktop installation, credential UI, and live harness routing are not yet qualified. See integrations/cindy/README.md."
 agent-plugin = "Portable Agent Plugin client package, not a qualified host or framework adapter; host support is tracked by the individual host declarations. See integrations/agent-plugin/README.md."
 minimax = "Host package awaiting one-command setup and native qualification under #1840; not yet included in the supported host catalog. See integrations/minimax/README.md."
 opendal = "Independently deployed evaluation Connector worker, not a complete standard Source integration or host adapter. See integrations/opendal/README.md."
