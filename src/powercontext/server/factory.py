@@ -87,6 +87,7 @@ from powercontext.server.mcp import mount_mcp
 from powercontext.server.metrics import CONTENT_TYPE_LATEST, HttpMetricsMiddleware, ServerMetrics
 from powercontext.server.middleware import AuthenticationMiddleware
 from powercontext.server.processing_security import build_worker_security
+from powercontext.server.request_id import HttpRequestIdMiddleware
 from powercontext.server.settings import MissingAuthenticationProviderError, ServerSettings
 from powercontext.server.tracing import HttpTracingMiddleware, ServerTracing
 from powercontext.server.worker_tracing import WorkerTracing
@@ -341,6 +342,14 @@ def create_server_app(  # noqa: C901
         authentication_provider=configured_authentication,
         allow_insecure_remote_http=resolved.allow_insecure_http,
     )
+    # Admission must see the outward send; only non-buffering instrumentation
+    # wraps it so early rejections retain the same correlation and observations.
+    app.add_middleware(
+        HttpResourceLimitsMiddleware,
+        max_request_body_bytes=resolved.http.max_request_body_bytes,
+        max_concurrent_requests=resolved.http.max_concurrent_requests,
+    )
+    app.add_middleware(HttpRequestIdMiddleware)
     if metrics is not None:
         app.add_api_route(
             "/metrics",
@@ -375,12 +384,6 @@ def create_server_app(  # noqa: C901
         )
     if resolved.dashboard.enabled:
         mount_dashboard(app)
-    # Reserve capacity until the final response send, outside response-forwarding middleware.
-    app.add_middleware(
-        HttpResourceLimitsMiddleware,
-        max_request_body_bytes=resolved.http.max_request_body_bytes,
-        max_concurrent_requests=resolved.http.max_concurrent_requests,
-    )
     return app
 
 

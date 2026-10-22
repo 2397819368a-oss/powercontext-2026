@@ -16,10 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import deque
 from collections.abc import Sequence
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import Response
@@ -27,7 +31,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from powercontext.http import ArtifactReference, ProposeSkillPackageRequest
 from powercontext.server.factory import create_server_app
-from powercontext.server.settings import HttpConfig, McpConfig, ServerSettings
+from powercontext.server.settings import HttpConfig, McpConfig, MetricsConfig, ServerSettings
+from powercontext.server.tracing import ServerTracing
 
 
 def _server(downstream: ASGIApp, *, max_body: int = 8, max_requests: int = 1) -> ASGIApp:
@@ -117,6 +122,79 @@ def test_blocked_outward_response_holds_server_capacity_until_sent() -> None:
         assert accepted[0]["status"] == 200
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("rejection", ["declared_body", "streamed_body", "capacity"])
+def test_admission_rejections_keep_request_identity_and_transport_observations(
+    caplog: pytest.LogCaptureFixture, rejection: str
+) -> None:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    caplog.set_level(logging.INFO, logger="powercontext.server.access")
+    app = create_server_app(
+        settings=ServerSettings(
+            http=HttpConfig(max_request_body_bytes=8, max_concurrent_requests=1),
+            mcp=McpConfig(enabled=False),
+            metrics=MetricsConfig(enabled=True),
+        ),
+        tracing=ServerTracing(provider),
+    )
+
+    async def scenario() -> list[Message]:
+        sending = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_send(message: Message) -> None:
+            if message["type"] == "http.response.body":
+                sending.set()
+                await release.wait()
+
+        first = None
+        if rejection == "capacity":
+            first = asyncio.create_task(_invoke(app, response_send=blocked_send, path="/health/live", method="GET"))
+        try:
+            if first is not None:
+                await asyncio.wait_for(sending.wait(), timeout=2)
+            messages, reads = await _invoke(
+                app,
+                [b"1234", b"56789"],
+                headers=[(b"content-length", b"9")] if rejection == "declared_body" else [],
+                path="/v1/scope-bindings/resolve",
+            )
+            assert reads == (2 if rejection == "streamed_body" else 0)
+            return messages
+        finally:
+            release.set()
+            if first is not None:
+                await first
+
+    try:
+        messages = asyncio.run(scenario())
+        status = 503 if rejection == "capacity" else 413
+        assert messages[0]["status"] == status
+        request_id = dict(messages[0]["headers"])[b"x-powercontext-request-id"].decode()
+        assert request_id
+        records = [record for record in caplog.records if getattr(record, "event", "") == "transport.request.completed"]
+        assert len(records) == 1
+        assert records[0].__dict__["request_id"] == request_id
+        assert records[0].__dict__["status_code"] == status
+        assert records[0].__dict__["outcome"] == "failure"
+        assert (
+            app.state.metrics.registry.get_sample_value(
+                "powercontext_server_transport_requests_total",
+                {"transport": "http", "operation": "resolve_scope_binding", "outcome": "failure"},
+            )
+            == 1
+        )
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        attributes = spans[0].attributes
+        assert attributes is not None
+        assert attributes["powercontext.request.id"] == request_id
+        assert attributes["http.response.status_code"] == status
+    finally:
+        provider.shutdown()
 
 
 @pytest.mark.parametrize(
