@@ -217,46 +217,75 @@ describe('pending Source flusher', () => {
   })
 
   it('includes queue waiting in the lifecycle deadline and retains pending work', async () => {
-    const firstBoundary = new AbortController()
-    const queuedBoundary = new AbortController()
-    const retryBoundary = new AbortController()
-    const boundaries = [firstBoundary.signal, queuedBoundary.signal, retryBoundary.signal]
-    let releaseFirst: (() => void) | undefined
-    let firstStarted: (() => void) | undefined
-    const started = new Promise<void>((resolve) => { firstStarted = resolve })
-    const blocked = new Promise<void>((resolve) => { releaseFirst = resolve })
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const diagnostic = vi.fn()
+    const boundaries: AbortController[] = []
+    setTimeout(() => {
+      for (const controller of boundaries) {
+        controller.abort(new DOMException('deadline exceeded', 'TimeoutError'))
+      }
+    }, 1000)
     let calls = 0
     const client = {
-      request: vi.fn(async () => {
+      request: vi.fn(async (_operation: string, _payload: unknown, signal?: AbortSignal) => {
         calls += 1
-        if (calls === 1) {
-          firstStarted?.()
-          await blocked
-          return { kind: 'json' as const, value: progress(0), status: 200, requestId: undefined }
-        }
-        return { kind: 'json' as const, value: progress(1), status: 200, requestId: undefined }
+        if (calls > 2) return { kind: 'json' as const, value: progress(1), status: 200, requestId: undefined }
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(resolve, 900)
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timeout)
+            reject(signal.reason)
+          }, { once: true })
+        })
+        if (signal?.aborted) throw signal.reason
+        return { kind: 'json' as const, value: progress(0, true), status: 200, requestId: undefined }
       }),
     } as unknown as PowerContextClient
     const flusher = createPendingSourceFlusher(
       client,
       resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '1' }),
-      undefined,
-      () => boundaries.shift()!,
+      diagnostic,
+      () => {
+        const controller = new AbortController()
+        boundaries.push(controller)
+        return controller.signal
+      },
     )
-    flusher.record('scope-a', 1)
+    flusher.record('private-scope', 1)
 
-    const first = flusher.flush('agent_end')
-    await started
-    const queued = flusher.flush('session_shutdown')
-    queuedBoundary.abort(new DOMException('deadline exceeded', 'TimeoutError'))
+    try {
+      const startedAt = Date.now()
+      const agentEnd = flusher.flush('agent_end')
+      const beforeCompact = flusher.flush('session_before_compact')
+      const shutdown = flusher.flush('session_shutdown')
+      await vi.advanceTimersByTimeAsync(1000)
 
-    await expect(queued).resolves.toEqual({ acknowledged: false, pendingScopes: 1 })
-    expect(client.request).toHaveBeenCalledTimes(1)
+      await expect(Promise.all([agentEnd, beforeCompact, shutdown])).resolves.toEqual([
+        { acknowledged: false, pendingScopes: 1 },
+        { acknowledged: false, pendingScopes: 1 },
+        { acknowledged: false, pendingScopes: 1 },
+      ])
+      expect(Date.now() - startedAt).toBe(1000)
+      expect(client.request).toHaveBeenCalledTimes(2)
+      expect(diagnostic).toHaveBeenCalledWith(
+        'flush_memory',
+        expect.anything(),
+        expect.objectContaining({
+          outcome: 'deadline_exceeded',
+          failure_class: 'deadline_exceeded',
+          host: 'pi',
+          lifecycle_event: 'session_shutdown',
+          target_position: 1,
+        }),
+      )
+      expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private-scope')
 
-    releaseFirst?.()
-    await expect(first).resolves.toEqual({ acknowledged: false, pendingScopes: 1 })
-    await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
-    expect(client.request).toHaveBeenCalledTimes(2)
+      await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
+      expect(client.request).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('flushes only accepted positions at both Pi closing boundaries', async () => {

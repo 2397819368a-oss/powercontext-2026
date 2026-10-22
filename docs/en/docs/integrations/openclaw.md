@@ -67,7 +67,8 @@ valid range `1`–`16`) within a one-second boundary budget that starts when the
 ceiling. Accepted positions that are not acknowledged remain pending for Server scheduling or a later bounded flush
 at `session_end` or `gateway_stop`. Closing work has priority over queued pre-compaction work, while queue waiting
 counts against each event's boundary budget. Closing events flush only
-already accepted positions and are not reported as pre-compaction events.
+already accepted positions and are not reported as pre-compaction events. A boundary that exhausts its budget while
+queued emits a content-free `deadline_exceeded` diagnostic and retains its pending positions.
 
 OpenClaw catches `before_compaction` hook failures and continues compaction, so this integration is not
 `required_capable`. Failure diagnostics contain the host, lifecycle event, a hashed Scope correlation, target and

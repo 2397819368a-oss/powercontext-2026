@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { initializeGlobalHookRunner, resetGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import { runAgentHarnessBeforeCompactionHook } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolvePowerContextConfig } from "./config.js";
 import { PowerContextRequestError, type PowerContextClient } from "./http.js";
 import { registerPowerContextLifecycle } from "./lifecycle.js";
@@ -644,50 +644,82 @@ describe("PowerContext lifecycle", () => {
   });
 
   it("includes queue waiting in closing deadlines and retains pending work", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
     const harness = createLifecycleHarness();
     harness.config.flushMaxCalls = 1;
-    const context = {
+    const firstContext = {
       agentId: "main",
-      sessionId: "session-queued-deadline",
+      sessionId: "session-queued-deadline-one",
       sessionKey: "agent:main:telegram:direct:user-1",
     };
+    const secondContext = { ...firstContext, sessionId: "session-queued-deadline-two" };
     await harness.hooks.get("agent_end")!(
-      { success: true, runId: "run-pending", messages: [{ role: "user", content: "remember this" }] },
-      context,
+      { success: true, runId: "run-pending-one", messages: [{ role: "user", content: "remember first" }] },
+      firstContext,
     );
-
-    const firstBoundary = new AbortController();
-    const queuedBoundary = new AbortController();
-    const retryBoundary = new AbortController();
-    const boundaries = [firstBoundary.signal, queuedBoundary.signal, retryBoundary.signal];
-    harness.setClosingSignalFactory(() => boundaries.shift()!);
-    let releaseCapabilities: (() => void) | undefined;
-    let capabilitiesStarted: (() => void) | undefined;
-    const started = new Promise<void>((resolve) => { capabilitiesStarted = resolve; });
-    const blocked = new Promise<void>((resolve) => { releaseCapabilities = resolve; });
-    harness.setCapabilitiesHandler(async () => {
-      capabilitiesStarted?.();
-      await blocked;
-      return { memory_extraction: false };
+    await harness.hooks.get("agent_end")!(
+      { success: true, runId: "run-pending-two", messages: [{ role: "user", content: "remember second" }] },
+      secondContext,
+    );
+    const boundaries: AbortController[] = [];
+    setTimeout(() => {
+      for (const controller of boundaries) {
+        controller.abort(new DOMException("deadline exceeded", "TimeoutError"));
+      }
+    }, 1000);
+    harness.setClosingSignalFactory(() => {
+      const controller = new AbortController();
+      boundaries.push(controller);
+      return controller.signal;
+    });
+    let calls = 0;
+    harness.setFlushHandler(async (_scopeId, signal) => {
+      calls += 1;
+      if (calls > 2) return flushProgress(2);
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(resolve, 900);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timeout);
+          reject(signal.reason);
+        }, { once: true });
+      });
+      if (signal?.aborted) throw signal.reason;
+      return flushProgress(0, true);
     });
 
-    const sessionEnd = harness.hooks.get("session_end")!(
-      { sessionId: context.sessionId, messageCount: 1 },
-      context,
-    ) as Promise<void>;
-    await started;
-    const gatewayStop = harness.hooks.get("gateway_stop")!({}, {}) as Promise<void>;
-    queuedBoundary.abort(new DOMException("deadline exceeded", "TimeoutError"));
+    try {
+      const startedAt = Date.now();
+      const firstSessionEnd = harness.hooks.get("session_end")!(
+        { sessionId: firstContext.sessionId, messageCount: 1 },
+        firstContext,
+      ) as Promise<void>;
+      const secondSessionEnd = harness.hooks.get("session_end")!(
+        { sessionId: secondContext.sessionId, messageCount: 1 },
+        secondContext,
+      ) as Promise<void>;
+      const gatewayStop = harness.hooks.get("gateway_stop")!({}, {}) as Promise<void>;
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.all([firstSessionEnd, secondSessionEnd, gatewayStop]);
 
-    await gatewayStop;
-    expect(harness.flushScopes).toEqual([]);
+      expect(Date.now() - startedAt).toBe(1000);
+      expect(harness.flushScopes).toEqual(["scp_default", "scp_default"]);
+      const deadlineDiagnostic = harness.warnings.map((line) => JSON.parse(line)).find((event) => (
+        event.event === "shutdown_flush" && event.outcome === "deadline_exceeded"
+      ));
+      expect(deadlineDiagnostic).toMatchObject({
+        failure_class: "deadline_exceeded",
+        host: "openclaw",
+        lifecycle_event: "gateway_stop",
+        target_position: 2,
+      });
+      expect(JSON.stringify(deadlineDiagnostic)).not.toContain("remember");
 
-    releaseCapabilities?.();
-    await sessionEnd;
-    harness.setCapabilitiesHandler(() => ({ memory_extraction: true }));
-    await harness.hooks.get("gateway_stop")!({}, {});
-
-    expect(harness.flushScopes).toEqual(["scp_default"]);
+      await harness.hooks.get("gateway_stop")!({}, {});
+      expect(harness.flushScopes).toEqual(["scp_default", "scp_default", "scp_default"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not let one Scope cursor acknowledge another Scope", async () => {

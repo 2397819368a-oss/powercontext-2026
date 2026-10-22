@@ -73,18 +73,23 @@ function settleWithinBoundary<T>(
   task: Promise<T>,
   signal: AbortSignal,
   onAbort: () => T,
+  onDeadline: () => void,
 ): Promise<T> {
-  if (signal.aborted) return Promise.resolve(onAbort())
+  const abort = () => {
+    onDeadline()
+    return onAbort()
+  }
+  if (signal.aborted) return Promise.resolve(abort())
   return new Promise<T>((resolve, reject) => {
-    const abort = () => resolve(onAbort())
-    signal.addEventListener('abort', abort, { once: true })
+    const handleAbort = () => resolve(abort())
+    signal.addEventListener('abort', handleAbort, { once: true })
     task.then(
       (value) => {
-        signal.removeEventListener('abort', abort)
+        signal.removeEventListener('abort', handleAbort)
         resolve(value)
       },
       (error) => {
-        signal.removeEventListener('abort', abort)
+        signal.removeEventListener('abort', handleAbort)
         reject(error)
       },
     )
@@ -102,7 +107,32 @@ export function createPendingSourceFlusher(
   const pending = new Map<string, number>()
   let queue = Promise.resolve<PendingFlushResult>({ acknowledged: true, pendingScopes: 0 })
 
-  async function flushAll(lifecycleEvent: string, signal?: AbortSignal): Promise<PendingFlushResult> {
+  function reportDeadline(lifecycleEvent: string, reason: unknown): void {
+    for (const [scopeId, position] of pending) {
+      try {
+        onFailure?.(
+          lifecycleEvent === 'session_before_compact' ? 'pre_compaction_checkpoint' : 'flush_memory',
+          reason,
+          {
+            outcome: 'deadline_exceeded',
+            failure_class: 'deadline_exceeded',
+            host: 'pi',
+            lifecycle_event: lifecycleEvent,
+            scope_correlation: scopeCorrelation(scopeId),
+            target_position: position,
+          },
+        )
+      } catch {
+        // Diagnostics are best effort and must not affect the host boundary.
+      }
+    }
+  }
+
+  async function flushAll(
+    lifecycleEvent: string,
+    signal: AbortSignal | undefined,
+    deadlineExpired: () => boolean,
+  ): Promise<PendingFlushResult> {
     if (pending.size === 0) return { acknowledged: true, pendingScopes: 0 }
     if (signal?.aborted) return { acknowledged: false, pendingScopes: pending.size }
     let acknowledged = true
@@ -113,6 +143,7 @@ export function createPendingSourceFlusher(
       for (let attempt = 0; attempt < config.flushMaxCalls; attempt += 1) {
         try {
           const result = await client.request('flush_memory', { scope_id: scopeId }, signal)
+          if (deadlineExpired()) break
           const progress = flushProgress(result.kind === 'json' ? result.value : undefined)
           observedCursor = progress.currentCursor
           scopeAcknowledged ||= progress.currentCursor >= position
@@ -132,6 +163,7 @@ export function createPendingSourceFlusher(
         continue
       }
       acknowledged = false
+      if (deadlineExpired()) continue
       failure ??= new InvalidResponseError('/v1/memory/flush')
       try {
         onFailure?.(lifecycleEvent === 'session_before_compact' ? 'pre_compaction_checkpoint' : 'flush_memory', failure, {
@@ -156,12 +188,16 @@ export function createPendingSourceFlusher(
     flush(lifecycleEvent, signal) {
       const boundarySignal = createBoundarySignal()
       const combined = signal ? combineSignals([boundarySignal, signal]) : boundarySignal
-      const task = queue.then(() => flushAll(lifecycleEvent, combined))
+      let deadlineExpired = boundarySignal.aborted
+      const task = queue.then(() => flushAll(lifecycleEvent, combined, () => deadlineExpired))
       queue = task.catch(() => ({ acknowledged: false, pendingScopes: pending.size }))
       return settleWithinBoundary(task, boundarySignal, () => ({
         acknowledged: false,
         pendingScopes: pending.size,
-      }))
+      }), () => {
+        deadlineExpired = true
+        reportDeadline(lifecycleEvent, boundarySignal.reason)
+      })
     },
   }
 }

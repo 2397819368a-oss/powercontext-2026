@@ -84,7 +84,8 @@ valid `current_cursor` at or beyond the captured Source position. Cursor lag and
 `flushMaxCalls` (default `4`, range `1`–`16`) within a one-second boundary budget that starts when the flush is queued, with `timeoutMs` retained as the
 per-request ceiling. Unacknowledged accepted positions remain pending for `session_end`, `gateway_stop`, or Server
 scheduling. Closing work skips ahead of queued pre-compaction work, while queue waiting counts against each event's
-boundary budget. OpenClaw continues compaction after hook failures, so this is not a required checkpoint mode.
+boundary budget. A queued boundary that exhausts its budget emits a content-free `deadline_exceeded` diagnostic and
+retains pending positions. OpenClaw continues compaction after hook failures, so this is not a required checkpoint mode.
 
 The plugin exposes five tools: `powercontext_memory_search`, `powercontext_memory_get`,
 `powercontext_memory_store`, `powercontext_memory_revise`, and `powercontext_memory_retire`. Mutating tools

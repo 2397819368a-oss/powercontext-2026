@@ -56,9 +56,11 @@ turn 前使用确定性 Source ID 采集，事件会 flush 这些已接受的 jo
 `current_cursor >= position` 时，position 才会从 pending 集合移除；仅有 HTTP 2xx、畸形 cursor 或其他 Scope 的
 cursor 都不能完成确认。
 
-边界最多调用 `POWERCONTEXT_PI_FLUSH_MAX_CALLS` 次（默认 `4`，有效范围 `1`–`16`），并共享不超过一秒的总预算，
-其中包括等待之前 lifecycle flush 的排队时间。cursor 落后或 `remaining_work` 为 true 时会在预算内继续调用。确认前失败或取消会保留 pending work；确认后
-发生取消不会撤销确认。`session_before_switch` 和 `session_shutdown` 只 flush 已接受的 pending position。
+每个 lifecycle 边界最多调用 `POWERCONTEXT_PI_FLUSH_MAX_CALLS` 次（默认 `4`，有效范围 `1`–`16`），并拥有各自的
+一秒预算；排队时间、所有 pending Scope 和重试调用共享该边界的预算。cursor 落后或 `remaining_work` 为 true 时会在
+预算内继续调用。确认前失败或取消会保留 pending work；确认后
+发生取消不会撤销确认。边界在排队期间耗尽预算时，会发出不含内容的 `deadline_exceeded` 诊断并保留 pending position。
+`session_before_switch` 和 `session_shutdown` 只 flush 已接受的 pending position。
 
 Pi 的真实 `ExtensionRunner` 会在 handler 抛错后继续运行；只有 handler 显式返回 `{ cancel: true }` 才会停止压缩。
 该 package 不返回这一结果，因此 checkpoint 失败不会阻止压缩，集成不具备 `required_capable` 语义。可选诊断不含

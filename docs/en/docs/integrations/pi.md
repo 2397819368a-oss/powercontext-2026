@@ -58,11 +58,13 @@ positions. A position is removed from the pending set only after a complete, val
 `current_cursor` at or beyond that exact position. A 2xx response, malformed cursor, or cursor from another Scope
 cannot acknowledge it.
 
-The boundary makes at most `POWERCONTEXT_PI_FLUSH_MAX_CALLS` calls (default `4`, valid range `1`–`16`) within a
-shared budget of at most one second, including time waiting behind an earlier lifecycle flush. A behind cursor or
-`remaining_work` consumes another bounded call.
+Each lifecycle boundary makes at most `POWERCONTEXT_PI_FLUSH_MAX_CALLS` calls (default `4`, valid range `1`–`16`)
+within its own one-second budget. Queue waiting, all pending Scopes, and retry calls share that boundary budget. A
+behind cursor or `remaining_work` consumes another bounded call.
 Failures and cancellation before acknowledgement retain pending work; cancellation after acknowledgement does not
-revoke it. `session_before_switch` and `session_shutdown` flush only already accepted pending positions.
+revoke it. A boundary that exhausts its budget while queued emits a content-free `deadline_exceeded` diagnostic and
+retains its pending positions. `session_before_switch` and `session_shutdown` flush only already accepted pending
+positions.
 
 Pi's real `ExtensionRunner` continues after thrown handler errors unless a handler explicitly returns
 `{ cancel: true }`. This package never returns that result, so checkpoint failure does not block compaction and the

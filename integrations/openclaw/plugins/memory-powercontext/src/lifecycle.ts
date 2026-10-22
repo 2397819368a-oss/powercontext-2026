@@ -124,15 +124,44 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
   };
   const sessionScopes = new Map<string, Set<string>>();
   const pendingPositions = new Map<string, number>();
+  const reportDeadline = (
+    event: string,
+    lifecycleEvent: string,
+    positions: Iterable<readonly [string, number]>,
+  ) => {
+    for (const [scopeId, targetPosition] of positions) {
+      emitDiagnostic({
+        component: "powercontext.openclaw",
+        event,
+        outcome: "deadline_exceeded",
+        failure_class: "deadline_exceeded",
+        host: "openclaw",
+        lifecycle_event: lifecycleEvent,
+        scope_correlation: scopeCorrelation(scopeId),
+        target_position: targetPosition,
+      });
+    }
+  };
   type QueuedFlush = {
     run: () => Promise<void>;
     resolve: () => void;
     reject: (error: unknown) => void;
     signal?: AbortSignal;
+    deadlineReported: boolean;
+    onDeadline?: () => void;
   };
   const normalFlushQueue: QueuedFlush[] = [];
   const closingFlushQueue: QueuedFlush[] = [];
   let flushQueueRunning = false;
+  const reportBoundaryDeadline = (queued: QueuedFlush) => {
+    if (queued.deadlineReported) return;
+    queued.deadlineReported = true;
+    try {
+      queued.onDeadline?.();
+    } catch {
+      // Diagnostics are best effort and must not affect the host boundary.
+    }
+  };
   const drainFlushQueue = async () => {
     if (flushQueueRunning) return;
     flushQueueRunning = true;
@@ -140,6 +169,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       while (closingFlushQueue.length || normalFlushQueue.length) {
         const queued = closingFlushQueue.shift() ?? normalFlushQueue.shift()!;
         if (queued.signal?.aborted) {
+          reportBoundaryDeadline(queued);
           queued.resolve();
           continue;
         }
@@ -158,15 +188,33 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     task: () => Promise<void>,
     priority: "normal" | "closing" = "normal",
     signal?: AbortSignal,
+    onDeadline?: () => void,
   ): Promise<void> => {
+    let queued!: QueuedFlush;
     const execution = new Promise<void>((resolve, reject) => {
-      (priority === "closing" ? closingFlushQueue : normalFlushQueue).push({ run: task, resolve, reject, signal });
+      queued = {
+        run: task,
+        resolve,
+        reject,
+        signal,
+        deadlineReported: false,
+        onDeadline,
+      };
+      (priority === "closing" ? closingFlushQueue : normalFlushQueue).push(queued);
     });
-    void drainFlushQueue();
-    if (!signal) return execution;
-    if (signal.aborted) return Promise.resolve();
-    return new Promise<void>((resolve, reject) => {
-      const abort = () => resolve();
+    if (!signal) {
+      void drainFlushQueue();
+      return execution;
+    }
+    const bounded = new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        reportBoundaryDeadline(queued);
+        resolve();
+      };
+      if (signal.aborted) {
+        abort();
+        return;
+      }
       signal.addEventListener("abort", abort, { once: true });
       execution.then(
         () => {
@@ -179,6 +227,8 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         },
       );
     });
+    void drainFlushQueue();
+    return bounded;
   };
   const readAgentId = (agentId: string | undefined): string | undefined => {
     const value = agentId?.trim();
@@ -271,6 +321,10 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     for (let attempt = 0; attempt < config.flushMaxCalls; attempt += 1) {
       try {
         const response = await deps.client.post<unknown>("/v1/memory/flush", { scope_id: scopeId }, signal);
+        if (signal?.aborted) {
+          failure = signal.reason;
+          break;
+        }
         const progress = flushProgress(response);
         observedCursor = Math.max(observedCursor ?? 0, progress.currentCursor);
         acknowledged ||= progress.currentCursor >= targetPosition;
@@ -438,7 +492,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       try {
         if (await canExtractMemory(signal)) {
           const result = await flush(scopeId, Math.max(targetPosition, currentTarget), signal);
-          if (!result.acknowledged) {
+          if (!result.acknowledged && !signal.aborted) {
             reportFailure("pre_compaction_checkpoint", result.error, {
               host: "openclaw",
               lifecycle_event: "before_compaction",
@@ -460,14 +514,25 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           });
         }
       } catch (error) {
-        reportFailure("pre_compaction_checkpoint", error, {
-          host: "openclaw",
-          lifecycle_event: "before_compaction",
-          scope_correlation: scopeCorrelation(scopeId),
-          target_position: Math.max(targetPosition, currentTarget),
-        });
+        if (!signal.aborted) {
+          reportFailure("pre_compaction_checkpoint", error, {
+            host: "openclaw",
+            lifecycle_event: "before_compaction",
+            scope_correlation: scopeCorrelation(scopeId),
+            target_position: Math.max(targetPosition, currentTarget),
+          });
+        }
       }
-    }, "normal", signal);
+    }, "normal", signal, () => {
+      const currentTarget = pendingPositions.get(scopeId);
+      if (currentTarget !== undefined) {
+        reportDeadline(
+          "pre_compaction_checkpoint",
+          "before_compaction",
+          [[scopeId, Math.max(targetPosition, currentTarget)]],
+        );
+      }
+    });
   });
 
   api.on("session_end", async (event, ctx) => {
@@ -495,7 +560,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
             continue;
           }
           const result = await flush(scopeId, targetPosition, signal);
-          if (!result.acknowledged) {
+          if (!result.acknowledged && !signal.aborted) {
             reportFailure("session_end_flush", result.error, {
               host: "openclaw",
               lifecycle_event: "session_end",
@@ -506,12 +571,23 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           }
         }
       } catch (error) {
-        reportFailure("session_end_flush", error, {
-          host: "openclaw",
-          lifecycle_event: "session_end",
-        });
+        if (!signal.aborted) {
+          reportFailure("session_end_flush", error, {
+            host: "openclaw",
+            lifecycle_event: "session_end",
+          });
+        }
       }
-    }, "closing", signal);
+    }, "closing", signal, () => {
+      reportDeadline(
+        "session_end_flush",
+        "session_end",
+        scopes.flatMap((scopeId) => {
+          const targetPosition = pendingPositions.get(scopeId);
+          return targetPosition === undefined ? [] : [[scopeId, targetPosition] as const];
+        }),
+      );
+    });
   });
 
   api.on("gateway_stop", async () => {
@@ -530,7 +606,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
             continue;
           }
           const result = await flush(scopeId, Math.max(targetPosition, currentTarget), signal);
-          if (!result.acknowledged) {
+          if (!result.acknowledged && !signal.aborted) {
             reportFailure("shutdown_flush", result.error, {
               host: "openclaw",
               lifecycle_event: "gateway_stop",
@@ -541,11 +617,15 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           }
         }
       } catch (error) {
-        reportFailure("shutdown_flush", error, {
-          host: "openclaw",
-          lifecycle_event: "gateway_stop",
-        });
+        if (!signal.aborted) {
+          reportFailure("shutdown_flush", error, {
+            host: "openclaw",
+            lifecycle_event: "gateway_stop",
+          });
+        }
       }
-    }, "closing", signal);
+    }, "closing", signal, () => {
+      reportDeadline("shutdown_flush", "gateway_stop", pendingPositions);
+    });
   });
 }
