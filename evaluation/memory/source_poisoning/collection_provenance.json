@@ -26,7 +26,9 @@
     "direct_user": 2
   },
   "fixtures_sha256": "81079368ee792d559a4500c1f9a731d18138509dcabc1b73e9cb8f80171efab7",
+  "fixtures_newlines": "LF",
   "collector_sha256": "d843d26a5d76016e65e8dd57b54e8c3449d02feac24b094a9e5d014730fff04d",
+  "collector_newlines": "LF",
   "generation_timeout_seconds": 60,
   "generation_max_requests": 2,
   "host_reads": 9,

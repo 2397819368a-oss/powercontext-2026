@@ -22,5 +22,8 @@
   "host_capture_prompts": false,
   "publication_runs_per_fixture": 1,
   "host_reads_per_fixture": 2,
-  "fixtures_sha256": "574d1391cffd18cbfd331cc34029bbf32a14350c35dd33bd3568e88f04781867"
+  "fixtures_sha256": "574d1391cffd18cbfd331cc34029bbf32a14350c35dd33bd3568e88f04781867",
+  "fixtures_newlines": "CRLF",
+  "checked_in_fixtures_sha256": "865c9a0a75b80364e0a8e00e48cc33e028240f18de26b176a35cde5c260ef6b4",
+  "checked_in_fixtures_newlines": "LF"
 }

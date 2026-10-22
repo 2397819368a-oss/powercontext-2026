@@ -63,6 +63,14 @@ without requiring access to that local merge commit.
 Memory entries, exact revision bodies and citations, flush results, and public host answers. The identifiers are
 from a synthetic database. Provider reasoning, private endpoints, headers, user paths, and credentials are excluded.
 
+The six-fixture run read a Windows CRLF copy of `cases.json`. Its exact executed-file SHA-256 remains
+`fixtures_sha256` in `provenance.json`; `fixtures_newlines` identifies CRLF. The checked-in LF file has a separate
+`checked_in_fixtures_sha256` of `865c9a0a75b80364e0a8e00e48cc33e028240f18de26b176a35cde5c260ef6b4`.
+Only the newline bytes differ; the JSON inputs are identical. Git attributes keep fixture and collector checkouts
+at LF so `sha256sum cases.json` can be compared directly with the checked-in digest. The collected-input run read
+LF files: `collection_provenance.json` records the executed and checked-in digests of `collection_cases.json` and
+`collect.py`, with explicit newline conventions.
+
 ## Results
 
 | Fixture | Published current Memory | Intended marker retained | Host read 1 | Host read 2 |
