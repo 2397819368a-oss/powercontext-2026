@@ -87,6 +87,21 @@
       "sensitive": true
     },
     {
+      "id": "assigned-private-key",
+      "prompt": "private_key=\"-----BEGIN PRIVATE KEY-----\nsynthetic-value-2084\n-----END PRIVATE KEY-----\"",
+      "sensitive": true
+    },
+    {
+      "id": "unfinished-assigned-private-key",
+      "prompt": "private_key='-----BEGIN RSA PRIVATE KEY-----\r\nsynthetic-value-2084",
+      "sensitive": true
+    },
+    {
+      "id": "pem-authorization-header",
+      "prompt": "Authorization: -----BEGIN PRIVATE KEY-----\nsynthetic-value-2084\n-----END PRIVATE KEY-----",
+      "sensitive": true
+    },
+    {
       "id": "known-server-token",
       "prompt": "Use this opaque synthetic-value-2084 in the request.",
       "authorization": "Bearer synthetic-value-2084",

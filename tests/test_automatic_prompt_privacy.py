@@ -34,14 +34,14 @@ HOOKS = {
     "codex": "codex/plugins/powercontext/hooks/recall.py",
     "workbuddy": "workbuddy/plugins/powercontext/hooks/workbuddy_powercontext_hook.py",
 }
+DISABLED_CASES = [case for case in CASES if case["id"].endswith("-header") or "private-key" in case["id"]]
 
 
 @pytest.mark.parametrize("host", HOOKS)
 @pytest.mark.parametrize(
     ("case", "capture_enabled"),
-    [(case, True) for case in CASES] + [(case, False) for case in CASES if case["id"].endswith("-header")],
-    ids=[case["id"] for case in CASES]
-    + [f"{case['id']}-capture-disabled" for case in CASES if case["id"].endswith("-header")],
+    [(case, True) for case in CASES] + [(case, False) for case in DISABLED_CASES],
+    ids=[case["id"] for case in CASES] + [f"{case['id']}-capture-disabled" for case in DISABLED_CASES],
 )
 def test_automatic_hook_skips_credentials_without_disabling_preparation(tmp_path, host, case, capture_enabled):
     requests: list[tuple[str, dict[str, object]]] = []

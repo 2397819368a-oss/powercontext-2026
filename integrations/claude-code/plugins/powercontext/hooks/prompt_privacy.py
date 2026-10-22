@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import re
 
+_PRIVATE_KEY = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)",
+    re.IGNORECASE | re.ASCII,
+)
 _PATTERN = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)"
     # Headers can contain schemes, multiple cookies, and folded continuation lines.
-    r"""|(?<![\w-])["']?\b(?:authorization|proxy-authorization|cookie|set-cookie)\b["']?"""
+    r"""(?<![\w-])["']?\b(?:authorization|proxy-authorization|cookie|set-cookie)\b["']?"""
     r"[ \t]*[:=][ \t]*[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*"
     r"""|(?<![\w-])["']?\b(?:api[_ -]?key|access[_ -]?(?:key|token)|client[_ -]?secret"""
     r"""|secret(?:[_ -]?key)?|private[_ -]?key|password|passwd|passphrase|token|authorization|cookie)\b"""
@@ -40,4 +43,5 @@ def scrub_secrets(text: str, authorization: str | None = None) -> str:
         _, _, credential = authorization.partition(" ")
         if credential:
             text = text.replace(credential, "[REDACTED]")
-    return _PATTERN.sub("[REDACTED]", text)
+    # Remove whole PEM blocks before an earlier assignment/header can consume their BEGIN marker.
+    return _PATTERN.sub("[REDACTED]", _PRIVATE_KEY.sub("[REDACTED]", text))
