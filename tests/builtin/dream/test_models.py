@@ -120,7 +120,7 @@ def test_revise_tags_requires_at_least_one_reference() -> None:
     [error] = raised.value.errors()
     assert error["loc"] == ("sources",)
     assert error["type"] == "evidence_selection_required"
-    assert "at most 32 references with Sources" in error["msg"]
+    assert error["msg"] == "sources or artifacts must select at least 1 reference (at most 32 references in total)"
 
 
 def test_revise_tags_reports_only_the_combined_limit() -> None:
@@ -136,11 +136,12 @@ def test_revise_tags_reports_only_the_combined_limit() -> None:
     [error] = raised.value.errors()
     assert error["loc"] == ("sources",)
     assert error["type"] == "evidence_limit_exceeded"
-    assert "at most 32 references" in error["msg"]
-    assert "20 Artifacts" not in error["msg"]
+    assert error["msg"] == "artifacts and sources must select at most 32 references in total"
 
 
-def test_revise_tags_allows_twenty_one_artifacts_below_the_combined_limit() -> None:
+def test_revise_tags_has_no_separate_twenty_artifact_limit() -> None:
+    # The basis_ref below is already among these Artifacts, so the combined
+    # selection stays exactly at the 32-reference limit.
     request = CreateDreamRunRequest(
         operation="revise_tags",
         tag_target=_tag_target(),

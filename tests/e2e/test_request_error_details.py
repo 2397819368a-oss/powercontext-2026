@@ -34,6 +34,14 @@ def _sources(count: int) -> list[dict[str, str]]:
     return [{"source_type": "content", "source_id": f"source-{index}"} for index in range(count)]
 
 
+def _tag_target() -> dict[str, object]:
+    return {
+        "target": {"type": "artifact", "family": "experience", "artifact_id": "experience-1"},
+        "expected_etag": "etag-1",
+        "basis_ref": {"family": "experience", "artifact_id": "experience-1", "revision": 1},
+    }
+
+
 def _settings(database: Path) -> ServerSettings:
     return ServerSettings(
         database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"),
@@ -140,3 +148,51 @@ def test_propose_experience_rejection_names_artifact_refs_over_http(tmp_path: Pa
     assert error["code"] == "invalid_request"
     assert error["details"] == {"field": "artifact_refs", "reason": "target_not_in_artifact_refs"}
     assert "artifacts" not in str(error["details"])
+
+
+def test_revise_tags_reports_only_the_combined_limit_over_http(tmp_path: Path) -> None:
+    app = create_server_app(settings=_settings(tmp_path / "tag-dream-validation.db"))
+
+    async def scenario() -> tuple[httpx.Response, httpx.Response]:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as client,
+        ):
+            rejected = await client.post(
+                "/v1/scopes/scp_validation/dream",
+                headers={"X-PowerContext-Dream-Contract": "2"},
+                json={
+                    "operation": "revise_tags",
+                    "tag_target": _tag_target(),
+                    "artifacts": _artifacts(21),
+                    "sources": _sources(12),
+                    "idempotency_key": "tag-too-many",
+                },
+            )
+            passed_validation = await client.post(
+                "/v1/scopes/scp_validation/dream",
+                headers={"X-PowerContext-Dream-Contract": "2"},
+                json={
+                    "operation": "revise_tags",
+                    "tag_target": _tag_target(),
+                    "artifacts": _artifacts(21),
+                    "sources": _sources(11),
+                    "idempotency_key": "tag-at-the-limit",
+                },
+            )
+            return rejected, passed_validation
+
+    rejected, passed_validation = asyncio.run(scenario())
+
+    assert rejected.status_code == 422, rejected.text
+    error = rejected.json()["error"]
+    assert error["code"] == "invalid_request"
+    [detail] = error["details"]["errors"]
+    assert detail["loc"] == ["sources"]
+    assert detail["type"] == "evidence_limit_exceeded"
+    assert detail["msg"] == "artifacts and sources must select at most 32 references in total"
+    assert passed_validation.status_code == 404, passed_validation.text
+    assert passed_validation.json()["error"]["code"] == "scope_not_found"

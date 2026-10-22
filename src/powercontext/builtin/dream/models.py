@@ -110,7 +110,7 @@ class CreateDreamRunRequest(BaseModel):
         if info.data.get("operation") == "revise_tags" and not artifacts and not value:
             raise PydanticCustomError(
                 "evidence_selection_required",
-                "sources or artifacts must select at least 1 reference (at most 32 references with Sources)",
+                "sources or artifacts must select at least 1 reference (at most 32 references in total)",
             )
         if len(artifacts) + len(value) > 32:
             message = "artifacts and sources must select at most 32 references in total"
