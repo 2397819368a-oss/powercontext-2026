@@ -328,6 +328,12 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         const progress = flushProgress(response);
         observedCursor = Math.max(observedCursor ?? 0, progress.currentCursor);
         acknowledged ||= progress.currentCursor >= targetPosition;
+        if (acknowledged) {
+          const pending = pendingPositions.get(scopeId);
+          if (pending !== undefined && observedCursor >= pending) {
+            pendingPositions.delete(scopeId);
+          }
+        }
         if (acknowledged && !progress.remainingWork) {
           break;
         }
@@ -337,10 +343,6 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       }
     }
     if (acknowledged) {
-      const pending = pendingPositions.get(scopeId);
-      if (pending !== undefined && observedCursor !== undefined && observedCursor >= pending) {
-        pendingPositions.delete(scopeId);
-      }
       return { acknowledged: true, ...(observedCursor === undefined ? {} : { observedCursor }) };
     }
     return {

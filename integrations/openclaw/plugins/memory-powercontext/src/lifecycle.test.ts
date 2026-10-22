@@ -609,6 +609,47 @@ describe("PowerContext lifecycle", () => {
     expect(harness.warnings).toEqual([]);
   });
 
+  it("preserves an acknowledgement when a later flush call exceeds the boundary deadline", async () => {
+    const harness = createLifecycleHarness();
+    harness.config.flushMaxCalls = 2;
+    const boundaries: AbortController[] = [];
+    harness.setClosingSignalFactory(() => {
+      const controller = new AbortController();
+      boundaries.push(controller);
+      return controller.signal;
+    });
+    let calls = 0;
+    harness.setFlushHandler(async (_scopeId, signal) => {
+      calls += 1;
+      if (calls === 1) return flushProgress(1, true);
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+      throw new Error("unreachable");
+    });
+    const context = {
+      agentId: "main",
+      sessionId: "session-ack-then-deadline",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+
+    const beforeCompaction = harness.hooks.get("before_compaction")!(
+      { messages: [{ role: "user", content: "remember this" }] },
+      context,
+    ) as Promise<void>;
+    await vi.waitFor(() => expect(harness.flushScopes).toHaveLength(2));
+    boundaries[0].abort(new DOMException("deadline exceeded", "TimeoutError"));
+    await beforeCompaction;
+
+    expect(harness.warnings).toEqual([]);
+    await harness.hooks.get("session_end")!(
+      { sessionId: context.sessionId, messageCount: 1 },
+      context,
+    );
+    expect(harness.flushScopes).toHaveLength(2);
+    expect(harness.warnings).toEqual([]);
+  });
+
   it("serializes overlapping closing boundaries without flushing a cleared position", async () => {
     const harness = createLifecycleHarness();
     const context = {

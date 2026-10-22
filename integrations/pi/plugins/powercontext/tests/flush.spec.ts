@@ -190,6 +190,44 @@ describe('pending Source flusher', () => {
     })
   })
 
+  it('preserves an acknowledgement when a later flush call exceeds the boundary deadline', async () => {
+    const diagnostic = vi.fn()
+    const boundaries: AbortController[] = []
+    let calls = 0
+    const client = {
+      request: vi.fn(async (_operation: string, _payload: unknown, signal?: AbortSignal) => {
+        calls += 1
+        if (calls === 1) {
+          return { kind: 'json' as const, value: progress(1, true), status: 200, requestId: undefined }
+        }
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+        throw new Error('unreachable')
+      }),
+    } as unknown as PowerContextClient
+    const flusher = createPendingSourceFlusher(
+      client,
+      resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '2' }),
+      diagnostic,
+      () => {
+        const controller = new AbortController()
+        boundaries.push(controller)
+        return controller.signal
+      },
+    )
+    flusher.record('scope-a', 1)
+
+    const flushing = flusher.flush('session_shutdown')
+    await vi.waitFor(() => expect(client.request).toHaveBeenCalledTimes(2))
+    boundaries[0].abort(new DOMException('deadline exceeded', 'TimeoutError'))
+
+    await expect(flushing).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
+    expect(diagnostic).not.toHaveBeenCalled()
+    await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
+    expect(client.request).toHaveBeenCalledTimes(2)
+  })
+
   it('serializes concurrent lifecycle boundaries', async () => {
     let release: (() => void) | undefined
     const blocked = new Promise<void>((resolve) => { release = resolve })

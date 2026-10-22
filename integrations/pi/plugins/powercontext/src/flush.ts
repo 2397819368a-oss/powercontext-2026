@@ -145,8 +145,14 @@ export function createPendingSourceFlusher(
           const result = await client.request('flush_memory', { scope_id: scopeId }, signal)
           if (deadlineExpired()) break
           const progress = flushProgress(result.kind === 'json' ? result.value : undefined)
-          observedCursor = progress.currentCursor
+          observedCursor = Math.max(observedCursor ?? 0, progress.currentCursor)
           scopeAcknowledged ||= progress.currentCursor >= position
+          if (scopeAcknowledged) {
+            const current = pending.get(scopeId)
+            if (current !== undefined && observedCursor >= current) {
+              pending.delete(scopeId)
+            }
+          }
           if (scopeAcknowledged && !progress.remainingWork) {
             break
           }
@@ -156,10 +162,6 @@ export function createPendingSourceFlusher(
         }
       }
       if (scopeAcknowledged) {
-        const current = pending.get(scopeId)
-        if (current !== undefined && observedCursor !== undefined && observedCursor >= current) {
-          pending.delete(scopeId)
-        }
         continue
       }
       acknowledged = false
@@ -192,7 +194,7 @@ export function createPendingSourceFlusher(
       const task = queue.then(() => flushAll(lifecycleEvent, combined, () => deadlineExpired))
       queue = task.catch(() => ({ acknowledged: false, pendingScopes: pending.size }))
       return settleWithinBoundary(task, boundarySignal, () => ({
-        acknowledged: false,
+        acknowledged: pending.size === 0,
         pendingScopes: pending.size,
       }), () => {
         deadlineExpired = true
