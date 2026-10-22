@@ -1,6 +1,6 @@
 ---
 title: PowerContext Gateway：受控模型调用与上下文复用
-description: 复用 Core 的上下文组织和隐私检查，以可选网关完成模型协议接入、稳定上下文重放、原生缓存适配与有界执行。
+description: Rust 网关复用原端口，经本机 IPC 调用 Core，在共享三后端数据库中管理复用状态，并预留第三方插件接入。
 ---
 
 - Proposal Name: `powercontext_gateway`
@@ -23,13 +23,19 @@ PowerContext Gateway 是可选的模型调用入口。它把现有 PowerContext 
 本 RFC 定义网关如何消费这些契约并控制最终请求、每次真实发送与首次响应释放。
 网关不新增 ContextRuntime、GateRuntime、记忆算法或策略数据库，也不替代 Core 的领域提交。
 
-首期随现有 Python Server 按需启用，共用进程、端口、认证和授权边界。
-支持完整历史的 Chat Completions 与无服务端会话依赖的 Responses；上下文增强要求可信的会话关联。
-仅在启用持久重放时增加**一个网关本地 SQLite 文件、两张专用表**，不增加 Core 表或数据库服务。
+PowerContext Gateway 由 Rust 实现，随 PowerContext 统一安装和启停，默认关闭。
+启用时 Rust 接管现有对外端口，Python Core 只监听本机 Unix Domain Socket（UDS）；
+原 Core API/MCP 路径由 Rust 转发，模型入口挂载于 `/gateway/v1`，不新增 TCP 监听。
+支持完整历史的 Chat Completions 与无服务端会话依赖的 Responses；上下文增强要求可信会话关联。
+
+网关持久状态复用 Server 的 `database` 配置和同一数据库，支持 SQLite、SeekDB、OceanBase，
+只在启用持久重放时通过统一迁移增加两张 `pc_gateway_*` 表。
+Python Server 持有连接、仓储与迁移，Rust 通过私有 IPC 读写网关状态；
+不另建数据库文件、数据库服务或 Rust 版 Core 仓储。
 首期不建设独立管理后台、自动工具循环、自动转录入库、自动摘要压缩、计费账本或语义响应缓存。
 
 本 RFC 与 #2086 均为提案。源码基线为 `0bc42d0b`，协作设计基线为 #2086；
-下述路由、权限、内部准备元信息和网关存储均不是基线已发布能力。
+下述 Rust 进程、IPC、接口、权限、三后端 Gateway 表和插件契约均不是基线已发布能力。
 
 | 决策 | 内容 |
 | --- | --- |
@@ -38,8 +44,8 @@ PowerContext Gateway 是可选的模型调用入口。它把现有 PowerContext 
 | 宿主的权威 | 用户历史、是否采用回答、客户端工具与副作用、工作完成、Handoff 时机。 |
 | 模型服务的权威 | 原生 KV 的保存、复用和淘汰，以及供应商定义的用量。 |
 | 接口增量 | 网关协议入口和两个会话元数据操作；Core 检查复用 #2086 的一个操作、两个阶段。 |
-| 持久化增量 | 网关独立、按需启用的两张表；没有转录库、响应恢复库和全量 attempt 账本。 |
-| 默认部署 | Server 内嵌，默认关闭；独立部署是使用同一契约的后续交付。 |
+| 持久化增量 | Server 同一 SQLite / SeekDB / OceanBase 数据库中的两张 pc_gateway_* 表；无独立状态库。 |
+| 默认部署 | Rust + Python 同机组合，默认关闭；启用后一个原有 TCP 入口，内部使用 UDS。 |
 | 安全默认 | 必需检查不可用则暂缓；strict 响应批准前不释放模型内容。 |
 
 # Motivation
@@ -98,9 +104,9 @@ curl https://pc.example/gateway/v1/chat/completions \
 
 | 接入方式 | 使用方法 | 能力边界 |
 | --- | --- | --- |
-| Server 内嵌网关 | 启用可选组件并将模型请求发到 `/gateway`；首期推荐。 | 经同一认证/授权执行器访问 Core，复用进程内准备元信息与检查。 |
-| 独立 PowerContext Gateway | 后续以 HTTP 调用现有 prepare 和 #2086 检查接口。 | 必须有可信委托；远端持久重放还需本文定义的可验证准备绑定。 |
-| 第三方网关 | 在其最终发送/释放边界接入 #2086；也可作为经过验证的上游路径。 | 不要求使用本网关的会话表；实际目标、变换、重试和可见性决定覆盖。 |
+| 同端口 Rust 网关 | 统一启动，模型请求发到 `/gateway/v1`；首期默认部署方式。 | 经 UDS 访问 Core 和 Server 网关状态仓储，保留当前认证与授权。 |
+| 显式远端 Gateway | 后续通过 HTTPS 调用相同公开契约。 | 可信委托、绑定、远端状态访问和部署生命周期须独立验收。 |
+| 第三方网关插件（预留） | 在其实际发送/释放边界调用公开 prepare/check；无需 Rust Gateway。 | 不使用私有 IPC/状态仓储；按具体版本验收，首期只预留契约。 |
 
 只修改 base URL 不一定能启用可靠会话增强。没有稳定会话关联的客户端首期使用 `check_only`：
 仍检查完整请求和响应，不推测项目、继承旧会话或自动注入。
@@ -114,15 +120,19 @@ curl https://pc.example/gateway/v1/chat/completions \
 | 是否能继续复用 | 授权、新鲜度、保留范围、完整来源依赖与复用限制。 | 发送前验证资格；持久化准确块，失效则停止该重放 epoch。 |
 | 怎么检查 | 同一输入/输出算法、模式、失败动作与临时绑定。 | 最终渲染后调用，每个真实尝试重新准入，strict 首次释放前检查。 |
 | 怎么命中缓存 | Core 提供可复用边界，实际命中属于模型服务。 | Native adapter 选择目标能力、断点、TTL 和路由提示，解析可用 usage。 |
-| 谁保存运行状态 | Core 不建立推理数据库；原 Source/Artifact 保持领域契约。 | 网关仅保存恢复注入所需的两张表，不写通用模型转录。 |
+| 谁保存运行状态 | Core 不建立推理数据库；原 Source/Artifact 保持领域契约。 | Gateway 的两张专用表由 Server 仓储持久化在同库，不写通用模型转录。 |
 | 如何写回知识 | 现有 Source/Artifact、Work/Handoff 及其验证。 | 首期不自动保存；后续显式采用现有 API，不能绕过提交。 |
 
 # Reference-level explanation
 
 ## 1. 范围、层次与非目标
 
-网关是执行适配器，业务代码置于 `src/powercontext/gateway/`，不让现有 Runtime 反向依赖网关。
-协议处理、最终渲染和传输属于网关；共享隐私/表示算法留在 #2086 指定的 context/inference/policy 所属模块。
+网关请求流水线、协议适配、准确重放、原生缓存设置和实际发送由 Rust crate 实现，
+建议源码目录为 `crates/powercontext-gateway/`。
+Python Server 继续拥有上下文算法、认证授权、三后端数据库连接、Gateway 状态仓储和统一迁移。
+Rust 以稳定 DTO 访问这些能力，不导入 Python 对象，不复制上下文选择或隐私规则，
+不直接读写 Source/Artifact 或重新启动嵌入式 SeekDB。
+现有 Runtime 不反向依赖网关；Gateway 关闭时保留原 Python Server 运行路径。
 
 首期支持单机、单网关进程、无 context references 的单 Scope、完整文本和已验证结构化工具载体。
 增强 profile 先显式选择 `assembly.sections=[{"family":"memory","limit":6},{"family":"experience","limit":2}]`，
@@ -138,78 +148,120 @@ Core 后台的 Embedding/rerank/提取仍由自己的 inference 边界负责，�
 ```mermaid
 %%{init: {"theme":"base","look":"classic","themeVariables":{"fontFamily":"Arial, Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#64748b","edgeLabelBackground":"#ffffff"},"flowchart":{"curve":"basis","nodeSpacing":28,"rankSpacing":24,"wrappingWidth":210,"padding":16,"htmlLabels":true}}}%%
 flowchart TB
-    H["<b>Agent / SDK</b><br/>客户端历史 · 客户端工具"]
-    T["<b>第三方网关（可选）</b><br/>最终调用边界接入"]
-    subgraph PC["PowerContext Server · 默认同进程"]
-        A["<b>复用认证与授权</b><br/>Principal / Scope / 执行许可"]
-        subgraph GW["可选 Gateway 组件 · 协议与执行"]
-            subgraph GW_FLOW[" "]
-                direction LR
-                P["<b>协议入口</b><br/>Chat / Responses<br/>已验证载体"]
-                L["<b>会话处理</b><br/>分类 · 注入 · 精确重放<br/>单写者"]
-                N["<b>Upstream adapter</b><br/>获准路由 · 缓存参数适配<br/>最终渲染"]
-                X["<b>发送与放行边界</b><br/>准入 → 发送<br/>缓冲 → 放行"]
-                S[("网关本地 SQLite<br/>会话状态 + 重放块")]
-                O["<b>复用现有观测</b><br/>受限元数据 · 不完整用量"]
-                P --> L
-                L <--> S
-                L --> N
-                N --> X
-                X -.-> O
-            end
+    H["<b>Agent / SDK</b><br/>历史 · 工具 · 原有服务地址"]
+    T["<b>第三方网关插件（预留）</b><br/>自身模型入口保持不变"]
+    subgraph PC["PowerContext 同一部署单元 · 统一安装与启停"]
+        subgraph GW["Rust Gateway 进程 · 唯一对外 TCP 监听"]
+            R["<b>统一路由</b><br/>原 host:port<br/>模型 / Core API / MCP"]
+            L["<b>会话与准确重放</b><br/>按新消息准备 · 单写者"]
+            N["<b>Upstream adapter</b><br/>目标确认 · 原生缓存适配<br/>最终渲染"]
+            X["<b>发送与放行</b><br/>准入 → 发送<br/>缓冲 → 检查 → 交付"]
+            R -->|"/gateway/v1"| L
+            L --> N --> X
         end
-        subgraph CORE["现有 Core + RFC 2086 · 上下文与检查"]
-            subgraph CORE_FLOW[" "]
-                direction LR
-                C["<b>Scope 上下文组织</b><br/>prepare / assembly<br/>PreparedContextBuilder"]
-                I["<b>输入 / 输出检查</b><br/>隐私 · 目标 · 完整预算<br/>输出放行"]
-                D[("现有 Scope / Source / Artifact<br/>Work / Bootstrap / Handoff")]
-                Q["<b>复用策略与 inference</b><br/>规则与算法"]
-                C --> D
-                Q -.-> C
-                Q -.-> I
-            end
+        subgraph CORE["Python Core / Server 进程 · HTTP over UDS"]
+            I["<b>IPC 与原 API 入口</b><br/>版本协商 · 当前用户 / 委托"]
+            A["<b>现有认证与授权</b><br/>Principal · Scope · 执行许可"]
+            C["<b>现有上下文与检查</b><br/>prepare / assembly / Builder<br/>check 的两个阶段"]
+            S["<b>Gateway 状态仓储</b><br/>有界读写 · CAS · 加密 · 清理"]
+            D["<b>现有领域仓储</b><br/>Scope / Source / Artifact<br/>Bootstrap / Work / Handoff"]
+            I --> A
+            A --> C
+            A --> S
+            C --> D
         end
-        A --> GW
+        DB[("Server 的同一数据库<br/>SQLite / SeekDB / OceanBase<br/>既有表 + 两张 pc_gateway_* 表")]
+        D --> DB
+        S --> DB
+        R -->|"原 Core API / MCP，保留传输语义"| I
+        L <-->|"prepare / 私有状态命令 · UDS"| I
+        X <-->|"before_send / before_release · UDS"| I
     end
-    U["<b>获准的实际模型端点</b><br/>原生 KV Cache · provider 用量"]
-    H --> A
-    GW <-->|"发送边界：获准发送 / 原始响应"| U
-    T -. "认证后的 prepare / 检查契约" .-> CORE
-    GW <-->|"会话处理 → prepare<br/>发送 / 放行边界 ⇄ 输入 / 输出检查"| CORE
-
+    U["<b>实际获准模型服务</b><br/>原生 KV Cache · 供应商用量"]
+    H --> R
+    X <-->|"获准原生请求 / 完整原始响应"| U
+    T -. "公开 prepare / check 契约" .-> R
     classDef client fill:#f1f5f9,stroke:#94a3b8,color:#0f172a,stroke-width:1.2px
-    classDef auth fill:#334155,stroke:#334155,color:#ffffff,stroke-width:1.5px
-    classDef gateway fill:#ffffff,stroke:#60a5fa,color:#1e3a5f,stroke-width:1.5px
+    classDef rust fill:#ffffff,stroke:#60a5fa,color:#1e3a5f,stroke-width:1.5px
     classDef core fill:#ffffff,stroke:#5eaaa0,color:#164e48,stroke-width:1.5px
     classDef store fill:#fff8eb,stroke:#d4a65a,color:#684b1b,stroke-width:1.2px
-    classDef support fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:4 3
     class H,T,U client
-    class A auth
-    class P,L,N,X gateway
-    class C,I core
-    class S,D store
-    class O,Q support
+    class R,L,N,X rust
+    class I,A,C,S,D core
+    class DB store
     style PC fill:#f8fafc,stroke:#94a3b8,stroke-width:1.5px
     style GW fill:#eff6ff,stroke:#93c5fd,stroke-width:1.5px
     style CORE fill:#f0fdfa,stroke:#83c5b9,stroke-width:1.5px
-    style GW_FLOW fill:transparent,stroke:transparent
-    style CORE_FLOW fill:transparent,stroke:transparent
 ```
 
-蓝色分组为网关协议与执行，绿色分组为 Core 上下文与检查，暖色节点为持久状态；虚线表示策略、观测和第三方可选接入。分组间连线标明实际调用方与入口。
+蓝色分组是 Rust 执行进程，绿色分组是 Python Server；共享数据库中的网关表仍属于 Gateway 组件。
+第三方插件走公开契约，不获得私有状态接口或数据库访问权。
+实现按协议、upstream、replay 和请求流水线拆分；不先建设通用插件框架或新运行时门面。
+Native adapter 必须控制最后一次实际发送，不能以高层 SDK 回调代替最终字节与逐次尝试覆盖。
 
-图中 Core 与网关是职责边界，不是两个必需服务。内嵌路径调用相同 application/检查算法，
-仍经过 Server 的认证授权执行器；不能因为同进程就直接取 repository 绕过资源授权。
-独立和第三方路径经已有 HTTP 契约接入，不导入 Server 私有 handler，也不直连 Core 数据库。
+### 2.1 同端口与本机 IPC
 
-实现按内聚职责拆分协议、upstream、replay/store 和请求流水线；不先建设通用插件框架或新“运行时”门面。
-Native adapter 必须接入最后一次实际发送；高层 SDK 若隐藏重试/内容变换，不能据此声明完整覆盖。
+| 模式 | 对外监听 | Core 通信 |
+| --- | --- | --- |
+| Gateway 关闭 | Python 继续监听原 `http.host:http.port`。 | 无 Rust 子进程，无 Gateway 私有 IPC。 |
+| 默认组合部署 | Rust 独占同一 `http.host:http.port`；Python 不再另开 TCP 端口。 | HTTP over UDS，复用同一 DTO、授权和算法。 |
+| 显式远端部署 | 由部署方指定已有服务入口，独立验收。 | 公开 prepare/check 使用 HTTPS；远端 Gateway 状态服务不属于首期。 |
+
+`/gateway` 是可配置挂载前缀；默认模型 Base URL 为 `http://localhost:8000/gateway/v1`。
+模型协议相对路径保持 `/v1/...`，与挂载前缀分开定义；组合部署须拒绝与 Core/MCP/静态路由冲突的前缀。
+健康、管理和 Gateway 指标复用原入口，不另外创建 admin/metrics TCP 监听。
+原 `/v1/...`、MCP、健康检查、Dashboard 和静态资源按已注册路由转给 Python，
+保留原路径、查询、认证、HTTP 状态、SSE/流式背压与取消。转发不表示对 Core 内容进行模型准入。
+未知模型路径明确拒绝，不转成任意上游代理；Gateway 私有路径不能经公共路由到达。
+外部 origin、代理头与请求关联只接受可信入口重建的值，不信任客户端伪造的内部头。
+原地址和外部端口保持不变；切换监听所有者通过受控重启完成，不承诺热切换。
+
+Linux/macOS 首期使用 UDS。启动器选择短且私有的运行目录，检查路径长度、
+目录/套接字所有权与权限；只清理确认属于本实例的失效 socket。
+Windows 本机 IPC 需独立 transport 和验收；未支持的平台明确拒绝启用，不能暗中回退到新 TCP 端口。
+UDS 只改变传输，不代替用户认证。私有调用同时携带本实例通道凭据和当前用户认证/受支持委托；
+凭据由启动器经受控句柄交付，不写日志、URL 或模型请求。
+
+### 2.2 IPC 能力与进程生命周期
+
+| 契约 | 责任与约束 |
+| --- | --- |
+| prepare / check | 使用 #2086 的公开 schema 和严格阶段；UDS 与 HTTPS 决策一致。`reuse.binding` 由 Core 生成/校验，Rust 原样保留。 |
+| 私有访问解析 | Core 根据当前认证请求解析 Principal、actor、Scope、`gateway.invoke` 与 profile 许可；结果绑定请求及实例 generation，不能由 Rust 自报用户字符串替代。 |
+| 私有状态命令 | 严格区分有界 load、put-if-absent 和 CAS transition；只操作两张 Gateway 表，不提供任意 SQL、表名或通用数据库代理。公开 GET/DELETE 复用同一仓储。 |
+| 版本与预算 | 协商 wire/schema、carrier、必需功能和大小/时间/并发上限；不兼容时拒绝 readiness，不静默丢弃未知必需字段。 |
+| 身份与有效期 | 每次受保护操作由 Core 校验当前授权；短期访问解析结果不授予永久读写或发送权。 |
+
+每个真实发送/释放前，Core 在可信 Gateway 调用上下文中重验当前 `gateway.invoke` 与 profile 许可；
+初始身份解析不代替后续执行授权，普通 check_only 的读取权限不因此扩大。
+
+私有 IPC 操作实现时同样登记在权威 `openapi/powercontext.yaml` 并标记为 internal；
+仅在 Gateway 的本机 UDS 模式装配，要求通道认证。生成器和路由测试必须证明其不进入公开
+SDK/MCP、能力清单或公共监听。它们不是对第三方承诺的新管理 API。
+两类公开 Core 操作保持不变，检查不夹带状态写入，状态命令也不能签发模型发送许可。
+
+Python Server 主进程继续拥有数据库与生命周期，并管理 Rust 子进程：
+先完成配置/数据库身份与 schema readiness、UDS 监听及版本握手，再让 Rust 占用原端口。
+安装包交付匹配平台的 Rust 可执行文件；默认启动不现场编译或下载。
+Gateway 关闭时无需启动该可执行文件。启用时版本不匹配、占用原端口或握手失败就明确失败，
+不抢选随机端口，也不降级为未检查模型透传。
+
+正常关闭先停止新准入，限时取消/排空在途请求，保存已知或不确定状态，再停止 Rust、
+关闭 UDS 与数据库。Core 不可用时停止新发送与内容释放；通道断开传播取消。
+Rust 退出由父进程确认旧 PID 终止后才可有界重启；Core 重启更新 generation，
+旧通道凭据与旧状态命令失效，未解决发送进入 Unknown，不自动重新付费调用。
+策略撤销、进程失联和取消的实际延迟以测量结果与配置期限声明，不宣称绝对即时。
+
+主模型每次调用通常有两次完整检查 RPC；新消息另有 prepare。
+状态读取按会话批量，写入只携带网关注入或有界状态，不额外复制完整转录/响应。
+IPC 排队、序列化、数据库等待与连接复用都计入总期限和 CPU/RSS、P95/P99 验收，
+Rust 实现不自动等同于整条链路更快。
 
 ## 3. 身份、Scope 和执行许可
 
-复用 `AuthenticationProvider` 得到的 `AuthenticationResult`、Principal/actor/credential identity、
-当前 Scope 目录和 `AuthorizationProvider`。不新增网关用户库、独立租户体系或网关密钥表。
+Python Core 复用 `AuthenticationProvider`、`AuthenticationResult`、当前 Scope 目录与 `AuthorizationProvider`。
+Rust 经私有访问解析取得经过验证的 Principal/actor/credential identity，不复制 Python 认证实现。
+不新增网关用户库、独立租户体系或网关密钥表。
 已有静态 Bearer 只映射一个固定主体，不能宣传为多用户隔离。
 
 | 约束 | 设计 |
@@ -236,8 +288,15 @@ Native adapter 必须接入最后一次实际发送；高层 SDK 若隐藏重试
 使用现有 Server 配置加载机制增加可选 `gateway` 段。以下字段是提议值，阈值需在验收时固定：
 
 ```yaml
+http:
+  host: 127.0.0.1
+  port: 8000
+database:
+  kind: sqlite
+  url: sqlite+aiosqlite:///./powercontext.db
 gateway:
   enabled: false
+  mount_path: /gateway
   context_owner: gateway
   privacy_mode: enforcing
   output_mode: strict
@@ -260,6 +319,9 @@ gateway:
       credential_ref: env:MODEL_API_KEY
       cache_adapter: validated-deployment-profile
 ```
+
+示例 database 仅说明 SQLite 的同库落点；替换为现有 SeekDB/OceanBase 配置即可选择对应后端。
+Gateway 不配置第二个数据库地址；UDS 路径与通道凭据由启动器管理。
 
 `context_owner` 从可信配置选择 `gateway` 或 `host`。Host 已管理 prepare/bootstrap/Handoff 时，
 网关不重复准备或追加第二份上下文，但完整请求检查始终执行。
@@ -344,45 +406,36 @@ anchor 使用固定版本的协议 canonicalizer，对原始客户端消息的�
 或者因总预算不符而暂缓。该可选策略沿用 #2086 的 off/shadow/active 和独立质量验收；
 未启用或无法证明等价时不能声称已经去重。
 
-### 6.1 准备结果不是授权凭据
+### 6.1 准备结果与完整依赖
 
-四字段 `PreparedContext`、正文中的引用、`PreparedContextBuild.lineages` 和 Bootstrap receipt 都不足以单独批准持久重放。
-Core 需要在实际选中并完成 render/fit 的路径上产生**完整、有界的复用依赖**：
-确切资源/版本、所属 Scope、内容摘要、适用资格/新鲜度规则、最大保留时间和输出内容绑定。
-已有 origins/lineages 可以提供部分输入，不能直接改名为授权证明。
+普通四字段 `PreparedContext`、引用文本、`PreparedContextBuild.lineages` 和 Bootstrap receipt
+都不能单独批准持久重放。Core 在实际 select/render/fit 后产生完整、有界依赖：
+准确资源/版本、所属 Scope、内容摘要、资格/新鲜度、最大保留与输出绑定。
+首期增强仍限定 memory/experience；其他 family、代码和 reference 需完整依赖与独立验收。
 
-首期内嵌网关在同一次授权 application 调用中取得 #2086 定义的完整复用元信息。
-复用同一准备路径及约束语义，不另建 prepare 算法、不暴露私有 `_prepare_build` 给网关。
-公开 prepare 默认仍返回严格四字段；显式 `include_reuse=true` 才返回版本化 envelope。
-未实现完整依赖的 family/代码/reference 不能进入该增强 profile；缺失依赖不能解释成“无需校验”。
+Rust 经 UDS 调用现有 `prepare_context(include_reuse=true)`，取得 #2086 的版本化
+`context + reuse`，而不依赖 Python 私有对象。未请求时保留严格四字段默认结果。
+先由 `get_capabilities` 与本机握手确认 schema、carrier、family 和上限；不支持则拒绝对应增强。
+`reuse.constraints` 交给 Rust native adapter，`reuse.binding` 连同准确注入经状态 IPC 保存到 Server 数据库。
+准备、状态持久化和实际发送是不同边界，不能声称一次 prepare 已原子完成模型执行。
 
-每次发送前，由 Core 的原领域读取/授权能力验证这些有界依赖：
-当前 Scope/资料权限、被选版本是否仍可用于该历史用途、active/retired、必要 head/freshness、
-当前隐私与保留策略。此验证不重新做语义搜索或 Embedding。
-单 Scope 也需验证资料生命周期；Scope 可读不代表已撤销资料可以永久外发。
+### 6.2 每次重放的当前资格与绑定
 
-任何依赖失效、过期或无法确认时返回 `context_refresh_required` / withhold，停止旧 epoch。
-宿主以新会话或显式 Handoff 建立新边界；不可原地替换旧块、拼接两个语义窗口或破坏原生签名。
-新增资料不要求每次重算所有历史查询；profile 必须明确最大新鲜度期限，以及新用户消息/显式刷新边界。
+每次 `check_context(phase=before_send)` 提交所有历史块的绑定和准确载荷位置。
+Core 重新认证，验证当前 Scope/资料权限、准确版本的资格、active/retired、
+必要 head/freshness、隐私与保留要求；验证不重新语义搜索或 Embedding。
+Scope 可读不表示已撤销资料可以永久外发，且不能只验证最新 prepare。
 
-### 6.2 独立部署的可验证绑定
+`reuse.binding` 使用 #2086 定义的有界、可认证加密格式，绑定主体/委托、Scope、
+准确内容摘要、完整私有依赖、策略和期限。Rust 不持有 Core 签发密钥，也不能自行延长资格。
+验证篡改、过期、audience/subject/Scope、key version、轮换和吊销延迟。
+响应检查使用同一操作的 `before_release`，关联本次 `request_binding`；
+准备绑定、发送批准和释放批准不能互相替代。
 
-远端增强是后续交付，直接消费 #2086 的共同契约，不定义第二种准备或绑定格式。
-通过现有 `prepare_context(include_reuse=true)` 取得版本化 `context + reuse` envelope；
-未请求时保留严格四字段默认结果。先从 `get_capabilities` 确认 schema、family/carrier 与上限，
-不支持时明确拒绝增强，不把普通 prepare 正文当作来源证明。
-
-`reuse.constraints` 供本地 native adapter 规划；`reuse.binding` 封装准确内容、完整私有依赖、
-主体/委托、Scope、策略和期限。使用 #2086 的有界、可认证加密格式，不创建额外响应头或永久 receipt 表。
-验证轮换、篡改、过期、错误 audience/subject/Scope、未知 key version 和吊销延迟。
-
-每次发送前调用 `check_context(phase=before_send)`：
-`prepared_contexts` 列出全部历史块的绑定与版本化实际载荷位置，Core 重新认证、验证准确内容和当前依赖。
-最终准入仅绑定此次真实载荷与实际目标；准备绑定不是 bearer 权限或已注入证明。
-响应检查使用同一操作的 `before_release` 阶段，并关联此次 `request_binding`。
-
-能力缺失时只能提供明确的 `check_only`，不能在已进入增强会话后静默丢弃绑定或不安全地继续冻结重放。
-第三方可消费同一 prepare/check 契约，无需部署本网关状态库。
+依赖失效、过期或无法确认时返回 `context_refresh_required` / withhold，停止旧 epoch，
+由宿主以新会话或显式 Handoff 建立新边界；不原地替换历史块、拼接语义窗口或破坏签名。
+Profile 明确最大新鲜度与新用户消息/显式刷新边界，不每轮重算历史查询。
+能力缺失只能进入明确的 check_only 接入；已有增强会话不能静默丢弃绑定继续发送。
 
 ## 7. 模型原生缓存与完整预算
 
@@ -435,25 +488,27 @@ Core 表示策略在准备阶段执行；网关不得二次压缩已经冻结的
 ```mermaid
 sequenceDiagram
     participant H as Host
-    participant G as Gateway
-    participant C as Core / RFC 2086
-    participant S as Gateway store
+    participant G as Rust Gateway
+    participant C as Python Core / UDS / RFC 2086
+    participant S as Server state repository / shared database
     participant U as Actual upstream
     H->>G: Complete request + Scope + conversation
-    G->>G: Authenticate / authorize / lock / classify
-    G->>G: Load exact replay blocks and preparation bindings
+    G->>C: Resolve current authenticated access over UDS
+    C-->>G: Verified Principal / Scope / profile / generation
+    G->>G: Lock conversation / classify
+    G->>S: Load exact blocks and bindings through private IPC
     opt New supported user message
-        G->>C: Existing prepare with shared reuse metadata
+        G->>C: prepare_context include_reuse over UDS
         C-->>G: Context + reuse constraints and complete bounded dependencies
         G->>S: Put immutable injection or reuse marker before send
     end
     G->>G: Exact replay + actual target + native rendering
-    G->>C: check_context before_send or same in-process algorithm
+    G->>C: check_context before_send over UDS
     C-->>G: Current payload-bound and target-bound admission
     G->>S: Persist sending marker
     G->>U: One admitted attempt
     U-->>G: Complete raw response + available usage
-    G->>C: check_context before_release before any model content release
+    G->>C: check_context before_release over UDS before content release
     C-->>G: Current content-bound release decision
     G->>S: Persist release authorization and reply anchor
     G-->>H: Checked result in original protocol
@@ -461,7 +516,7 @@ sequenceDiagram
 
 检查沿用 #2086 的 `allow/block/withhold`、当前授权、可信 stage/profile、
 覆盖范围、最终内容/目标绑定和有效期；check-only 操作本身不证明真实发送行为。
-内嵌与远端执行必须用同一规则和一致性样例，不在网关实现另一个更宽松的隐私判断。
+本机 IPC 与远端执行必须用同一规则和一致性样例，不在网关实现另一个更宽松的隐私判断。
 
 接收时先限制原始字节、严格解析 UTF-8/JSON、拒绝重复键和不支持结构，再执行可选增强。
 原始载体保留到检查完成，与最终载荷一起纳入适用内容检查，避免序列化归一化隐藏禁止值；
@@ -481,7 +536,7 @@ prepare 所需查询 Embedding/rerank 仍在 Core 自己的发送前检查边界
 
 缓冲限制覆盖响应字节、时间、并发、解析深度和总内存。2 MiB × 16 只是正文下界，不能当作进程 RSS 上限。
 超限、不完整 JSON/工具参数、上游断流、释放检查失败或不可用时，不释放并尽力取消。
-不把敏感响应溢写到 SQLite 或临时文件。发送与释放前校验当前策略，撤销延迟按实际边界测量。
+不把敏感响应溢写到任何数据库或临时文件。发送与释放前校验当前策略，撤销延迟按实际边界测量。
 SSE 头已发出后，用受支持错误事件终止，不能声称改变已发出的 HTTP 状态。
 
 ### 8.2 有界发送与重启
@@ -493,7 +548,7 @@ SSE 头已发出后，用受支持错误事件终止，不能声称改变已发�
 确定未发送的连接失败才可在有界预算内重试，重新完成准入。
 任何可能到达上游的超时、连接丢失或进程崩溃都记为 `outcome_unknown`，不自动付费重发、不自动 fallback。
 
-会话只允许一个在途请求，进程内锁加数据库版本 CAS 保证状态更新。
+会话只允许一个在途请求，Rust 会话锁配合 Server 仓储的 version/generation CAS 保证状态更新。
 首期不依赖租约过期推导“上游没执行”，不宣称分布式恰好一次。
 同会话并发冲突返回 409，客户端在原调用完成后重试；取消按实际发送状态保存已知/不确定结果。
 发送前被 block/withhold 不推进已发送状态；已取得完整终态但拒绝释放时记录已知失败，
@@ -542,7 +597,7 @@ Core API 的请求体继续使用 `scope_id` 和现有扁平 operationId；网�
 GET 不返回上下文/响应正文、凭据或命中秘密；已不存在会话仍按隐私约束处理，不泄露他人资源存在性。
 DELETE 是对网关派生副本的操作，不等于删除 Source/Artifact，也不能收回已发送给模型的材料。
 删除与在途发送/释放在同一会话状态机排序；正在取消的请求返回 409/稍后重试，
-成功只在阻止后续本地使用并完成可见行删除后确认，不承诺 SQLite 页、备份或 provider 端物理擦除。
+成功只在阻止后续本地使用并完成可见行删除后确认，不承诺数据库页、备份或 provider 端物理擦除。
 
 `X-PowerContext-Scope-ID` 必须与可信绑定一致；领域会话路径以路径 Scope 为准，冲突输入不能换归属。
 如客户端不能传 Scope header，可信的一凭据单 Scope 绑定可以省略它；不能以全局默认 Scope 猜测隔离。
@@ -553,40 +608,84 @@ DELETE 是对网关派生副本的操作，不等于删除 Source/Artifact，也
 不把 withhold、empty、upstream error 和本地拒绝混成同一种成功响应。
 所有 PowerContext 控制头、复用绑定和调用凭据均在最终上游请求中剥离；只发送获准 provider headers。
 
-上述均为设计，本文不修改 `openapi/powercontext.yaml`。实现时 Core 检查/管理元数据操作进入该权威契约、
+公开管理操作继续使用原 Scope 路径；Gateway 关闭后的状态查询/清理由已授权 Server 仓储处理，
+在途状态返回 409，不绕过释放排序。私有 IPC 不作为第三方接入面。
+
+上述均为设计，本文不修改 `openapi/powercontext.yaml`。实现时 Core 检查/管理元数据与标记 internal 的 IPC 操作进入该权威契约、
 生成客户端并运行 `make api-generate` / `make contract-test`；
 模型 wire schema 单独版本化、记录 OpenAPI 入口和一致性 fixture，不用普通 Core ErrorResponse 冒充供应商协议。
 
 ## 10. 持久化、成本与生命周期
 
-### 10.1 为什么需要两张网关专用表
+### 10.1 同库的两张 Gateway 表
 
-精确注入需在请求重试和网关重启后恢复，单靠内存不能保证历史一致。
-现有 Source 是领域证据、Artifact 是版本化知识，Bootstrap receipt 是特定交付去重，
-usage 日聚合是允许缺失的统计；均不能承担未交付模型调用或不可变注入的状态机。
-不应为少建表而把这些私密副本塞入 Source/Artifact、processing lease 或 decision observation。
+准确注入需在请求重试和重启后恢复。Source 是领域证据，Artifact 是版本化知识，
+Bootstrap receipt 用于特定交付去重，usage 是允许缺失的统计，均不承担网关发送/重放状态。
+复用数据库和迁移设施，不把私密副本写成 Source/Artifact，不触发自动提取。
 
-只在可选网关持久重放启用时建立 `gateway.sqlite3`：
+启用持久重放时，通过 Server 的统一迁移注册两张组件专用表：
 
 | 表 | 主键与必要内容 | 更新约束 |
 | --- | --- | --- |
-| `gateway_conversations` | deployment/principal/Scope/conversation/epoch；配置/renderer/目标 profile；客户端历史摘要、最近回答 anchor；最新 attempt 状态/摘要；版本、期限。 | CAS 更新；最新 attempt 是有界防盲重发标记，不是全量账本；不含完整历史或回答正文。 |
-| `gateway_replay_blocks` | 完整会话分区 + message anchor；准确注入/原生位置、复用绑定、内容摘要、创建/失效时间。 | put-if-absent；冲突失败；按会话/期限可删除；只保存该网关注入。 |
+| `pc_gateway_conversations` | deployment/Principal/Scope/conversation/epoch；配置/renderer/target profile；历史摘要、最近回答 anchor；最新 attempt 状态、最近 transition identity/hash、version、期限。 | CAS 更新；不含完整历史或回答正文，不是全量 attempt 账本。 |
+| `pc_gateway_replay_blocks` | 完整会话分区 + message anchor；准确注入、原生位置、复用绑定、内容摘要和期限。 | put-if-absent，同值可读回，不同值冲突；仅保存本网关注入。 |
 
-首期不新增 Core 表，不新增 profile/key/log/response/capture/tool/summary 表。
-配置用可信文件/secret reference，低敏诊断用已有可观测性；选中版本和提交仍使用 Core 的领域存储。
-如果关闭持久重放，必须回到无自动跨请求增强的 check_only，不能在已有增强会话中悄悄丢失注入。
+同库指复用 Server 已选择的准确数据库身份：SQLite 是同一文件，
+SeekDB 是同一嵌入式实例/数据库，OceanBase 是同一已配置租户/数据库。
+不增加 Gateway 数据库 URL、第二个 SQLite 文件、独立 schema 服务或独立迁移历史。
+新增两张表归 #2199；#2086 的算法与检查本身仍零新增表。
+不再增加 profile/key/log/response/capture/tool/summary 表。
 
-SQLite 单机本地 WAL，严格目录/文件权限，不放共享文件系统；仅支持单进程网关所有者。
-打开状态库时持有生命周期级的独占进程锁；第二个所有者启动失败，不能依赖请求级 CAS 掩盖多进程发送。
-不因 Core 使用其他数据库就默认提供网关多机恢复。
-新文件有独立且显式的版本迁移；未知版本拒绝打开，迁移先备份并验证准确块读回。
-升级不能静默给旧块绑定今天的来源/权限；缺失新版本必需依赖时关闭旧 epoch。
+### 10.2 Server 持有仓储，Rust 通过 IPC 访问
 
-### 10.2 上限、过期与清理
+Python Server 复用现有 `AsyncDatabase`、backend profile、表定义与事务边界，
+实现仅限 Gateway 表的状态仓储。Rust 无数据库凭据、不直接访问任何表；
+私有状态操作验证当前用户/Scope、进程 generation、epoch、expected version 和合法状态转换。
+加密、读回校验、配额与同值 put-if-absent 位于这一持久化边界。
+这是 Gateway 组件的状态能力，不是新的记忆算法或任意数据库 RPC。
+
+| Server 后端 | 同库落点与复用 | 必需验收 |
+| --- | --- | --- |
+| SQLite | 相同文件、现有 Python engine/事务与 WAL/busy timeout；两表与 Core 表共存。 | 与 Core 写入并发、锁等待、取消/回滚、进程重启、准确字节读回。内存库不能宣称持久重放。 |
+| SeekDB | 复用 Python 持有的同一个 embedded profile 与数据库；不重复启动实例。 | 实际嵌入式运行、事务/CAS、冲突回滚、重启读回与完整清理。 |
+| OceanBase | 复用现有官方异步 dialect、同一租户/数据库与连接策略。 | 实际服务上的提交、回滚、断连/不确定提交、二进制/JSON 字节与索引兼容；不能由 MySQL mock 代替。 |
+
+两表使用现有方言无关类型与后端变体，不引入向量索引或供应商特有 JSON 更新语义。
+键长度、大小写/排序规则、唯一约束、密文大小和期限索引须在三后端上验证；
+不能截断身份字段或忽略约束以凑建表成功。
+核心记录和 Gateway 记录共享数据库，但各自事务提交，不把资料写入和远端模型调用视为同一事务。
+
+同值 put 判定依据完整身份、准确内容/绑定与摘要，而非比较每次随机加密后的密文字节。
+最近 transition identity/hash 随 version 原子保存；若读回不能证明同一提交或已失效，就暂缓，不新增完整事件账本。
+
+put 或 transition 的 IPC 回复丢失时，使用相同分区/anchor 或 transition identity 精确读回；
+只有准确同值/预期 version 证明提交完成才能继续。不确定落库不能换 ID 再写。
+网络模型调用不在数据库事务内等待。三后端均按并发上限控制仓储等待，避免拖住 Core 工作。
+
+首期每个 deployment 只有一个活动 Rust 发送者，由同机启动器和生命周期锁约束。
+共享远端数据库不等于多机发送协调：部署系统必须先停止或隔离旧发送者，再启用同 deployment 的新发送者；
+未确认时拒绝接管，不能以租约到期或 CAS 推断上游没有执行。
+重启遇到 Sending/未确认交付仍进入 Unknown，不自动付费重发。
+多机自动故障转移与分布式恰好一次不属于首期。
+
+### 10.3 统一迁移与兼容
+
+复用 [RFC 1771](1771-unified-database-migrations.md) 及现有迁移入口，
+将 `gateway-state` 注册为可选组件 bundle；该 bundle 是本设计的新增项，不是当前 CLI 已有选项。
+SQLite、SeekDB、OceanBase 各有受验证的资源/适配，不让 Rust 启动另一个迁移器。
+已存在数据库的升级执行明确的 plan/apply/verify；既有控制表复用，未知版本或缺少必需结构使增强 readiness 失败。
+迁移与共享库写入者的协调按现有部署契约执行，不能只停 Rust 就假设所有 Core 写入者均已停止。
+
+新部署和升级均在模型流量前完成 schema 校验，普通请求不做 DDL、全库回填或隐式修复。
+关闭 Gateway 或仅使用 check_only 不自动创建网关表；已有表只保留/按策略清理，
+禁用组件不删除 Core 数据。内存数据库拒绝持久增强，不悄悄创建文件替代。
+升级不把今天的来源/权限赋给旧块；缺少必需依赖时关闭旧 epoch。
+备份、恢复、retention 和容量规划覆盖整个共享库；恢复后先验证当前授权与绑定，不自动恢复旧发送许可。
+
+### 10.4 上限、过期与清理
 
 持久正文遵守部署保留策略，使用受管理密钥的认证加密；密钥不可用时拒绝敏感持久写入。
-密钥不写进 SQLite；加密不能替代 Scope/owner 校验、备份权限和当前授权。
+密钥不写进数据库；加密不能替代 Scope/owner 校验、备份权限和当前授权。
 会话/消息摘要使用部署 HMAC，避免把低熵内容 hash 当作可公开诊断。
 
 默认上限提议为 idle 1 小时、绝对 24 小时、128 个块、每会话 256 KiB；
@@ -595,21 +694,24 @@ TTL 到期先停止读取/发送，再异步清理；cleanup 尚未执行不能�
 
 128 块是条目上限，256 KiB 是累计 payload 上限，不是每块上限。
 一个主体最多 100 个活跃增强会话时，正文上界约 25 MiB；1,000 个主体约 25 GiB，
-还需计算索引、加密、WAL 和备份。部署必须配置主体与全局总字节/会话准入上限，不能仅靠 TTL。
+还需计算索引、加密、WAL/redo 与备份；共享库容量必须包含这些网关副本。部署必须配置主体与全局总字节/会话准入上限，不能仅靠 TTL。
 容量达到上限时拒绝新增强，不能驱逐仍需重放的块后继续发送。
 
 读写按完整会话键和有界 anchor 批量查询；每次 prepare 的候选仍受原条目上限约束。
 完整会话去重后的复用依赖最多 64 个，当前资格验证受该总上限约束，而不是只计算本轮 8 个候选。
 达到依赖上限就暂缓并要求新边界，不能截断依赖清单继续发送。
 单次新消息不扫描所有会话、全部 Source 或整份 Memory 集合。
-过期清理按索引有界批次推进；测量热会话并发、WAL 增长、重启和清理延迟。
+会话行维护存储字节/块数，随状态事务更新。单活部署可在 readiness 按索引聚合恢复准入计数，
+并测量该启动工作；普通增量请求不反复全库 SUM。计数或提交无法确认时先暂缓准入，再精确读回/重建。
+过期清理按索引有界批次推进；测量三后端热会话并发、锁等待、WAL/redo 增长、重启和清理延迟。
 
 客户端历史虽不持久化，仍要逐次解析/扫描，成本随请求长度线性增长；
 完整隐私检查和 strict 输出缓冲的 CPU/内存成本不能被“只为新消息召回”掩盖。
 
 ## 11. 用量、运行治理与可观测性
 
-共用现有 telemetry、usage wrappers、统计/sink 和无内容诊断规范。
+跨语言沿用既有有类型 usage 与无正文观测契约：Rust 产生受限事件，Server 复用现有 sink。
+Python 侧使用 `log_safely`；Rust 安全日志适配执行相同字段白名单与失败不改变业务结果的规则。
 新增 operation/unit/outcome、协议、有限原因与 coverage 必须登记字段白名单并同步中英文指南，
 使用 `log_safely`，复用请求/trace 身份，不记录 prompt、引用正文、响应、密钥或敏感路径。
 日志与允许丢失的 usage 不能充当响应恢复、审计或财务账本。
@@ -618,6 +720,7 @@ TTL 到期先停止读取/发送，再异步清理；cleanup 尚未执行不能�
 可取得的普通输入/缓存读写/输出/reasoning 用量、已知/估算/未知状态和未完成原因。
 复用 #2086 在 inference/usage 边界的可选元信息，不另定义第二套通用用量模型；
 日聚合不能反推出缺失的缓存或失败尝试，unknown 不记零。
+Rust 不直接调用 Python 日志函数；跨进程传递的事件仍需类型与字段白名单验收。
 关联 task ID 是观测信息，不证明宿主任务成功。
 
 首期执行治理是有界并发、输入/输出大小、超时、取消与背压，不建设复杂限流或硬费用预留。
@@ -629,12 +732,41 @@ TTL 到期先停止读取/发送，再异步清理；cleanup 尚未执行不能�
 
 | 能力 | 组合方式 | 开启前的独立验收 |
 | --- | --- | --- |
-| 独立部署 | 同一 Core prepare/check、可信委托和可验证复用绑定。 | HTTP 真实链路、当前授权、key rotation、绑定长度/过期、取消和故障。 |
+| 显式远端部署 | 相同公开 Core prepare/check、可信委托与可验证绑定；状态访问另验收。 | HTTPS、实际目标、轮换、过期、取消、故障与远端状态归属，私有 UDS 不公开。 |
 | 只读记忆工具 | 显式允许的 MCP/HTTP 工具；结果保持原证据/权限，工具往返纳入完整检查与准确重放。 | 模型可见目录、宿主可见行为、轮数/成本上限、原生 tool/reasoning 配对。 |
 | 写工具/副作用 | 默认关闭；用户明确授权，沿用领域审批、幂等和提交。 | 不能把执行许可当工具授权，不能在隐藏循环中默认批准写入。 |
 | 显式保存对话片段 | 用户/宿主要求时，复用 `/v1/sources/content` 或 working-notes；稳定 source_id + 准确同值重试。 | 剥离网关注入仅依据可信注入记录；隐私/保留、回执、冲突与读取验收。 |
 | 长对话连续性 | 优先宿主显式 Handoff/rollover，采用原 prepare/finalize/commit/continue 流程。 | 真实持久化/readback，不把临时摘要当 Handoff，不自动宣称接收/完成。 |
 | 自动 compaction | 若有独立质量与完整费用证据，再定义新窗口、摘要证据和签名兼容。 | 摘要调用也逐次检查/计费，明确缓存失效与不可逆信息损失。 |
+
+### 12.1 第三方网关插件接入契约
+
+插件是可选接入方式，不是 Rust 网关首期必须同时交付的一套插件平台。
+已有第三方网关的用户可以直接消费 Core，无需部署 PowerContext Gateway；
+其模型 URL 保持自身规则，不要求实现 `/gateway/v1`，也不获得 Gateway 私有状态接口。
+
+| 插件阶段 | 共同契约 |
+| --- | --- |
+| 能力/身份 | 使用公开 get_capabilities，绑定支持的用户认证/受限委托、Scope、目标 profile 与版本；不信任自报 Principal。 |
+| 上下文准备 | 需要增强的新消息调用 `prepare_context(include_reuse=true)`；唯一注入所有者，保留准确值与绑定。 |
+| 原生适配/发送 | 最终执行侧消费 `reuse.constraints`，完成实际目标的原生缓存设置与最终渲染；逐次尝试调用 `check_context(before_send)`。 |
+| 响应交付 | 有界缓冲完整受支持响应，关联本次 request_binding 并调用 `check_context(before_release)`，获准后释放。 |
+| 会话/失效 | 使用第三方已有的可靠状态设施；准确重放需完整依赖与稳定会话，失效则新边界，不能把同 Scope 当共享会话。 |
+
+各品牌适配器只转换协议、身份和生命周期，选择/隐私规则保持在 Core。
+请求级前置钩子不自动等于最终出站钩子；需覆盖协议映射之后的准确字节、每次 retry/fallback、
+缓存回复、错误正文和首个流式内容。并行 moderation 或异步日志不能代替阻断。
+首个 enforcing profile 关闭第三方答案/语义缓存，原生 KV 能力按目标单独验证；
+后续缓存回复须独立定义当前授权与释放契约。
+
+第三方网关必须是获准的数据处理方。若隐私目标包括阻止数据进入外部 SaaS 网关，
+检查必须先在宿主或自建入口执行；远端插件不能撤回已经收到的数据。
+将第三方作为 Rust Gateway 上游时，只启用已验证的透明目标/内容/cache-field 保持 profile；
+有后续不透明变换时需第三方最终边界接入，必需覆盖无法建立则拒绝。
+
+首期交付版本化规范与一致性样例，预留插件包入口；
+具体网关插件按明确需求选择真实版本开发、验收、发布支持清单。
+不宣称 LiteLLM、Portkey 或其他产品已兼容，不新增各品牌专用 Core API 或插件数据库表。
 
 网关模型完成不等于用户采用，下一轮重复出现也不等于明确知识保存授权；首期不根据这些启发式自动入库。
 未来保存使用现有同值 capture 幂等契约：同一完整 Source identity 和准确内容/metadata 返回原回执，
@@ -646,22 +778,26 @@ Working Note 是显式短期证据，不自动晋升 Memory。
 
 ## 13. 分期与验收
 
-### P0：随 Server 运行的最小闭环
+### P0：Rust 网关的同端口闭环
 
-先交付单 Scope、明确会话 ID、memory/experience 的完整复用依赖、Chat 和完整历史 Responses、
-单一获准部署 profile、strict 文本/结构化工具响应、准确持久重放及有界执行。
-不透明 carrier 或其他 family 通过能力声明排除，不以宽松透传补齐。
+先完成 Rust 可执行文件交付、统一启停、UDS 协商/通道认证、当前身份与 Scope 解析、
+Core API/MCP 代理兼容和有界状态 IPC；原端口由单个监听者持有，关闭组件保留原 Server 行为。
+本机增强从首期就使用 #2086 的版本化 prepare/check、完整复用依赖与绑定，
+这些跨进程契约是 Gateway P0 前置条件，不能留待远端部署阶段补齐。
 
-#2086 的共享输入/输出检查和内部完整复用依赖是安全前置条件；
-其独立无网关切片仍可先交付。本组件只有前置条件验收后才能开启 enforcing/增强声明。
-P0 内嵌无需 HTTP 检查往返、独立网关部署或远端准备绑定。
-只需要检查的用户可以不开 replay，不创建两张网关表。
+交付单 Scope、明确会话 ID、memory/experience、Chat/完整历史 Responses、单一获准目标、
+strict 文本/工具输出、准确重放和有界执行。
+三后端共享数据库的表、迁移、事务与重启读回均需真实验收，
+通过哪个后端就声明哪个后端；仅有接口或 SQLite 测试不能声称全部支持。
+check_only 可不开重放，无需创建两表。第三方只交付接入规范与一致性样例，不强制开发具体插件。
 
-### P1：远端与更多协议
+### P1：选定插件、远端与更多协议
 
-验证已有 prepare 的显式 opt-in envelope 及 #2086 一个远端检查操作的两个阶段，交付独立部署/第三方 conformance 样例。
-补齐 Messages、相应原生签名和更多受支持 carrier/family；每项单独公布真实客户端和部署版本。
-不因 P0 已通过就默认这些路径受保护。
+按需求选定第三方网关版本，验证最终发送/释放、原生缓存保持、可信委托和错误/取消语义，
+再交付对应轻量适配插件；不先建设通用插件平台。
+显式远端部署单独验收 HTTPS 与状态访问方案，不将私有 UDS 状态接口自动暴露公网。
+补齐 Messages、原生签名及其他 carrier/family；每项公布真实客户端/部署版本。
+Windows 本机 IPC 在对应实现完成后独立验收，默认不另占 TCP 端口。
 
 ### P2：按证据扩展
 
@@ -672,15 +808,18 @@ P0 内嵌无需 HTTP 检查往返、独立网关部署或远端准备绑定。
 
 | 维度 | 可复现验收 |
 | --- | --- |
-| 两份 RFC 一致 | 进程内和 HTTP 使用相同策略样例；未知/不可用、授权、真实目标、内容绑定和有效期一致。 |
+| 两份 RFC 一致 | Python 进程内、Rust UDS 和 HTTPS 使用相同策略样例、DTO 与绑定；当前授权/目标/期限一致。 |
 | 检查契约 | phase 与 DTO 不混用；缺失/过期/跨请求绑定、历史块错误位置、HTTP 200 的 block/withhold 均不发送/释放；检查不重做 prepare。 |
+| 端口与 IPC | 开关前后仅使用原 TCP 端口；真实双进程验证私有路由不可外达、伪造通道/用户失败、版本不匹配、父子退出、Core/MCP/SSE 代理兼容与取消。 |
+| 三后端同库 | SQLite/真实 SeekDB/真实 OceanBase 分别验证同库两表、事务/CAS、约束、Unicode/密文读回、迁移、隔离删除及与 Core 并发写入。 |
+| 插件预留 | 一致性样例覆盖逐次重试/fallback、变换后最终载荷与首个响应释放；没有实际品牌验收就不声明兼容。 |
 | 隐私 | 在宿主历史、上下文、工具结构、转义/重复键、原始错误植入禁止值；受控上游/宿主分别证明未收到阻断内容。 |
 | 复用与权限 | 当前 Scope 拒绝、Artifact retired/删除、head/freshness 变化、绑定篡改/过期、跨用户/Scope ID 不能继续重放。 |
 | 历史一致性 | 首条、新消息、工具轮、准确整块重复与部分重合、重新生成、客户端编辑/压缩、不同会话同一问题、host/gateway 同时接入。 |
 | 原生载体 | 角色/工具 ID/顺序/内容块不变，renderer 变化明确，签名或隐藏历史不支持时拒绝。 |
-| 状态和恢复 | 块冲突/磁盘满阻止发送；真实进程崩溃覆盖发送前、发送后、释放前后；Unknown 不自动重发。 |
+| 状态和恢复 | 三后端块冲突/存储不可用阻止发送；IPC 回应丢失按相同 identity 精确读回；真实双进程崩溃保留 Unknown。 |
 | 并发与取消 | 同会话只准一个在途，PDP/策略失败不旁路，客户端中断、SSE 背压、超限和清理不泄露。 |
-| 部署与迁移 | 默认关闭不创建状态库；开启后重启准确读回；未知 schema/key 拒绝；删除阻止后续本地使用。 |
+| 部署与迁移 | 默认关闭不建 Gateway 表；同端口启用只增 UDS，注册 bundle 后三后端读回；未知 schema/key 拒绝。 |
 | 领域复用 | prepare 默认四字段/opt-in envelope 严格区分，不重复注入，不自动建 Source/Memory/Handoff，不把隐私失败消费成成功窗口。 |
 
 实际协议支持需用受支持客户端和真实 provider 逐项验收。
@@ -708,7 +847,8 @@ Mock 上游适合证明本地字节/错误处理，不能证明真实缓存命�
 # Drawbacks
 
 网关进入关键模型调用路径，会增加故障点、授权/扫描开销、strict 交付延迟和隐私副本保留责任。
-持久重放带来本地状态、密钥、清理和升级成本；单机 SQLite 不提供多机故障转移。
+Rust/Python 双进程、完整检查和状态 IPC 增加版本协商、序列化、取消与进程治理成本。
+持久重放在 Server 共享库中增加私密副本、索引、锁等待、密钥、清理与升级负担；三后端支持不等于多机故障转移。
 可靠增强要求会话/完整历史/协议能力，不能覆盖所有只改 base URL 的客户端。
 
 缓存稳定、实时流式、即时资料变化和自动摘要存在取舍。
@@ -725,6 +865,7 @@ Mock 上游适合证明本地字节/错误处理，不能证明真实缓存命�
 | 复制完整转录和响应/attempt 账本 | 首期没有相应恢复/财务保证需求，只保留注入和最近未解决状态。 |
 | 新建网关用户/租户/策略管理平台 | 重复现有 Principal/Scope/Access/Policy；先复用现有边界和可信配置。 |
 | 通过不透明下游代理宣称完整安全 | 无法验证真实目标/变换/重试；必须经最终插件或受验证透传路径。 |
+| Rust 直接持有三后端连接与迁移 | 首期复用 Server 的 engine、嵌入式 SeekDB 生命周期与迁移；经有界 IPC 访问 Gateway 状态，承担相应调用成本。 |
 | 缓存优先保留旧内容 | 可能继续外发已撤销资料；当前安全与资料资格优先。 |
 
 # Prior art
@@ -738,14 +879,14 @@ Server 身份授权、DecisionPolicy、inference adapters 与 usage wrappers 提
 
 合并前确定首个真实客户端/provider/SDK 版本组合、配置入口、部署 profile 所需的资料保留约束、
 完整依赖的 family 细节、密钥设施和资源/SLO 验收数值。
-执行许可 action/role、两张专用表、默认内嵌、最终边界检查和不确定发送不自动重试均为明确设计决策。
+Rust 流水线、同端口 UDS、Server 同库仓储、三后端、两张 pc_gateway_* 表、当前授权和不确定发送不重试均为明确决策。
 
-远端响应头的 envelope 编码/加密 key rotation 属于 P1 实现前需固定的 wire contract；
-未完成时 P1 不得声称支持远端持久增强，不影响 P0 使用同一内部依赖契约。
+公开复用绑定的 wire/加密轮换、内部 IPC schema/internal 过滤和三后端 gateway-state 资源
+必须在 Gateway P0 启用前固定并验收；接口名字或单后端样例不构成已交付声明。
 多机、财务账本、自动 compaction 和写工具不属于首期未完成工作。
 
 # Future possibilities
 
 在已验证的最小闭环上扩展多协议、受控只读工具、显式知识保存和宿主连续性。
 需要多机或持久响应恢复时，再单独论证共享状态、单次执行/交付、不确定结果和数据删除，
-不能把本地两张表直接宣传为分布式执行平台。
+同一数据库中的两张网关表不能直接提供分布式执行保证。

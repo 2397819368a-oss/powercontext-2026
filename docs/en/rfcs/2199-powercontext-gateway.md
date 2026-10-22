@@ -1,6 +1,6 @@
 ---
 title: PowerContext Gateway for Controlled Model Calls and Context Reuse
-description: Reuse Core context organization and privacy checks through an optional gateway for model protocols, exact context replay, native cache adaptation, and bounded execution.
+description: A Rust gateway reuses the existing port, calls Core over local IPC, stores replay state in Server's three-backend database, and reserves third-party plugins.
 ---
 
 - Proposal Name: `powercontext_gateway`
@@ -25,15 +25,20 @@ checks, reuse constraints, and check interfaces. This RFC defines how the gatewa
 the final request, every actual send, and the first release of response content.
 It adds no second ContextRuntime, GateRuntime, memory algorithm, or policy database, and does not replace Core commits.
 
-The initial deployment is optional within the existing Python Server, sharing its process, port, authentication, and
-authorization boundary. It supports full-history Chat Completions and Responses without hidden provider conversation
-state. Context enhancement requires trusted conversation association.
-Persistent replay introduces **one gateway-local SQLite file with two dedicated tables**, only when enabled, and no
-Core tables or database service. The initial release excludes a separate administration UI, automatic tool loops,
-automatic transcript ingestion, automatic summarization, billing ledgers, and semantic response caching.
+PowerContext Gateway is implemented in Rust, installed and supervised with PowerContext, and disabled by default.
+When enabled, Rust owns the existing public port while Python Core listens only on a local Unix Domain Socket (UDS).
+Rust forwards existing Core API/MCP routes and mounts model ingress at `/gateway/v1`, without another TCP listener.
+It supports full-history Chat Completions and Responses without hidden provider conversation state; enhancement requires
+trusted conversation association.
 
-Both this RFC and #2086 are proposals. The source baseline is `0bc42d0b`, and the coordination baseline is #2086. The routes, permissions, internal preparation metadata, and gateway storage below are not shipped
-capabilities in that baseline.
+Gateway state inherits Server's `database` configuration and exact database, supporting SQLite, SeekDB and OceanBase.
+Persistent replay adds only two optional `pc_gateway_*` tables through unified migrations.
+Python Server owns connections, repositories and migrations; Rust accesses Gateway state through private IPC.
+There is no separate database file/service or Rust reimplementation of Core repositories.
+The initial release excludes a separate administration UI, automatic tool loops/transcript ingestion/summarization,
+billing ledgers and semantic response caching.
+
+Both this RFC and #2086 are proposals. The source baseline is `0bc42d0b`, and the coordination baseline is #2086. The Rust process, IPC, routes, permissions, three-backend Gateway tables and plugin contracts below are not shipped capabilities in that baseline.
 
 | Decision | Contract |
 | --- | --- |
@@ -42,8 +47,8 @@ capabilities in that baseline.
 | Host authority | User history, response acceptance, client tools and side effects, task completion, and Handoff timing. |
 | Model-service authority | Native KV storage, reuse, eviction, and provider-defined usage. |
 | API additions | Model-protocol ingress and two conversation-metadata operations; Core checks reuse one #2086 operation with two phases. |
-| Storage additions | Two dedicated optional gateway tables; no transcript store, response-recovery store, or complete attempt ledger. |
-| Default deployment | Embedded in Server and disabled by default; standalone deployment is a later delivery using the same contracts. |
+| Storage additions | Two optional pc_gateway_* tables in Server's same SQLite / SeekDB / OceanBase database; no separate state database. |
+| Default deployment | Rust + Python on one host, disabled by default; one existing public TCP listener and internal UDS when enabled. |
 | Safety default | Withhold when required checks are unavailable; strict mode releases no model content before approval. |
 
 # Motivation
@@ -109,9 +114,9 @@ states. A delivered answer does not mean tools executed, Memory was written, or 
 
 | Mode | Usage | Boundary |
 | --- | --- | --- |
-| Embedded Server gateway | Enable the optional component and send model requests to `/gateway`; the initial recommended deployment. | Reach Core through the same authentication/authorization executor and reuse in-process preparation metadata and checks. |
-| Standalone PowerContext Gateway | A later delivery calls existing prepare and #2086 checks over HTTP. | Requires trusted delegation; remote persistent replay also requires the verifiable preparation binding defined below. |
-| Third-party gateway | Integrate #2086 at its final send/release boundary, or use it as a validated upstream path. | Does not require this gateway's tables; actual targets, mutations, retries, and visibility determine coverage. |
+| Same-port Rust gateway | Unified startup; models use `/gateway/v1`, the initial default deployment. | UDS to Core and Server's Gateway repository, preserving current authentication/authorization. |
+| Explicit remote Gateway | Later HTTPS access to the same public contracts. | Trusted delegation, bindings, remote state access and lifecycle require separate acceptance. |
+| Third-party plugin (reserved) | Public prepare/check at its actual send/release boundary, without Rust Gateway. | No private IPC/repository access; validate concrete versions, initially reserving contracts only. |
 
 Changing only a base URL does not necessarily enable reliable conversation enhancement. Clients without stable
 conversation association initially use `check_only`: complete input/output inspection remains, but no project inference,
@@ -127,16 +132,19 @@ timeouts, and native signature behavior.
 | Whether reuse remains valid | Authorization, freshness, retention, complete provenance dependencies, and reuse restrictions. | Verify before sending; persist exact blocks and stop an invalid replay epoch. |
 | How to inspect | The same input/output algorithms, modes, failure actions, and transient bindings. | Call after final rendering, re-admit every actual attempt, and check before first strict release. |
 | How to use native caching | Core supplies reusable boundaries; actual hits belong to the model service. | Native adapter maps target capabilities, breakpoints, TTL, and routing hints and parses available usage. |
-| Who stores execution state | Core adds no inference database; Source/Artifact retain their domain contracts. | Store only two tables needed to restore injections, without a general model transcript. |
+| Who stores execution state | Core adds no inference database; Source/Artifact retain their domain contracts. | Server persists Gateway's two dedicated tables in the shared database, without a general model transcript. |
 | How knowledge is written | Existing Source/Artifact, Work/Handoff, and their validation. | No automatic capture initially; later explicit workflows use existing APIs and commits. |
 
 # Reference-level explanation
 
 ## 1. Scope, layers, and non-goals
 
-The gateway is an execution adapter, with implementation under `src/powercontext/gateway/`. Existing Runtime code must
-not depend on it. Protocol handling, final rendering, and transport belong to the gateway. Shared privacy and
-representation algorithms remain in the context/inference/policy modules identified by #2086.
+A Rust crate owns the gateway request pipeline, protocol adapters, exact replay, native cache settings and actual sends;
+the proposed source location is `crates/powercontext-gateway/`.
+Python Server continues to own context algorithms, authentication/authorization, three-backend database connections,
+Gateway state repositories and unified migrations. Rust consumes stable DTOs, without importing Python objects,
+duplicating selection/privacy rules, directly accessing Source/Artifact, or starting another embedded SeekDB instance.
+Existing Runtime code does not depend on Gateway. Disabling Gateway retains the original Python Server execution path.
 
 The initial scope is one host, one gateway process, a single Scope without context references, full text, and validated
 structured-tool carriers. Enhancement explicitly selects
@@ -155,81 +163,123 @@ gateway or automatically given Agent context.
 ```mermaid
 %%{init: {"theme":"base","look":"classic","themeVariables":{"fontFamily":"Arial, Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#64748b","edgeLabelBackground":"#ffffff"},"flowchart":{"curve":"basis","nodeSpacing":28,"rankSpacing":24,"wrappingWidth":210,"padding":16,"htmlLabels":true}}}%%
 flowchart TB
-    H["<b>Agent / SDK</b><br/>Client history and tools"]
-    T["<b>Third-party gateway (optional)</b><br/>Final-boundary integration"]
-    subgraph PC["PowerContext Server · one process by default"]
-        A["<b>Existing authentication and authorization</b><br/>Principal / Scope / execution permission"]
-        subgraph GW["Optional Gateway · protocol and execution"]
-            subgraph GW_FLOW[" "]
-                direction LR
-                P["<b>Protocol ingress</b><br/>Chat / Responses<br/>Validated carriers"]
-                L["<b>Conversation handling</b><br/>Classify · inject · exact replay<br/>Single writer"]
-                N["<b>Upstream adapter</b><br/>Approved route · cache parameters<br/>Final rendering"]
-                X["<b>Execution boundary</b><br/>Admit → send<br/>Buffer → release"]
-                S[("Gateway-local SQLite<br/>Conversations + replay blocks")]
-                O["<b>Existing observations</b><br/>Bounded metadata<br/>Incomplete usage"]
-                P --> L
-                L <--> S
-                L --> N
-                N --> X
-                X -.-> O
-            end
+    H["<b>Agent / SDK</b><br/>History · tools · existing service URL"]
+    T["<b>Third-party plugin (reserved)</b><br/>Its own model ingress"]
+    subgraph PC["One PowerContext deployment · unified installation and supervision"]
+        subgraph GW["Rust Gateway process · only public TCP listener"]
+            R["<b>Unified router</b><br/>Existing host:port<br/>Models / Core API / MCP"]
+            L["<b>Conversations and exact replay</b><br/>Prepare on new messages · single writer"]
+            N["<b>Upstream adapter</b><br/>Actual target · native cache mapping<br/>Final rendering"]
+            X["<b>Send and release</b><br/>Admit → send<br/>Buffer → check → deliver"]
+            R -->|"/gateway/v1"| L
+            L --> N --> X
         end
-        subgraph CORE["Existing Core + RFC 2086 · context and checks"]
-            subgraph CORE_FLOW[" "]
-                direction LR
-                C["<b>Scoped context application</b><br/>prepare / assembly<br/>PreparedContextBuilder"]
-                I["<b>Input and output checks</b><br/>Privacy · target · full budget<br/>Output release"]
-                D[("Existing Scope / Source / Artifact<br/>Work / Bootstrap / Handoff")]
-                Q["<b>Existing policy and inference</b><br/>Rules and algorithms"]
-                C --> D
-                Q -.-> C
-                Q -.-> I
-            end
+        subgraph CORE["Python Core / Server process · HTTP over UDS"]
+            I["<b>IPC and existing API ingress</b><br/>Version negotiation · current actor / delegation"]
+            A["<b>Existing authentication and authorization</b><br/>Principal · Scope · execution permission"]
+            C["<b>Existing context and checks</b><br/>prepare / assembly / Builder<br/>Two check phases"]
+            S["<b>Gateway state repository</b><br/>Bounded access · CAS · encryption · cleanup"]
+            D["<b>Existing domain repositories</b><br/>Scope / Source / Artifact<br/>Bootstrap / Work / Handoff"]
+            I --> A
+            A --> C
+            A --> S
+            C --> D
         end
-        A --> GW
+        DB[("Server's same database<br/>SQLite / SeekDB / OceanBase<br/>Existing tables + two pc_gateway_* tables")]
+        D --> DB
+        S --> DB
+        R -->|"Existing Core API / MCP, preserving transport semantics"| I
+        L <-->|"prepare / private state commands · UDS"| I
+        X <-->|"before_send / before_release · UDS"| I
     end
-    U["<b>Approved actual model endpoint</b><br/>Native KV cache · provider usage"]
-    H --> A
-    GW <-->|"Send boundary: admitted send / raw response"| U
-    T -. "Authenticated prepare / check contracts" .-> CORE
-    GW <-->|"Conversation handling → prepare<br/>Send / release boundary ⇄ input / output checks"| CORE
-
+    U["<b>Approved actual model service</b><br/>Native KV cache · provider usage"]
+    H --> R
+    X <-->|"Admitted native request / complete raw response"| U
+    T -. "Public prepare / check contracts" .-> R
     classDef client fill:#f1f5f9,stroke:#94a3b8,color:#0f172a,stroke-width:1.2px
-    classDef auth fill:#334155,stroke:#334155,color:#ffffff,stroke-width:1.5px
-    classDef gateway fill:#ffffff,stroke:#60a5fa,color:#1e3a5f,stroke-width:1.5px
+    classDef rust fill:#ffffff,stroke:#60a5fa,color:#1e3a5f,stroke-width:1.5px
     classDef core fill:#ffffff,stroke:#5eaaa0,color:#164e48,stroke-width:1.5px
     classDef store fill:#fff8eb,stroke:#d4a65a,color:#684b1b,stroke-width:1.2px
-    classDef support fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:4 3
     class H,T,U client
-    class A auth
-    class P,L,N,X gateway
-    class C,I core
-    class S,D store
-    class O,Q support
+    class R,L,N,X rust
+    class I,A,C,S,D core
+    class DB store
     style PC fill:#f8fafc,stroke:#94a3b8,stroke-width:1.5px
     style GW fill:#eff6ff,stroke:#93c5fd,stroke-width:1.5px
     style CORE fill:#f0fdfa,stroke:#83c5b9,stroke-width:1.5px
-    style GW_FLOW fill:transparent,stroke:transparent
-    style CORE_FLOW fill:transparent,stroke:transparent
 ```
 
-Blue groups show Gateway protocol and execution; green groups show Core context and checks; warm nodes show persistent state. Dashed lines mark policy, observations, and optional third-party integration. Links between groups name the actual callers and entry points.
+Blue groups contain Rust execution; green groups contain Python Server. Gateway tables in the shared database remain
+owned by the Gateway component. Third-party plugins use public contracts, without private state or database access.
+Split protocol, upstream, replay and pipeline responsibilities without a generic plugin framework or runtime facade.
+Native adapters must control the final actual send; a high-level SDK callback cannot establish final-byte/per-attempt coverage.
 
-Core and Gateway are responsibility boundaries, not two required services. Embedded calls use the same application and
-check algorithms through Server's authenticated authorization executor. Sharing a process does not permit repository
-access that bypasses resource authorization. Standalone and third-party integrations use public HTTP contracts, without
-private Server handlers or direct Core database access.
+### 2.1 One public port and local IPC
 
-Split code around cohesive protocol, upstream, replay/store, and request-pipeline responsibilities; do not begin with a
-generic plugin framework or a new runtime facade.
-Native adapters must reach the final actual send. A high-level SDK with hidden retries or mutations cannot establish
-complete coverage.
+| Mode | Public listener | Core communication |
+| --- | --- | --- |
+| Gateway disabled | Python retains existing `http.host:http.port`. | No Rust child or Gateway private IPC. |
+| Default combined deployment | Rust exclusively owns the same `http.host:http.port`; Python opens no additional TCP port. | HTTP over UDS, with identical DTOs, authorization and algorithms. |
+| Explicit remote deployment | Operator selects an existing service ingress, with separate acceptance. | Public prepare/check use HTTPS; remote Gateway state service is outside initial scope. |
+
+`/gateway` is a configurable mount prefix; the default model Base URL is `http://localhost:8000/gateway/v1`.
+Define model-relative `/v1/...` separately from the mount. Combined deployment rejects mounts conflicting with Core/MCP/
+static routes. Health, management and Gateway metrics reuse the existing ingress, without extra admin/metrics TCP ports.
+Forward registered existing `/v1/...`, MCP, health, Dashboard and static routes to Python, preserving paths, queries,
+authentication, status codes, SSE/streaming backpressure and cancellation. Forwarding is not model admission of Core API
+content. Reject unknown model paths rather than proxying arbitrary upstreams; private Gateway routes are unreachable
+through public routing. External origin, proxy headers and correlation come only from trusted ingress, never forged
+client internal headers. Existing service addresses/ports remain unchanged; changing the listener owner requires
+controlled restart, not a promised hot switch.
+
+Linux/macOS initially use UDS. The launcher selects a short private runtime directory and checks path length and
+directory/socket ownership and permissions; remove only stale sockets confirmed to belong to this instance.
+Windows local IPC needs its own transport and acceptance. Unsupported platforms reject enablement instead of silently
+opening a new TCP port. UDS changes transport, not user authentication. Private calls include both an instance channel
+credential and current user authentication/supported delegation. Deliver channel credentials through controlled handles,
+never logs, URLs or model requests.
+
+### 2.2 IPC capabilities and process lifecycle
+
+| Contract | Responsibility and constraints |
+| --- | --- |
+| prepare / check | Use #2086 public schemas and strict phases; UDS and HTTPS decisions match. Core issues/validates `reuse.binding`; Rust retains it unchanged. |
+| Private access resolution | Core resolves Principal, actor, Scope, `gateway.invoke` and profile permission from current authentication. Bind results to request/instance generation; Rust-supplied identity strings are not authority. |
+| Private state commands | Strict bounded load, put-if-absent and CAS transition variants, limited to the two Gateway tables. No arbitrary SQL, table names or generic database proxy. Public GET/DELETE reuse the repository. |
+| Version and budgets | Negotiate wire/schema, carriers, required features and byte/time/concurrency limits. Incompatibility fails readiness; never silently ignore unknown required fields. |
+| Identity and expiry | Core checks current authorization on each protected operation; short-lived access resolution grants no permanent read/write/send permission. |
+
+Before every actual send/release, Core's trusted Gateway call context revalidates current `gateway.invoke` and profile
+permission. Initial access resolution does not replace execution authorization or enlarge ordinary check_only read rights.
+
+Implementation registers private IPC operations in authoritative `openapi/powercontext.yaml` with internal markers.
+Assemble them only in Gateway's local UDS mode, requiring channel authentication. Generation/routing tests must prove
+they appear in no public SDK/MCP surface, capability list or public listener. They are not new third-party management
+APIs. Existing public Core operations stay unchanged; checks do not perform state writes, and state commands cannot
+authorize a model send.
+
+Python Server remains the database/lifecycle owner and supervises the Rust child. Validate configuration/database
+identity/schema readiness, establish UDS and negotiate versions before Rust claims the existing port.
+Ship a matching platform Rust executable in the installation; normal startup neither compiles nor downloads code.
+Disabled Gateway needs no child executable. Version mismatch, occupied original port or handshake failure stops
+enablement, without selecting a random port or falling back to unchecked model forwarding.
+
+Shutdown stops admission, bounds cancellation/draining, persists known/uncertain outcomes, stops Rust, then closes UDS
+and the database. Core unavailability stops new sends/content release; channel loss propagates cancellation.
+The parent confirms the old Rust PID exited before bounded restart. Core restart changes generation, invalidates old
+channel credentials/state commands, and leaves unresolved sends Unknown without automatic paid resend.
+Declare measured/configured policy-revocation, process-loss and cancellation delays rather than absolute immediacy.
+
+The main model call usually needs two complete check RPCs; a new user message adds prepare.
+Batch state reads by conversation; writes carry only injected blocks or bounded state, not another complete transcript/
+response copy. Include IPC queues, serialization, database wait and connection reuse in total deadlines and CPU/RSS,
+P95/P99 acceptance. Rust alone does not prove the complete path is faster.
 
 ## 3. Identity, Scope, and execution permission
 
-Reuse `AuthenticationProvider` and its `AuthenticationResult`, Principal/actor/credential identity, the current Scope
-catalog, and `AuthorizationProvider`. Add no gateway user database, separate tenant hierarchy, or gateway-key table.
+Python Core reuses `AuthenticationProvider`, `AuthenticationResult`, the current Scope catalog and `AuthorizationProvider`.
+Rust obtains verified Principal/actor/credential identity through private access resolution, without duplicating Python
+authentication. Add no gateway user database, separate tenant hierarchy or gateway-key table.
 The existing static Bearer maps to one fixed Principal and is not multi-user isolation.
 
 | Constraint | Design |
@@ -258,8 +308,15 @@ Extend existing Server configuration with an optional `gateway` section. The fol
 must fix the measured thresholds:
 
 ```yaml
+http:
+  host: 127.0.0.1
+  port: 8000
+database:
+  kind: sqlite
+  url: sqlite+aiosqlite:///./powercontext.db
 gateway:
   enabled: false
+  mount_path: /gateway
   context_owner: gateway
   privacy_mode: enforcing
   output_mode: strict
@@ -282,6 +339,9 @@ gateway:
       credential_ref: env:MODEL_API_KEY
       cache_adapter: validated-deployment-profile
 ```
+
+The database example only illustrates shared SQLite storage; use the existing SeekDB/OceanBase configuration to select
+those backends. Gateway has no second database URL; the launcher manages UDS paths/channel credentials.
 
 Trusted configuration selects `gateway` or `host` as `context_owner`. When the host already manages
 prepare/bootstrap/Handoff, the gateway neither prepares again nor injects a second copy; complete-request checks still
@@ -375,53 +435,38 @@ Deliver the complete new block or withhold if the full budget does not fit.
 This optional strategy follows #2086 off/shadow/active modes and independent quality acceptance.
 A disabled strategy or unproven equivalence cannot be reported as deduplication.
 
-### 6.1 Preparation results are not credentials
+### 6.1 Preparation results and complete dependencies
 
-The four-field `PreparedContext`, rendered citations, `PreparedContextBuild.lineages`, and Bootstrap receipts cannot alone
-authorize persistent replay. At the actual selected-and-rendered path, Core must produce **complete bounded reuse
-dependencies**: exact resources/versions, owning Scopes, content digests, eligibility/freshness rules, maximum retention,
-and output-content binding. Existing origins/lineages can contribute facts but cannot simply be renamed authorization
-proof.
+Ordinary four-field `PreparedContext`, rendered citations, `PreparedContextBuild.lineages` and Bootstrap receipts alone
+do not authorize persistent replay. After actual select/render/fit, Core creates complete bounded dependencies: exact
+resources/versions, owning Scopes, content digests, eligibility/freshness, maximum retention and output binding.
+Initial enhancement remains memory/experience; other families, code and references need complete dependencies and acceptance.
 
-The initial embedded gateway obtains #2086's complete reuse metadata in the same authorized application call.
-Reuse its preparation path and constraint semantics, without another algorithm or private `_prepare_build` access.
-Public prepare retains its strict four-field default; explicit `include_reuse=true` returns the versioned envelope.
-Families/code/references without complete dependencies cannot enter that enhancement profile. Missing dependencies do
-not mean no validation is needed.
+Rust calls existing `prepare_context(include_reuse=true)` over UDS and receives #2086's versioned `context + reuse`,
+without private Python objects. Unrequested calls retain the strict default four fields.
+Use `get_capabilities` and local negotiation to confirm schemas, carriers, families and bounds; reject unsupported
+enhancement. `reuse.constraints` feeds Rust's native adapter; state IPC persists `reuse.binding` with exact injection
+in Server's database. Preparation, state persistence and actual sending are separate boundaries; prepare does not
+atomically execute a model.
 
-Before each send, Core validates these bounded dependencies through existing domain read/authorization capabilities:
-current Scope/resource permissions, whether each exact version remains eligible for this historical use, active/retired
-status, required head/freshness checks, and current privacy/retention policy. Validation does not run semantic search or
-Embedding again. Even one Scope requires resource-lifecycle validation; readable Scope status does not authorize
-indefinite egress of revoked material.
+### 6.2 Current eligibility and bindings on every replay
 
-An invalid, expired, or unverifiable dependency yields `context_refresh_required` / withhold and stops the old epoch.
-The host establishes a new conversation or explicit Handoff boundary. Never replace an old block in place, splice
-semantic windows, or break native signatures.
-Newly added material does not require repeating all old queries on every call. Profiles define maximum freshness ages,
-new-user-message boundaries, and explicit refresh behavior.
+Every `check_context(phase=before_send)` includes all historical blocks' bindings and exact locations in the payload.
+Core authenticates again and validates current Scope/resource access, exact-version eligibility, active/retired status,
+required head/freshness, privacy and retention. Validation does not repeat semantic search or Embedding.
+Readable Scope does not authorize indefinite egress of revoked content; validating only the newest prepare is insufficient.
 
-### 6.2 Verifiable binding for standalone deployment
+`reuse.binding` uses #2086's bounded authenticated encrypted format, binding actor/delegation, Scope, exact content
+digest, complete private dependencies, policy and expiry. Rust holds no Core issuance key and cannot extend eligibility.
+Verify tampering, expiry, audience/subject/Scope, key versions, rotation and revocation latency.
+Response checking uses `before_release` with this attempt's `request_binding`; preparation, sending and release
+approvals are not interchangeable.
 
-Remote enhancement is a later delivery that directly consumes #2086's shared contract, without another preparation or
-binding format. Existing `prepare_context(include_reuse=true)` returns the versioned `context + reuse` envelope;
-unrequested calls retain the strict default four-field result. Discover schemas, families/carriers and bounds through
-`get_capabilities` first. Reject unsupported enhancement explicitly; ordinary prepare content is not provenance proof.
-
-`reuse.constraints` feeds the local native adapter. `reuse.binding` seals exact content, complete private dependencies,
-actor/delegation, Scope, policy and expiry. Use #2086's bounded authenticated encrypted format, without another response
-header or permanent receipt table. Verify rotation, tampering, expiry, wrong audience/subject/Scope, unknown key versions
-and revocation latency.
-
-Before each send, call `check_context(phase=before_send)`. `prepared_contexts` lists every historical block's binding
-and versioned location in the actual payload. Core authenticates again and validates exact content and current
-dependencies. Final admission binds only this actual payload and target; a preparation binding is neither bearer
-permission nor injection proof. Response checking uses the same operation with `before_release` and the corresponding
-`request_binding`.
-
-Without the capability, offer explicit `check_only` only; an enhanced conversation cannot silently discard bindings or
-continue unsafe frozen replay. Third parties may use the same prepare/check contract without this gateway's state
-database.
+Invalid, expired or unverifiable dependencies yield `context_refresh_required` / withhold, stopping the old epoch.
+The host creates a new conversation or explicit Handoff boundary; do not replace old blocks, splice semantic windows
+or break signatures. Profiles define maximum freshness and new-message/explicit-refresh boundaries without re-running
+all historical queries every round. Missing capabilities permit only explicit check_only integration; an enhanced
+conversation cannot silently discard required bindings and continue.
 
 ## 7. Native caching and complete budgets
 
@@ -478,25 +523,27 @@ compress already frozen prepared text a second time.
 ```mermaid
 sequenceDiagram
     participant H as Host
-    participant G as Gateway
-    participant C as Core / RFC 2086
-    participant S as Gateway store
+    participant G as Rust Gateway
+    participant C as Python Core / UDS / RFC 2086
+    participant S as Server state repository / shared database
     participant U as Actual upstream
     H->>G: Complete request + Scope + conversation
-    G->>G: Authenticate / authorize / lock / classify
-    G->>G: Load exact replay blocks and preparation bindings
+    G->>C: Resolve current authenticated access over UDS
+    C-->>G: Verified Principal / Scope / profile / generation
+    G->>G: Lock conversation / classify
+    G->>S: Load exact blocks and bindings through private IPC
     opt New supported user message
-        G->>C: Existing prepare with shared reuse metadata
+        G->>C: prepare_context include_reuse over UDS
         C-->>G: Context + reuse constraints and complete bounded dependencies
         G->>S: Put immutable injection or reuse marker before send
     end
     G->>G: Exact replay + actual target + native rendering
-    G->>C: check_context before_send or same in-process algorithm
+    G->>C: check_context before_send over UDS
     C-->>G: Current payload-bound and target-bound admission
     G->>S: Persist sending marker
     G->>U: One admitted attempt
     U-->>G: Complete raw response + available usage
-    G->>C: check_context before_release before any model content release
+    G->>C: check_context before_release over UDS before content release
     C-->>G: Current content-bound release decision
     G->>S: Persist release authorization and reply anchor
     G-->>H: Checked result in original protocol
@@ -504,7 +551,7 @@ sequenceDiagram
 
 Checks retain #2086 `allow/block/withhold`, current authorization, trusted stage/profile, coverage, final content/target
 binding, and expiry. A check-only operation does not prove what an executor actually sent.
-Use the same rules and conformance samples for embedded/remote execution, not a more permissive gateway privacy engine.
+Use the same rules and conformance samples for local IPC/remote execution, not a more permissive gateway privacy engine.
 
 First bound raw bytes, strictly parse UTF-8/JSON, and reject duplicate keys and unsupported structures before optional
 enhancement. Retain original carriers until checks finish and inspect them alongside final payloads so serialization
@@ -529,7 +576,7 @@ independent acceptance.
 Limits cover response bytes, time, concurrency, parse depth, and total memory. 2 MiB × 16 is only the body lower bound,
 not an RSS cap. Overflow, incomplete JSON/tool arguments, interrupted upstream streams, failed checks, or unavailable
 release decisions stop content release and trigger best-effort cancellation.
-Never spill sensitive responses into SQLite or temporary files.
+Do not spill sensitive responses to any database or temporary file.
 Check current policy before send and release; measure revocation latency at the actual boundaries.
 After SSE headers have been sent, terminate through supported error events rather than claiming an HTTP-status change.
 
@@ -544,7 +591,7 @@ Only provably unsent connection failures permit bounded retries, with new admiss
 Timeouts, lost connections, and crashes that may have reached the upstream yield `outcome_unknown`; do not automatically
 pay to resend or fall back.
 
-Allow one in-flight request per conversation, using an in-process lock and database version CAS.
+Allow one in-flight request per conversation, with Rust locks and Server repository version/generation CAS.
 Lease expiry does not imply that the upstream did not execute. No distributed exactly-once claim is made.
 Return 409 on conversation concurrency conflicts; clients retry after the original call resolves.
 Cancellation preserves known/uncertain send state.
@@ -597,7 +644,7 @@ without revealing another owner's state.
 DELETE acts on gateway-derived copies, not Source/Artifact, and cannot recall material already sent to models.
 Order deletion with in-flight send/release in the same conversation state machine. Return 409/retry-later while a request
 is being cancelled. Confirm success only after preventing subsequent local use and deleting visible rows, without
-promising physical erasure from SQLite pages, backups, or providers.
+promising physical erasure from database pages, backups or providers.
 
 `X-PowerContext-Scope-ID` must match trusted bindings. Domain conversation routes use the path Scope; conflicting inputs
 cannot change resource ownership. When clients cannot send the header, a trusted one-credential/one-Scope binding may
@@ -610,45 +657,89 @@ and 403 for explicit policy prohibition. Do not collapse withhold, empty, upstre
 Strip all PowerContext control headers, reuse bindings, and caller credentials from final upstream requests; send only
 approved provider headers.
 
+Public management retains its Scope paths. Authorized Server repositories can query/clean retained state after Gateway
+is disabled; in-flight states return 409 and preserve release ordering. Private IPC is no third-party surface.
+
 These are proposals; this RFC does not change `openapi/powercontext.yaml`.
-Implement Core checks and management metadata in that source contract, regenerate clients, and run `make api-generate` /
+Implement Core checks, management metadata and internally marked IPC operations in that source contract, regenerate clients, and run `make api-generate` /
 `make contract-test`. Version model wire schemas separately, document their OpenAPI entry points and conformance fixtures,
 and do not present ordinary Core ErrorResponse as the provider protocol.
 
 ## 10. Persistence, costs, and lifecycle
 
-### 10.1 Why two dedicated tables
+### 10.1 Two Gateway tables in Server's database
 
-Exact injections must survive retries and gateway restart; memory alone cannot preserve history integrity.
-Source is domain evidence, Artifact is versioned knowledge, Bootstrap receipts address specific delivery deduplication,
-and daily usage aggregates permit loss. None has the state machine for undelivered model calls or immutable injections.
-Reducing table count does not justify storing private copies in Source/Artifact, processing leases, or decision observations.
+Exact injections must survive retries/restart. Source is domain evidence, Artifact is versioned knowledge, Bootstrap
+receipts deduplicate specific deliveries, and usage permits loss; none owns Gateway send/replay state.
+Reuse database/migration infrastructure without storing private copies as Source/Artifact or triggering extraction.
 
-Create `gateway.sqlite3` only when optional persistent gateway replay is enabled:
+Persistent replay registers two optional component tables through Server's unified migrations:
 
 | Table | Key and required contents | Mutation contract |
 | --- | --- | --- |
-| `gateway_conversations` | deployment/Principal/Scope/conversation/epoch; config/renderer/target profiles; client-history digest and latest reply anchor; latest attempt state/digest; version and expiry. | CAS updates; latest attempt is a bounded blind-resend guard, not a full ledger; no complete history or response body. |
-| `gateway_replay_blocks` | Complete conversation partition plus message anchor; exact injection/native position, reuse binding, content digest, and creation/expiry. | Put-if-absent; conflicts fail; delete by conversation/expiry; store this gateway's injections only. |
+| `pc_gateway_conversations` | deployment/Principal/Scope/conversation/epoch; config/renderer/target profiles; history digest/latest reply anchor; latest attempt state, last transition identity/hash, version and expiry. | CAS updates; no complete transcript/response or full attempt ledger. |
+| `pc_gateway_replay_blocks` | Complete conversation partition plus message anchor; exact injection/native position, reuse binding, content digest and expiry. | Put-if-absent, exact same-value readback, conflicting values fail; this gateway's injections only. |
 
-Initially add no Core tables and no profile/key/log/response/capture/tool/summary tables.
-Use trusted files/secret references for configuration and existing observations for low-sensitivity diagnostics.
-Selected versions and commits retain Core domain storage.
-Without persistent replay, use check_only without automatic cross-request enhancement. Never silently lose injections
-inside an already enhanced conversation.
+The same database means Server's exact configured identity: the same SQLite file, embedded SeekDB instance/database,
+or OceanBase tenant/database. No Gateway database URL, second SQLite file, separate schema service or migration history.
+These two tables belong to #2199; #2086's algorithms/checks still add no tables.
+Add no profile/key/log/response/capture/tool/summary tables.
 
-Use local single-host SQLite WAL with strict directory/file permissions, not a shared filesystem, and one gateway
-process owner. Hold an exclusive process-lifetime lock when opening the state store; a second owner fails startup.
-Request-level CAS is not a substitute for single-process sending.
-A different Core backend does not imply multi-host gateway recovery.
-The new file has explicit independent schema migration. Reject unknown schemas, back up before migration, and verify
-exact-block readback. Do not assign today's provenance/permissions to old blocks. Close epochs missing dependencies
-required by the new version.
+### 10.2 Server-owned repositories accessed through IPC
 
-### 10.2 Bounds, expiry, and cleanup
+Python Server reuses existing `AsyncDatabase`, backend profiles, table definitions and transaction boundaries for a
+repository restricted to Gateway state. Rust receives no database credentials and directly accesses no tables.
+Private state operations validate current actor/Scope, process generation, epoch, expected version and legal transitions.
+This persistence boundary owns encryption, exact readback, quotas and same-value put-if-absent.
+It is Gateway state capability, not another memory algorithm or arbitrary database RPC.
+
+| Server backend | Shared destination and reuse | Required acceptance |
+| --- | --- | --- |
+| SQLite | Same file and existing Python engine/transactions, WAL/busy timeout; Gateway and Core tables coexist. | Concurrent Core writes, lock wait, cancellation/rollback, process restart and exact-byte readback. Memory databases cannot claim durable replay. |
+| SeekDB | Same embedded profile/database held by Python; no second embedded instance. | Real embedded execution, transactions/CAS, conflict rollback, restart readback and complete cleanup. |
+| OceanBase | Existing official async dialect, same tenant/database and connection policy. | Real-service commit, rollback, disconnect/uncertain commit, binary/JSON fidelity and index compatibility; MySQL mocks are insufficient. |
+
+Use existing dialect-neutral types/backend variants, without vector indexes or vendor-specific JSON mutation semantics.
+Verify key lengths, case/collation, uniqueness, ciphertext size and expiry indexes on all three backends; never truncate
+identities or omit constraints to make DDL succeed. Core and Gateway share a database but commit separate transactions;
+domain writes and remote model execution are not one transaction.
+
+Same-value puts compare complete identity, exact content/bindings and digests, not randomized ciphertext bytes.
+Persist the latest transition identity/hash atomically with version; unverifiable or invalidated readback withholds instead
+of creating a complete event ledger.
+
+If a put/transition IPC reply is lost, read back by the same partition/anchor or transition identity.
+Continue only when exact values/expected versions establish the commit; do not create new IDs after uncertain writes.
+Do not wait for model network calls inside a database transaction. Bound repository wait/concurrency on all backends
+to protect Core work.
+
+Initially, each deployment has one active Rust sender, controlled by its local supervisor/lifetime lock.
+A shared remote database is not multi-host send coordination: deployment tooling must stop or fence the old sender
+before another host takes over the same deployment. Without confirmation, refuse takeover rather than infer no model
+execution from lease expiry/CAS. Restart retains Unknown semantics for Sending/unconfirmed delivery, without paid resend.
+Automatic multi-host failover and distributed exactly-once execution are outside initial scope.
+
+### 10.3 Unified migration and compatibility
+
+Reuse [RFC 1771](1771-unified-database-migrations.md) and the existing migration entry point.
+Register optional component bundle `gateway-state`; this is a proposed addition, not an existing CLI choice.
+SQLite, SeekDB and OceanBase need verified migration resources/adapters. Rust starts no second migrator.
+Existing database upgrades use explicit plan/apply/verify and existing control tables; unknown versions/missing required
+structure fail enhancement readiness. Coordinate shared-database writers through the existing deployment contract;
+stopping Rust does not establish that all Core writers stopped.
+
+Both new installations and upgrades verify schema before model traffic. Ordinary requests perform no DDL, whole-database
+backfills or silent repair. Disabled Gateway/check_only creates no Gateway tables; existing tables retain policy-based
+retention/cleanup, and disabling never deletes Core data. Reject durable enhancement on memory databases rather than
+silently create a replacement file.
+Do not assign current provenance/permissions to historical blocks; missing required dependencies close their epoch.
+Backup/restore, retention and capacity cover the shared database. Restore first validates current authorization/bindings,
+without reviving historical sending permission.
+
+### 10.4 Bounds, expiry, and cleanup
 
 Persist content only within deployment retention policy, using authenticated encryption with managed keys.
-Unavailable keys prevent sensitive writes. Keys are not stored in SQLite. Encryption does not replace Scope/owner
+Unavailable keys prevent sensitive writes. Keys are not stored in the database. Encryption does not replace Scope/owner
 authorization, backup protection, or current policy.
 Conversation/message digests use deployment HMAC; low-entropy content hashes are not public diagnostics.
 
@@ -658,7 +749,7 @@ Stop reads/sends on expiry before asynchronous cleanup; delayed cleanup never ex
 
 128 is a record-count bound; 256 KiB is cumulative, not per block.
 At 100 active enhanced conversations per Principal, content alone can reach approximately 25 MiB, or 25 GiB for 1,000
-Principals, before indexes, encryption, WAL, and backups.
+Principals, before indexes, encryption, WAL/redo and backups; shared-database capacity includes these Gateway copies.
 Deployments must bound per-Principal and global bytes/conversation admission, not rely on TTL alone.
 At capacity, reject new enhancement instead of evicting required blocks and continuing with broken replay.
 
@@ -666,7 +757,10 @@ Batch reads/writes by complete conversation keys and bounded anchors; each prepa
 limit. Bound the deduplicated dependencies for the entire conversation to 64, not merely this turn's eight candidates.
 At that limit, withhold and require a new boundary rather than truncating the dependency list.
 A new message must not scan all conversations, Sources, or Memory.
-Cleanup uses indexed bounded batches. Measure hot-conversation concurrency, WAL growth, restart, and deletion latency.
+Conversation rows track stored bytes/block counts in their state transactions. A single-active deployment may restore
+admission counters through an indexed readiness aggregation, measuring this startup work rather than repeating a whole-
+database SUM on incremental requests. Uncertain counts/commits withhold admission until exact readback/reconstruction.
+Cleanup uses indexed bounded batches. Measure hot-conversation concurrency, lock wait, WAL/redo growth, restart and cleanup on all three backends.
 
 Although client history is not persisted, each request still requires parsing/scanning with linear cost in request size.
 Complete privacy inspection and strict buffering remain real CPU/memory costs despite retrieval occurring only on new
@@ -674,15 +768,19 @@ messages.
 
 ## 11. Usage, operational controls, and observations
 
-Reuse existing telemetry, usage wrappers, statistics/sinks, and content-free operational conventions.
+Retain existing typed usage/content-free observation contracts across languages: Rust emits bounded events and Server
+reuses existing sinks. Python uses `log_safely`; Rust's safe logging adapter follows the same field allowlists and
+observation-failure rules.
 Register new operation/unit/outcome fields, protocol values, finite reasons, and coverage; update both language guides.
-Use `log_safely` and existing request/trace identity, excluding prompts, cited content, responses, credentials, and
+Use `log_safely` on Python and the equivalent safe adapter on Rust, with existing request/trace identity and no prompts,
+cited content, responses, credentials or
 sensitive paths. Logs and lossy usage are not response recovery, audit, or billing ledgers.
 
 Gateway emits typed attempt metadata: actual target/profile, preparation/check/send/buffer/release latency,
 available ordinary-input/cache-read/cache-write/output/reasoning usage, known/estimated/unknown coverage, and incomplete
 reasons. Reuse #2086's optional inference/usage metadata rather than introducing another usage model.
 Daily aggregates cannot reconstruct missing cache or failed-attempt fields. Unknown is not zero.
+Rust does not directly call Python log functions; cross-process events still require typed/allowlisted acceptance.
 A task correlation ID is observation, not proof of host task success.
 
 Initial execution controls are bounded concurrency, input/output sizes, timeouts, cancellation, and backpressure, not
@@ -694,12 +792,41 @@ Required dependency failures surface through readiness/operations; safety failur
 
 | Capability | Composition | Required independent acceptance |
 | --- | --- | --- |
-| Standalone deployment | Same Core prepare/check, trusted delegation, and verifiable reuse binding. | Real HTTP path, current authorization, rotation, binding size/expiry, cancellation, and faults. |
+| Explicit remote deployment | Same public Core prepare/check, trusted delegation/bindings; separately accepted state access. | HTTPS, actual target, rotation/expiry, cancellation, faults and remote state ownership; private UDS stays private. |
 | Read-only memory tools | Explicitly allowed MCP/HTTP tools retaining evidence/permissions; tool rounds enter complete checks and exact replay. | Model-visible catalog, host-visible behavior, round/cost bounds, native tool/reasoning pairing. |
 | Write tools/side effects | Disabled by default; explicit user permission with domain approval, idempotency, and commits. | Execution permission is not tool authorization; hidden loops never approve writes by default. |
 | Explicit conversation-fragment capture | User/host-requested `/v1/sources/content` or working-notes with stable source_id and exact-value retries. | Strip injected blocks only from trusted injection records; verify privacy/retention, receipts, conflicts, and readback. |
 | Long-task continuity | Prefer explicit host Handoff/rollover through existing prepare/finalize/commit/continue. | Real persistence/readback; temporary summaries are not Handoffs or evidence of acceptance/completion. |
 | Automatic compaction | Define new windows, summary evidence, and signature compatibility only with independent quality and complete-cost evidence. | Check and bill summarizer calls, account for lost cache qualification and irreversible information loss. |
+
+### 12.1 Third-party gateway plugin contract
+
+Plugins are optional integrations, not a generic plugin platform required alongside Rust Gateway's initial release.
+Users of another gateway can consume Core directly without PowerContext Gateway. Keep that gateway's own model URL;
+it need not implement `/gateway/v1` and receives no Gateway-private state interface.
+
+| Plugin phase | Shared contract |
+| --- | --- |
+| Capability/identity | Public get_capabilities plus supported user authentication/restricted delegation, Scope, target profile and version; self-reported Principals are not authority. |
+| Preparation | `prepare_context(include_reuse=true)` at an eligible new-message boundary, one injection owner, exact values/bindings retained. |
+| Native adaptation/send | The final executor maps `reuse.constraints` to the actual target's native cache settings and final rendering; each attempt calls `check_context(before_send)`. |
+| Response delivery | Bound and buffer the complete supported response, correlate this request_binding, call `check_context(before_release)`, then release if allowed. |
+| Conversation/invalidation | Reuse reliable third-party state facilities. Exact replay needs complete dependencies/stable conversation identity; invalidation starts a new boundary. Same Scope is not a shared session. |
+
+Brand-specific adapters translate protocol, identity and lifecycle; selection/privacy rules stay in Core.
+A request-level pre-hook is not automatically the final outbound boundary. Cover exact post-mapping bytes, every retry/
+fallback, cache replies, error bodies and first streamed content. Parallel moderation/asynchronous logs cannot enforce
+blocking. The first enforcing profile disables third-party answer/semantic caches; validate native KV independently.
+Later cached replies need separate current-authorization/release contracts.
+
+The third-party gateway must be an approved data processor. If privacy includes preventing egress to an external SaaS
+gateway, check at the host/self-hosted ingress before that egress; a remote plugin cannot undo receipt.
+As a Rust Gateway upstream, enable only verified transparent target/content/cache-field-preserving profiles.
+Later opaque transformations require integration at that third party's final boundary; reject missing mandatory coverage.
+
+Initially deliver versioned specifications/conformance fixtures and reserve plugin package integration.
+Develop, validate and publish supported versions of concrete plugins only for explicit demand.
+Do not claim existing LiteLLM, Portkey or other product compatibility; add no brand-specific Core APIs or plugin tables.
 
 A completed model response is not user acceptance; repetition in the next turn is not knowledge-capture authorization.
 The initial gateway does not automatically ingest based on these heuristics.
@@ -714,23 +841,28 @@ Existing domain consumers retain recovery permissions and retry budgets.
 
 ## 13. Phases and acceptance
 
-### P0: the smallest complete Server deployment
+### P0: Rust Gateway with one public port
 
-Deliver one Scope, explicit conversation IDs, complete memory/experience reuse dependencies, Chat and full-history
-Responses, one approved deployment profile, strict text/structured-tool output, persistent exact replay, and bounded
-execution. Exclude opaque carriers and unsupported families through capability declarations, not permissive forwarding.
+First deliver the platform executable, unified supervision, UDS negotiation/channel authentication, current identity/
+Scope resolution, Core API/MCP proxy compatibility and bounded state IPC. One listener owns the existing port; disabled
+Gateway retains Server behavior.
+Local enhancement uses #2086's versioned prepare/check, complete dependencies and bindings from the initial release.
+These cross-process contracts are Gateway P0 prerequisites, not deferred remote-deployment work.
 
-#2086 shared input/output checks and complete internal reuse dependencies are safety prerequisites.
-Its gateway-free vertical slice can still ship independently. Enable this component's enforcing/enhancement declarations
-only after prerequisites pass. Embedded P0 needs no HTTP check round trips, standalone deployment, or remote preparation
-binding. Check-only users can leave replay disabled without creating gateway tables.
+Deliver one Scope, explicit conversations, memory/experience, Chat/full-history Responses, one approved target,
+strict text/tool responses, exact replay and bounded execution.
+Shared-database tables, migrations, transactions and restart readback require real SQLite, SeekDB and OceanBase acceptance.
+Declare only backends actually accepted; interfaces or SQLite tests do not establish all three.
+Check_only leaves replay disabled and needs no two tables. Third-party scope is specifications/conformance fixtures,
+without mandatory brand-specific plugin implementation.
 
-### P1: remote access and more protocols
+### P1: selected plugins, remote access and more protocols
 
-Validate the explicit opt-in prepare envelope and both phases of the single #2086 remote check operation, then deliver standalone and
-third-party conformance examples.
-Add Messages, its native signatures, and additional validated carriers/families, publishing real client/deployment
-versions for each. P0 acceptance does not establish these paths.
+Select actual third-party versions on demand, validate final sends/releases, native cache preservation, trusted delegation,
+errors/cancellation, then ship the corresponding small adapter. Do not build a generic plugin platform first.
+Separately validate explicit remote HTTPS/state access rather than expose private UDS state operations publicly.
+Add Messages, native signatures and more carriers/families with real client/deployment versions.
+Validate Windows local IPC separately when implemented; default operation still opens no additional TCP port.
 
 ### P2: evidence-driven extensions
 
@@ -742,15 +874,18 @@ dynamic model scheduling.
 
 | Dimension | Reproducible acceptance |
 | --- | --- |
-| Coordination between RFCs | Identical embedded/HTTP policy samples, including unknown/unavailable, authorization, actual targets, content binding, and expiry. |
+| Coordination between RFCs | Identical Python in-process, Rust UDS and HTTPS samples, schemas/bindings, current authorization, actual targets and deadlines. |
 | Check contract | Reject wrong-phase DTOs, missing/expired/cross-request bindings and mislocated historical blocks; HTTP 200 block/withhold never sends/releases, and checks do not repeat prepare. |
+| Port/IPC | Enabled/disabled use the existing TCP port only; real two-process tests cover private-route isolation, forged channel/actor, incompatible versions, parent/child exits, Core/MCP/SSE proxy compatibility and cancellation. |
+| Three-backend shared state | Real SQLite, SeekDB and OceanBase acceptance for same-database tables, transactions/CAS, constraints, Unicode/ciphertext readback, migrations, isolated deletion and concurrent Core writes. |
+| Reserved plugins | Conformance covers per-attempt retry/fallback, final post-mapping payload and first response release; no brand compatibility claim without actual acceptance. |
 | Privacy | Seed prohibited values in host history, context, tool structures, escaping/duplicate keys, and raw errors; prove controlled upstreams/hosts do not receive blocked content. |
 | Reuse and access | Scope denial, retired/deleted Artifacts, head/freshness changes, tampered/expired bindings, and another user/Scope ID cannot preserve invalid replay. |
 | History integrity | Initial/new messages, tool rounds, exact whole-value duplicates versus partial overlap, regeneration, client edits/compaction, identical questions in different conversations, and host/gateway integration together. |
 | Native carriers | Stable roles/tool IDs/order/content blocks, explicit renderer changes, and rejection of unsupported signatures/hidden history. |
-| State and restart | Block conflicts/disk full prevent sends; real process crashes before/after send and release leave Unknown without automatic resend. |
+| State and restart | Three-backend conflicts/unavailable storage prevent sends; lost IPC replies require exact same-identity readback; real two-process crashes retain Unknown. |
 | Concurrency/cancellation | One in-flight call per conversation; PDP/policy failure, disconnect, SSE backpressure, limits, and cleanup do not leak. |
-| Deployment/migration | Disabled means no state file; enabled restart reads exact blocks; unknown schemas/keys fail; deletion prevents later local use. |
+| Deployment/migration | Disabled creates no Gateway tables; enablement adds UDS only, registered bundles read back on all three backends, unknown schemas/keys fail. |
 | Domain reuse | Strict default four-field/opt-in envelope separation, no duplicate injection, no automatic Source/Memory/Handoff, and no successful Source-window consumption after privacy failure. |
 
 Validate actual protocol support with supported clients and real providers. Mock upstreams establish local bytes and
@@ -779,7 +914,8 @@ predeclared thresholds. Publish no savings numbers without experiments.
 
 A gateway on the critical model path adds failure modes, authorization/scanning cost, strict-release latency, and
 responsibility for retained private copies.
-Persistent replay needs local state, keys, cleanup, and migrations; single-host SQLite has no multi-host failover.
+Rust/Python IPC adds negotiation, serialization, cancellation and supervision work. Replay adds private copies, indexes,
+lock contention, keys, cleanup and migrations to Server's database. Three backends do not establish multi-host failover.
 Reliable enhancement requires conversation/full-history/protocol capabilities and cannot cover every base-URL-only client.
 
 Cache stability, real-time streaming, immediate resource changes, and automatic summarization have tradeoffs.
@@ -797,6 +933,7 @@ content delivery substantially.
 | Full transcripts plus response/attempt ledger | No initial recovery/financial guarantee requires them; retain only injections and the latest unresolved state. |
 | New gateway identity/tenant/policy platform | Duplicates Principal/Scope/Access/Policy; reuse existing boundaries and trusted configuration. |
 | Claim complete safety through opaque downstreams | Actual targets/mutations/retries are unknown; require a final-boundary plugin or validated transparent path. |
+| Rust owns database connections/migrations directly | Initially reuse Server's engine, embedded SeekDB lifecycle and migrations; bounded state IPC has an explicit measured cost. |
 | Prefer cache stability over current eligibility | Risks sending revoked content; current safety and resource eligibility take priority. |
 
 # Prior art
@@ -811,15 +948,15 @@ Concrete deployment adapters and acceptance fixtures describe model protocols an
 
 Before merge, fix the initial real client/provider/SDK combinations, configuration entry point, deployment retention
 requirements, family-specific complete dependencies, key facilities, and resource/SLO thresholds.
-Execution action/role, two dedicated tables, embedded default, final-boundary checks, and no automatic uncertain-send
-retry are explicit decisions.
+Rust execution, same-port UDS, Server-owned shared storage, three backends, two pc_gateway_* tables, current
+authorization and no uncertain-send retry are explicit decisions.
 
-The remote-header envelope encoding and encryption-key rotation must be fixed before P1 implementation.
-Until then, P1 must not claim remote persistent enhancement; embedded P0 uses the same internal dependency contract.
+Public binding wire/key rotation, private IPC schemas/internal filtering and three-backend gateway-state resources
+must be fixed and accepted before Gateway P0 enablement. Names or single-backend examples do not establish delivery.
 Multi-host execution, financial ledgers, automatic compaction, and write tools are not unfinished initial requirements.
 
 # Future possibilities
 
 Extend the validated vertical slice with more protocols, controlled read-only tools, explicit knowledge capture, and host
 continuity. Multi-host or durable response recovery requires a separate justification for shared state, single execution
-and delivery, uncertain results, and data deletion. Two local tables do not constitute a distributed execution platform.
+and delivery, uncertain results, and data deletion. Two Gateway tables in the shared database do not establish distributed execution guarantees.
