@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -110,7 +110,13 @@ class ArtifactPublicationApplication:
         self._topic_memory_writer = topic_memory_writer
         self._id_factory = generate_publication_artifact_id if id_factory is None else id_factory
 
-    async def publish(self, request: ArtifactPublicationRequest, /) -> ArtifactPublication:
+    async def publish(
+        self,
+        request: ArtifactPublicationRequest,
+        /,
+        *,
+        on_commit: Callable[[AsyncConnection, ArtifactPublication], Awaitable[None]] | None = None,
+    ) -> ArtifactPublication:
         if request.source.artifact.family == "atomic-memory":
             raise ArtifactPublicationUnsupportedError("atomic-memory")
         await self._scopes.get(request.source.scope_id)
@@ -128,7 +134,7 @@ class ArtifactPublicationApplication:
             projection = await writer.prepare(source.topic.content, usage_scope_id=request.target_scope_id)
         try:
             async with self._database.transaction() as connection:
-                return await self._publish(connection, request, projection)
+                return await self._publish(connection, request, projection, on_commit=on_commit)
         except IntegrityError:
             async with self._database.transaction() as connection:
                 existing = await self._find_request(connection, request.target_scope_id, request.idempotency_key)
@@ -141,6 +147,8 @@ class ArtifactPublicationApplication:
         connection: AsyncConnection,
         request: ArtifactPublicationRequest,
         projection: TopicMemoryProjection | None = None,
+        *,
+        on_commit: Callable[[AsyncConnection, ArtifactPublication], Awaitable[None]] | None = None,
     ) -> ArtifactPublication:
         source = await self._artifacts.get(connection, request.source.scope_id, request.source.artifact)
         if source.family in {"profile", "prompt"}:
@@ -178,6 +186,8 @@ class ArtifactPublicationApplication:
                 idempotency_key=request.idempotency_key,
             )
         )
+        if on_commit is not None:
+            await on_commit(connection, publication)
         return publication
 
     async def get(self, target: ArtifactAddress, /) -> ArtifactPublication | None:
