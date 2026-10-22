@@ -23,7 +23,9 @@ import sys
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import Column, Integer, MetaData, String, Table, select
+from sqlalchemy import Column, Integer, MetaData, String, Table, event, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.schema import CreateTable
 from typer.testing import CliRunner
 
 from powercontext.builtin.persistence.seekdb import SeekDBConfig, SeekDBProfile
@@ -112,7 +114,16 @@ def main(directory: Path) -> None:
         + "POWERCONTEXT_SERVER_DATABASE_DATABASE=test\n",
         encoding="utf-8",
     )
-    rotated = runner.invoke(cli, reset_arguments)
+
+    def reject_identity_ddl(connection, clauseelement, multiparams, params, execution_options) -> None:
+        if isinstance(clauseelement, CreateTable):
+            assert clauseelement.element.name != SERVER_IDENTITY_TABLE.name, "Existing identity table must be reused"
+
+    event.listen(Engine, "before_execute", reject_identity_ddl)
+    try:
+        rotated = runner.invoke(cli, reset_arguments)
+    finally:
+        event.remove(Engine, "before_execute", reject_identity_ddl)
     assert rotated.exit_code == 0, (rotated.stdout, rotated.stderr, rotated.exception)
     new_id = rotated.stdout.strip()
     assert str(UUID(new_id)) == new_id
