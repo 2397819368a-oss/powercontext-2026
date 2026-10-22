@@ -598,7 +598,8 @@ def mount_mcp(
         metrics=metrics,
         tracing=tracing,
     )
-    mcp_app = mcp_server.http_app(path="/")
+    # Keep authentication ContextVars scoped to the current HTTP request.
+    mcp_app = mcp_server.http_app(path="/", stateless_http=True)
 
     server_app.router.lifespan_context = combine_lifespans(
         server_app.router.lifespan_context,

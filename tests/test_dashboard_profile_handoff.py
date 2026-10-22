@@ -124,7 +124,7 @@ def test_profile_page_rolls_back_to_a_new_revision(dashboard):
         headers={"If-Match": current.headers["etag"]},
     )
     assert changed.status_code == 200, changed.text
-    opened = dashboard.get("/dashboard/profile", params={"scope": scope, "revision": "1", "lang": "en"})
+    opened = dashboard.get("/dashboard/profile", params={"scope": scope, "revision": "1", "history": "1", "lang": "en"})
     assert opened.status_code == 200
     assert 'name="reason"' in opened.text
     stale = dashboard.post(
@@ -185,7 +185,9 @@ def test_rollback_is_offered_when_access_control_is_disabled(tmp_path: Path) -> 
             headers={"If-Match": current.headers["etag"]},
         )
         assert changed.status_code == 200, changed.text
-        opened = client.get("/dashboard/profile", params={"scope": scope, "revision": "1", "lang": "en"})
+        opened = client.get(
+            "/dashboard/profile", params={"scope": scope, "revision": "1", "history": "1", "lang": "en"}
+        )
         assert opened.status_code == 200
         assert 'name="reason"' in opened.text
         assert 'type="number"' in opened.text
@@ -413,6 +415,7 @@ def test_atomic_memory_history_link_opens_that_exact_revision(dashboard: TestCli
     current = dashboard.get("/dashboard/notes", params={"scope": scope, "lang": "en"})
     assert current.status_code == 200, current.text
     assert "Revised note." in _reading(current.text)
+    assert "Revision history" in current.text
     older = next(
         href
         for href in _hrefs(current.text)
@@ -444,7 +447,7 @@ def test_notes_directory_link_drops_the_previous_notes_revision_cursor(dashboard
             json={"content": {"kind": "fact", "text": f"Revised {revision}."}},
         )
         assert revised.status_code == 200, revised.text
-    opened = dashboard.get("/dashboard/notes", params={"scope": scope, "lang": "en"})
+    opened = dashboard.get("/dashboard/notes", params={"scope": scope, "history": "1", "lang": "en"})
     paged = dashboard.get(next(href for href in _hrefs(opened.text) if "notes_revision_cursor=" in href))
     assert paged.status_code == 200, paged.text
     directory = next(href for href in _hrefs(paged.text) if "notes_cursor=" in href)
@@ -513,7 +516,8 @@ def test_topic_history_cursor_does_not_follow_a_link_to_another_topic(dashboard:
             {"title": "Topic A", "summary": f"Summary {revision}", "detail": "Detail."},
         )
     opened = dashboard.get(
-        "/dashboard/topics", params={"scope": scope, "topic_artifact": ids[0], "topic_revision": "9", "lang": "en"}
+        "/dashboard/topics",
+        params={"scope": scope, "topic_artifact": ids[0], "topic_revision": "9", "history": "1", "lang": "en"},
     )
     assert opened.status_code == 200, opened.text
     paged = dashboard.get(next(href for href in _hrefs(opened.text) if "topic_revision_cursor=" in href))
@@ -550,6 +554,7 @@ def test_dashboard_restores_a_legacy_instruction_only_skill_revision(dashboard: 
     assert "- Run the approved compatibility tests." in unescape(changed.text)
     assert "+ Run a later set of tests." in unescape(changed.text)
     assert 'action="/dashboard/rollback"' in changed.text
+    assert "The content matches the current revision, so rollback is unavailable." in changed.text
     restored = _rollback(dashboard, scope, "skill", skill_id, 2)
     assert restored.status_code == 200, restored.text
     head = dashboard.get(f"/v1/scopes/{scope}/artifacts/skill/{skill_id}").json()
@@ -695,7 +700,7 @@ def test_dashboard_rolls_back_experience_skill_topic_and_handoff(dashboard: Test
     _put_content(dashboard, scope, "handoff", handoff_id, changed)
     confirmation = dashboard.get(
         "/dashboard/handoff-detail",
-        params={"scope": scope, "artifact": handoff_id, "revision": "1", "lang": "en"},
+        params={"scope": scope, "artifact": handoff_id, "revision": "1", "history": "1", "lang": "en"},
     )
     assert confirmation.status_code == 200, confirmation.text
     assert "This creates a new revision" in confirmation.text
@@ -828,18 +833,17 @@ def test_handoff_download_stays_exact_and_retains_all_citations(dashboard):
 def test_handoff_directory_return_survives_refresh_and_login(dashboard, monkeypatch):
     scope = create_scope(dashboard, "Download recovery")["scope_id"]
     commit_handoff(dashboard, scope)
-    # Supply two public collection pages while keeping exact record reads and
-    # authorization real. New Handoff writes use the default singleton identity.
-    read = DashboardAPI.read
+    # Supply two collection pages while keeping exact records and authorization real.
+    # New Handoff writes use the default singleton identity.
+    records = DashboardAPI.records
 
-    async def paged(api, path, payload=None):
-        if path.startswith(f"/v1/scopes/{scope}/artifacts/handoff?"):
-            result = await read(api, f"/v1/scopes/{scope}/artifacts/handoff?limit=1")
-            result["next_cursor"] = None if "cursor=" in path else "saved-page-position"
-            return result
-        return await read(api, path, payload)
+    async def paged(api, selected_scope, family, *, cursor=None, limit=12, query=None):
+        result = await records(api, selected_scope, family, cursor=None, limit=1, query=query)
+        if selected_scope == scope and family == "handoff":
+            result["next_cursor"] = None if cursor else "saved-page-position"
+        return result
 
-    monkeypatch.setattr(DashboardAPI, "read", paged)
+    monkeypatch.setattr(DashboardAPI, "records", paged)
     first = dashboard.get("/dashboard/handoff", params={"scope": scope, "lang": "en"})
     next_page = next(url for url in _links(first.text, "/dashboard/handoff") if "cursor=" in url)
     second = dashboard.get(next_page)

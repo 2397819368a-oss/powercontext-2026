@@ -1,6 +1,6 @@
 ---
 title: Install and run
-description: Install PowerContext 1.3.0 and run the local Server.
+description: Install PowerContext 1.4.0 and run the local Server.
 ---
 
 # Install and run
@@ -24,12 +24,12 @@ Embedded seekDB is unavailable on Windows.
 
 ## Choose a version
 
-These instructions use PowerContext 1.3.0. Keep the package and Agent integration on
-the same version: package `1.3.0` and Git tag `powercontext-v1.3.0`.
+These instructions use PowerContext 1.4.0. Keep the package and Agent integration on
+the same version: package `1.4.0` and Git tag `powercontext-v1.4.0`.
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
-powercontext setup codex --ref powercontext-v1.3.0
+uv tool install --force "powercontext[cli,server]==1.4.0"
+powercontext setup codex --ref powercontext-v1.4.0
 ```
 
 Check the [capability matrix](../integrations/capabilities.md) for host support and maintenance status.
@@ -41,14 +41,18 @@ You need Python 3.11 or newer, Git, and [`uv`](https://docs.astral.sh/uv/) on ma
 PowerContext from PyPI:
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
 ```
 
 For a source installation of the same version:
 
 ```bash
-uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.3.0"
+uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.4.0"
 ```
+
+For a machine that only connects to a remote Server, the `cli` extra includes `setup`, `doctor`, and remote content
+commands. Add `server` to run a local Server or use the `service` commands. If a command provider has a missing
+dependency, the CLI reports the provider and missing module so the installation can be repaired.
 
 The Git command does not leave a repository checkout for you to manage. Git uses its normal credential configuration,
 including credential helpers and SSH settings. For an SSH-based install, replace the HTTPS URL with the Git URL
@@ -122,7 +126,7 @@ Embedded seekDB is available on Linux and macOS when a compatible `pylibseekdb` 
 support this embedded backend. Install or replace the tool with the optional seekDB extra:
 
 ```bash
-uv tool install --force "powercontext[cli,server,seekdb]==1.3.0"
+uv tool install --force "powercontext[cli,server,seekdb]==1.4.0"
 ```
 
 When switching from SQLite, remove `POWERCONTEXT_SERVER_DATABASE_URL` from the Server process environment. An explicit
@@ -174,7 +178,7 @@ Before upgrading an existing deployment, back up its database and configuration.
 tag-table constraints during Server startup to support Topic Memory tags. Stop the old Server instances and start
 one upgraded instance first so the schema upgrade completes before other instances connect. Databases from before
 1.0.0 also need the [Artifact processing migration](../operate/artifact-processing-migration.md) if it has not already
-been completed. Upgrading to 1.3.0 also requires the [offline Atomic Memory migration](../operate/atomic-memory-migration.md)
+been completed. Existing collection-based Memory databases also require the [offline Atomic Memory migration](../operate/atomic-memory-migration.md)
 for existing collection databases. Complete any required Artifact processing migration first, stop all writers, then
 apply and verify the Atomic Memory migration. Start the new service only after verification returns `ready: true`.
 Upgrade the Server, clients, and Agent integrations together.
@@ -182,10 +186,17 @@ The Dashboard must be explicitly enabled; static Bearer authentication is option
 [Deploy the Server](../operate/deploy-server.md). Remote plaintext HTTP connections require explicit client consent;
 see [Connect to a remote Server](../operate/connect-remote-server.md).
 
-To upgrade to 1.3.0:
+Review the [Dream coordinated upgrade requirements](../workflows/review-dream-revisions.md#coordinated-upgrade)
+before upgrading an existing database. The unified Candidate routes replace `/v1/artifact-candidates/*` with
+`/v1/candidates/*` without aliases, and Dream Clients require contract 2. Existing Dream storage needs an explicit
+migration after unfinished runs have drained. The current unified migration bundle reports `server_ready=false`;
+it does not provide a complete production Server upgrade path. Atomic Memory verification alone does not establish
+that readiness. Do not bypass `migration_required` or `migration_framework_not_ready`.
+
+To upgrade to 1.4.0:
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
 ```
 
 To replace the installed tool with another Git ref:
@@ -203,7 +214,7 @@ changes.
 An application that imports the async Client SDK should add it to that application's environment:
 
 ```bash
-uv add "powercontext[client]==1.3.0"
+uv add "powercontext[client]==1.4.0"
 ```
 
 Use `builtin` for in-process Python composition, `server` for the service, `client` for the Python SDK, or `cli` for

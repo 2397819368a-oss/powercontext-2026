@@ -83,7 +83,9 @@ from powercontext.builtin.artifacts.topic_memory.relatedness import (
 from powercontext.builtin.artifacts.topic_memory.search import bounded_topic_memory_query
 from powercontext.builtin.inference import (
     EmbeddingModel,
+    EmbeddingResult,
     GenerationResult,
+    InvalidInferenceOutputError,
     StructuredGenerator,
     TokenEstimator,
     character_token_estimator,
@@ -111,6 +113,8 @@ from powercontext.builtin.runtime.processing_contracts import (
     ArtifactProcessingWorkerCompletion,
     ArtifactProcessingWorkerOutcome,
 )
+from powercontext.builtin.runtime.protocols import RuntimeTracing
+from powercontext.builtin.runtime.worker_observability import worker_observability
 from powercontext.builtin.source_eligibility import is_generation_eligible
 from powercontext.builtin.sources import (
     CONTENT_SOURCE_NAME,
@@ -455,7 +459,9 @@ class TopicMemoryProcessor:
         history_min_candidates: int = 5,
         id_factory: Callable[[], str] | None = None,
         prompt_refs: Mapping[str, ArtifactRef] | None = None,
+        tracing: RuntimeTracing | None = None,
     ) -> None:
+        self._tracing = tracing
         self._database = database
         self._sources = sources
         self._topics = topics
@@ -478,6 +484,9 @@ class TopicMemoryProcessor:
         )
         self._publisher = publisher
         self._embedding_model = embedding_model
+        self._document_vectors: ContextVar[dict[tuple[str, str], tuple[float, ...]] | None] = ContextVar(
+            "topic_memory_document_vectors", default=None
+        )
         self._usage_reporter = usage_reporter
         self._history_max = history_max_candidates
         self._history_threshold = history_rrf_threshold
@@ -521,21 +530,36 @@ class TopicMemoryProcessor:
             fence=assignment.fence,
         )
         token = self._work_budget.set(budget)
+        vector_token = self._document_vectors.set({})
         self._used_stages.clear()
         try:
             await budget.begin()
             try:
-                stored = await self._read_window(assignment)
-                evidence = {_evidence_id(index): item for index, item in enumerate(stored, start=1)}
-                projected = await _project_window(stored, self._sources)
-                proposals, candidates = await self._generate(assignment.scope_id, projected) if projected else ((), {})
-                operations = await self._prepare_operations(assignment.scope_id, proposals, candidates, evidence)
-                await self._publisher.publish(
-                    assignment, evidence, operations, work_budget=budget, commit_hook=commit_hook
-                )
+                with (
+                    nullcontext()
+                    if self._tracing is None
+                    else self._tracing.stage("topic_memory.prepare", attributes={})
+                ):
+                    stored = await self._read_window(assignment)
+                    evidence = {_evidence_id(index): item for index, item in enumerate(stored, start=1)}
+                    projected = await _project_window(stored, self._sources)
+                    proposals, candidates = (
+                        await self._generate(assignment.scope_id, projected) if projected else ((), {})
+                    )
+                    operations = await self._prepare_operations(assignment.scope_id, proposals, candidates, evidence)
+                with (
+                    nullcontext()
+                    if self._tracing is None
+                    else self._tracing.stage("topic_memory.commit", attributes={})
+                ):
+                    await self._publisher.publish(
+                        assignment, evidence, operations, work_budget=budget, commit_hook=commit_hook
+                    )
             except TopicMemoryGenerationError as error:
                 if error.code in RECORDED_TOPIC_MEMORY_REJECTIONS:
                     await budget.fail(error.code)
+                else:
+                    await budget.record_failure(error.code)
                 raise
         except ArtifactProcessingLeadershipLostError:
             return ArtifactProcessingWorkerCompletion(ArtifactProcessingWorkerOutcome.LEADERSHIP_LOST)
@@ -544,6 +568,7 @@ class TopicMemoryProcessor:
         except RevisionConflictError:
             return ArtifactProcessingWorkerCompletion(ArtifactProcessingWorkerOutcome.HEAD_CONFLICT)
         finally:
+            self._document_vectors.reset(vector_token)
             self._work_budget.reset(token)
         return ArtifactProcessingWorkerCompletion()
 
@@ -575,13 +600,24 @@ class TopicMemoryProcessor:
         self._local_tokens += tokens
 
     async def _embed(self, texts: tuple[str, ...]):
-        if self._embedding_model is None:
+        model = self._embedding_model
+        if model is None:
             raise TopicMemoryGenerationError("embedding_unavailable")
+        cached = self._document_vectors.get()
+        if cached is None:
+            cached = {}
+        profile = model.profile.model_dump_json()
+        pending = tuple(dict.fromkeys(text for text in texts if (profile, text) not in cached))
         # At most one provider request per text (the adapter may batch them).
-        await self._reserve(
-            requests=max(1, len(texts)), tokens=max(1, sum(self._stages.estimator.estimate(text) for text in texts))
-        )
-        return await self._embedding_model.embed(texts)
+        if pending:
+            await self._reserve(
+                requests=len(pending), tokens=max(1, sum(self._stages.estimator.estimate(text) for text in pending))
+            )
+            result = await model.embed(pending)
+            if len(result.vectors) != len(pending):
+                raise InvalidInferenceOutputError("topic-memory.index", "requires one vector per input")
+            cached.update(((profile, text), vector) for text, vector in zip(pending, result.vectors, strict=True))
+        return EmbeddingResult(vectors=tuple(cached[profile, text] for text in texts))
 
     async def _embed_query(self, texts: tuple[str, ...]):
         if self._embedding_model is None:
@@ -821,10 +857,12 @@ class TopicMemoryProcessor:
         )[: self._history_max]
         id_by_key = {key: f"candidate-{index:04d}" for index, key in enumerate(ordered_keys, start=1)}
         candidates: dict[str, PublishedTopicMemory] = {}
-        async with self._database.transaction() as connection:
-            for key in ordered_keys:
-                ref = ranked[key][2].artifact_ref
-                candidates[id_by_key[key]] = await self._topics.get_exact(connection, scope_id, ref)
+        if ordered_keys:
+            async with self._database.transaction(consistent_snapshot=True) as connection:
+                publications = await self._topics.get_exact_many(
+                    connection, scope_id, tuple(ranked[key][2].artifact_ref for key in ordered_keys)
+                )
+            candidates = {id_by_key[key]: value for key, value in zip(ordered_keys, publications, strict=True)}
         projected = tuple(
             TopicMemoryProbeCandidates(
                 probe_id=f"probe-{index:04d}",
@@ -864,7 +902,7 @@ class TopicMemoryProcessor:
                 embedded = await self._embed_query((query if semantic_query is None else semantic_query,))
             query_vector = embedded.vectors[0]
             profile = self._embedding_model.profile
-        async with self._database.transaction() as connection:
+        async with self._database.transaction(consistent_snapshot=True) as connection:
             result = await self._topics.search(
                 connection,
                 scope_id,
@@ -1009,7 +1047,7 @@ class TopicMemoryProcessor:
                 or f"{proposal.content.title}\n{proposal.content.summary}"[:MAX_TOPIC_MEMORY_QUERY_LENGTH].strip()
             )
             mode: TopicMemorySearchMode = "fts" if vector is None else "hybrid" if signature else "vector"
-            async with self._database.transaction() as connection:
+            async with self._database.transaction(consistent_snapshot=True) as connection:
                 result = await self._topics.search(
                     connection,
                     scope_id,
@@ -1019,16 +1057,19 @@ class TopicMemoryProcessor:
                     query_vector=vector,
                     embedding_profile=profile,
                 )
-                ids: set[str] = set()
-                for hit in result.hits:
-                    candidate_id = next(
-                        (key for key, value in candidates.items() if value.topic.as_ref() == hit.artifact_ref),
-                        None,
-                    )
-                    if candidate_id is None:
+                known = {_artifact_key(publication.topic.as_ref()): key for key, publication in candidates.items()}
+                missing = {
+                    _artifact_key(hit.artifact_ref): hit.artifact_ref
+                    for hit in result.hits
+                    if _artifact_key(hit.artifact_ref) not in known
+                }
+                if missing:
+                    publications = await self._topics.get_exact_many(connection, scope_id, tuple(missing.values()))
+                    for ref, publication in zip(missing, publications, strict=True):
                         candidate_id = f"candidate-{len(candidates) + 1:04d}"
-                        candidates[candidate_id] = await self._topics.get_exact(connection, scope_id, hit.artifact_ref)
-                    ids.add(candidate_id)
+                        candidates[candidate_id] = publication
+                        known[ref] = candidate_id
+                ids = {known[_artifact_key(hit.artifact_ref)] for hit in result.hits}
             secondary.append(frozenset(ids))
             vectors.append(vector)
         components = topic_memory_related_components(
@@ -1575,13 +1616,18 @@ async def _process_topic_dream_if_pending(
     operations = operations_for_binding(assignment.binding_name)
     if not operations or not spec.config.runtime.dream_enabled:
         return False
+    # Mirror the Memory family worker: the dream branch stays observable when the
+    # spawn entrypoint supplied worker tracing or model instrumentation.
+    observation = worker_observability.get()
+    instrumentation = None if observation is None else observation.instrumentation
+    tracing = None if observation is None else observation.tracing
     async with AsyncExitStack() as resources:
         raw_embedding, _ = await _embedding_models(
-            spec.config.inference, resources, None, disable_provider_retries=True
+            spec.config.inference, resources, instrumentation, disable_provider_retries=True
         )
         embedding = None if raw_embedding is None else UsageReportingEmbeddingModel(raw_embedding)
         contexts = await resources.enter_async_context(
-            open_builtin_contexts(spec.config, embedding_model=embedding, _topic_memory_worker=True)
+            open_builtin_contexts(spec.config, embedding_model=embedding, tracing=tracing, _topic_memory_worker=True)
         )
         async with contexts.database.transaction() as connection:
             record = await DreamRepository().next_pending(
@@ -1592,7 +1638,7 @@ async def _process_topic_dream_if_pending(
             )
         if record is None:
             return False
-        generator = await _dream_generator(spec.config.inference, record.run.budget, resources, None)
+        generator = await _dream_generator(spec.config.inference, record.run.budget, resources, instrumentation)
         security = None
         if spec.worker_security is not None:
             from powercontext.server.processing_security import open_worker_security
@@ -1646,6 +1692,9 @@ async def _open_topic_memory_processor(spec: TopicMemoryWorkerSpec, scope_id: st
         open_builtin_contexts,
     )
 
+    observation = worker_observability.get()
+    instrumentation = None if observation is None else observation.instrumentation
+    tracing = None if observation is None else observation.tracing
     config = spec.config
     inference = config.inference
     if inference.generation_model is None:
@@ -1671,15 +1720,16 @@ async def _open_topic_memory_processor(spec: TopicMemoryWorkerSpec, scope_id: st
             base_url=inference.generation_base_url,
             headers=inference.generation_headers,
             resources=resources,
-            instrumentation=None,
+            instrumentation=instrumentation,
             disable_provider_retries=True,
         )
-        raw_embedding, _ = await _embedding_models(inference, resources, None, disable_provider_retries=True)
+        raw_embedding, _ = await _embedding_models(inference, resources, instrumentation, disable_provider_retries=True)
         embedding = None if raw_embedding is None else UsageReportingEmbeddingModel(raw_embedding)
         contexts = await resources.enter_async_context(
             open_builtin_contexts(
                 config,
                 embedding_model=embedding,
+                tracing=tracing,
                 _topic_memory_worker=True,
                 prompt_registry=PromptRegistry(
                     builtin_prompt_definitions(config.runtime.memory_extraction_profile),
@@ -1821,6 +1871,7 @@ async def _open_topic_memory_processor(spec: TopicMemoryWorkerSpec, scope_id: st
             history_rrf_threshold=config.runtime.topic_memory_history_rrf_threshold,
             history_min_candidates=config.runtime.topic_memory_history_min_candidates,
             prompt_refs=prompt_refs,
+            tracing=tracing,
         )
         try:
             yield TopicMemoryScopeProcessor(

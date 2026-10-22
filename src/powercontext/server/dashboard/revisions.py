@@ -171,59 +171,95 @@ async def load_history(
     artifact_id: str,
     selected: int,
     cursor_key: str,
-) -> dict[str, Any] | None:
+    snapshot=None,
+) -> dict[str, Any]:
     """Load one artifact's revision list and optional comparison."""
 
     scope = ctx["scope"]
-    base = f"/v1/scopes/{segment(scope)}/artifacts/{segment(family)}/{segment(artifact_id)}"
-    params = {"limit": str(PAGE_SIZE)}
-    if request.query_params.get(cursor_key):
-        params["cursor"] = request.query_params[cursor_key]
+    query = request.query_params
+    compare = _revision_param(query.get("compare"))
     try:
-        page = await api.read(base + "/revisions?" + urlencode(params))
-        head = await api.read(base)
-    except ReadError:
-        return None
-    items = page["items"]
-    head_revision = int(head["revision"])
-    compare_raw = request.query_params.get("compare")
-    compare = _revision_param(compare_raw)
+        if api.builtin is not None:
+            result = await api.revision_history(
+                scope,
+                family,
+                artifact_id,
+                selected,
+                cursor=query.get(cursor_key),
+                compare=compare,
+                snapshot=snapshot,
+            )
+        else:
+            result = await _public_history(api, request, scope, family, artifact_id, selected, cursor_key, compare)
+    except ReadError as error:
+        return {
+            "loaded": False,
+            "error": error,
+            "selected": selected,
+            "head": selected,
+            "family": family,
+            "artifact_id": artifact_id,
+            "same_content": False,
+            "items": [],
+            "next_url": None,
+            "rows": None,
+            "can_rollback": False,
+            "compare_error": False,
+        }
+    values = result["values"]
+    head_revision = result["head"]
+    left, right = values.get(selected), values.get(compare)
     rows = None
-    compare_error = False
-    if compare is not None and compare != selected:
-        try:
-            left = await api.artifact_revision(scope, family, artifact_id, selected)
-            right = await api.artifact_revision(scope, family, artifact_id, compare)
-            rows = comparison(family, left["content"], right["content"])
-        except ReadError:
-            rows = None
-            compare_error = True
-    same_content = False
-    if family in ROLLBACK_FAMILIES and selected != head_revision:
-        try:
-            opened = await api.artifact_revision(scope, family, artifact_id, selected)
-            same_content = canonical_view(family, opened["content"]) == canonical_view(family, head["content"])
-        except ReadError:
-            same_content = False
+    compare_error = compare is not None and (left is None or right is None)
+    if compare is not None and compare != selected and not compare_error:
+        rows = comparison(family, left["content"], right["content"])
+    head = values.get(head_revision)
+    same_content = (
+        family in ROLLBACK_FAMILIES
+        and left is not None
+        and head is not None
+        and canonical_view(family, left["content"]) == canonical_view(family, head["content"])
+    )
     return {
+        "loaded": True,
         "family": family,
         "artifact_id": artifact_id,
         "head": head_revision,
         "selected": selected,
-        "items": items,
-        "pager_key": cursor_key,
-        "next_cursor": page.get("next_cursor"),
-        "next_url": (
-            ctx["link"](**{cursor_key: page["next_cursor"]})
-            if page.get("next_cursor") and ctx.get("link") is not None
-            else None
-        ),
-        "can_rollback": family in ROLLBACK_FAMILIES and await _can_replace(request, api, scope, family, artifact_id),
+        "items": result["items"],
+        "next_cursor": result["next_cursor"],
+        "next_url": ctx["link"](**{cursor_key: result["next_cursor"]}) if result["next_cursor"] else None,
+        "can_rollback": family in ROLLBACK_FAMILIES and result["can_replace"],
         "same_content": same_content,
         "compare": compare,
         "compare_error": compare_error,
         "rows": rows,
-        "error": request.query_params.get("rollback_error"),
+        "error": query.get("rollback_error"),
+    }
+
+
+async def _public_history(api, request, scope, family, artifact_id, selected, cursor_key, compare):
+    base = f"/v1/scopes/{segment(scope)}/artifacts/{segment(family)}/{segment(artifact_id)}"
+    params = {"limit": str(PAGE_SIZE)}
+    if request.query_params.get(cursor_key):
+        params["cursor"] = request.query_params[cursor_key]
+    page = await api.read(base + "/revisions?" + urlencode(params))
+    head = await api.read(base)
+    values = {head["revision"]: head}
+    for revision in dict.fromkeys((selected, compare)):
+        if revision is None or revision in values:
+            continue
+        try:
+            values[revision] = await api.artifact_revision(scope, family, artifact_id, revision)
+        except ReadError as error:
+            if error.status != 404:
+                raise
+            continue
+    return {
+        **page,
+        "head": head["revision"],
+        "values": values,
+        "can_replace": await _can_replace(request, api, scope, family, artifact_id),
     }
 
 

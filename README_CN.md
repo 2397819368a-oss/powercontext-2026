@@ -72,13 +72,15 @@ Experience 记录一个场景、一次动作、观察到的结果，以及可复
 
 一个受管的 Skill 包含名称、发现描述、指令、校验项和血缘。评审通过**不等于**安装或执行：必须先显式导出某一个明确的已通过 Revision，Agent 宿主才能发现对应的宿主内副本。
 
+[运行指标](docs/zh/docs/operate/observability.md)提供依赖状态观察、处理进度新鲜度和执行尝试延迟；独立后台部署也可使用受保护的专用指标端点。
+
 ## 为什么选 PowerContext？
 
 - **上下文活在对话之外。** Memory、Handoff、Experience、Skill 都是服务端 Artifact，不是某个 Agent 家目录里的文件。从 Codex 换到 Claude Code，或者把工作交给同事，工作本身跟着你走。
 - **一切都带版本、可追溯。** 每个 Artifact 都以 `家族/ARTIFACT_ID@REVISION` 寻址。通过替换产生的后续 Revision 不会改变 Artifact ID，读取一个精确的引用会返回那一份历史快照，即使家族主版本已经前进。
 - **生成、评审、执行是三个分开的步骤。** 模型可以提出内容，评审通过某个 Revision，导出生成宿主内副本。这三步都不会授予 Agent 执行指令的权限。各个入口目前各自暴露了什么，见[接口说明](https://powercontext.oceanbase.io/zh/docs/develop/interfaces/)。
 - **召回是有边界的，不是整包倾倒。** `PreparedContext` 会按请求选择活跃的 Memory 和已通过的 Experience，并可选加入 Profile 快照和 Topic Memory，再套用一个共享的字节预算，返回 `ready` 内容或 `empty`。召回的内容是历史，不是指令权威：接收方仍然要遵循当前指令，并检查工作区的实时状态。
-- **复用之前先评审。** Experience 和 Skill 都要经过一次评审决策，无论通过还是驳回都是终态。模型负责提议，而不是悄悄把自己生成的内容提上去。
+- **复用之前先评审。** Experience 和 Skill 都要经过一次评审决策，无论通过还是驳回都是终态；批准会写入不可变 Revision。启用权限控制后，批准需要 `scope.review`。有审核权限的 Agent 仍可批准自己的 Candidate；需要由人决定时，应使用不同身份和权限[分离 Agent 提交与审核](https://powercontext.oceanbase.io/zh/docs/workflows/review-candidates/#分离-agent-提交与审核)。
 - **一个 Server，同一份契约的多个视图。** HTTP 是完整的远端应用契约。Python Client 提供带类型的访问，MCP 是面向 Agent 的精选投影，Core 协议则允许应用自行组装 Source、Artifact 和 Trigger 实现。
 
 ### 横向对比
@@ -124,7 +126,7 @@ PowerContext 把可长期复用的项目上下文放在单次对话之外。一�
 Agent 输入 → Source 证据 → Memory / Topic Memory → PreparedContext → 新会话或新 Agent
 ```
 
-PowerContext 1.3.0 包含交互式配置向导。需要 Python 3.11+、Git 和
+PowerContext 1.4.0 包含交互式配置向导。需要 Python 3.11+、Git 和
 [uv](https://docs.astral.sh/uv/getting-started/installation/)；需要时 uv 可以按需提供 Python。
 要接入 Agent，还需要安装对应的 CLI。向导中选择“基础记忆”即可在没有模型 API 的情况下显式保存与召回；
 选择“完整记忆能力”则需要独立的 Generation、Embedding API 凭据。只想启动不依赖模型 API 的本地 Server 时，
@@ -142,7 +144,7 @@ PowerContext 1.3.0 包含交互式配置向导。需要 Python 3.11+、Git 和
 ### 1. 安装并运行配置向导
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
 mkdir -p powercontext-config && cd powercontext-config
 powercontext config init --language zh --output .env
 powercontext config validate --env-file .env
@@ -166,7 +168,7 @@ powercontext capabilities
 [完整安装流程](https://powercontext.oceanbase.io/zh/docs/get-started/quickstart/)包含 Codex、Claude Code、Dashboard 登录、SSH 隧道、HTTPS 前提及逐项验收。例如，匹配本版本的 Codex 安装命令是：
 
 ```bash
-powercontext setup codex --ref powercontext-v1.3.0
+powercontext setup codex --ref powercontext-v1.4.0
 powercontext doctor codex
 ```
 

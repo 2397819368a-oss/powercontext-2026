@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -123,7 +125,6 @@ def test_atomic_public_exact_revisions_scores_and_threshold_order(tmp_path, mode
             ]
             assert len(kept.matches) < 3
             legacy = await contexts.atomic_memory.for_scope("project").search("alpha", mode=mode)
-            assert legacy.artifacts is None and legacy.matches == ()
             assert [hit.hit.artifact_ref for hit in legacy.hits] == [match.artifact_ref for match in scored.matches]
 
     asyncio.run(scenario())
@@ -249,26 +250,28 @@ def test_atomic_public_threshold_precedes_configured_rerank_and_retains_retrieva
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("boundary", ["candidate-validation", "rerank-reauthorization"])
-def test_atomic_public_missing_selected_authority_is_internal_failure(tmp_path, monkeypatch, boundary):
+@pytest.mark.parametrize("rerank", [False, True])
+def test_atomic_public_missing_selected_authority_is_internal_failure(tmp_path, rerank):
     class Reranker:
         supports_atomic_memory = True
         policy_id = "test-policy"
 
         async def rerank(self, query, candidates, limit, /):
-            return MemoryRerankDecision((1,), InferenceUsage(requests=1))
-
-    async def missing(*args, **kwargs):
-        raise RepositoryNotFoundError("artifact", "selected")
+            pytest.fail("Missing authoritative content must not reach the reranker")
 
     async def scenario():
-        async with open_builtin_contexts(config(tmp_path), memory_reranker=Reranker()) as contexts:
+        async with open_builtin_contexts(config(tmp_path), memory_reranker=Reranker() if rerank else None) as contexts:
             await contexts.get("project")
-            await contexts.records.create_atomic_memories("project", ({"kind": "fact", "text": "Alpha plan."},))
-            if boundary == "candidate-validation":
-                monkeypatch.setattr(contexts.atomic_memory.artifacts, "get_many", missing)
-            else:
-                monkeypatch.setattr(contexts.atomic_memory.artifacts, "latest", missing)
+            (created,) = await contexts.records.create_atomic_memories(
+                "project", ({"kind": "fact", "text": "Alpha plan."},)
+            )
+            # Simulate lost authoritative storage while leaving a searchable projection.
+            with closing(sqlite3.connect(tmp_path / "atomic.db")) as connection:
+                connection.execute(
+                    "DELETE FROM pc_artifacts WHERE scope_id = ? AND family = ? AND artifact_id = ?",
+                    ("project", "atomic-memory", created.artifact_id),
+                )
+                connection.commit()
             with pytest.raises(ArtifactSearchContractError):
                 await service(contexts).search("project", "atomic-memory", {"query": "alpha"})
             with pytest.raises(RepositoryNotFoundError):

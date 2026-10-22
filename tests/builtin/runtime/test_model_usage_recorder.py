@@ -72,7 +72,10 @@ def _offer(recorder: _ModelUsageRecorder, usage: InferenceUsage | None = None) -
 
 async def _rows(database: AsyncDatabase) -> tuple[StoredModelUsage, ...]:
     async with database.transaction() as connection:
-        return await StatisticsRepository().usage(connection, _SCOPE, _DAY, _DAY)
+        usage, _recall = await StatisticsRepository().daily_usage_many(
+            connection, (_SCOPE,), _DAY, _DAY, estimator=None
+        )
+        return usage[_SCOPE]
 
 
 async def _assert_connection_restored(database: AsyncDatabase, busy_timeout: int = 5_000) -> None:
@@ -118,6 +121,7 @@ def test_flush_persists_copied_usage_with_unknown_tokens_and_original_date(tmp_p
 def test_queue_capacity_drops_without_sql_or_sensitive_logs(caplog: pytest.LogCaptureFixture) -> None:
     async def scenario() -> None:
         async with _database() as database:
+            observations = []
             capacity = 2
             write_budget = 5.0
             # Queue admission is under test. The default short flush may return
@@ -125,6 +129,7 @@ def test_queue_capacity_drops_without_sql_or_sensitive_logs(caplog: pytest.LogCa
             recorder = _ModelUsageRecorder(
                 database,
                 StatisticsRepository(),
+                observer=lambda *snapshot: observations.append(snapshot),
                 queue_capacity=capacity,
                 write_timeout_seconds=write_budget,
                 flush_timeout_seconds=capacity * write_budget + 1,
@@ -132,9 +137,11 @@ def test_queue_capacity_drops_without_sql_or_sensitive_logs(caplog: pytest.LogCa
             try:
                 for _ in range(8):
                     _offer(recorder)
+                assert observations[-1] == (2, 2, 6, 0)
                 assert recorder.checkpoint() == 2
                 await recorder.flush()
                 assert (await _rows(database))[0].requests == 2
+                assert observations[-1] == (0, 2, 6, 0)
             finally:
                 await recorder.close()
 
@@ -148,7 +155,10 @@ def test_queue_capacity_drops_without_sql_or_sensitive_logs(caplog: pytest.LogCa
 def test_in_memory_usage_does_not_join_outer_rollback() -> None:
     async def scenario() -> None:
         async with _database() as database:
-            recorder = _ModelUsageRecorder(database, StatisticsRepository())
+            # Verify rollback isolation after settlement, not the short best-effort flush deadline.
+            recorder = _ModelUsageRecorder(
+                database, StatisticsRepository(), write_timeout_seconds=5.0, flush_timeout_seconds=6.0
+            )
             try:
                 with pytest.raises(ValueError, match="business rollback"):
                     async with database.transaction() as connection:
@@ -831,17 +841,22 @@ def test_an_interrupted_commit_reply_does_not_repeat_applied_usage(caplog: pytes
         async with _database() as database:
 
             def lost_reply(connection) -> None:
-                # Commit for real, then let the native deadline expire before
-                # reporting an interrupted reply. Repeating this outcome would
-                # increment an already committed record a second time.
+                # Commit for real, then report an interrupted reply. Repeating
+                # this unknown outcome would increment an already committed
+                # record a second time.
                 connection.connection.commit()
-                await_only(asyncio.sleep(0.12))
                 original = sqlite3.OperationalError("secret commit reply")
                 original.sqlite_errorcode = sqlite3.SQLITE_INTERRUPT
                 raise OperationalError("COMMIT", None, original)
 
-            event.listen(database.engine.sync_engine, "commit", lost_reply, once=True)
-            recorder = _ModelUsageRecorder(database, StatisticsRepository(), write_timeout_seconds=0.4)
+            engine = database.engine.sync_engine
+            event.listen(engine, "commit", lost_reply, once=True)
+            recorder = _ModelUsageRecorder(
+                database,
+                StatisticsRepository(),
+                write_timeout_seconds=5.0,
+                flush_timeout_seconds=5.0,
+            )
             try:
                 _offer(recorder)
                 await recorder.flush()
@@ -851,6 +866,7 @@ def test_an_interrupted_commit_reply_does_not_repeat_applied_usage(caplog: pytes
                 await _assert_connection_restored(database)
             finally:
                 await recorder.close()
+                event.remove(engine, "commit", lost_reply)
 
     with caplog.at_level(logging.WARNING):
         asyncio.run(scenario())

@@ -101,7 +101,7 @@ class ArtifactRecord(_RecordModel):
 
 
 class ArtifactCollectionItem(_RecordModel):
-    """One active Artifact head without content or lineage."""
+    """One active Artifact head with content omitted from serialization."""
 
     scope_id: str
     family: ArtifactReadFamily
@@ -110,6 +110,7 @@ class ArtifactCollectionItem(_RecordModel):
     sources: tuple[SourceRef, ...]
     artifacts: tuple[ArtifactRef, ...]
     content_digest: str
+    content: dict[str, JsonValue] | None = Field(default=None, exclude=True)
     title: str | None = None
     summary: str | None = None
     published_at: datetime | None = None

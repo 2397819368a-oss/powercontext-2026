@@ -49,6 +49,22 @@ Prompt 配置操作；Topic Memory 整理主题。直接 Artifact 写入遵循�
 部分 API schema 为兼容保留旧 `memory` 标识，但它不是当前可写家族，也不能据此推断通用旧集合读取仍受支持。
 已有数据和旧引用的处理见[Atomic Memory 迁移](../operate/atomic-memory-migration.md)。
 
+## 按预期结果选择工作流
+
+这些值具有不同的生命周期。应先从想要得到的结果开始，而不是把每一条已采集的 Source 都当成创建长期上下文的指令。
+
+| 预期结果 | 从这里开始 | 后续会发生什么 |
+| --- | --- | --- |
+| 保留一条事实、决定、约束或下一步 | 显式写入 Memory | 它带有 Revision、可被搜索，也可 retire 而不丢失历史。 |
+| 维护相关证据的摘要 | 采集相关 Source 并启用 Topic 处理 | 配置的后台 pipeline 在发现符合条件的证据时，可能创建或更新 Topic Memory。 |
+| 将工作交给后续会话或协作者 | 准备并检查 Handoff | 只有当交接是值得保留的里程碑时才提交。 |
+| 复用已完成工作的经验 | 记录 Task Outcome，再提交或生成 Experience | Review 决定 candidate 是否成为 approved Artifact。 |
+| 复用一套流程 | 提交或生成 managed Skill | 批准不等于安装：必须导出精确的 approved Revision，宿主才能发现它。 |
+| 设置共享的 Scope 背景 | 配置 Profile policy | policy 与其审核工作流决定 Profile 何时变为 active。 |
+
+采集 Source 只提供证据；它本身不会创建 Memory、Experience、Skill、Handoff 或 Profile。Tag 可以帮助组织受支持的
+Artifact，但不会改变 Artifact 的生命周期，也不会授予执行权限。
+
 ## Memory 保存长期项目知识
 
 每条 Atomic Memory 都是独立的带 Revision 制品，保存一条可复用的决定、约束、事实、状态或下一步。

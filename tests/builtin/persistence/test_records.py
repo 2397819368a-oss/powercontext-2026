@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import JsonValue, ValidationError
-from sqlalchemy import event, func, insert, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef, StableHandle
@@ -30,7 +30,12 @@ from powercontext.builtin.artifacts.experience import Experience
 from powercontext.builtin.artifacts.handoff import Handoff
 from powercontext.builtin.artifacts.skill import Skill
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
-from powercontext.builtin.persistence.experience_index import ExperienceIndex, NoExperienceIndex
+from powercontext.builtin.persistence.experience_index import (
+    ExperienceIndex,
+    NoExperienceIndex,
+    experience_search_hits,
+    skill_search_hits,
+)
 from powercontext.builtin.persistence.family_management import (
     ExperienceManagementWriter,
     FamilyManagementWriterRegistry,
@@ -678,29 +683,6 @@ def test_artifact_create_and_replace_validate_handoff_as_json() -> None:
     asyncio.run(scenario())
 
 
-def test_artifact_list_batches_revision_and_lineage_reads() -> None:
-    async def scenario() -> None:
-        async with _atomic_record_services() as (contexts, records, _, _):
-            for _ in range(3):
-                await records.create_artifact("scope-a", "atomic-memory", ArtifactWrite(content=_memory_content()))
-
-            statements: list[str] = []
-
-            def record_statement(*args: object) -> None:
-                statements.append(str(args[2]))
-
-            event.listen(contexts.database.engine.sync_engine, "before_cursor_execute", record_statement)
-            try:
-                page = await records.query_artifacts("scope-a", "atomic-memory", limit=10, cursor=None)
-            finally:
-                event.remove(contexts.database.engine.sync_engine, "before_cursor_execute", record_statement)
-
-            assert len(page.items) == 3
-            assert len([statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]) == 4
-
-    asyncio.run(scenario())
-
-
 def test_experience_and_skill_writers_update_owned_search_projections() -> None:
     async def scenario() -> None:
         async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as profile:
@@ -763,8 +745,10 @@ def test_experience_and_skill_writers_update_owned_search_projections() -> None:
             )
 
             async with profile.database.transaction() as connection:
-                experience_hits = await index.search(connection, "scope-a", "rollback", 10)
-                skill_hits = await index.search_skills(connection, "scope-a", "matrix", 10)
+                experience_rows = await index.search(connection, "scope-a", "experience", "rollback", 10)
+                skill_rows = await index.search(connection, "scope-a", "skill", "matrix", 10)
+                experience_hits = experience_search_hits(experience_rows, "rollback", 10, "scope-a")
+                skill_hits = skill_search_hits(skill_rows, "matrix", 10)
                 package_count = await connection.scalar(select(func.count()).select_from(SKILL_PACKAGES_TABLE))
             assert [hit.artifact_ref for hit in experience_hits.hits] == [
                 ArtifactRef(

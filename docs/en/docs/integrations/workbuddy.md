@@ -22,7 +22,7 @@ PowerContext Server over HTTP.
 
 ## Install with the PowerContext CLI
 
-WorkBuddy is not listed by `setup select` or `doctor integrations`; use the dedicated setup and diagnostic commands on this page.
+WorkBuddy supports `setup workbuddy`, `config agent workbuddy`, and `doctor workbuddy`, including multi-agent commands.
 
 The CLI installs the hooks, MCP server, and Skill from a local checkout or a
 GitHub source in one step:

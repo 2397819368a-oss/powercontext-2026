@@ -133,7 +133,7 @@ from powercontext.builtin.persistence.artifact_governance import (
     ArtifactLifecycleState,
 )
 from powercontext.builtin.persistence.artifact_readers import TopicMemoryArtifactListReader
-from powercontext.builtin.persistence.artifacts import ArtifactRepository
+from powercontext.builtin.persistence.artifacts import ArtifactRepository, with_artifact_content
 from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndex
 from powercontext.builtin.persistence.candidates import CandidateRepository
 from powercontext.builtin.persistence.connectors import ConnectorCheckpointRepository
@@ -141,7 +141,12 @@ from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.decision_observations import DecisionObservationRepository
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError, StoredPayloadConflictError
-from powercontext.builtin.persistence.experience_index import ExperienceIndex, NoExperienceIndex
+from powercontext.builtin.persistence.experience_index import (
+    ExperienceIndex,
+    NoExperienceIndex,
+    experience_search_hits,
+    skill_search_hits,
+)
 from powercontext.builtin.persistence.external_skills import ExternalSkillRepository
 from powercontext.builtin.persistence.family_management import (
     AtomicMemoryManagementWriter,
@@ -182,7 +187,7 @@ from powercontext.builtin.review.generation import (
     SkillGenerationOrigin,
 )
 from powercontext.builtin.review.models import Candidate
-from powercontext.builtin.review.service import ReviewService
+from powercontext.builtin.review.service import CandidateCommitHook, ReviewService
 from powercontext.builtin.runtime._model_usage import _ModelUsageRecorder
 from powercontext.builtin.runtime.atomic_memory import AtomicMemoryApplication
 from powercontext.builtin.runtime.atomic_memory_processing import (
@@ -207,6 +212,7 @@ from powercontext.builtin.runtime.protocols import (
 )
 from powercontext.builtin.runtime.recall import RelationalRecallTokenEstimator
 from powercontext.builtin.runtime.recurrence import RelationalRecurrenceLedger
+from powercontext.builtin.runtime.skill_search import SkillArtifactSearcher
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -401,7 +407,7 @@ class _ScopedServices:
             skill_generator=self.skill_generator,
         )
 
-    def handoff(self) -> HandoffService:
+    def handoff(self, *, on_commit=None) -> HandoffService:
         def evidence_resolver(scope_id: str) -> RelationalHandoffEvidenceResolver:
             services = self if scope_id == self.scope_id else replace(self, scope_id=scope_id)
             return RelationalHandoffEvidenceResolver(
@@ -420,6 +426,7 @@ class _ScopedServices:
                 database=self.database,
                 scope_id=self.scope_id,
                 artifacts=self.repositories.artifacts,
+                on_commit=on_commit,
             ),
             evidence_resolver=RelationalHandoffEvidenceResolver(
                 database=self.database,
@@ -507,6 +514,7 @@ class RelationalContexts:
         handoff_verification_keys: tuple[bytes, ...] = (),
         topic_memory_write_timeout_seconds: float = 30.0,
         topic_memory_write_concurrency: int = 4,
+        model_usage_observer: Callable[[int, int, int, int], None] | None = None,
         model_usage_queue_capacity: int = 256,
         model_usage_write_timeout_seconds: float = 1.0,
         model_usage_flush_timeout_seconds: float = 0.5,
@@ -593,9 +601,11 @@ class RelationalContexts:
             topic_memories=topic_memory_repository,
             decision_observations=DecisionObservationRepository(),
         )
+        self.list_skills = SkillArtifactSearcher(database, self.repositories.artifacts, self.experience_index)
         self._model_usage = _ModelUsageRecorder(
             database,
             self.repositories.statistics,
+            observer=model_usage_observer,
             queue_capacity=model_usage_queue_capacity,
             write_timeout_seconds=model_usage_write_timeout_seconds,
             flush_timeout_seconds=model_usage_flush_timeout_seconds,
@@ -618,7 +628,7 @@ class RelationalContexts:
                 if component is not None
             ),
         )
-        self.prompts = PromptService(self.prompt_registry, self._prompt_head, prompt_demonstrators)
+        self.prompts = PromptService(self.prompt_registry, self._prompt_heads, prompt_demonstrators)
         self.atomic_memory_processor = AtomicMemorySourceWindowProcessor(
             self.atomic_memory,
             self.repositories.sources,
@@ -921,12 +931,19 @@ class RelationalContexts:
         estimator = self._services_for(scope_id).recall_tokens()
         return None if estimator is None else await estimator.estimate(build)
 
-    async def _prompt_head(self, scope_id: str, key: str) -> Prompt | None:
+    async def _prompt_heads(self, scope_id: str, keys: tuple[str, ...]) -> dict[str, Prompt]:
+        statement = select(ARTIFACT_HEADS_TABLE).where(
+            ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
+            ARTIFACT_HEADS_TABLE.c.family == "prompt",
+            ARTIFACT_HEADS_TABLE.c.artifact_id.in_(keys),
+        )
         async with self.database.connection() as connection:
-            try:
-                return cast(Prompt, await self.repositories.artifacts.latest(connection, scope_id, "prompt", key))
-            except RepositoryNotFoundError:
-                return None
+            rows = (await connection.execute(with_artifact_content(statement))).mappings().all()
+            # A missing exact body has the same absent-head meaning as the scalar reader.
+            values = await self.repositories.artifacts.decode_many(
+                connection, scope_id, tuple(row for row in rows if row["content"] is not None)
+            )
+        return {value.artifact_id: cast(Prompt, value) for value in values}
 
     async def search_experience(
         self,
@@ -958,7 +975,10 @@ class RelationalContexts:
             raise ValueError("Experience search limit must be positive")  # noqa: TRY003
         scope = validate_scope_id(scope_id)
         async with self.database.transaction() as connection:
-            return await self.experience_index.search(connection, scope, query, limit, admission=admission)
+            rows = await self.experience_index.search(
+                connection, scope, "experience", query, limit, admission=admission
+            )
+            return experience_search_hits(rows, query, limit, scope, admission=admission)
 
     async def get_topic_memory(
         self,
@@ -1079,7 +1099,8 @@ class RelationalContexts:
             raise ValueError("Skill search limit must be positive")  # noqa: TRY003
         scope = validate_scope_id(scope_id)
         async with self.database.transaction() as connection:
-            return await self.experience_index.search_skills(connection, scope, query, limit)
+            rows = await self.experience_index.search(connection, scope, "skill", query, limit)
+            return skill_search_hits(rows, query, limit)
 
     async def get_skill_governance(
         self,
@@ -1140,58 +1161,6 @@ class RelationalContexts:
                     return origin
         return SkillOrigin(kind=SkillOriginKind.POWERCONTEXT)
 
-    async def list_skills(
-        self,
-        scope_id: str,
-        include_deprecated: bool,
-        limit: int,
-        /,
-    ) -> tuple[tuple[Skill, ArtifactGovernance], ...]:
-        """List current managed Skill heads with mutable governance state."""
-
-        if limit < 1:
-            raise ValueError("Skill Library limit must be positive")  # noqa: TRY003
-        scope = validate_scope_id(scope_id)
-        states = (
-            (ArtifactLifecycleState.ACTIVE.value, ArtifactLifecycleState.DEPRECATED.value)
-            if include_deprecated
-            else (ArtifactLifecycleState.ACTIVE.value,)
-        )
-        async with self.database.transaction() as connection:
-            rows = tuple(
-                (
-                    await connection.execute(
-                        select(
-                            ARTIFACT_HEADS_TABLE.c.artifact_id,
-                            ARTIFACT_HEADS_TABLE.c.revision,
-                        )
-                        .where(
-                            ARTIFACT_HEADS_TABLE.c.scope_id == scope,
-                            ARTIFACT_HEADS_TABLE.c.family == Skill.family,
-                            ARTIFACT_HEADS_TABLE.c.lifecycle_state.in_(states),
-                            ARTIFACT_HEADS_TABLE.c.merged_into_id.is_(None),
-                        )
-                        .order_by(ARTIFACT_HEADS_TABLE.c.artifact_id)
-                        .limit(limit)
-                    )
-                ).mappings()
-            )
-            values = []
-            for row in rows:
-                artifact_id = str(row["artifact_id"])
-                skill = await self.repositories.artifacts.get(
-                    connection,
-                    scope,
-                    ArtifactRef(
-                        family=Skill.family,
-                        artifact_id=artifact_id,
-                        revision=int(row["revision"]),
-                    ),
-                )
-                governance = await self.repositories.governance.get(connection, scope, Skill.family, artifact_id)
-                values.append((cast(Skill, skill), governance))
-            return tuple(values)
-
     async def update_skill_lifecycle(
         self,
         scope_id: str,
@@ -1247,6 +1216,8 @@ class RelationalContexts:
         reason: str | None,
         target: ArtifactRef | None,
         /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
     ) -> Candidate[SkillContent]:
         """Canonicalize an explicit upload and create a pending exact-import Candidate."""
 
@@ -1273,6 +1244,7 @@ class RelationalContexts:
                     artifacts=artifacts,
                     target=target,
                     reason=reason,
+                    on_commit=on_commit,
                 )
             )
 
@@ -1351,6 +1323,8 @@ class RelationalContexts:
         mode: ExternalSkillImportMode,
         reason: str | None,
         /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
     ) -> GeneratedCandidateResult:
         """Snapshot an exact package, preserving import bytes or using LLM only for a fork."""
 
@@ -1384,6 +1358,7 @@ class RelationalContexts:
                         artifacts=(),
                         target=None,
                         reason=reason,
+                        on_commit=on_commit,
                     )
                 )
                 return GeneratedCandidateResult(candidate=candidate)
@@ -1393,6 +1368,7 @@ class RelationalContexts:
             artifacts=(),
             target=None,
             reason=reason,
+            on_commit=on_commit,
         )
 
     async def scope_ids(self) -> tuple[str, ...]:
@@ -1405,6 +1381,12 @@ class RelationalContexts:
                 )
             ).scalars()
             return tuple(str(value) for value in values)
+
+    async def unconsumed_source_scope_ids(self) -> tuple[str, ...]:
+        """Return built-in Source windows that still have journal input."""
+
+        async with self.database.transaction() as connection:
+            return await self.repositories.cursors.unconsumed_scope_ids(connection, SOURCE_WINDOW_TRIGGER_NAME)
 
     async def handoff_scope_ids(self) -> tuple[str, ...]:
         """Return scopes with a committed Handoff head, in deterministic order."""
@@ -1419,6 +1401,9 @@ class RelationalContexts:
                 )
             ).scalars()
             return tuple(str(value) for value in values)
+
+    async def commit_handoff(self, scope_id: str, prepared, *, on_commit) -> Handoff:
+        return await self._services_for(scope_id).handoff(on_commit=on_commit).commit(prepared)
 
     async def _authorize_atomic_tag_write(self, connection, scope_id: str, artifact_id: str, context=None) -> None:
         await self.atomic_memory.security.authorize(

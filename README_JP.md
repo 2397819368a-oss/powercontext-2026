@@ -76,7 +76,7 @@ Experience は、状況・行動・観察された結果・再利用可能な教
 - **すべてがリビジョン管理され、追跡可能です。** 各 Artifact は `ファミリ/ARTIFACT_ID@REVISION` で識別されます。承認された置換が後のリビジョンを作っても ARTIFACT_ID は変わらず、正確な参照を読めば、ファミリのヘッドが進んだ後でもその時点のスナップショットが返ります。
 - **生成・レビュー・実行は別々のステップです。** モデルが内容を提案し、レビューがリビジョンを承認し、エクスポートがホスト内のコピーを作ります。いずれのステップも、Agent に命令実行の権限を与えるものではありません。各入口が現在何を公開しているかは[インターフェース](https://powercontext.oceanbase.io/en/docs/develop/interfaces/)を参照してください。
 - **想起はまとめてではなく、境界つきで行われます。** `PreparedContext` は設定されたセクションからアクティブな Memory と承認済み Experience を選択し、必要に応じて Profile スナップショットと Topic Memory を加え、共有のバイト予算を適用して `ready` または `empty` を返します。想起された内容は履歴であり、命令の権威ではありません。受け手の Agent は現在の指示に従い、実際のワークスペースの状態を確認します。
-- **再利用の前にレビューを通します。** Experience と Skill はレビューの決定を経ます。承認・却下のいずれも終端です。モデルは提案までを担い、自分の出力を暗黙のうちに昇格させることはありません。
+- **再利用の前にレビューを通します。** Experience と Skill はレビューの決定を経て、承認・却下のいずれも終端です。承認は不変リビジョンを書き込みます。アクセス制御が有効な場合、承認には `scope.review` が必要です。レビュー権限を持つ Agent は自分の Candidate も承認できます。人が判断する運用では、異なる ID と権限で[Agent の提出とレビューを分離](https://powercontext.oceanbase.io/en/docs/workflows/review-candidates/#separate-agent-submission-from-review)してください。
 - **1 つの Server、同じ契約の複数の見え方。** HTTP が完全なリモートアプリケーション契約です。Python クライアントは型付きアクセスを提供し、MCP は Agent 向けに取捨選択された投影であり、Core プロトコルを使えばアプリケーション側で Source・Artifact・Trigger の実装を組み込めます。
 
 ### 他手段との比較
@@ -120,7 +120,7 @@ PowerContext は、長く使うプロジェクトのコンテキストを 1 つ�
 Agent の入力 → Source の証拠 → Memory / Topic Memory → PreparedContext → 新しいセッションまたは Agent
 ```
 
-PowerContext 1.3.0 には対話式セットアップウィザードが含まれています。Python 3.11+、Git、[uv](https://docs.astral.sh/uv/getting-started/installation/) が必要です。必要に応じて uv が Python を用意できます。Agent に接続するには、その CLI もインストールしてください。ウィザードでは、モデル API なしで明示的な保存と想起を試す場合は Basic memory、自動抽出を有効にする場合は Full memory を選択してください。Full memory には Generation と Embedding API の個別の認証情報が必要です。モデル API なしでローカル Server だけを起動する場合は[インストールと実行](docs/en/docs/get-started/install-and-run.md)を参照してください。macOS と Linux をサポートし、Windows のサポートは `experimental` です。
+PowerContext 1.4.0 には対話式セットアップウィザードが含まれています。Python 3.11+、Git、[uv](https://docs.astral.sh/uv/getting-started/installation/) が必要です。必要に応じて uv が Python を用意できます。Agent に接続するには、その CLI もインストールしてください。ウィザードでは、モデル API なしで明示的な保存と想起を試す場合は Basic memory、自動抽出を有効にする場合は Full memory を選択してください。Full memory には Generation と Embedding API の個別の認証情報が必要です。モデル API なしでローカル Server だけを起動する場合は[インストールと実行](docs/en/docs/get-started/install-and-run.md)を参照してください。macOS と Linux をサポートし、Windows のサポートは `experimental` です。
 
 目的に合う経路を選択してください：
 
@@ -133,7 +133,7 @@ PowerContext 1.3.0 には対話式セットアップウィザードが含まれ�
 ### 1. ウィザードをインストールして実行する
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
 mkdir -p powercontext-config && cd powercontext-config
 powercontext config init --language en --output .env
 powercontext config validate --env-file .env
@@ -157,7 +157,7 @@ powercontext capabilities
 Scope を使います。その後、対応するプラグインをインストールして新しい Agent セッションを起動します。[完全な手順](https://powercontext.oceanbase.io/en/docs/get-started/quickstart/)では、Codex と Claude Code、Dashboard へのログイン、SSH 転送、HTTPS の前提条件、確認可能な受け入れチェックを扱っています。対応する Codex のインストールは次のとおりです。
 
 ```bash
-powercontext setup codex --ref powercontext-v1.3.0
+powercontext setup codex --ref powercontext-v1.4.0
 powercontext doctor codex
 ```
 
