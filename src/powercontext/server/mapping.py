@@ -528,7 +528,10 @@ def runtime_source_definition_manifest(value: SourceDefinitionManifest) -> Runti
 
 
 def source_definition_manifest_response(value: RuntimeSourceDefinitionManifest) -> SourceDefinitionManifest:
-    return SourceDefinitionManifest.model_validate(value.model_dump(mode="json", by_alias=True))
+    payload = value.model_dump(mode="json", by_alias=True)
+    # Keep the pre-declaration wire shape for neutral manifests. Older workers
+    # reject the new field, and null is not valid for the generated schema.
+    return SourceDefinitionManifest.model_validate(_without_absent_evidence(payload))
 
 
 def runtime_connector_binding(value: HttpConnectorBinding) -> RuntimeConnectorBinding:
