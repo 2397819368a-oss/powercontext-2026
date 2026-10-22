@@ -699,7 +699,10 @@ def _resolve_codex_native_authorization(
 def _run_codex_mcp_list() -> list[dict[str, Any]]:
     """Read Codex's resolved native MCP configuration without exposing header values."""
 
-    command = ["codex", "mcp", "list", "--json"]
+    executable = which("codex")
+    if executable is None:
+        raise SetupError("Codex CLI is not installed or is not on PATH.")  # noqa: TRY003
+    command = [executable, "mcp", "list", "--json"]
     try:
         completed = subprocess.run(  # noqa: S603 - arguments are fixed and do not contain credentials.
             command,
@@ -1116,7 +1119,10 @@ def _is_powercontext_statusline(value: object) -> bool:
 
 
 def _run_codex_json(*arguments: str) -> dict[str, Any]:
-    command = ["codex", *arguments, "--json"]
+    executable = which("codex")
+    if executable is None:
+        raise SetupError("Codex CLI is not installed or is not on PATH.")  # noqa: TRY003
+    command = [executable, *arguments, "--json"]
     try:
         completed = subprocess.run(  # noqa: S603 - arguments are passed directly to the fixed Codex executable.
             command,

@@ -31,7 +31,7 @@ import powercontext.cli.authorization as authorization_cli
 import powercontext.cli.system as system_cli
 from powercontext.cli.app import create_cli
 from powercontext.cli.installation import setup as install_plugin
-from powercontext.cli.system import Diagnostic, DiagnosticStatus, doctor_app, setup_app
+from powercontext.cli.system import Diagnostic, DiagnosticStatus, SetupError, doctor_app, setup_app
 from powercontext.paths import default_scheduler_path
 from powercontext.server.settings import ServerSettings
 from powercontext.service.model import (
@@ -45,6 +45,7 @@ from powercontext.service.model import (
 )
 
 _probe_codex_mcp_status = system_cli._probe_codex_mcp_status
+_run_codex_mcp_list = system_cli._run_codex_mcp_list
 
 
 @pytest.fixture(autouse=True)
@@ -860,6 +861,71 @@ def test_codex_diagnostics_fail_when_setup_credential_is_unavailable_to_host(tmp
     assert "not available to the Codex host" in diagnostics["authorization"].detail
     assert diagnostics["mcp_tools"].status is DiagnosticStatus.SKIPPED
     probe.assert_not_called()
+
+
+# npm installs the Codex CLI as codex.cmd without a codex.exe; the shim below answers both
+# runner surfaces with the minimal JSON their callers expect.
+CODEX_CMD_SHIM = (
+    "@echo off\r\n"
+    'if "%1" == "mcp" (\r\n'
+    '  echo [{"name": "powercontext", "enabled": true, "auth_status": "unsupported",'
+    ' "transport": {"type": "streamable_http", "url": "http://127.0.0.1:8000/mcp",'
+    ' "env_http_headers": {"Authorization": "POWERCONTEXT_CODEX_AUTHORIZATION"}}}]\r\n'
+    "  exit /b 0\r\n"
+    ")\r\n"
+    'if "%1" == "plugin" (\r\n'
+    '  echo {"installed": [{"name": "powercontext", "pluginId": "powercontext@powercontext",'
+    ' "installed": true, "enabled": true, "marketplaceName": "powercontext", "version": "0.1.0"}]}\r\n'
+    "  exit /b 0\r\n"
+    ")\r\n"
+    'echo {"ok": true}\r\n'
+    "exit /b 0\r\n"
+)
+
+
+@pytest.fixture
+def codex_cmd_shim(tmp_path: Path, monkeypatch) -> Path:
+    bin_dir = tmp_path / "bin with spaces"
+    bin_dir.mkdir()
+    shim = bin_dir / "codex.cmd"
+    shim.write_text(CODEX_CMD_SHIM, encoding="ascii")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    return shim
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="npm-style codex.cmd shims without codex.exe are Windows-specific")
+def test_codex_json_runner_launches_the_resolved_cmd_shim(codex_cmd_shim: Path) -> None:
+    result = system_cli._run_codex_json("plugin", "list")
+
+    assert result["installed"][0]["name"] == "powercontext"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="npm-style codex.cmd shims without codex.exe are Windows-specific")
+def test_codex_mcp_list_runner_launches_the_resolved_cmd_shim(codex_cmd_shim: Path) -> None:
+    servers = _run_codex_mcp_list()
+
+    assert servers[0]["name"] == "powercontext"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="npm-style codex.cmd shims without codex.exe are Windows-specific")
+def test_codex_diagnostics_run_through_the_resolved_cmd_shim(codex_cmd_shim: Path, monkeypatch) -> None:
+    monkeypatch.setattr(system_cli, "_run_codex_mcp_list", _run_codex_mcp_list)
+
+    diagnostics = system_cli.CodexInstaller().verify()
+
+    assert diagnostics["codex"].ok
+    assert diagnostics["codex"].detail.casefold() == str(codex_cmd_shim).casefold()
+    assert diagnostics["plugin"].ok
+    assert diagnostics["mcp_configuration"].ok
+
+
+def test_codex_runners_report_a_missing_executable(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+
+    with pytest.raises(SetupError, match="Codex CLI is not installed or is not on PATH"):
+        system_cli._run_codex_json("plugin", "list")
+    with pytest.raises(SetupError, match="Codex CLI is not installed or is not on PATH"):
+        _run_codex_mcp_list()
 
 
 def test_setup_codex_uses_an_absolute_local_marketplace_without_a_ref(
