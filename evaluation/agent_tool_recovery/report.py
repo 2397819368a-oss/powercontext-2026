@@ -158,6 +158,7 @@ def turn_rows(  # noqa: PLR0913
 
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    answered: set[int] = set()
     field = expected.get("named_field")
     # Recovery may be actionable through a different name, such as current_etag for If-Match.
     markers = expected.get("named_field_markers") or ([field] if field else [])
@@ -172,6 +173,10 @@ def turn_rows(  # noqa: PLR0913
         # failing one, such as a parallel call, is neither a retry nor a write after that failure.
         observed = sorted((failure for failure in failures if failure["at"] <= call.at), key=lambda item: item["at"])
         prior = [failure for failure in observed if failure["operation_id"] == operation_id]
+        # The call answers the operation's latest observed failure unless an earlier call already answered it.
+        responds_to = prior[-1]["sequence"] if prior and prior[-1]["sequence"] not in answered else None
+        if responds_to is not None:
+            answered.add(responds_to)
         rows.append(
             {
                 "sequence": sequence,
@@ -196,6 +201,8 @@ def turn_rows(  # noqa: PLR0913
                 "write_after_terminal_failure": powercontext
                 and operation_id not in read_only
                 and any(failure["disposition"] == "terminal" for failure in observed),
+                # Sequence of the failure this call answers, so aggregate evidence pairs calls by the same rule.
+                "responds_to_failure": responds_to,
                 "seconds_from_turn_start": round((call.at - turn.started_at).total_seconds(), 3),
                 **(bindings or {}).get(call.call_id, UNBOUND),
             }
@@ -209,6 +216,7 @@ def turn_rows(  # noqa: PLR0913
                     "field_sha256": field_sha256,
                     "disposition": expected["retry_disposition"] if matches_case else "unknown",
                     "at": call.result.at,
+                    "sequence": sequence,
                 }
             )
     first_failure_at = min((failure["at"] for failure in failures), default=None)

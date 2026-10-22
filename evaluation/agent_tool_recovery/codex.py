@@ -61,6 +61,9 @@ def _executable() -> str:
 
 def _environment() -> dict[str, str]:
     env = child_environment()
+    # CODEX_HOME selects the sign-in and plugin directory that installed_plugin_root() checks; keep the CLI on it.
+    if "CODEX_HOME" in os.environ:
+        env["CODEX_HOME"] = os.environ["CODEX_HOME"]
     # An inherited API key would switch Codex from the user's ChatGPT sign-in to API-key authentication.
     env.pop("OPENAI_API_KEY", None)
     env.pop("ENABLE_TOOL_SEARCH", None)

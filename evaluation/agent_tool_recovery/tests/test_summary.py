@@ -17,12 +17,15 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from ..summary import summarize
+from ..report import turn_rows
+from ..summary import retry_counts, summarize
+from ..transcript import ToolCall, ToolResult, Turn
 
 CASE = {
     "case_id": "permission-denied",
@@ -43,9 +46,18 @@ def report(*, violations: list[str], transcript: str, host: str = "claude-code")
         "args_sha256": "same",
         "repeats_failed_call": False,
         "retries_target_failure": False,
+        "sequence": 1,
+        "responds_to_failure": None,
     }
     # A violating run resends the failed call unchanged.
-    calls = [row] + ([{**row, "repeats_failed_call": True, "retries_target_failure": True}] if violations else [])
+    resend = {
+        **row,
+        "repeats_failed_call": True,
+        "retries_target_failure": True,
+        "sequence": 2,
+        "responds_to_failure": 1,
+    }
+    calls = [row] + ([resend] if violations else [])
     metrics = {
         "repeated_identical_after_failure": len(violations),
         "target_retries": len(violations),
@@ -181,8 +193,10 @@ def test_retry_behavior_separates_retry_later_resends_from_retries_after_a_chang
         "expected": {"http_status": None, "error_code": None, "retry_disposition": "retry_later"},
     }
 
-    def read(args: str, *, repeats: bool, retries: bool) -> dict[str, Any]:
+    def read(args: str, sequence: int, *, repeats: bool, retries: bool) -> dict[str, Any]:
         return {
+            "sequence": sequence,
+            "responds_to_failure": sequence - 1 or None,
             "operation_id": "search_memory",
             "powercontext": True,
             "is_error": True,
@@ -195,9 +209,9 @@ def test_retry_behavior_separates_retry_later_resends_from_retries_after_a_chang
 
     value: dict[str, Any] = {**report(violations=[], transcript="a"), "case_id": "transport-reset-read"}
     value["turns"][0]["calls"] = [
-        read("q", repeats=False, retries=False),
-        read("q", repeats=True, retries=True),
-        read("other", repeats=False, retries=True),
+        read("q", 1, repeats=False, retries=False),
+        read("q", 2, repeats=True, retries=True),
+        read("other", 3, repeats=False, retries=True),
     ]
 
     behavior = summarize([write_run(tmp_path, [value])], {"transport-reset-read": case})[0]["cases"][0]
@@ -239,8 +253,11 @@ def test_the_same_finding_from_several_runs_becomes_one_row(tmp_path: Path) -> N
 
 
 def test_reviewer_row_counts_the_next_call_after_each_failure_with_its_code(tmp_path: Path) -> None:
-    def call(error_code: str, args: str) -> dict[str, Any]:
+    def call(error_code: str, args: str, sequence: int) -> dict[str, Any]:
         return {
+            "sequence": sequence,
+            # Sequential calls: each answers the failure of the call before it.
+            "responds_to_failure": sequence - 1 if sequence > 2 else None,
             "operation_id": "create_dream_run",
             "powercontext": True,
             "is_error": True,
@@ -254,11 +271,11 @@ def test_reviewer_row_counts_the_next_call_after_each_failure_with_its_code(tmp_
     value = report(violations=[], transcript="a")
     # After the 422s: one unchanged resend, then two changed calls. The resend after the 429 answers another code.
     value["turns"][0]["calls"] += [
-        call("invalid_request", "first"),
-        call("invalid_request", "first"),
-        call("invalid_request", "second"),
-        call("capacity_exceeded", "third"),
-        call("capacity_exceeded", "third"),
+        call("invalid_request", "first", 2),
+        call("invalid_request", "first", 3),
+        call("invalid_request", "second", 4),
+        call("capacity_exceeded", "third", 5),
+        call("capacity_exceeded", "third", 6),
     ]
     run_dir = write_run(tmp_path, [value])
     (run_dir / "findings.json").write_text(json.dumps([finding(["a"])]), encoding="utf-8")
@@ -266,3 +283,42 @@ def test_reviewer_row_counts_the_next_call_after_each_failure_with_its_code(tmp_
     row = summarize([run_dir], {"permission-denied": CASE})[1][0]
 
     assert row["evidence"] == {"runs": 1, "repeated_calls": 1, "retries_after_change": 2, "transcript_hashes": ["a"]}
+
+
+UNAVAILABLE = "HTTP error 503: Service Unavailable - {'error': {'code': 'search_unavailable', 'details': None}}"
+START = datetime(2026, 10, 19, tzinfo=UTC)
+
+
+def search(call_id: str, query: str, issued: int, answered: int) -> ToolCall:
+    result = ToolResult(True, UNAVAILABLE, START + timedelta(seconds=answered))
+    return ToolCall(
+        call_id, "mcp__powercontext__search_memory", {"query": query}, START + timedelta(seconds=issued), result
+    )
+
+
+def evidence(*calls: ToolCall) -> dict[str, int]:
+    rows = turn_rows(
+        Turn(index=1, started_at=START, calls=list(calls)),
+        prefix="mcp__powercontext__",
+        read_only=frozenset({"search_memory"}),
+        case_operation="search_memory",
+        expected={"error_code": "search_unavailable", "retry_disposition": "retry_later"},
+    )
+    return retry_counts([{"status": "complete", "turns": [rows]}], "search_memory", "search_unavailable")
+
+
+def test_calls_issued_together_are_not_remediation_retries() -> None:
+    # Both calls are issued at t=1, before either failure returns at t=3 and t=4.
+    assert evidence(search("t1", "q", 1, 3), search("t2", "q", 1, 4)) == {
+        "repeated_calls": 0,
+        "retries_after_change": 0,
+    }
+    assert evidence(search("t1", "q", 1, 3), search("t2", "r", 1, 4)) == {
+        "repeated_calls": 0,
+        "retries_after_change": 0,
+    }
+    # Issued after the first result arrived, the same call is a repeat.
+    assert evidence(search("t1", "q", 1, 3), search("t2", "q", 5, 6)) == {
+        "repeated_calls": 1,
+        "retries_after_change": 0,
+    }

@@ -35,7 +35,8 @@ The suite is evaluation-only. It does not change any HTTP or MCP response, Serve
 
 Both CLIs use the user's existing sign-in; no credential is copied. The child environment drops inherited host
 sessions and personal PowerContext settings (`CLAUDE_*`, `ANTHROPIC_*`, `POWERCONTEXT_*`, `CODEX_*`, and
-`OPENAI_API_KEY` for Codex). Claude Code transcripts are copied from `~/.claude/projects`; Codex transcripts are the
+`OPENAI_API_KEY` for Codex). Codex keeps `CODEX_HOME`, which selects its sign-in and the plugin directory the harness
+checks. Claude Code transcripts are copied from `~/.claude/projects`; Codex transcripts are the
 `exec --json` stream with harness receipt times, because Codex events carry no timestamps; a call is issued when its
 `item.started` event arrives and answered when its `item.completed` event arrives. Codex runs single-turn cases only.
 
@@ -180,9 +181,10 @@ diagnosis is in `problems` and the report. The evidence is computed from the cit
 the reviewer:
 
 - `runs` and `transcript_hashes`: the cited sessions;
-- `repeated_calls`: failures of the operation with `observed_error_code` whose next call of the same operation, in
-  the same turn, had the same canonical arguments;
-- `retries_after_change`: such failures whose next call had different arguments, such as a blind retry after a
+- `repeated_calls`: failures of the operation with `observed_error_code` answered, in the same turn, by a call of the
+  same operation with the same canonical arguments. A call answers the latest failure of its operation whose result
+  arrived before the call was issued, unless an earlier call already answered it; calls issued together answer none;
+- `retries_after_change`: such failures answered by a call with different arguments, such as a blind retry after a
   failure that names no field.
 
 ## Limitations

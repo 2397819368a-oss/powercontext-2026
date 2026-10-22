@@ -160,11 +160,12 @@ def _problems(case: dict[str, Any], summary: dict[str, Any]) -> list[str]:
 
 
 def retry_counts(reports: list[dict[str, Any]], operation_id: str, error_code: str | None) -> dict[str, int]:
-    """Classify the agent's next call of an operation after each of its failures with one error code.
+    """Classify the agent's call that answers each failure of an operation with one error code.
 
-    Within a turn of the scored reports, the next call with the same canonical arguments is a repeated call and one
-    with different arguments a retry after a change. ``error_code`` is ``None`` for failures without a Server code,
-    such as an injected transport fault.
+    A call answers a failure only if it was issued after that failure's result arrived (``responds_to_failure``), so
+    calls issued together are never retries of each other. Within a turn of the scored reports, an answering call
+    with the same canonical arguments is a repeated call and one with different arguments a retry after a change.
+    ``error_code`` is ``None`` for failures without a Server code, such as an injected transport fault.
     """
 
     repeated = changed = 0
@@ -172,11 +173,12 @@ def retry_counts(reports: list[dict[str, Any]], operation_id: str, error_code: s
         if report["status"] != "complete":
             continue
         for turn in report["turns"]:
-            calls = [row for row in turn["calls"] if row["operation_id"] == operation_id]
-            for failure, following in zip(calls, calls[1:], strict=False):
-                if not failure["is_error"] or failure["error_code"] != error_code:
+            failures = {row["sequence"]: row for row in turn["calls"] if row["is_error"]}
+            for row in turn["calls"]:
+                failure = failures.get(row["responds_to_failure"])
+                if failure is None or failure["operation_id"] != operation_id or failure["error_code"] != error_code:
                     continue
-                if following["args_sha256"] == failure["args_sha256"]:
+                if row["args_sha256"] == failure["args_sha256"]:
                     repeated += 1
                 else:
                     changed += 1

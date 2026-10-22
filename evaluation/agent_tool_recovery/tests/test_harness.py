@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,29 @@ def test_host_environment_drops_inherited_sessions_and_keeps_loopback_off_proxy(
 
     assert set(env) == {"PATH", "NO_PROXY", "ENABLE_TOOL_SEARCH"}
     assert env["NO_PROXY"].split(",") == ["127.0.0.1", "corp", "localhost"]
+
+
+def test_codex_cli_runs_with_the_codex_home_its_plugin_is_checked_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stand-in CLI prints the home it received and an inherited Codex session variable.
+    if os.name == "nt":
+        cli = tmp_path / "codex.cmd"
+        cli.write_text("@echo %CODEX_HOME%^|%CODEX_THREAD_ID%\r\n", encoding="utf-8")
+    else:
+        cli = tmp_path / "codex"
+        cli.write_text('#!/bin/sh\necho "$CODEX_HOME|$CODEX_THREAD_ID"\n', encoding="utf-8")
+        cli.chmod(0o755)
+    home = tmp_path / "codex-home"
+    monkeypatch.setenv(codex.EXECUTABLE_VARIABLE, str(cli))
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_THREAD_ID", "inherited")
+
+    received_home, inherited = codex.version().split("|")
+
+    assert Path(received_home) == home
+    assert codex.installed_plugin_root().is_relative_to(home)
+    assert inherited == ""
 
 
 PROMPT = "Generate an Experience."
