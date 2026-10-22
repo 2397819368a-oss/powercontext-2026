@@ -919,6 +919,41 @@ def test_codex_diagnostics_run_through_the_resolved_cmd_shim(codex_cmd_shim: Pat
     assert diagnostics["mcp_configuration"].ok
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd shim output decoding is Windows-specific")
+@pytest.mark.parametrize("runner", ["_run_codex_json", "_run_codex_mcp_list"])
+def test_codex_runners_report_non_utf8_cmd_errors(codex_cmd_shim: Path, runner: str) -> None:
+    emitter = codex_cmd_shim.parent / "failure.py"
+    emitter.write_text(
+        "import sys\nsys.stderr.buffer.write(b'codex failure: \\xd6\\xd0\\xce\\xc4\\n')\nsys.exit(7)\n",
+        encoding="ascii",
+    )
+    codex_cmd_shim.write_text(f'@echo off\n"{sys.executable}" "{emitter}"\nexit /b 7\n', encoding="ascii")
+    probe = (
+        "import sys\n"
+        "from powercontext.cli import system\n"
+        "assert sys.flags.utf8_mode == 1\n"
+        "try:\n"
+        f"    system.{runner}(*(('plugin', 'list') if {runner!r} == '_run_codex_json' else ()))\n"
+        "except system.SetupError as error:\n"
+        "    print(error)\n"
+        "else:\n"
+        "    raise AssertionError('expected SetupError for a failed Codex command')\n"
+    )
+
+    completed = system_cli.subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", probe],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "failed: codex failure:" in completed.stdout
+    assert completed.stderr == ""
+
+
 def test_codex_runners_report_a_missing_executable(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
 

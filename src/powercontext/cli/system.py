@@ -709,6 +709,8 @@ def _run_codex_mcp_list() -> list[dict[str, Any]]:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as error:
@@ -1129,6 +1131,8 @@ def _run_codex_json(*arguments: str) -> dict[str, Any]:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
     except (OSError, subprocess.SubprocessError) as error:
