@@ -4,6 +4,12 @@ Evaluation for [#2069](https://github.com/oceanbase/powercontext/issues/2069). I
 submissions re-enter Atomic Memory as new evidence and whether that produces candidates supported outside the current
 user turn. Production capture, Source registration, extraction prompts, APIs, and ranking are unchanged.
 
+The committed [Qwen Flash experiment](reports/qwen-flash-20261020/EXPERIMENT.md) is historical live evidence
+frozen at generation commit `2c21132ba5dd1caa986484b8d71e1504f0dca3e2`. It predates the runtime's evidence-body
+compaction in [#2139](https://github.com/oceanbase/powercontext/pull/2139) and
+[#2163](https://github.com/oceanbase/powercontext/pull/2163). Its saved carrier counts, model outputs, token usage,
+and decision describe that frozen setup, not a live evaluation of the current checkout.
+
 ## Install and validate
 
 Run from the repository root, on Python 3.11+. SQLite needs no external database. Full replay is validated on Linux;
@@ -103,10 +109,12 @@ explicitly, checks the registered projection independently, and passes the actua
 `AtomicMemoryGenerationPipeline.extract()`. It does not claim that native capture selects a registered projection
 internally. The structured adapter, extraction schema, evidence-ID validation and built-in profile are the runtime's.
 
-- `joined-source-v1`: unchanged runtime evidence. The joined raw text occurs in content **and source_metadata**.
+- `joined-source-v1`: unchanged runtime evidence. After runtime compaction, the native ContentSource path retains the
+  joined raw text once in content and omits its duplicate from source_metadata. The offline regression at merge
+  `f71f6955` checks exactly one text carrier. The historical live report predates compaction and records two.
 - `host-turn-candidate-v1`: a local whole-evidence view with the same Source reference, materialization digest,
-  position, evidence ID and ordering. It replaces both raw carriers, retaining only host-parser-selected current text
-  and bounded provenance. It is never registered or sent to public capture.
+  position, evidence ID and ordering. It replaces both content and source_metadata, retaining only host-parser-selected
+  current text and bounded provenance. It is never registered or sent to public capture.
 
 The candidate uses the owning WorkBuddy wrapper helpers with an additional frozen envelope-eligibility gate. Missing,
 truncated, mismatched or unrecognized top-level blocks remain unknown; blank current turns remain empty. Recall's
@@ -166,6 +174,12 @@ design-first OpenAPI changes. Publish a separate production issue with the repro
 The maintained reference snapshot is under `reports/qwen-flash-20261020/`.
 It contains `EXPERIMENT.md`, `report.json`, and `deterministic-support-audit.json`
 as evidence for #2069.
+
+Its `report.json` keeps the original generation `code_sha` of `2c21132ba5dd1caa986484b8d71e1504f0dca3e2`,
+with two text carriers in all 38 joined-source rows. Runtime compaction brought in by merge `f71f6955` changes the
+offline joined-source count to one; it does not rewrite the saved experiment. No post-compaction live run is included.
+See [the experiment's revision scope](reports/qwen-flash-20261020/EXPERIMENT.md#revision-scope) before comparing its
+measurements with another checkout. A new live comparison requires a new freeze, generation, and output-bound review.
 
 The production design follow-up is tracked in
 [#2119](https://github.com/oceanbase/powercontext/issues/2119).

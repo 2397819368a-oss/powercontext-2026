@@ -1,7 +1,27 @@
 # WorkBuddy capture ownership: synthetic replay
 
-Decision: **projection_follow_up_required**. This calls for a separate production design issue; it does not qualify
-the experimental projection for deployment. Production behavior is unchanged.
+Historical decision: **projection_follow_up_required**. This calls for a separate production design issue; it does not
+qualify the experimental projection for deployment. Production behavior is unchanged.
+
+## Revision scope
+
+This is a historical live experiment frozen at generation commit
+[`2c21132ba5dd1caa986484b8d71e1504f0dca3e2`](https://github.com/tmt-123/powercontext/commit/2c21132ba5dd1caa986484b8d71e1504f0dca3e2).
+The adjacent `report.json` retains that `code_sha`, the original run/lock hashes, and the original measurements.
+All 38 `joined-source-v1` rows have `occupancy.text_carriers == 2`: the runtime then included the complete body in
+both materialized content and Source metadata.
+
+Runtime changes [#2139](https://github.com/oceanbase/powercontext/pull/2139) and
+[#2163](https://github.com/oceanbase/powercontext/pull/2163), brought into this branch by merge
+[`f71f6955`](https://github.com/tmt-123/powercontext/commit/f71f6955fd61a85e02dba4b295f40f92f20d281b), compact duplicate
+bodies. The offline ContentSource replay at that merge has one joined-source text carrier, as asserted by the
+updated regression test. These are different frozen runtime inputs; running the current checkout does not reproduce
+this report's two-carrier occupancy.
+
+No post-compaction live generation is included. Candidate counts, contamination annotations, fact retention, token
+usage, latency, and the decision below all describe the original live experiment. The decision gate uses reviewed
+candidate contamination and paired fact retention, not carrier occupancy, so compaction alone does not invalidate
+the historical finding or establish the current runtime's extraction quality.
 
 ## Protocol and coverage
 
@@ -72,11 +92,13 @@ annotator identities remain private; this directory contains only aggregate metr
 
 ## Evidence carriers and remaining failures
 
-The complete joined text appeared in two extraction carriers: materialized content and Source metadata. Across the
-38 rows per arm, historical labeled bytes fell from 1,804 to 0; PreparedContext bytes from 764 to 0; Skill bytes from
+In the frozen runtime above, the complete joined text appeared in two extraction carriers: materialized content and
+Source metadata. Across the 38 rows per arm, historical labeled bytes fell from 1,804 to 0; PreparedContext bytes from
+764 to 0; Skill bytes from
 448 to 0; summary bytes from 1,000 to 0. These are repeated evidence-byte counts, not provider token counts. The
 candidate view retains 56 scaffold bytes consisting of wrapper-adjacent whitespace, and quoted text inside valid
-current turns remains present. This is why replacing only the content field is not an adequate experiment.
+current turns remains present. For that frozen input, replacing only the content field would have left the complete
+joined text in Source metadata.
 
 The candidate arm still produced an unsupported attribution in a quoted-inline case and promoted a quoted bad example
 to a preference in a fenced-quote case. It also omitted required current facts in two rows. A host boundary view alone
@@ -101,6 +123,11 @@ The two full-run conservative cost reservations total 0.4225 CNY, including rese
 See [the suite README](../../README.md) for installation, freeze/run/review/report commands, provider configuration
 and offline acceptance tests. `report.json` binds the exact run, manifest, model configuration, prompt and generation
 harness via hashes.
+
+Replaying the saved lock requires its original generation commit and file hashes. For a post-compaction comparison,
+freeze a new experiment on the intended revision, run generation again, and review the newly generated outputs.
+Keep it separate from this snapshot; changing `code_sha` or carrier counts in the saved JSON would misrepresent the
+original measurements, and the saved output-bound labels cannot be transferred to a new run.
 
 This directory retains the curated experiment account, aggregate report, and deterministic support audit as
 reference evidence for #2069. The production follow-up design is tracked in
