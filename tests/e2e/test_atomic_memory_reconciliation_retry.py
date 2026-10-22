@@ -120,7 +120,9 @@ def test_flush_publishes_the_decision_corrected_after_rule_feedback(monkeypatch,
 
     assert error is None
     assert cursor == 1
-    assert [entry.artifact.content.text for entry in entries] == ["Billing uses PostgreSQL 16; MySQL is no longer an option."]
+    assert [entry.artifact.content.text for entry in entries] == [
+        "Billing uses PostgreSQL 16; MySQL is no longer an option."
+    ]
     assert provider.comparisons == 2
     assert len(provider.retry_feedback) == 1
     assert REVISE_RULE in provider.retry_feedback[0]
