@@ -867,7 +867,9 @@ class ServiceController:
             and probe.state is ProbeState.UNREACHABLE
             and record is not None
         ):
-            if record.get("phase") == "manual_switching":
+            if record.get("phase") == "configuration_switching":
+                recovery = "use the owning Ops caller to inspect and resume the interrupted `config_apply` operation"
+            elif record.get("phase") == "manual_switching":
                 recovery = "run `powercontext service install` to finish the interrupted stopped-registration update"
             elif record.get("phase") == "manual_stopped" and registration.definition is DefinitionState.CURRENT:
                 recovery = "run `powercontext service start` when ready to resume the manually stopped service"

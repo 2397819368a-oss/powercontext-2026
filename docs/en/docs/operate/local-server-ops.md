@@ -99,6 +99,9 @@ switch must be reconciled before a later start. Windows login startup is an expl
 same disabled-login option exists on macOS.
 A configuration switch can stop an active service. It leaves the service stopped unless the plan explicitly permits
 an applicable restart; an explicitly stopped service remains stopped, and recovery does not implicitly authorize startup.
+When service status reports an interrupted `config_apply`, use the owning Ops caller to query `operation_status`,
+obtain and confirm a fresh `preflight` plan, and `resume` the recorded operation. The human-facing `service install`
+and `service start` commands cannot finish an Ops configuration switch.
 
 ## Failure, cancellation, and recovery
 

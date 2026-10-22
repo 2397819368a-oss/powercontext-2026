@@ -89,7 +89,10 @@ def native_command_boundary(path: Path) -> Iterator[None]:
         raise ServiceError("a previous native service command has not been confirmed to have exited")  # noqa: TRY003
 
     def checkpoint(event: dict[str, object]) -> None:
-        write_protected_file(path, json.dumps({"format_version": 1, **event}, sort_keys=True).encode("utf-8"))
+        try:
+            write_protected_file(path, json.dumps({"format_version": 1, **event}, sort_keys=True).encode("utf-8"))
+        except (OSError, ValueError) as error:
+            raise ServiceError("the native command evidence could not be recorded") from error  # noqa: TRY003
 
     with observe_native_commands(checkpoint):
         yield

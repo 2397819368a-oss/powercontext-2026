@@ -173,6 +173,8 @@ def test_configuration_failure_blocks_start_and_resumes_stopped(
     with pytest.raises(ServiceError, match="not been verified"):
         controller.start()
     assert adapter.manager is ManagerState.INACTIVE
+    recovery = controller.status().recovery_action
+    assert recovery is not None and "Ops" in recovery and "config_apply" in recovery
     assert controller.configure(env_file=revision, restart=True).manager is ManagerState.INACTIVE
     assert controller.start().ok
 

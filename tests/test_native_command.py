@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 
 from powercontext.service.controller import ServiceController
-from powercontext.service.environment import write_protected_file
+from powercontext.service.environment import ProtectedEnvironmentFileError, write_protected_file
 from powercontext.service.model import ServiceError
 from powercontext.service.native_command import native_process_exited, observe_native_commands, run_native_command
 from tests.test_service import FakeAdapter
@@ -63,6 +63,31 @@ def test_timeout_reaps_child_before_recording_completion() -> None:
         run_native_command([sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.1)
     assert events[-1]["phase"] == "completed"
     assert native_process_exited(int(str(events[1]["pid"])))
+
+
+@pytest.mark.parametrize("phase", ["dispatching", "completed"])
+def test_checkpoint_protection_failure_is_a_service_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    controller = ServiceController(FakeAdapter(tmp_path))
+    marker = tmp_path / "executed"
+
+    def fail_checkpoint(path: Path, content: bytes):
+        if path == controller.native_command_path and json.loads(content)["phase"] == phase:
+            raise ProtectedEnvironmentFileError("isolated protection failure")  # noqa: TRY003
+        return write_protected_file(path, content)
+
+    monkeypatch.setattr("powercontext.service.environment.write_protected_file", fail_checkpoint)
+    with pytest.raises(ServiceError, match="native command evidence could not be recorded"), controller.mutation():
+        run_native_command(
+            [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)],
+            timeout=10,
+        )
+    assert marker.exists() is (phase == "completed")
+    # A missing final checkpoint retains process evidence, but a positively
+    # exited child must not prevent the next explicit operation.
+    with controller.mutation():
+        pass
 
 
 @pytest.mark.parametrize("missing", [True, False])

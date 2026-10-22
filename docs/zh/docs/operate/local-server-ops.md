@@ -88,6 +88,8 @@ python -m powercontext.ops --target-file /absolute/target.json --state-dir /abso
 Windows 登录启动是明确的选项，不能假定 macOS 也支持相同的关闭登录触发选项。
 配置切换可能停止正在运行的服务；只有计划明确允许且符合条件时才重启。
 原本显式停止的服务继续停止，恢复操作本身也不隐含启动授权。
+服务状态提示 `config_apply` 中断时，应通过原 Ops 调用方查询 `operation_status`，获取并确认新的 `preflight` 计划，
+再用 `resume` 恢复已有操作。人用 CLI 的 `service install` 和 `service start` 命令不能完成 Ops 配置切换。
 
 ## 失败、取消与恢复
 
