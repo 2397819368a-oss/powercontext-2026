@@ -9,7 +9,8 @@ description: 在现有上下文组织、策略治理和推理适配中实现隐�
 - Related RFCs: [RFC 0016](0016_pydantic_ai_inference_integration.md)、[RFC 0028](0028_context_pack.md)、
   [RFC 0046](0046_observability_foundations.md)、[RFC 0048](0048_handoff_artifact.md)、
   [RFC 1435](1435_explainable_prepared_context_receipts.md)、[RFC 1770](1770-decision-policy-governance.md)、
-  [RFC 1783](1783-handoff-session-rollover.md)
+  [RFC 1783](1783-handoff-session-rollover.md)、
+  [PowerContext Gateway](0000-powercontext-gateway.md)
 
 # Summary
 
@@ -20,7 +21,7 @@ description: 在现有上下文组织、策略治理和推理适配中实现隐�
 两项能力扩展 PowerContext 现有上下文准备、策略治理、阶段投影和推理适配。
 ContextRuntime 是已有 `ContextApplication.for_scope(scope_id).prepare(...)`、召回/assembly、
 `PreparedContextBuilder` 与 Bootstrap/Work/Handoff 组合能力的名称，不新增上下文引擎、独立策略运行时或执行数据库。
-公共准备结果仍是临时 `PreparedContext`，宿主保留历史、注入和采用权。
+公共准备结果仍是临时 `PreparedContext`，宿主保留历史和采用权，可显式把注入与发送委托给网关。
 
 Core 负责上下文选择、获准表示、稳定复用边界、刷新条件及安全约束。
 控制最终模型请求的执行适配器根据实际模型、API 和部署能力落实原生缓存设置，
@@ -46,6 +47,25 @@ Core 负责上下文选择、获准表示、稳定复用边界、刷新条件及
 | 默认优化方向 | 既有有界选择、精确准备值复用、获准结构编码、缓存兼容和显式输出限制。 |
 | v1 隐私处理 | 语义内容原样通过，或阻断/暂缓；不自动通用脱敏或恢复秘密。 |
 | 验收口径 | 泄露反例、误阻断、任务质量、完整用量/费用、端到端延迟及明确覆盖范围。 |
+
+## 与 PowerContext Gateway 的协作
+
+[PowerContext Gateway RFC](0000-powercontext-gateway.md) 定义本契约的自有执行接入方，
+两份设计沿用同一条准备、复用、最终检查与释放链路，不分别实现隐私或 Token 算法。
+
+| 共同约定 | 本 RFC / Core | Gateway RFC |
+| --- | --- | --- |
+| 上下文 | 现有 prepare/assembly/Builder 选择并形成准确准备值。 | 新用户消息调用一次，普通工具轮次准确重放，不二次压缩。 |
+| 复用资格 | 从实际选中内容产生完整有界依赖，当前授权/资格/新鲜度校验归原领域。 | 保存自己注入的准确块与位置，每次发送前消费当前资格，失效停止旧 epoch。 |
+| 检查 | 相同 input/output 算法、`allow/block/withhold`、实际目标和内容绑定。 | 最终原生渲染后逐尝试准入，strict 首次内容释放前检查。 |
+| 原生缓存 | 内容/信任/语义/保留约束，保留默认 PreparedContext 四字段。 | 获准 profile、目标相关 native adapter、准确历史重放与可取得 usage。 |
+| 身份与权限 | 当前 Principal/actor、Scope 和资源授权。 | 复用相同边界，另外明确模型付费执行许可，不把 scope.read 当消费权。 |
+| 状态 | 本 RFC 仍为零新增 Core 表，不建立通用模型转录或响应恢复。 | 网关可选的两张专用表保存准确注入和最近未解决状态，详见其最小存储论证。 |
+
+两份设计的 P0 含义分别是各自的交付阶段：本 RFC 的无网关切片可独立完成；
+网关内嵌增强依赖共享检查和完整内部复用依赖验收。远端绑定、独立部署和更多协议另按网关 P1 验收。
+网关持久状态不提升本 RFC 的响应恢复、恰好一次、完整费用或领域提交保证。
+自动工具循环、对话入库、compaction 和路由治理不进入本 RFC 的算法范围。
 
 # Motivation
 
@@ -359,7 +379,8 @@ Turn 2: Same prefix + original accepted history             | New messages / too
 ```
 
 这是逻辑布局，实际角色、信任级别、消息边界和工具配对遵守目标协议。
-宿主拥有历史和采用权，在显式本地任务 epoch 中保留准备值与注入位置；epoch 不是服务端会话资源。
+宿主拥有历史和采用权，在显式本地任务 epoch 中保留准备值与注入位置；此处不引入 Core 会话资源。
+宿主委托给网关的注入可由网关自身的会话/epoch 管理，不改变 Core 的 Scope、Work 或 Handoff 身份。
 新意图、资料新鲜度变化、权限撤销或主动刷新建立适当新边界。不能为缓存而继续使用已不获准内容。
 
 | 层次 | 决策与责任 |
@@ -414,6 +435,23 @@ TTL 字段是否表达最短计费覆盖、保留提示或删除期限，由获�
 
 内部 `PreparedContextBuild.lineages` 已保留用于用量归属的不可变 Artifact 快照，可在契约相同时复用，
 但它不是当前 head、完整来源清单或授权证明，也不改变公共四字段结果；不能用它直接批准冻结重放。
+
+网关持久重放所需的完整依赖由现有准备 application 在实际选择、render/fit 后按需产生，
+包含准确资源/版本、Scope、内容绑定及资格/新鲜度/保留规则；已有 origins/lineages 只提供部分事实。
+这是待实现的可选内部执行元信息，不是调用私有 Builder 跳过授权，也不重新执行召回。
+内嵌网关在同一次授权调用中取得它；每次发送前由原领域能力验证当前权限与资格，无法确认则 withhold。
+不支持完整依赖的 family/code/reference 不能进入冻结重放 profile。
+
+可选整块交付复用只在准确 prepared 文本、完整依赖/版本、信任与位置约束都匹配，
+旧块确实保留在本次待发历史且仍获准时，允许省略新消息中的准确重复追加。
+该判断归现有 context/inference 的复用约束，沿用 off/shadow/active；网关执行准确布局。
+部分重合不授予网关逐条筛选、拆块或改写引用包装的权力，不从 hash 单独推导来源或等价。
+
+远端增强后续可在现有 prepare 上协商可选 `X-PowerContext-Reuse-Binding` 响应头，
+使用有界、短期、可认证且加密的内容/依赖绑定，默认 JSON body 仍为四字段。
+同一 input/check 可消费绑定并重新验证当前主体、Scope 和依赖，不新增第三个检查操作或持久 receipt 表。
+这不是 bearer 权限或注入证明；协议、key rotation、期限和撤销延迟按 Gateway RFC 验收。
+能力缺失时远端网关只能声明实际可见的检查能力，不能凭正文/hash 自行批准持久重放。
 
 现有 `bootstrap_receipt_id` 仅对其支持的已完整注入 Atomic Memory 版本去重，不证明任意历史、Topic Memory、代码或 Handoff 覆盖。
 [RFC 1435](1435_explainable_prepared_context_receipts.md) 提议的按需诊断尚未在基线实现，也不能提升为权限。

@@ -9,7 +9,8 @@ description: Integrate privacy interception and token efficiency into existing c
 - Related RFCs: [RFC 0016](0016_pydantic_ai_inference_integration.md), [RFC 0028](0028_context_pack.md),
   [RFC 0046](0046_observability_foundations.md), [RFC 0048](0048_handoff_artifact.md),
   [RFC 1435](1435_explainable_prepared_context_receipts.md), [RFC 1770](1770-decision-policy-governance.md),
-  [RFC 1783](1783-handoff-session-rollover.md)
+  [RFC 1783](1783-handoff-session-rollover.md),
+  [PowerContext Gateway](0000-powercontext-gateway.md)
 
 # Summary
 
@@ -21,8 +22,8 @@ and evidence fidelity. Safety comes first, then correctness/evidence, complete-t
 Both capabilities extend existing context preparation, policy governance, stage projections and inference adapters.
 ContextRuntime names existing `ContextApplication.for_scope(scope_id).prepare(...)`, recall/assembly,
 `PreparedContextBuilder` and Bootstrap/Work/Handoff composition. It is not a new context engine, policy runtime or
-execution database. The public result remains ephemeral `PreparedContext`; history, injection and acceptance stay
-host-owned.
+execution database. The public result remains ephemeral `PreparedContext`; history and acceptance stay host-owned.
+The host may explicitly delegate injection and sending to a gateway.
 
 Core owns context selection, approved representation, stable reuse boundaries, refresh conditions and safety constraints.
 The execution adapter controlling the final model request maps those constraints to native caching for the actual
@@ -51,6 +52,27 @@ privacy interception, complete-request checks, native cache adapters or measured
 | Default optimization | Existing bounded selection, exact prepared-value reuse, approved structural encoding, cache compatibility and explicit output limits. |
 | V1 privacy behavior | Allow unchanged semantic content or block/withhold; no automatic general redaction or secret restoration. |
 | Acceptance | Disclosure counterexamples, false blocks, task quality, complete usage/cost, end-to-end latency and explicit coverage. |
+
+## Coordination with PowerContext Gateway
+
+The [PowerContext Gateway RFC](0000-powercontext-gateway.md) defines the first-party execution integration of this
+contract. Both designs use one preparation, reuse, final-inspection, and release path, without separate privacy or token
+algorithms.
+
+| Shared agreement | This RFC / Core | Gateway RFC |
+| --- | --- | --- |
+| Context | Existing prepare/assembly/Builder selects and constructs exact prepared values. | Prepare once for new user messages; replay through ordinary tool rounds without second compression. |
+| Reuse eligibility | Complete bounded dependencies come from actually selected content; current authorization/eligibility/freshness remain domain-owned. | Store exact owned injections and positions; consume current eligibility before every send and stop invalid epochs. |
+| Checks | Same input/output algorithms, `allow/block/withhold`, actual-target and content binding. | Admit each actual attempt after final native rendering; inspect before the first strict content release. |
+| Native caching | Content/trust/semantic/retention constraints with the default four-field PreparedContext. | Approved profiles, target-specific native adapters, exact historical replay, and available usage. |
+| Identity and permission | Current Principal/actor, Scope, and resource authorization. | Reuse those boundaries and define paid execution permission separately from scope.read. |
+| State | Still zero new Core tables, no generic model transcript or response recovery. | Two optional dedicated gateway tables for exact injections and latest unresolved state, justified in that RFC. |
+
+Each RFC's P0 names its own delivery phase: the gateway-free slice here can ship independently; embedded gateway
+enhancement depends on shared checks and complete internal reuse-dependency acceptance.
+Remote binding, standalone deployment, and additional protocols require gateway P1 acceptance.
+Persistent gateway state does not upgrade this RFC's response-recovery, exactly-once, complete-cost, or domain-commit
+guarantees. Automatic tool loops, transcript ingestion, compaction, and routing governance remain outside its algorithms.
 
 # Motivation
 
@@ -392,7 +414,8 @@ Turn 2: Same prefix + original accepted history             | New messages / too
 
 This is a logical layout. Actual roles, trust levels, message boundaries and tool pairing follow the target protocol.
 The host owns history and acceptance, retaining the exact prepared value and injection position within an explicit local
-task epoch; an epoch is not a server session resource. New intent, freshness changes, revoked permissions or explicit
+task epoch; this introduces no Core session resource. Delegated injection may use gateway-owned conversations/epochs
+without changing Core Scope, Work, or Handoff identities. New intent, freshness changes, revoked permissions or explicit
 refresh establish appropriate new boundaries. Cache reuse cannot justify sending material that is no longer permitted.
 
 | Layer | Decision and responsibility |
@@ -458,6 +481,27 @@ citation text or treat a revoked historical projection as permanently permitted.
 Internal `PreparedContextBuild.lineages` already retains immutable Artifact snapshots for usage attribution. Reuse
 them only under that contract; they are not current heads, complete provenance or authorization evidence. They neither
 change the public four-field result nor authorize frozen replay.
+
+Persistent gateway replay requires complete dependencies produced on demand by the existing preparation application
+after actual selection and render/fit: exact resources/versions, Scope, content binding, and eligibility/freshness/retention
+rules. Existing origins/lineages supply only partial facts.
+This is proposed optional internal execution metadata, not private-Builder access that bypasses authorization or repeats
+retrieval. An embedded gateway obtains it in the same authorized call. Existing domain capabilities validate current
+access and eligibility before each send; inability to establish eligibility yields withhold.
+Unsupported families/code/references cannot enter a frozen-replay profile.
+
+Optional whole-value delivery reuse may omit an exact duplicate append only when prepared text, complete
+dependencies/versions, and trust/placement constraints match, and the original block is present in this actual outbound
+history and remains eligible. Existing context/inference reuse constraints own that decision under off/shadow/active;
+Gateway executes the exact layout. Partial overlap does not authorize gateway item selection, block splitting, or citation
+rewriting. Hashes alone establish neither provenance nor equivalence.
+
+Later remote enhancement may negotiate optional `X-PowerContext-Reuse-Binding` on existing prepare, carrying a bounded,
+short-lived authenticated and encrypted content/dependency binding. The default JSON body remains four fields.
+The same input/check can consume it and revalidate current subject, Scope, and dependencies, without a third check
+operation or durable receipt table. It is neither bearer permission nor injection proof.
+The Gateway RFC owns wire, key-rotation, expiry, and revocation-latency acceptance. Without this capability, remote
+gateways may claim only their observed check coverage, not persistent replay authorized from content/hashes.
 
 Existing `bootstrap_receipt_id` deduplicates only its supported fully injected Atomic Memory revisions. It does not
 prove coverage of arbitrary history, Topic Memory, code or Handoff. Optional diagnostics proposed by
