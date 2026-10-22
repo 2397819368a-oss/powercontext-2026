@@ -25,7 +25,6 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -90,10 +89,10 @@ def _noisy_logging_worker(assignment: ArtifactProcessingWorkAssignment) -> Artif
     return ArtifactProcessingWorkerCompletion()
 
 
-@pytest.mark.skipif(not Path("/dev/stdout").exists(), reason="Requires the POSIX stdout device")
 def test_worker_completion_does_not_wait_for_slow_log_consumer(tmp_path) -> None:
     script = """
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from tests.e2e.test_worker_logging import _noisy_logging_worker
@@ -104,6 +103,15 @@ from powercontext.builtin.runtime.processing_contracts import (
 )
 from powercontext.server.logging import configure_server_logging, shutdown_server_logging, worker_logging
 from powercontext.server.settings import ServerLoggingConfig
+
+blocked = Path(sys.argv[3])
+original_emit = logging.FileHandler.emit
+def slow_emit(handler, record):
+    if not blocked.exists():
+        blocked.write_text("blocked", encoding="utf-8")
+        sys.stdin.read(1)
+    original_emit(handler, record)
+logging.FileHandler.emit = slow_emit
 
 config = ServerLoggingConfig(file=True, directory=Path(sys.argv[1]), format="json")
 configure_server_logging(config, role="all")
@@ -126,22 +134,22 @@ Path(sys.argv[2]).write_text("completed", encoding="utf-8")
 shutdown_server_logging()
 """
     completed = tmp_path / "completed"
+    blocked = tmp_path / "blocked"
     log_directory = tmp_path / "logs"
-    log_directory.mkdir()
-    (log_directory / "all.log").symlink_to("/dev/stdout")
     process = subprocess.Popen(
-        [sys.executable, "-c", script, str(log_directory), str(completed)],
+        [sys.executable, "-c", script, str(log_directory), str(completed), str(blocked)],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     try:
         deadline = time.monotonic() + 45
-        # Keep the file sink's pipe unread until the business result is available.
+        # Hold file writes until the business result is available, then release the sink.
         while not completed.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.01)
-        finished_without_draining = completed.exists()
-        stdout, stderr = process.communicate(timeout=30)
+        finished_without_draining = completed.exists() and blocked.exists()
+        stdout, stderr = process.communicate(input="\n", timeout=30)
     finally:
         if process.poll() is None:
             process.kill()
@@ -149,8 +157,10 @@ shutdown_server_logging()
     assert process.returncode == 0, stderr
     assert finished_without_draining
     assert completed.read_text(encoding="utf-8") == "completed"
-    assert "Worker observation" in stdout
-    assert _PRIVATE not in stdout + stderr
+    output = (log_directory / "all.log").read_text(encoding="utf-8")
+    assert "Worker observation" in output
+    assert stdout == ""
+    assert _PRIVATE not in output + stderr
 
 
 def test_terminated_worker_does_not_interrupt_shared_log_output(tmp_path, capfd) -> None:

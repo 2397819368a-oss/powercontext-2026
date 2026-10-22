@@ -151,6 +151,9 @@ class LogReceiver:
             self._decode(buffer)
         except BlockingIOError:
             return
+        except (ConnectionResetError, ConnectionAbortedError):
+            # Windows reports terminated peers as resets rather than EOF.
+            self._close_channel(connection)
         except Exception:
             self._on_failure()
             self._close_channel(connection)
