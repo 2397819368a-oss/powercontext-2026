@@ -26,6 +26,7 @@ from contextlib import closing
 
 import pytest
 from sqlalchemy import Engine, event
+from sqlalchemy.ext.asyncio import create_async_engine
 from typer.testing import CliRunner
 
 from powercontext.builtin.persistence.errors import ArtifactProcessingLeadershipLostError
@@ -180,7 +181,8 @@ def test_atomic_maintenance_continuation_preserves_backup_and_remains_writable(a
     asyncio.run(write_and_reopen(SQLiteConfig(url=f"sqlite+aiosqlite:///{restored}")))
 
 
-def test_legacy_atomic_maintenance_without_description_still_initializes(tmp_path):
+@pytest.mark.parametrize("upgrade", ["none", "startup", "offline"])
+def test_legacy_atomic_maintenance_without_description_still_initializes(tmp_path, upgrade):
     path = tmp_path / "legacy-atomic.db"
     baseline = recovery_resource()["atomic_maintenance_sqlite_v1"]
     with closing(sqlite3.connect(path)) as connection, connection:
@@ -190,6 +192,41 @@ def test_legacy_atomic_maintenance_without_description_still_initializes(tmp_pat
                 continue
             connection.execute(ddl)
     config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}")
+    if upgrade == "startup":
+        from powercontext.builtin.persistence.atomic_memory_index import RelationalAtomicMemoryIndex
+        from powercontext.builtin.persistence.atomic_memory_index_schema import atomic_memory_current_table
+
+        async def upgrade_projection():
+            engine = create_async_engine(config.url)
+            try:
+                async with engine.begin() as connection:
+                    await RelationalAtomicMemoryIndex(atomic_memory_current_table(), None).require_current_schema(
+                        connection
+                    )
+            finally:
+                await engine.dispose()
+
+        asyncio.run(upgrade_projection())
+    elif upgrade == "offline":
+        environment = tmp_path / "maintenance.env"
+        environment.write_text(
+            f"POWERCONTEXT_SERVER_DATABASE_KIND=sqlite\nPOWERCONTEXT_SERVER_DATABASE_URL={config.url}\n",
+            encoding="utf-8",
+        )
+        migrated = CliRunner().invoke(
+            create_cli([app]),
+            [
+                "server",
+                "atomic-memory-migrate",
+                "--action",
+                "apply",
+                "--maintenance-confirmed",
+                "--env-file",
+                str(environment),
+            ],
+        )
+        assert migrated.exit_code == 0, migrated.output
+        assert json.loads(migrated.output)["ready"] is True
     runner = TopicMemoryRecoveryMigrationRunner(config)
     assert runner.plan().state == "uninitialized"
     assert _apply(runner).backup_state == "completed"
