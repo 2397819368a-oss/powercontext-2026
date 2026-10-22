@@ -341,6 +341,7 @@ class RelationalRecordService:
         /,
         *,
         execution_context=None,
+        on_commit=None,
     ) -> ArtifactCreated:
         if family == "memory":
             raise BaseOperationNotSupportedError("artifact_family", family, "collection writes")
@@ -388,6 +389,8 @@ class RelationalRecordService:
             async with self._database.transaction() as connection:
                 stored = await self._sources.add(connection, scope_id, source)
                 artifact = await writer.create(connection, scope_id, artifact_id, prepared, stored.ref)
+                if on_commit is not None:
+                    await on_commit(connection, _artifact_created(scope_id, artifact))
         except (StoredPayloadConflictError, RevisionConflictError) as error:
             raise BaseValueConflictError("artifact", (scope_id, family, artifact_id)) from error
         return _artifact_created(scope_id, artifact)

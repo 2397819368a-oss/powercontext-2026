@@ -1087,6 +1087,9 @@ def test_history_selection_applies_threshold_floor_cap_and_stable_exact_binding(
                 async def get_exact(self, _connection, _scope_id, ref):
                     return stored[ref.artifact_id]
 
+                async def get_exact_many(self, connection, scope_id, refs):
+                    return tuple([await self.get_exact(connection, scope_id, ref) for ref in refs])
+
             processor = TopicMemoryProcessor(
                 database=profile.database,
                 sources=sources,
@@ -1175,6 +1178,9 @@ def test_global_structural_ambiguity_falls_back_to_lightweight_planner(
 
                 async def get_exact(self, _connection, _scope_id, _ref):
                     return published
+
+                async def get_exact_many(self, connection, scope_id, refs):
+                    return tuple([await self.get_exact(connection, scope_id, ref) for ref in refs])
 
             global_proposals = tuple(
                 TopicMemoryProposal(
@@ -1588,6 +1594,9 @@ def test_related_coordination_fails_closed_for_candidate_union_above_stage_contr
             async def get_exact(self, _connection, _scope_id, ref):
                 return published[ref.artifact_id]
 
+            async def get_exact_many(self, connection, scope_id, refs):
+                return tuple([await self.get_exact(connection, scope_id, ref) for ref in refs])
+
         try:
             stages = _stages(probe=TopicMemoryProbeOutput(), global_output=TopicMemoryGlobalOutput())
             processor = TopicMemoryProcessor(
@@ -1672,6 +1681,9 @@ def test_related_coordination_fails_closed_and_keeps_cursor_when_history_exceeds
 
                 async def get_exact(self, _connection, _scope_id, _ref):
                     return published
+
+                async def get_exact_many(self, connection, scope_id, refs):
+                    return tuple([await self.get_exact(connection, scope_id, ref) for ref in refs])
 
             class UnexpectedPublisher:
                 async def publish(self, *_args, **_kwargs):
@@ -1763,6 +1775,9 @@ async def _union_over_stage_contract_setup(*, retrying: bool = False):
 
         async def get_exact(self, _connection, _scope_id, ref):
             return published[ref.artifact_id]
+
+        async def get_exact_many(self, connection, scope_id, refs):
+            return tuple([await self.get_exact(connection, scope_id, ref) for ref in refs])
 
     leases = ArtifactProcessingLeaseRepository()
     async with profile.database.transaction() as connection:

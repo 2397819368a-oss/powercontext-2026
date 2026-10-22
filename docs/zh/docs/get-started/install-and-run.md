@@ -48,6 +48,9 @@ uv tool install --force "powercontext[cli,server]==1.4.0"
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.4.0"
 ```
 
+只连接远程 Server 的机器安装 `cli` extra 即可使用 `setup`、`doctor` 和远程内容命令。运行本地 Server 或使用
+`service` 命令时，还需安装 `server`。如果命令 provider 缺少依赖，CLI 会报告 provider 和缺失模块，便于修复安装。
+
 Git 安装命令不会留下需要自行管理的仓库工作副本。Git 会沿用本机的凭据配置，包括 credential helper 和 SSH 设置。
 如需使用 SSH，请把 HTTPS URL 换成当前环境允许的 Git URL。`--force` 还会从所选 Git ref 当前指向的 commit
 刷新已安装工具；如果不加该参数，`uv` 可能只提示相同 requirement 已安装，而不会获取更新后的 `master`。

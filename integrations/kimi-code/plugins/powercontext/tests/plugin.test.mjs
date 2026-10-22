@@ -44,7 +44,7 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
     const answer = req.url === '/v1/scope-bindings/resolve' ? { scope_id: 'scope-test' } :
       req.url === '/v1/context/prepare' ? { schema: 'powercontext.prepared-context.v1', status: 'ready',
         content: 'Historical context: use uv.', content_bytes: Buffer.byteLength('Historical context: use uv.') } :
-      req.url === '/health/ready' ? { status: 'ready' } : undefined
+      req.url === '/health/ready' ? { status: 'ready', checks: {} } : undefined
     if (answer) { res.writeHead(200); res.end(JSON.stringify(answer)); return }
     if (req.url === '/v1/sources/content') {
       captures.push(body)
@@ -88,8 +88,8 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
       { env: { ...process.env, KIMI_CODE_HOME: home }, windowsHide: true }).catch(error => error)
     return { exit_code: result.code ?? 0, ...JSON.parse(result.stdout) }
   }
-  async function doctor(cwd = workspace) {
-    const result = await promisify(execFile)(process.execPath, [join(installed, 'scripts/doctor.mjs'), '--cwd', cwd],
+  async function doctor(cwd = workspace, mcp = false) {
+    const result = await promisify(execFile)(process.execPath, [join(installed, 'scripts/doctor.mjs'), '--cwd', cwd, ...(mcp ? ['--mcp'] : [])],
       { env: { ...process.env, KIMI_CODE_HOME: home }, windowsHide: true })
     return JSON.parse(result.stdout)
   }
@@ -142,6 +142,36 @@ test('Scope script resolves explicit Scope without a workspace but binding opera
 test('disabled capture still supplies context', async t => {
   const f = await fixture(t, {}, { capture_prompts: false })
   assert.match((await f.invoke()).output.message, /Historical context/)
+  assert.deepEqual(f.captures, [])
+})
+
+test('doctor discovers paginated MCP tools without domain operations and reports missing tools', async t => {
+  let missing = false
+  const f = await fixture(t, { '/mcp/': (req, res, body) => {
+    if (req.method === 'DELETE') { res.writeHead(204); res.end(); return }
+    if (body.method === 'notifications/initialized') { res.writeHead(202); res.end(); return }
+    let result
+    if (body.method === 'initialize') {
+      result = { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+      res.setHeader('mcp-session-id', 'fixture-session')
+    } else {
+      assert.equal(body.method, 'tools/list')
+      assert.equal(req.headers['mcp-session-id'], 'fixture-session')
+      result = body.params.cursor ? { tools: missing ? [] : [{ name: 'remember_memory' }, { name: 'get_artifact_revision' }] } :
+        { tools: [{ name: 'search_memory' }], nextCursor: 'rest' }
+    }
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.end('event: message\ndata: ' + JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) + '\n\n')
+  } })
+  const discovered = (await f.doctor(f.workspace, true)).checks.mcp_discovery
+  assert.equal(discovered.status, 'ok')
+  assert.equal(discovered.checks.expected_tools, '3')
+  assert.match(discovered.detail, /operations are not verified/)
+  missing = true
+  const failed = (await f.doctor(f.workspace, true)).checks.mcp_discovery
+  assert.equal(failed.status, 'failed')
+  assert.equal(failed.checks.missing_tools, 'remember_memory, get_artifact_revision')
+  assert.ok(f.requests.every(item => !item.body?.method || ['initialize', 'notifications/initialized', 'tools/list'].includes(item.body.method)))
   assert.deepEqual(f.captures, [])
 })
 

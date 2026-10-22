@@ -6,6 +6,7 @@ title: Complete the Topic Memory generic Artifact APIs
 
 - Proposal Name: `topic_memory_generic_api_completion`
 - Start Date: 2026-09-15
+- RFC PR: [#1614](https://github.com/oceanbase/powercontext/pull/1614)
 - Status: Proposed
 - Inspected code: `9ff03eedffe6e73a54bb3adf40d42badd7cacdf7`
 - Related implementation: [Standard Topic Memory reads #1550](https://github.com/oceanbase/powercontext/pull/1550)

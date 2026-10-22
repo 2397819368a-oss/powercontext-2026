@@ -102,9 +102,12 @@ jobs:
       - name: Run plugin Hook behavior tests
         run: node --test integrations/kimi-code/plugins/powercontext/tests/plugin.test.mjs
 
+      - name: Check generated MCP profiles
+        run: uv run --locked --no-sync python scripts/generate_kimi_profiles.py --check
+
       - name: Run real-host acceptance without skips
         run: |
-          uv run --locked --no-sync pytest tests/e2e/test_kimi_code_host.py \
+          uv run --locked --no-sync pytest tests/e2e/test_kimi_code_host.py tests/e2e/test_kimi_code_workflows.py \
             -q -p no:cacheprovider \
             --basetemp="${{ runner.temp }}/kimi-acceptance" \
             --junitxml="${{ runner.temp }}/kimi-ci-evidence/junit.xml"

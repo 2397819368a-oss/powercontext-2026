@@ -31,11 +31,16 @@ def test_real_http_capture_readback_pipeline_and_metadata_isolation(manifest, tm
     assert len(run["rows"]) == len(manifest.cases) * 4
     assert all(row["status"] in {"completed", "skipped"} for row in run["rows"])
     assert all(row["parser_matches_ground_truth"] for row in run["rows"])
+    cases = {case.case_id: case for case in manifest.cases}
     for row in run["rows"]:
         assert row["candidates"] == []
         assert row["materialization_path"] == "ContentSource"
         if row["arm"] == "joined-source-v1":
-            assert row["occupancy"]["text_carriers"] == 2
+            evidence = row["input"]["evidence"][0]
+            assert evidence["content"]["content"] == cases[row["case_id"]].prompt
+            # Runtime compaction retains the body once and removes its metadata copy.
+            assert "content" not in evidence["source_metadata"]
+            assert row["occupancy"]["text_carriers"] == 1
         else:
             assert "source_metadata" in row["input"]["evidence"][0]
             assert "content" not in row["input"]["evidence"][0]["source_metadata"]

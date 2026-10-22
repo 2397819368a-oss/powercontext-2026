@@ -191,35 +191,52 @@ def test_scoped_statistics_reports_current_inventory_and_recall_reduction() -> N
 
 def test_recall_estimates_each_source_as_complete_text() -> None:
     async def scenario() -> None:
-        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            candidate_pipeline=AtomicMemoryGenerationPipeline(
+                extractor=_ContentCandidatePipeline(),
+                reconciler=_IndependentMemoryReconciler(),
+                estimator=character_token_estimator(),
+            ),
+        ) as runtime:
             scope_id = await _create_scope(runtime, "statistics-recall")
             sources = runtime.sources.for_scope(scope_id)
             first = await sources.capture(CaptureSource(source_id="short-a", content="a", metadata={}))
-            second = await sources.capture(CaptureSource(source_id="short-b", content="b", metadata={}))
-            candidate = await runtime.experience.for_scope(scope_id).propose(
+            await sources.capture(CaptureSource(source_id="short-b", content="b", metadata={}))
+            assert runtime.atomic_memory is not None
+            memory = runtime.atomic_memory.for_scope(scope_id)
+            await memory.flush()
+            originals = await memory.list()
+            merged = await memory.merge(
+                tuple(item.as_read() for item in originals.items),
+                AtomicMemoryContent(kind="fact", text="Estimate each complete Source through ancestry."),
+            )
+            descendant = await runtime.experience.for_scope(scope_id).propose(
                 ProposeExperienceRequest(
                     proposal=ExperienceContent(
-                        situation="A short Source recall baseline was needed.",
-                        action="Estimate each complete Source separately.",
-                        outcome="Per-Source rounding remains visible in statistics.",
-                        lesson="Do not join independent Source text before estimation.",
+                        situation="An ancestry baseline was needed.",
+                        action="Estimate each complete Source through ancestry.",
+                        outcome="Shared ancestry contributes each Source once.",
+                        lesson="Preserve complete Source text and deduplicate shared ancestry.",
                     ),
-                    sources=(first.source_ref, second.source_ref),
+                    sources=(first.source_ref,),
+                    artifacts=(merged.primary.ref,),
                 )
             )
             await runtime.review.for_scope(scope_id).approve(
                 ApproveCandidateRequest(
-                    candidate_id=candidate.candidate_id,
-                    expected_version=candidate.version,
+                    candidate_id=descendant.candidate_id,
+                    expected_version=descendant.version,
                 )
             )
-            prepared = await runtime.context.for_scope(scope_id).prepare(
-                PrepareContextRequest(query="estimate each complete Source separately")
-            )
+            prepared = await runtime.context.for_scope(scope_id).prepare(PrepareContextRequest(query="ancestry"))
             result = await runtime.statistics.for_scope(scope_id).overview(period=StatisticsPeriod.TODAY)
 
         estimator = character_token_estimator()
         assert prepared.status == "ready"
+        assert prepared.content is not None and "through ancestry" in prepared.content
+        assert '"kind":"experience"' in prepared.content
+        assert '"family":"atomic-memory"' in prepared.content
         assert result.recall.totals.comparable_preparations == 1
         assert result.recall.totals.baseline_tokens == estimator.estimate("a") + estimator.estimate("b") == 2
 
@@ -606,3 +623,44 @@ def test_statistics_selection_reports_the_same_scope_rows_as_scoped_overviews() 
             assert batched[scope_id] == scoped[scope_id].by_scope[0]
 
     asyncio.run(scenario())
+
+
+# Measured on the default text-recall path; slack of one statement above the observed value.
+_PREPARE_STATEMENT_CEILING = 41
+
+
+def test_prepare_context_statement_count_does_not_grow_with_memory_count() -> None:
+    """Recall must not cost one authority read per candidate; see issue #2075."""
+
+    async def counted(memory_count: int) -> int:
+        statements: list[str] = []
+
+        def record(_conn, _cursor, statement, *_args) -> None:
+            statements.append(statement)
+
+        event.listen(Engine, "before_cursor_execute", record)
+        try:
+            async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+                scope_id = await _create_scope(runtime, f"recall-fanout-{memory_count}")
+                assert runtime.atomic_memory is not None
+                await runtime.atomic_memory.for_scope(scope_id).create(
+                    tuple(
+                        AtomicMemoryContent(kind="fact", text=f"Contract decision {entry} binds the gateway to mTLS.")
+                        for entry in range(memory_count)
+                    )
+                )
+                statements.clear()
+                prepared = await runtime.context.for_scope(scope_id).prepare(
+                    PrepareContextRequest(query="contract gateway")
+                )
+        finally:
+            event.remove(Engine, "before_cursor_execute", record)
+
+        assert prepared.status == "ready"
+        return len(statements)
+
+    pool = asyncio.run(counted(8))
+    beyond = asyncio.run(counted(40))
+
+    assert pool == beyond
+    assert beyond <= _PREPARE_STATEMENT_CEILING

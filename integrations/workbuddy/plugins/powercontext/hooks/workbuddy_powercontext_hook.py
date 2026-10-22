@@ -42,9 +42,25 @@ import prepared_context as _prepared_context  # noqa: E402
 from workbuddy_settings import WorkBuddyPluginSettings  # noqa: E402
 
 if (_HOOKS_ROOT / "powercontext_scope_binding.py").is_file():
-    from powercontext_scope_binding import bind_response_deadline, open_bounded, resolve_scope_id
+    from powercontext_scope_binding import (
+        ScopeBindingError,
+        ScopeBindingRejectedError,
+        ScopeBindingStatusError,
+        ScopeBindingUnavailableError,
+        bind_response_deadline,
+        open_bounded,
+        resolve_scope_id,
+    )
 else:
-    from workspace_scope import bind_response_deadline, open_bounded, resolve_scope_id
+    from workspace_scope import (
+        ScopeBindingError,
+        ScopeBindingRejectedError,
+        ScopeBindingStatusError,
+        ScopeBindingUnavailableError,
+        bind_response_deadline,
+        open_bounded,
+        resolve_scope_id,
+    )
 
 _MAX_CONTEXT_BYTES = _prepared_context.MAX_CONTEXT_BYTES
 _InvalidResponseError = _prepared_context.InvalidPreparedContextResponse
@@ -108,15 +124,12 @@ def main(settings: WorkBuddyPluginSettings | None = None) -> int:
         if prompt is not None and prompt.strip() and isinstance(cwd, str):
             query = _recall_query(prompt)
             http_deadline = monotonic() + settings.http_budget_seconds
-            try:
-                scope_id = resolve_scope_id(
-                    cwd,
-                    session_id=_payload_identifier(payload, "session_id"),
-                    settings=settings,
-                    deadline=http_deadline,
-                )
-            except Exception:
-                scope_id = None
+            scope_id = _resolve_scope(
+                cwd,
+                session_id=_payload_identifier(payload, "session_id"),
+                settings=settings,
+                deadline=http_deadline,
+            )
             if scope_id:
                 # Only the recall depends on a usable query. The request contract requires a
                 # query of at least one non-whitespace character, so a turn that reduces to
@@ -170,6 +183,29 @@ def _read_payload() -> dict[str, Any]:
     if hasattr(stdin, "buffer"):
         return cast(dict[str, Any], json.loads(stdin.buffer.read().decode("utf-8")))
     return cast(dict[str, Any], json.load(stdin))
+
+
+def _resolve_scope(
+    cwd: str,
+    *,
+    session_id: str | None,
+    settings: WorkBuddyPluginSettings,
+    deadline: float,
+) -> str | None:
+    try:
+        return resolve_scope_id(cwd, session_id=session_id, settings=settings, deadline=deadline)
+    except ScopeBindingRejectedError:
+        _emit_context_event("authentication_failed")
+    except ScopeBindingUnavailableError:
+        _emit_context_event("server_unavailable")
+    except ScopeBindingStatusError as error:
+        outcome = "version_mismatch" if error.status == 404 else "invalid_response"
+        _emit_context_event(outcome, http_status=error.status)
+    except ScopeBindingError:
+        _emit_context_event("invalid_response")
+    except Exception:
+        return None
+    return None
 
 
 def _prompt(payload: Mapping[str, object]) -> str | None:

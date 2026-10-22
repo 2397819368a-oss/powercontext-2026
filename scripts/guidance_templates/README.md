@@ -4,9 +4,7 @@ Packaged `powercontext-project-context` resources are generated from this direct
 Change `base/` for common instructions and `hosts/<host>/` for genuine host differences.
 Host templates inherit named blocks; do not edit generated copies under `integrations/`.
 `resources.json` lists the complete packaged resource set, including linked references.
-`legacy.json` is a frozen migration record of pristine pre-marker resources, not a second editable guidance source.
-Generated `.powercontext-guidance.json` files separate the current `resources` inventory from
-`legacy_sha256` migration hashes using `schema_version: 1`. Initial flat hash-map manifests remain readable.
+Generated `.powercontext-guidance.json` files contain the current `resources` inventory and `schema_version: 1`.
 All declared resources (including unlinked auxiliary files) and local Markdown references must exist before
 installation writes. Managed content without its manifest, invalid manifests, and incomplete legacy reference
 trees are rejected; existing files never repair an incomplete incoming package.
@@ -16,7 +14,7 @@ then `uv run python scripts/integration_guidance_skills.py --check-generated`.
 The latter runs in `make check`, reports drift without writing, and never runs model evaluation.
 Running the generator again with unchanged inputs preserves file bytes and mtimes.
 
-`src/powercontext/cli/guidance.py` owns distribution paths, installer entry points and the permitted
+`src/powercontext/cli/guidance.py` owns distribution paths, guidance refresh and the permitted
 path variables. Supported capabilities come from `integrations/capabilities.toml`; capability removal,
 missing resolver scripts and unknown template variables fail generation. The portable agent-plugin
 and MiniMax MCP packages use the Server MCP toolset as a content contract, not a native-host qualification.
@@ -29,16 +27,14 @@ and the discovery description is updated with the body. Text outside the range i
 Duplicate, incomplete or reversed markers fail before writing any generated file.
 
 The installation helpers for WorkBuddy/OpenCode and the staged Hermes/ZCode upgrades preserve these
-ranges and additional local Skill files. An unchanged legacy document can be migrated automatically.
-An edited document without markers is rejected rather than overwritten: identify the package-owned
+ranges and additional local Skill files.
+An existing document without markers is rejected rather than overwritten: identify the package-owned
 range and add the matching markers, leaving personal notes outside. Host-managed package installation
 remains subject to that host's behavior; generation tests do not certify native discovery or execution.
 
 Reinstalling an older, unmarked package is allowed only where its existing Markdown is identical.
 An incompatible downgrade fails before replacing installed guidance; staged upgrades retain additional
-user files even when the incoming package predates managed-refresh metadata. WorkBuddy uses the previous
-owned hook's interpreter substitution to recognize untouched legacy guidance across environment changes;
-the complete normalized document must still match its frozen migration hash.
+user files even when the incoming package predates managed-refresh metadata.
 
 An upgrade that drops a previously owned resource requires an explicit migration and currently fails before
 writing. This preserves edits and notes in retired resources and avoids silently reviving them as user files.
