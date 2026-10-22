@@ -2261,16 +2261,13 @@ async def publish_artifact(
         )
     elif access is not None and not owner_committed and result.target.artifact.family != "topic-memory":
         target = result.target
-        if (
-            await access.artifact_owner(
-                ResourceRef.artifact(
-                    target.scope_id,
-                    family=target.artifact.family,
-                    artifact_id=target.artifact.artifact_id,
-                )
-            )
-            is None
-        ):
+        resource = ResourceRef.artifact(
+            target.scope_id,
+            family=target.artifact.family,
+            artifact_id=target.artifact.artifact_id,
+        )
+        await flush_owner_writes(artifact=resource)
+        if await access.artifact_owner(resource) is None:
             raise AccessUnavailableError("artifact_owner_pending")
     return TransportArtifactPublication.model_validate(result.model_dump(mode="json"))
 
@@ -3439,6 +3436,7 @@ async def commit_handoff(
         )
     elif access is not None and not committed:
         resource = ResourceRef.artifact(request.scope_id, family="handoff", artifact_id=result.artifact_id)
+        await flush_owner_writes(artifact=resource)
         if await access.artifact_owner(resource) is None:
             raise AccessUnavailableError("artifact_owner_pending")
     return mapping.committed_handoff_response(result)

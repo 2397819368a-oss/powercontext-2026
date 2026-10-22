@@ -346,7 +346,7 @@ def test_corrupted_intent_does_not_block_background_recovery_of_other_objects(tm
                     .values(scope_id="damaged-scope")
                 )
             async with recovery.monitor(), asyncio.timeout(12):
-                while await access.artifact_owner(other) is None:  # noqa: ASYNC110 - observe persisted external state
+                while await recovery.pending(scope_id="scope"):  # noqa: ASYNC110 - wait for durable delivery completion
                     await asyncio.sleep(0.05)
             assert await access.artifact_owner(RESOURCE) is None
             audits = await access.audit.list_audit(resource=other)

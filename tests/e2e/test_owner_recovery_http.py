@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 import httpx
+import pytest
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.records import ArtifactWrite
@@ -177,6 +178,100 @@ def test_candidate_http_failure_retains_a_replayable_proposer_attestation(tmp_pa
             )
             assert response.status_code == 200, response.text
             assert response.json()["candidate_id"] == candidate_id
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["publication", "handoff"])
+def test_idempotent_retry_requires_the_original_owner_audit_to_complete(tmp_path, monkeypatch, operation):
+    async def scenario():
+        async with _server(tmp_path) as (app, client, access):
+            scope_id = await _scope(client)
+            source = await client.post(f"/v1/scopes/{scope_id}/sources", json={"content": "Verified task state."})
+            assert source.status_code == 201, source.text
+            statement = {
+                "text": "Continue the verified task.",
+                "citations": [
+                    {"kind": "source", "source_ref": {"name": "content", "source_id": source.json()["source_id"]}}
+                ],
+            }
+            content = {
+                "schema": "powercontext.handoff.v1",
+                "objective": "Continue verified work.",
+                "state": [statement],
+                "disposition": "continuable",
+                "next_action": statement,
+                "omissions": [],
+            }
+            destination = scope_id
+            path = "/v1/handoff/commit"
+            payload = {
+                "scope_id": scope_id,
+                "handoff": {
+                    "schema": "powercontext.prepared-handoff.v1",
+                    "scope_id": scope_id,
+                    "base": None,
+                    "content": content,
+                },
+            }
+            if operation == "publication":
+                created = await client.post(
+                    f"/v1/scopes/{scope_id}/artifacts", json={"family": "handoff", "content": content}
+                )
+                assert created.status_code == 201, created.text
+                target = await client.post(
+                    "/v1/scopes",
+                    json={"title": "Publication target", "summary": "Audit retry", "idempotency_key": "audit-target"},
+                )
+                assert target.status_code == 201, target.text
+                destination = target.json()["scope_id"]
+                path = "/v1/artifact-publications"
+                payload = {
+                    "source": {
+                        "scope_id": scope_id,
+                        "artifact": {
+                            "family": "handoff",
+                            "artifact_id": "handoff",
+                            "revision": created.json()["revision"],
+                        },
+                    },
+                    "target_scope_id": destination,
+                    "idempotency_key": "audit-publication",
+                }
+
+            async def unavailable(_event):
+                raise AccessUnavailableError("external_audit_unavailable")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(access.audit, "append_audit_once", unavailable)
+                failed = await client.post(
+                    path, json=payload, headers={"X-PowerContext-Request-ID": "accepted-owner-request"}
+                )
+                assert failed.status_code == 503, failed.text
+                original_request_id = failed.headers["X-PowerContext-Request-ID"]
+                pending = await app.state.owner_recovery.pending()
+                assert len(pending) == 1
+                resource = pending[0].resource
+                assert resource is not None
+                assert (await access.artifact_owner(resource)).owner == ALICE
+                retried = await client.post(
+                    path, json=payload, headers={"X-PowerContext-Request-ID": "retry-owner-request"}
+                )
+                assert retried.status_code == 503, retried.text
+                assert await app.state.owner_recovery.pending() == pending
+                audit = await access.audit.list_audit(resource=resource, limit=100)
+                assert not [item for item in audit if item.reason_code == "artifact-owner-established"]
+            retried = await client.post(path, json=payload)
+            assert retried.is_success, retried.text
+            assert await app.state.owner_recovery.pending() == ()
+            audit = await access.audit.list_audit(resource=resource, limit=100)
+            owners = [item for item in audit if item.reason_code == "artifact-owner-established"]
+            assert len(owners) == 1
+            assert owners[0].principal == ALICE and owners[0].request_id == original_request_id
+            assert len(await app.state.application.records.for_scope(destination).logical_artifacts()) == 1
+            assert (await client.post(path, json=payload)).json() == retried.json()
+            audit = await access.audit.list_audit(resource=resource, limit=100)
+            assert [item for item in audit if item.reason_code == "artifact-owner-established"] == owners
 
     asyncio.run(scenario())
 
