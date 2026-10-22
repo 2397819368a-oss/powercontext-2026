@@ -34,7 +34,7 @@ from pydantic import JsonValue, SecretStr
 from sqlalchemy import create_engine, event, insert, select, update
 from sqlalchemy.engine import make_url
 
-from powercontext.artifacts import ArtifactRef, StableHandle
+from powercontext.artifacts import ArtifactAddress, ArtifactRef, StableHandle
 from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.atomic_memory.errors import InvalidAtomicMemoryStateError
 from powercontext.builtin.artifacts.experience import ExperienceContent
@@ -60,6 +60,7 @@ from powercontext.builtin.portability import (
     BundleRecoveryRequiredError,
     PortableBundleService,
 )
+from powercontext.builtin.publication import ArtifactPublicationRequest
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.review.models import CandidateAudit, CandidateStatus
 from powercontext.builtin.runtime import (
@@ -735,6 +736,197 @@ def test_archive_restores_package_files_and_topic_search_after_restart(
             assert (
                 await reverse.records.get_artifact(scope.scope_id, "profile", profile.artifact_id) == expected_profile
             )
+
+    asyncio.run(scenario())
+
+
+async def _publication_archive(tmp_path: Path):
+    archive = tmp_path / "publications.pcb"
+
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async with open_builtin_contexts(BuiltinConfig()) as source:
+        scopes = tuple([
+            await source.scopes.create(ScopeDraft(title=title, summary="Publication recovery", idempotency_key=title))
+            for title in ("Origin", "Relay", "Delivery")
+        ])
+        created = await source.records.create_artifact(
+            scopes[0].scope_id,
+            "experience",
+            ArtifactWrite(
+                content={"situation": "Recovery", "action": "Publish", "outcome": "Ready", "lesson": "Keep lineage"}
+            ),
+        )
+        addresses = [
+            ArtifactAddress(
+                scope_id=created.scope_id,
+                artifact=ArtifactRef(family=created.family, artifact_id=created.artifact_id, revision=created.revision),
+            )
+        ]
+        for scope in (scopes[1], scopes[2], scopes[0]):
+            published = await source.publications.publish(
+                ArtifactPublicationRequest(
+                    source=addresses[-1], target_scope_id=scope.scope_id, idempotency_key="portable-publication"
+                )
+            )
+            addresses.append(published.target)
+        independent = await source.records.create_artifact(
+            scopes[1].scope_id,
+            "experience",
+            ArtifactWrite(
+                content={"situation": "Separate", "action": "Keep", "outcome": "Root", "lesson": "No publication"}
+            ),
+        )
+        addresses.append(
+            ArtifactAddress(
+                scope_id=independent.scope_id,
+                artifact=ArtifactRef(
+                    family=independent.family, artifact_id=independent.artifact_id, revision=independent.revision
+                ),
+            )
+        )
+        expected = tuple([
+            await source.records.get_artifact(address.scope_id, address.artifact.family, address.artifact.artifact_id)
+            for address in addresses
+        ])
+        exported = await source.portability.export([scope.scope_id for scope in scopes], archive, authorize=authorize)
+    return archive, tuple(addresses), expected, exported
+
+
+def test_archive_preserves_publication_chains_after_restart(tmp_path: Path, target_config: BuiltinConfig) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive, addresses, expected, exported = await _publication_archive(tmp_path)
+        async with open_builtin_contexts(target_config) as target:
+            assert (await target.portability.validate(archive)).compatible
+            assert (await target.portability.restore(archive)).projections_ready
+            for address, record in zip(addresses, expected, strict=True):
+                assert (
+                    await target.records.get_artifact(
+                        address.scope_id, address.artifact.family, address.artifact.artifact_id
+                    )
+                    == record
+                )
+        async with open_builtin_contexts(target_config) as target:
+            assert (await target.portability.restore(archive)).inserted == 0
+            for address, record in zip(addresses, expected, strict=True):
+                assert (
+                    await target.records.get_artifact(
+                        address.scope_id, address.artifact.family, address.artifact.artifact_id
+                    )
+                    == record
+                )
+            roundtrip = await target.portability.export(
+                sorted({address.scope_id for address in addresses}),
+                tmp_path / "publications-roundtrip.pcb",
+                authorize=authorize,
+            )
+            assert roundtrip.total_digest == exported.total_digest
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("damage", ["cycle", "self_cycle", "digest"])
+def test_archive_rejects_invalid_publication_chains_before_writing(tmp_path: Path, damage: str) -> None:
+    async def scenario() -> None:
+        archive, addresses, expected, _exported = await _publication_archive(tmp_path)
+        original = archive.read_bytes()
+
+        def rewrite(records):
+            publication = next(
+                record
+                for record in records
+                if record["record_type"] == "artifact_publication"
+                and record["identity"]["target_scope_id"] == addresses[1].scope_id
+            )
+            if damage == "digest":
+                publication["payload"]["content_digest"] = "0" * 64
+            else:
+                source = addresses[1] if damage == "self_cycle" else addresses[2]
+                publication["payload"].update(
+                    source_scope_id=source.scope_id,
+                    source_family=source.artifact.family,
+                    source_artifact_id=source.artifact.artifact_id,
+                    source_revision=source.artifact.revision,
+                )
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'target.db'}"))
+        async with open_builtin_contexts(config) as target:
+            before = await target.scopes.list()
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match="publication"):
+                    await operation(archive)
+                assert await target.scopes.list() == before
+            archive.write_bytes(original)
+            assert (await target.portability.restore(archive)).projections_ready
+        async with open_builtin_contexts(config) as target:
+            assert (await target.portability.restore(archive)).inserted == 0
+            for address, record in zip(addresses, expected, strict=True):
+                assert (
+                    await target.records.get_artifact(
+                        address.scope_id, address.artifact.family, address.artifact.artifact_id
+                    )
+                    == record
+                )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("target_history", ["cycle", "different_origin"])
+def test_archive_detects_publication_conflicts_with_existing_target(tmp_path: Path, target_history: str) -> None:
+    async def scenario() -> None:
+        archive, addresses, _expected, _exported = await _publication_archive(tmp_path)
+        existing = tmp_path / "existing.pcb"
+        existing.write_bytes(archive.read_bytes())
+
+        def rewrite(records):
+            publication = next(
+                record
+                for record in records
+                if record["record_type"] == "artifact_publication"
+                and record["identity"]["target_scope_id"] == addresses[1].scope_id
+            )
+            publication["identity"].update(
+                target_scope_id=addresses[0].scope_id,
+                target_family=addresses[0].artifact.family,
+                target_artifact_id=addresses[0].artifact.artifact_id,
+                target_revision=addresses[0].artifact.revision,
+            )
+            source = addresses[1] if target_history == "cycle" else addresses[-1]
+            publication["payload"].update(
+                source_scope_id=source.scope_id,
+                source_family=source.artifact.family,
+                source_artifact_id=source.artifact.artifact_id,
+                source_revision=source.artifact.revision,
+                idempotency_key="target-existing-publication",
+            )
+            return records
+
+        _rewrite_archive_records(existing, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            assert (await target.portability.restore(existing)).projections_ready
+            before = tuple([
+                await target.records.get_artifact(
+                    address.scope_id, address.artifact.family, address.artifact.artifact_id
+                )
+                for address in addresses
+            ])
+            validation = await target.portability.validate(archive)
+            assert not validation.compatible
+            with pytest.raises(BundleConflictError):
+                await target.portability.restore(archive)
+            for address, record in zip(addresses, before, strict=True):
+                assert (
+                    await target.records.get_artifact(
+                        address.scope_id, address.artifact.family, address.artifact.artifact_id
+                    )
+                    == record
+                )
 
     asyncio.run(scenario())
 

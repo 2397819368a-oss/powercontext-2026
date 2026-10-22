@@ -551,8 +551,8 @@ class PortableBundleService:
             # Reject missing dependencies and size-limit breaches
             # without replacing a previous usable backup at the destination.
             _parse_bundle(archive_path)
-            _validate_dependencies(archive_path, candidate_decoder=self._candidate_decoder)
-            archive_path.replace(output)
+            with _validate_dependencies(archive_path, candidate_decoder=self._candidate_decoder):
+                archive_path.replace(output)
             return BundleReceipt(bundle_id=bundle_id, record_count=count, total_digest=digest)
         finally:
             records_path.unlink(missing_ok=True)
@@ -575,19 +575,27 @@ class PortableBundleService:
         """Verify bundle integrity, dependencies, and optional adapter support."""
 
         inspection = _parse_bundle(source, progress=progress, phase="validate")
-        required_sources, required_families = _validate_dependencies(source, candidate_decoder=self._candidate_decoder)
-        configured = (
-            self._supported_source_types if supported_source_types is None else frozenset(supported_source_types)
-        )
-        missing_sources = () if configured is None else tuple(sorted(required_sources - configured))
-        missing_families = (
-            ()
-            if self._supported_artifact_families is None
-            else tuple(sorted(required_families - self._supported_artifact_families))
-        )
-        already_present, conflicts = await self._target_compatibility(
-            source, supported_source_types=configured, total=inspection.record_count, progress=progress
-        )
+        with _validate_dependencies(source, candidate_decoder=self._candidate_decoder) as (
+            required_sources,
+            required_families,
+            index,
+        ):
+            configured = (
+                self._supported_source_types if supported_source_types is None else frozenset(supported_source_types)
+            )
+            missing_sources = () if configured is None else tuple(sorted(required_sources - configured))
+            missing_families = (
+                ()
+                if self._supported_artifact_families is None
+                else tuple(sorted(required_families - self._supported_artifact_families))
+            )
+            already_present, conflicts = await self._target_compatibility(
+                source,
+                supported_source_types=configured,
+                total=inspection.record_count,
+                progress=progress,
+                publication_index=index,
+            )
         return BundleValidation(
             bundle_id=inspection.bundle_id,
             scopes=inspection.scopes,
@@ -735,6 +743,7 @@ class PortableBundleService:
         supported_source_types: frozenset[str] | None,
         total: int,
         progress: ProgressObserver | None,
+        publication_index: sqlite3.Connection,
     ) -> tuple[int, int]:
         already_present = 0
         conflicts = 0
@@ -783,6 +792,12 @@ class PortableBundleService:
                     else:
                         conflicts += 1
                 _report_progress(progress, "target", processed, total)
+            if (
+                conflicts == 0
+                and ARTIFACT_PUBLICATIONS_TABLE.name in existing_tables
+                and not await _validate_target_publications(connection, publication_index)
+            ):
+                conflicts += 1
         return already_present, conflicts
 
     def _validate_target_content(self, record: _Record, /, *, supported_source_types: frozenset[str] | None) -> None:
@@ -1689,9 +1704,10 @@ def _validate_safe_value(value: object, key: str | None = None) -> None:
             _validate_safe_value(child, key)
 
 
+@contextmanager
 def _validate_dependencies(
     source: Path, /, *, candidate_decoder: Callable[[Mapping[str, Any]], object] | None = None
-) -> tuple[set[str], set[str]]:
+) -> Iterator[tuple[set[str], set[str], sqlite3.Connection]]:
     """Validate dependencies with disk-backed identities and bounded metadata."""
 
     heads, packages = _dependency_metadata(source)
@@ -1719,7 +1735,73 @@ def _validate_dependencies(
                 if _source_observation(record) is None:
                     required_sources.add(str(record.identity["source_type"]))
             required_families.update(_required_artifact_families((record,)))
-    return required_sources, required_families
+        _validate_publication_chains(index)
+        yield required_sources, required_families, index
+
+
+def _index_publication_dependencies(index: sqlite3.Connection, record: _Record, /) -> None:
+    if record.record_type == "artifact_revision":
+        index.execute(
+            "INSERT OR IGNORE INTO publication_nodes (identity) VALUES (?)",
+            (_identity_key({"target_" + field: value for field, value in record.identity.items()}),),
+        )
+        return
+    if record.record_type != "artifact_publication":
+        return
+    target = _identity_key(record.identity)
+    source = _identity_key({
+        "target_" + field: record.payload["source_" + field]
+        for field in ("scope_id", "family", "artifact_id", "revision")
+    })
+    index.execute(
+        "INSERT OR IGNORE INTO publication_edges (target, source, digest) VALUES (?, ?, ?)",
+        (target, source, record.payload["content_digest"]),
+    )
+
+
+def _validate_publication_chains(index: sqlite3.Connection, /) -> None:
+    if (
+        index.execute(
+            "SELECT 1 FROM publication_edges AS edge JOIN publication_edges AS parent ON edge.source = parent.target "
+            "WHERE edge.digest != parent.digest LIMIT 1"
+        ).fetchone()
+        is not None
+    ):
+        raise BundleFormatError("publication chain has inconsistent content digests")
+    while pending := index.execute("SELECT target FROM publication_edges WHERE state = 0 LIMIT 1").fetchone():
+        current = pending[0]
+        while edge := index.execute(
+            "SELECT source, state FROM publication_edges WHERE target = ?", (current,)
+        ).fetchone():
+            if edge[1] == 1:
+                raise BundleFormatError("publication chain contains a cycle")
+            if edge[1] == 2:
+                break
+            index.execute("UPDATE publication_edges SET state = 1 WHERE target = ?", (current,))
+            current = edge[0]
+        index.execute("UPDATE publication_edges SET state = 2 WHERE state = 1")
+
+
+async def _validate_target_publications(connection: AsyncConnection, index: sqlite3.Connection, /) -> bool:
+    table = ARTIFACT_PUBLICATIONS_TABLE
+    fields = _SPECS["artifact_publication"].identity
+    pending = index.execute("SELECT identity FROM publication_nodes ORDER BY identity")
+    while batch := pending.fetchmany(100):
+        identities = [json.loads(row[0]) for row in batch]
+        rows = (
+            await connection.execute(
+                select(table).where(
+                    tuple_(*(table.c[field] for field in fields)).in_([
+                        tuple(identity[field] for field in fields) for identity in identities
+                    ])
+                )
+            )
+        ).mappings()
+        for row in rows:
+            target = _identity_key({field: row[field] for field in fields})
+            if index.execute("SELECT 1 FROM publication_edges WHERE target = ?", (target,)).fetchone() is None:
+                return False
+    return True
 
 
 def _validate_observation_record(record: _Record, index: sqlite3.Connection, /) -> None:
@@ -2151,6 +2233,12 @@ def _identity_index(source: Path, /) -> Iterator[sqlite3.Connection]:
             "CREATE TABLE identities (record_type TEXT NOT NULL, identity TEXT NOT NULL, document BLOB, "
             "PRIMARY KEY (record_type, identity))"
         )
+        connection.execute(
+            "CREATE TABLE publication_edges (target TEXT PRIMARY KEY, source TEXT NOT NULL, digest TEXT NOT NULL, "
+            "state INTEGER NOT NULL DEFAULT 0)"
+        )
+        connection.execute("CREATE INDEX publication_edges_state ON publication_edges(state, target)")
+        connection.execute("CREATE TABLE publication_nodes (identity TEXT PRIMARY KEY)")
         for record in _iter_records(source):
             try:
                 connection.execute(
@@ -2170,6 +2258,7 @@ def _identity_index(source: Path, /) -> Iterator[sqlite3.Connection]:
                     )
             except sqlite3.IntegrityError as error:
                 raise BundleFormatError("bundle contains duplicate immutable or unique identity") from error
+            _index_publication_dependencies(connection, record)
             if record.record_type == "candidate_version":
                 connection.execute(
                     "INSERT INTO identities (record_type, identity) VALUES (?, ?)",

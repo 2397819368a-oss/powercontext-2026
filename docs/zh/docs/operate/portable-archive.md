@@ -85,6 +85,11 @@ Candidate version 和 decision head 使用正常读取路径的完整解码器�
 这包括 Windows 的绝对 `file:///C:/...` 路径及经过百分号编码的文件名。不支持的 URI authority、无法读取的目标、目录目标
 或非目录的父路径会使验证失败，不会被当成空数据库。
 
+发布关系验证会沿精确的 Artifact Revision 地址检查完整来源链。即使所有端点和 checksum 都有效，链中的环和不一致的
+content digest 仍会在领域写入前被拒绝。兼容性检查也会比对待恢复 Revision 在目标中已有的发布关系。归档未声明的目标发布
+关系即使自身合法，也会作为冲突拒绝，防止恢复后的原始来源被改变。关系图使用本地临时存储建立索引，目标关系按批读取，
+不扫描无关的发布历史。存在冲突时不会覆盖目标历史；已经损坏的历史需要使用有效备份恢复到干净目标。
+
 原生 Source 需要目标环境安装对应的 Python adapter。验证会在写入前使用正常读取路径的已注册 Source 解码器，检查 payload
 结构与索引 identity 是否一致，也覆盖受支持的 legacy payload。远程 worker 已物化的 `SourceObservation` 自带捕获内容和投影，
 其存储 envelope 也使用同一解码器验证，但不需要加载 worker adapter。归档只携带所选 scope 实际引用的 Source Definition

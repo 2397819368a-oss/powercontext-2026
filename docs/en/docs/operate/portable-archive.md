@@ -101,6 +101,14 @@ This includes absolute `file:///C:/...` paths on Windows and percent-encoded fil
 unreadable targets, directory targets and non-directory parent paths fail validation rather than being treated as an
 empty database.
 
+Publication validation follows exact Artifact revision addresses through the complete chain. Cycles and inconsistent
+content digests within a chain are rejected before domain writes, even if all endpoints and checksums are valid.
+Compatibility checks also compare existing target publication links for restored revisions. A target link absent from
+the archive is a conflict, even if its chain is valid: accepting it could change the restored revision's original
+provenance. The graph is indexed in temporary local storage, and target links are read in batches without scanning
+unrelated publication histories. Conflicting target histories are reported without overwriting them; recovery from an
+already invalid history requires a clean target and a valid backup.
+
 Native Sources require their Python adapter on the target. Before writing records, validation uses the same registered
 Source decoder as normal reads to check both payload shape and indexed identity, including supported legacy payloads.
 Worker-materialized `SourceObservation` records carry their captured payload and projections. The same decoder
