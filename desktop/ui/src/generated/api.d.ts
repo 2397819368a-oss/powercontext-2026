@@ -2372,7 +2372,7 @@ export interface components {
             kind: string;
             /** @description Memory text is NFC-normalized and trimmed before enforcing an 8192 UTF-8 byte limit. */
             text: string;
-            /** @description Optional supplied single-line summary. When omitted, the Server generates it before writing; without a generation model the write fails with inference_unavailable. */
+            /** @description Optional supplied single-line summary. When omitted, the Server stores a whitespace-collapsed text prefix of at most 200 Unicode characters, including a trailing ellipsis when truncated. Explicit writes do not invoke a generation model. */
             description?: string | null;
         };
         CreateAtomicMemoryArtifactRequest: {
@@ -4462,7 +4462,7 @@ export interface components {
             text: string;
             reason?: string | null;
             expected_revision?: number | null;
-            /** @description Optional supplied single-line summary. When omitted, the Server generates it before writing; without a generation model the write fails with inference_unavailable. */
+            /** @description Optional supplied single-line summary. When omitted, the Server stores a whitespace-collapsed text prefix of at most 200 Unicode characters, including a trailing ellipsis when truncated. Explicit writes do not invoke a generation model. */
             description?: string | null;
         };
         RetireMemoryEntryRequest: {
