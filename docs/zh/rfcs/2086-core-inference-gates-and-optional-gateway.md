@@ -28,9 +28,10 @@ Core 负责上下文选择、获准表示、稳定复用边界、刷新条件及
 
 本 RFC 定义既有入口、嵌入式调用和两个按需远端检查操作的接入契约。
 **PowerContext Gateway 与第三方网关都是外部可选接入方；网关组件的实现、语言、路由、限流、共享缓存和运行治理不在本 RFC 范围内。**
-没有网关也可通过受支持 SDK/provider 接入执行完整检查；只有上下文片段的接入不能声称控制完整请求。
+没有网关也可在 PowerContext 自身后台调用，或宿主显式接入的进程内模型适配器中执行完整检查；
+只通过 SDK 获取上下文片段的接入不能声称控制完整请求。
 
-实现基线为仓库提交 e4efb39b。本 RFC 是设计提案，不表示通用模型外发拦截、完整请求检查、原生缓存适配或节省收益已经在基线实现。
+实现基线为 `origin/main` 的仓库提交 `0bc42d0b`。本 RFC 是设计提案，不表示通用模型外发拦截、完整请求检查、原生缓存适配或节省收益已经在基线实现。
 
 | 决策项 | 契约 |
 | --- | --- |
@@ -93,7 +94,8 @@ PowerContext 已能选择并交付带引用的项目上下文、管理 Source/Ar
 ## 一个 Core 后台阶段
 
 Memory 或 Topic 处理继续使用当前 Source 投影、指令和输出 schema。
-在批准了版本化阶段 codec 的位置，可以更高效地编码重复结构，但保留每次出现、身份、顺序和证据引用，权威 Source 不变。
+Atomic Memory 提取已在输入投影中移除与所选正文的规范文本严格相等的重复载体，并保留不同的 payload、wire 或 Projection 证据；
+直接复用该行为，不重写权威 Source。新增阶段 codec 才需要独立版本与验收，并保留每次出现、身份、顺序和证据引用。
 
 Provider 边界检查真实请求，并在解析和领域校验前检查原始输出，阶段沿用既有生成/输出预算。
 Embedding v1 只检查或阻断未改变语义的输入，不在原索引 profile 下对文档或查询进行通用压缩。
@@ -112,22 +114,25 @@ Strict 分别报告上游首 token 与首次内容释放时间，不能只根据
 | --- | --- | --- |
 | `ScopedContextApplication.prepare` / `_prepare_build` | Scoped 召回、assembly、有界 recall effort、prepare 内查询向量复用 | 保留选择权威，在这里组合获准的上下文表示策略。 |
 | `PreparedContextBuilder` / prepared text/code | 最终选择、引用、信任包装、遗漏和 UTF-8 预算 | 表示变化在最终 render/fit/count 前完成，不在别处二次截断已构建包装。 |
-| 阶段输入投影 | 领域专用指令、schema、Source 窗口和证据 | 只为对应阶段契约增加经过验证的结构 codec。 |
+| 阶段输入投影 | 领域专用指令、schema、Source 窗口、证据与提取正文去重 | 只为对应阶段契约增加经过验证的结构 codec。 |
 | `InferenceConfig`、inference ports 与 provider adapters | 生成、Embedding、重排、判断配置与真实调用 | 接入强制发送/释放检查、完整请求限制、缓存映射与逐尝试落实。 |
 | `TokenEstimator` / estimator profile | 部署固定的文本估算和估算器身份 | 复用并明确范围/不确定性，不冒充供应商实际 token 数。 |
 | `DecisionPolicy` / `DecisionAssessment` | 策略版本、模式、本地规则/模型 verdict 和 unknown 覆盖 | 按需注册窄域隐私消费者，最终动作仍归调用边界。 |
 | `decision_projection` | 判断请求专用的有界临时投影保护 | 复用契约及兼容的已验证算法，不能把其载荷限制当成通用扫描上限。 |
 | 现有 Source/Artifact、Work/Handoff | 证据、精确版本、显式连续性和提交 | 保留领域身份、权威、事务与支持的读取路径。 |
-| Usage wrappers / 统计 / observations | 尽力而为的用量和有界策略诊断 | 复用适用字段和 sink，不升级成财务或响应恢复账本。 |
+| Usage wrappers / 统计 / observations | 尽力而为的用量、有界诊断和 recorder 丢失观测 | 复用适用字段和 sink，不升级成财务或响应恢复账本。 |
 
 实现基线：
-[上下文 application](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/application.py)、
-[上下文 Builder](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/prepared_context.py)、
-[推理配置](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/config.py)、
-[provider 适配](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/inference/pydantic_ai.py)、
-[策略治理](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/decision_policy.py)、
-[投影保护](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/runtime/decision_projection.py)、
-[Token 估算](https://github.com/oceanbase/powercontext/blob/e4efb39bd6b8303a508c83fd5fcde5f99290b785/src/powercontext/builtin/inference/tokens.py)。
+[上下文 application](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/runtime/application.py)、
+[上下文 Builder](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/runtime/prepared_context.py)、
+[推理配置](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/runtime/config.py)、
+[provider 适配](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/inference/pydantic_ai.py)、
+[策略治理](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/runtime/decision_policy.py)、
+[投影保护](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/runtime/decision_projection.py)、
+[Token 估算](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/inference/tokens.py)、
+[提取证据投影](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/artifacts/atomic_memory/extraction.py)、
+[后台处理结果](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/runtime/models.py)、
+[用量 recorder](https://github.com/oceanbase/powercontext/blob/0bc42d0bc978ded22db1901305280c5b840d6533/src/powercontext/builtin/runtime/_model_usage.py)。
 
 ## 架构与职责归属
 
@@ -136,7 +141,7 @@ Strict 分别报告上游首 token 与首次内容释放时间，不能只根据
 ```mermaid
 flowchart TB
     HOST["宿主 / Agent<br/>历史、注入、工具与采用"]
-    SDK["受支持 SDK / 内置 provider 接入"]
+    SDK["进程内模型调用接入<br/>PC 后台调用 / 宿主显式适配器"]
 
     subgraph CORE["本 RFC：PowerContext 现有组件"]
         AUTH["既有 Scope / 可信调用者 / 授权"]
@@ -199,12 +204,17 @@ ContextRuntime 保留选择权威，推理边界消费完整请求；策略消�
 | 接入方式 | 可承诺的能力 | 必须说明的限制 |
 | --- | --- | --- |
 | Context Provider / MCP / Hook 仅取得上下文片段 | 优化和检查 PowerContext 实际交付的上下文，保留引用与字节预算。 | 不知道宿主最终 prompt、模型和后续变更，不能承诺完整外发/释放保护或真实账单收益。 |
-| 受支持 SDK / 内置 provider 接入 | 在已验证的最终发送与释放边界检查完整载荷，落实目标相关缓存设置并取得可用 usage。 | 不控制应用绕过该适配器的其他流量；覆盖按协议、载体、模型与版本声明。 |
+| 进程内模型调用接入 | 在已验证的最终发送与释放边界检查完整载荷，落实目标相关缓存设置并取得可用 usage。 | 不控制应用绕过该适配器的其他流量；覆盖按协议、载体、模型与版本声明。 |
 | PowerContext Gateway 接入 | 通过同一准备与检查契约使用 Core 能力，在其实际发送/释放边界落实决策。 | 网关单独设计与交付，本 RFC 不要求部署它。 |
 | 第三方网关接入 | 通过最终边界插件调用检查接口，或经受验证的透传路径接入。 | 透明程度、实际目标、重试、内容变换与 usage 决定覆盖，品牌或 OpenAI-compatible 标签不是兼容证明。 |
 
 MCP、Hook 和 SDK 名称本身不决定权限；若某个宿主能控制更完整边界，按其实际能力验收。
 没有 usage 时只报告交付字节、估算或本地复用，不把 unknown 当零。
+
+例如，PowerContext 的 Atomic Memory 提取器在其实际 provider 边界接入检查，便可覆盖自身后台请求。
+宿主若先调用 `prepare`，再直接用自己的模型客户端发送，仍然只有上下文交付覆盖；
+宿主需显式将完整请求交给已验证的模型适配器，才获得对应发送/释放覆盖。
+这里不要求替换所有模型 SDK，也不承诺导入 PowerContext 后自动拦截其他网络调用。
 
 ## 目标一：隐私安全拦截
 
@@ -227,6 +237,11 @@ Prepare 不知道未来任意目的地，也不能认证尚未由宿主装配的
 
 ### 复用策略，明确失败语义
 
+基础规则随当前 PowerContext 进程执行：配置的秘密值/格式匹配与受控目的地检查无需单独部署组件。
+PII 是个人身份信息这一类数据，不是指定库；如需姓名、地址等实体识别，可按场景选择进程内可选依赖或外部 DLP，
+并明确检测覆盖、模型/资源成本和可信边界。Presidio、独立识别服务或 Gateway 都不是首期前提，
+安装基础功能也不默认下载识别模型。可选检测器一旦被部署策略声明为必需，其不可用仍按强制检查暂缓处理。
+
 先在本地执行确定性规则。实质本地判断可使用既有 `DecisionAssessment` 词汇，
 注册的消费者复用版本、模式、原因、覆盖和 observation 契约，再由消费者映射到所属发送/释放动作。
 `deny` 阻断，`unknown`、必需覆盖缺失或 enforcing 不可用时暂缓。
@@ -235,6 +250,13 @@ LLM 结果不能覆盖强制规则，也不能授予资料或工具权限。
 `FailOpenDecisionModel` 保留当前 abstention 契约。可选 advisory 消费者可以按本领域契约忽略 abstention；
 强制隐私消费者必须将同一 abstention 解释为不足以发送/释放，不能全局改变所有判断消费者，
 也不能把 provider 故障记成隐私检查干净通过。
+
+后台处理必须保留失败的领域含义。当前写入判断 `HOLD` 虽不提交 Memory，却会推进 cursor 并消费 Source 窗口；
+强制隐私检查的 block/withhold、超时或 unknown 不能映射成该 `HOLD`、空提取成功或跳过窗口。
+它们应在发送/释放边界显式失败，由所属处理流程保留待处理证据与进度，并遵守已有重试预算；
+不能通过更换模型、重启或策略变更自动获得新预算，也不为此建立新重试库。
+Topic Memory 已有阻塞/显式重试能力按其原授权与幂等契约使用，不挪用为通用推理状态。
+写入判断的既有 `HOLD` 语义保持不变。
 
 外部辅助模型只能接收已获准的有界投影，不能先把禁止资料送给托管分类、压缩或 Judge 模型，再判断能否外发。
 现有 decision projection sanitizer 仍是判断请求专用能力，不构成通用模型 DLP 覆盖。
@@ -259,12 +281,13 @@ v1 不自动脱敏代码、工具参数、标识符或签名内容，不维护�
 | --- | --- |
 | 隐私策略 | 适用时沿用 disabled/shadow/advisory/enforcing 治理，只有经验证覆盖的 enforcing 才能声称拦截。 |
 | 部署必需规则 | 不受可选优化或 Judge 开关影响，客户端不能通过请求字段选择更弱策略。 |
-| 表示优化 | 为合格策略提议 `off`、`shadow`、`active` 配置；每项默认 off，验收后才启用。 |
+| 新增表示优化 | 为新增合格策略提议 `off`、`shadow`、`active` 配置；每项默认 off，验收后才启用。 |
 | 缓存规划 | Profile 显式选择，仍需最终载荷准入，不削弱隐私检查。 |
 
 优化 shadow 计算候选但继续发送获准原输入，不隐含第二次模型调用。
 隐私 shadow/observation 不阻止泄露，不能展示为 enforcing 保护。
 策略晋升沿用窄域消费者证据要求，不新建中央策略服务。
+既有提取正文去重、有界召回和查询向量复用保留当前行为，不被重新包装为默认关闭的新功能。
 
 ## 目标二：Token 效率优化
 
@@ -280,14 +303,24 @@ v1 不自动脱敏代码、工具参数、标识符或签名内容，不维护�
 | 输出效率 | 现有阶段 schema、指令与 `InferenceLimits`/模型设置 | 显式输出上限与必需字段，保留证据和完成检查，不自动截断后接受。 |
 | 减少不必要模型工作 | 现有有界 recall effort 与阶段调度 | 计算实际减少的调用和新增 Embedding/rerank/Judge 成本，不新增 Agent 调度器。 |
 
-当前 checkout 没有实现涵盖以上全部策略的通用输入/输出优化器，策略名称与例子不能当作已实现声明。
-每项 active 策略都需定义支持输入、不变量、对照行为、版本、回退和质量证据。
+基线已实现 Atomic Memory 提取输入的精确正文去重，并在单次 prepare 中复用合格查询向量、合并部分召回查询；
+这些能力先作为对照基线，不计入本 RFC 的新增收益。向量复用仍遵守原查询/profile/后端兼容条件；
+Atomic/Topic 复用要求实际 Embedding 后端一致且查询未经变换，不扩大到任意 Scope、profile 或跨调用缓存。
+每个读取和外发边界仍需当前授权与适用规则，计算复用不能替代检查。
+现有 `recall_embedding_timeout_seconds` 只是召回等待预算，不是整个请求或隐私检查的超时/放行规则。
+
+基线没有涵盖以上全部策略的通用输入/输出优化器，也没有本 RFC 的强制外发/释放与原生缓存契约。
+每项新增 active 策略都需定义支持输入、不变量、对照行为、版本、回退和质量证据。
 
 ### 表示算法与不变量
 
-首个结构 codec 可以在受控阶段 schema 内，把严格相同的重复正文编码一次，并保留有序的出现/引用列表。
-相等条件必须覆盖 codec 承诺保留的内容，不能静默删除时间、身份、元数据、次数或重复。
-日志行不能仅因模板相似就合并，这是拟议的阶段局部算法，不是通用日志压缩器。
+先复用已有 `project_atomic_memory_evidence`：只省去与所选正文规范文本相等的载体副本。
+Source、wire、payload 或其他 Projection 中内容不同的事实必须保留，不能按字段名删除；
+不合并不同 Source 的身份、顺序、出现次数或 lineage，不改存储内容与 journal。
+
+如需跨记录结构 codec，再在受控阶段 schema 内编码严格相同的正文，保留有序出现/引用列表并证明等价。
+时间、身份、元数据、次数和重复不能静默丢弃，日志行也不能仅因模板相似就合并。
+这是待验收的阶段局部扩展，不是通用日志压缩器；已有去重不因此新增 wrapper 或通用 codec 层。
 
 上下文交付的表示算法在 Builder 最终 render/fit/count 前执行，保留精确引用、历史信任边界、必需字段和诚实的截断/遗漏标记。
 不能用未经验证的正则改写空白、代码、JSON 值或工具参数，删除当前公共展示契约必需字段也不算无损优化。
@@ -350,7 +383,8 @@ Core 不输出套用于所有模型的原生缓存参数。获准 `UpstreamProfi
 必需的目标/保留/隔离约束不能满足时暂缓；普通缓存未命中不自动重试，也不为达到缓存门槛默认填充无关内容。
 
 缓存优化默认尽力而为，不把实际命中作为发送条件。可选缓存能力不可用时，只有原请求仍符合隐私、目标、
-格式和完整预算才能使用无缓存配置；如因此改变最终载荷，必须重新检查。
+格式和完整预算才能省略可选原生缓存参数；如因此改变最终载荷，必须重新检查。
+省略参数不代表关闭供应商的隐式缓存；目标仍须满足获准保留/隔离策略，无法验证时暂缓。
 必需的数据保留/隔离约束不能随缓存优化一起关闭。
 
 缓存协议兼容与实际命中分别验收。相同语义或前缀文字不证明具有相同原生边界；
@@ -377,6 +411,9 @@ TTL 字段是否表达最短计费覆盖、保留提示或删除期限，由获�
 公共 PreparedContext 保持临时四字段：`schema`、`status`、`content`、`content_bytes`。
 它不是完整 prompt、可信来源清单、授权 token 或注入证明。
 自动跨 Scope 冻结重放在获得经过验证的来源/重新授权机制前不受支持，不能从引用文本推导权限或永久使用已撤销投影。
+
+内部 `PreparedContextBuild.lineages` 已保留用于用量归属的不可变 Artifact 快照，可在契约相同时复用，
+但它不是当前 head、完整来源清单或授权证明，也不改变公共四字段结果；不能用它直接批准冻结重放。
 
 现有 `bootstrap_receipt_id` 仅对其支持的已完整注入 Atomic Memory 版本去重，不证明任意历史、Topic Memory、代码或 Handoff 覆盖。
 [RFC 1435](1435_explainable_prepared_context_receipts.md) 提议的按需诊断尚未在基线实现，也不能提升为权限。
@@ -432,6 +469,8 @@ rollover 按 [RFC 1783](1783-handoff-session-rollover.md) 仍归宿主。
 
 不可信模型请求字段不能削弱策略配置。Profile/stage/Principal/委托绑定由所属边界校验，
 provider session ID 或用户关联 ID 不能授予权限。
+每次远端检查均从当前已认证请求绑定 Principal/委托并校验资源 Scope，不能复用长连接或旧检查结果中的旧授权。
+保留现有路径参数优先于同名查询参数的规则，冲突输入不得重定向资源归属。
 
 ### 临时值与绑定
 
@@ -574,6 +613,10 @@ Core 不恢复未持久化转录/响应，也不建立分布式选择前沿。
 基线 `InferenceUsage` 只有请求/输入/输出计数。实现缓存读写、reasoning 用量和实际目标证据时，
 需在既有 inference/usage 边界增加有类型的可选元数据，保留 unknown；现有日聚合不能还原这些字段。
 v1 展示一次任务无需强制持久化这些新证据。
+现有 recorder 的队列丢弃、写入失败与 worker summary 可用于标记统计不完整；
+缺少 child report 是 unknown，不能按零丢失处理。`artifact_processing.worker.returned` 或进程退出不能证明业务提交，
+处理成功仍以所属 supervisor 验证 durable acknowledgement 为准。
+这些信号都不补齐缺失的 provider 用量，也不保证完整失败尝试账目；观测失败不能改变业务结果或吞掉取消。
 执行反馈进入符合契约的既有 usage/sink、统计或决策 observation；
 Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈库，不要求逐请求写 Source。
 任务成功与工具副作用由宿主/领域事实确认，模型调用成功不能代替任务完成。
@@ -589,9 +632,10 @@ Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈�
 
 选择一个既有上下文准备路径、一个后台生成阶段、固定受支持文本/工具协议与模型、无 context references 的单 Scope，
 以及明确的 enforcing 规则，把算法接入当前 context/stage/provider 边界。
-交付最终输入与 strict 原始响应检查、精确准备值复用，以及一个先 shadow 验证的 opt-in 结构效率策略。
-使用原宿主历史和显式 Handoff，不新增运行时服务、表、Artifact 家族或会话初始化。
-在受支持内置/provider 路径验证原生缓存适配，单独记录缓存计量与实际延迟。
+交付最终输入与 strict 原始响应检查、精确准备值复用，直接使用已有提取去重和召回计算复用。
+先证明在这些现有优化之上的增量价值，不要求先发明新 codec；有具体收益假设时，再对一项新增表示策略先 shadow 验证。
+使用原宿主历史和显式 Handoff，基础规则随现有进程运行，不新增运行时服务、表、Artifact 家族或会话初始化。
+在已验证的进程内模型适配路径验证原生缓存适配，单独记录缓存计量与实际延迟。
 
 ### P1：远端接入契约与一致性
 
@@ -607,7 +651,9 @@ Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈�
 - 在每个受支持输入/输出字段、工具结构、原始错误、转义/数字表示和重复键中放置配置的禁止值，证明被阻断输入未到达受控上游，strict 阻断输出未到达宿主。
 - 覆盖强制检查超时/不可用/unknown、伪造 Scope/调用者/stage、目标变化、过期策略、不支持载体、跨片段内容、不完整 JSON、缓冲限制和取消。
 - 证明 advisory abstention 保持原行为，而强制隐私消费者会暂缓；优化 off/shadow/失败不能关闭必需拦截。
-- 验证 codec 还原、顺序、重复次数、身份、引用、代码/JSON 标量保真，以及非法/不支持输入；不同日志行不能塌缩为一次出现。
+- 验证强制隐私 block/withhold、超时与 unknown 不被转换成写入 HOLD 或空提取成功，不消费未处理 Source；重试遵守原有预算/显式恢复权限。
+- 验证进程内基础规则无需额外部署；声明必需的可选检测器不可用时暂缓，单纯 SDK prepare 不被展示成完整调用保护。
+- 验证已有去重保留不同 payload/wire/Projection 证据，再验证新增 codec 还原、顺序、重复次数、身份、引用、代码/JSON 标量保真，以及非法/不支持输入；不同日志行不能塌缩为一次出现。
 - 覆盖 Embedding 原语义、rerank 身份映射、不递归 Judge/召回、逐次尝试 provider 检查、不确定发送/用量、进程丢失和约定恢复限制。
 - 验证普通检查不创建 Source/Artifact 正文，已有领域提交保留校验、事务和精确读取。
 - 覆盖 SDK 与外部适配器组合时唯一优化/发送所有者；客户端声称“已优化”不能跳过检查，也不能触发二次 prepare。
@@ -617,7 +663,8 @@ Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈�
 
 固定仓库任务、起始状态、模型/profile、工具/schema、策略和质量标准，所有可比优化实验组都开启必需隐私规则。
 对比当前流程、获准的稳定上下文复用，以及相同复用加 opt-in 表示/缓存规划。
-基线忠实于实际宿主，不能人为重复检索放大收益。
+基线包含已有提取正文去重、合格查询向量复用和有界召回，忠实于实际宿主，不能人为重复检索放大收益。
+不同优化组保留相同证据与任务要求；缺少 worker/usage 报告时标记完整费用不可确认，不能只算成功主调用。
 不额外调用模型的 shadow 与付费配对实验分开说明。
 
 测量冷/热条件，以及消息边界、工具/schema、上下文刷新、策略、模型和路由变化。
