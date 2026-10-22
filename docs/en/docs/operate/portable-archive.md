@@ -24,18 +24,8 @@ selection, scheduler state or derived indexes. A SQLite database copy is not an 
 backend's SQL dump does not perform these application-level selections and projection rebuilds. Schema migrations
 upgrade a deployment's schema; they do not replace this scope-transfer operation.
 
-The logical record schema is therefore an explicit portability contract, not a second copy of every storage column.
-It retains authoritative domain fields and maps them to each backend while excluding deployment-specific data.
-Changing a domain model requires checking this mapping and its round-trip behavior; a checksum cannot discover a
-field that a producer failed to export. Unknown record schema versions are rejected instead of silently supplying
-defaults for new authoritative state.
-
-Import policy is independent of the checksum algorithm: an absent identity is inserted, identical canonical content is
-skipped, and different content at an existing identity causes a conflict without overwriting it. Per-record SHA-256
-digests are the chosen fingerprints for this comparison and for stream verification; comparing canonical record bytes
-would implement the same policy. The total digest covers the record stream, while ZIP checks detect damaged compressed
-data. These checks do not authenticate the producer, establish completeness against the source database, or replace
-Source/Artifact decoding and dependency validation.
+Checksums detect corruption, not producer authenticity or completeness against the source database. Domain decoding
+and dependency validation still run before restore.
 
 ## Prerequisites
 
@@ -109,6 +99,10 @@ provenance. The graph is indexed in temporary local storage, and target links ar
 unrelated publication histories. Conflicting target histories are reported without overwriting them; recovery from an
 already invalid history requires a clean target and a valid backup.
 
+Tag labels and complete tag sets use the normal domain validation, including the limit of 32 labels per target. New
+tag identities are added without removing existing labels; the combined set must also fit that limit. An oversized
+bundle tag set is invalid input; an oversized combined target set is a conflict, rejected before writes.
+
 Native Sources require their Python adapter on the target. Before writing records, validation uses the same registered
 Source decoder as normal reads to check both payload shape and indexed identity, including supported legacy payloads.
 Worker-materialized `SourceObservation` records carry their captured payload and projections. The same decoder
@@ -145,7 +139,8 @@ Format version 1 carries the portable relational representation of these support
 | Work contracts, task outcomes, Handoff boundaries and receipts stored as Sources | Credentials, bearer tokens, provider secrets, and host-local Skill installation state |
 
 The archive has a versioned manifest (`format_version`, producer version, scopes, counts, exclusions, and total
-checksum) plus NDJSON records. It is the authoritative round-trip format. CSV may be produced separately for bounded
+checksum) plus NDJSON records. Per-record digests compare canonical content for conflicts; the total digest verifies
+the record stream. It is the authoritative round-trip format. CSV may be produced separately for bounded
 analysis, but it cannot preserve immutable revisions, lineage, or evidence references and must not be used for restore.
 
 Frozen recurrence matches and events are preserved with their original idempotency keys, Source positions, and exact
@@ -207,6 +202,11 @@ The environment files use `POWERCONTEXT_SERVER_DATABASE_KIND` and `POWERCONTEXT_
 the Server configuration guide. Dry-run must report no unsupported families and zero conflicts before the write.
 
 ## Format compatibility
+
+Bundle IDs must use the canonical lowercase, hyphenated UUID representation. The entire archive file, including ZIP
+prefixes or trailing bytes, is limited to 512 MiB. The manifest limit is 256 KiB; uncompressed records are limited to
+2 GiB, with at most 2,000,000 records and 8 MiB per NDJSON line. Oversized files are rejected before restore copying,
+and snapshot copying enforces the same limit if the source changes while being read.
 
 Format version `1` readers require support for every record type present in the bundle. Older readers may reject
 new record types even when the bundle uses format version `1`. The producer version is reported for diagnostics but

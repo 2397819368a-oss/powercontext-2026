@@ -615,6 +615,107 @@ def test_archive_rejects_inconsistent_tag_labels_before_writing(tmp_path: Path, 
     asyncio.run(scenario())
 
 
+def test_archive_rejects_unreadable_tag_sets_before_writing(tmp_path: Path) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        archive = tmp_path / "tags.pcb"
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Tags", summary="Complete tag set", idempotency_key="tags")
+            )
+            memory = await source.records.create_artifact(
+                scope.scope_id, "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Portable tag set."})
+            )
+            tag_target = ArtifactTagTarget(family="atomic-memory", artifact_id=memory.artifact_id)
+            empty = await source.records.get_tags(scope.scope_id, tag_target)
+            tagged = await source.records.replace_tags(
+                scope.scope_id, tag_target, tuple(f"tag-{number}" for number in range(32)), expected_etag=empty.etag
+            )
+            await source.portability.export([scope.scope_id], archive, authorize=authorize)
+        original = archive.read_bytes()
+
+        def rewrite(records):
+            tag = next(record for record in records if record["record_type"] == "artifact_tag")
+            records.append({
+                **tag,
+                "identity": {**tag["identity"], "tag_key": "tag-32"},
+                "payload": {
+                    **tag["payload"],
+                    "tag": "tag-32",
+                    "tag_key_hash": {"base64": base64.b64encode(hashlib.sha256(b"tag-32").digest()).decode()},
+                },
+            })
+            return records
+
+        _rewrite_archive_records(archive, rewrite)
+        async with open_builtin_contexts(BuiltinConfig()) as target:
+            before = await target.scopes.list()
+            for operation in (target.portability.validate, target.portability.restore):
+                with pytest.raises(BundleFormatError, match="tag set"):
+                    await operation(archive)
+                assert await target.scopes.list() == before
+            archive.write_bytes(original)
+            assert (await target.portability.restore(archive)).projections_ready
+            assert await target.records.get_tags(scope.scope_id, tag_target) == tagged
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("incoming_count", [16, 17])
+def test_archive_validates_combined_tag_sets_before_writing(
+    tmp_path: Path, incoming_count: int, target_config: BuiltinConfig
+) -> None:
+    async def authorize(_scopes: tuple[str, ...]) -> None:
+        pass
+
+    async def scenario() -> None:
+        first, second = tmp_path / "first.pcb", tmp_path / "second.pcb"
+        previous_labels = tuple(f"left-{number}" for number in range(16))
+        incoming_labels = tuple(f"right-{number}" for number in range(incoming_count))
+        async with open_builtin_contexts(BuiltinConfig()) as source:
+            scope = await source.scopes.create(
+                ScopeDraft(title="Tags", summary="Combined tag set", idempotency_key="tags")
+            )
+            memory = await source.records.create_artifact(
+                scope.scope_id,
+                "atomic-memory",
+                ArtifactWrite(content={"kind": "fact", "text": "Portable combined tags."}),
+            )
+            tag_target = ArtifactTagTarget(family="atomic-memory", artifact_id=memory.artifact_id)
+            empty = await source.records.get_tags(scope.scope_id, tag_target)
+            previous = await source.records.replace_tags(
+                scope.scope_id, tag_target, previous_labels, expected_etag=empty.etag
+            )
+            await source.portability.export([scope.scope_id], first, authorize=authorize)
+            await source.records.replace_tags(scope.scope_id, tag_target, incoming_labels, expected_etag=previous.etag)
+            await source.portability.export([scope.scope_id], second, authorize=authorize)
+        async with open_builtin_contexts(target_config) as target:
+            await target.portability.restore(first)
+            if incoming_count == 17:
+                assert not (await target.portability.validate(second)).compatible
+                with pytest.raises(BundleConflictError):
+                    await target.portability.restore(second)
+                expected = set(previous_labels)
+            else:
+                assert (await target.portability.validate(second)).compatible
+                assert (await target.portability.restore(second)).projections_ready
+                assert (await target.portability.restore(second)).inserted == 0
+                expected = set(previous_labels + incoming_labels)
+            assert set((await target.records.get_tags(scope.scope_id, tag_target)).tags) == expected
+        async with open_builtin_contexts(target_config) as target:
+            assert set((await target.records.get_tags(scope.scope_id, tag_target)).tags) == expected
+            hits = await target.atomic_memory.for_scope(scope.scope_id).search(
+                "portable", tag_filter=TagFilter(tags=("right-0",))
+            )
+            assert [hit.hit.artifact_ref.artifact_id for hit in hits.hits] == (
+                [memory.artifact_id] if incoming_count == 16 else []
+            )
+
+    asyncio.run(scenario())
+
+
 def test_archive_restores_package_files_and_topic_search_after_restart(
     tmp_path: Path, target_config: BuiltinConfig
 ) -> None:

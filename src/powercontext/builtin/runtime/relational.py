@@ -274,11 +274,6 @@ def _artifact_identity(ref: ArtifactRef) -> tuple[str, str, int]:
     return ref.family, ref.artifact_id, ref.revision
 
 
-_MEMORY_COMMIT_STAGE = "memory.commit"
-_MEMORY_COMMIT_MEMORY_CHANGED = "powercontext.memory.commit.memory_changed"
-_MEMORY_COMMIT_ENTRY_VERSION_COUNT = "powercontext.memory.commit.entry_version_count"
-
-
 BUILTIN_ARTIFACT_TYPES = (Handoff, AtomicMemory, Experience, Skill, Profile, Prompt, TopicMemory)
 BUILTIN_CANDIDATE_PROPOSAL_TYPES = {
     Experience.family: ExperienceContent,

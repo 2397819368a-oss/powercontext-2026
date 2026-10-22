@@ -20,14 +20,7 @@ SQLite、SeekDB 或 OceanBase 配置。恢复前应停止 PowerContext 写入进
 SQLite 数据库副本不能直接作为 OceanBase 数据库使用；回放后端的 SQL dump 也不会执行这些应用层的范围选择和投影重建。
 schema migration 负责升级现有部署的表结构，并不替代这种 scope 迁移操作。
 
-逻辑 record schema 因此是显式的可移植协议，而非每个存储列的另一份副本。它保留权威领域字段，映射到各后端，并排除部署
-专有数据。领域模型变化时，仍需检查映射及其往返行为；checksum 无法发现生产端遗漏导出的字段。读取端拒绝未知的 record
-schema version，不会为新增的权威状态静默补默认值。
-
-导入策略独立于 checksum 算法：不存在的 identity 会插入，canonical 内容相同则跳过，已有 identity 的内容不同则报告冲突，
-不覆盖原数据。逐条 SHA-256 digest 是当前用于比较和流校验的指纹表示；直接比较 canonical record 字节也能实现同一策略。
-总 digest 覆盖 record 流，ZIP 校验可发现压缩数据损坏。这些检查不提供生产者身份认证，不证明导出内容相对源数据库完整，
-也不替代 Source/Artifact 解码与依赖校验。
+Checksum 用于发现数据损坏，不提供生产者身份认证，也不证明导出内容相对源数据库完整。恢复前仍会执行领域解码和依赖校验。
 
 ## 前提条件
 
@@ -90,6 +83,9 @@ content digest 仍会在领域写入前被拒绝。兼容性检查也会比对�
 关系即使自身合法，也会作为冲突拒绝，防止恢复后的原始来源被改变。关系图使用本地临时存储建立索引，目标关系按批读取，
 不扫描无关的发布历史。存在冲突时不会覆盖目标历史；已经损坏的历史需要使用有效备份恢复到干净目标。
 
+标签及完整标签集合使用正常领域校验，每个标签目标最多包含 32 个标签。新标签 identity 会追加到目标，不删除已有标签，
+合并后的集合也必须满足同一上限。归档内的标签集合超限会作为无效输入拒绝；与目标合并后超限则作为冲突在写入前拒绝。
+
 原生 Source 需要目标环境安装对应的 Python adapter。验证会在写入前使用正常读取路径的已注册 Source 解码器，检查 payload
 结构与索引 identity 是否一致，也覆盖受支持的 legacy payload。远程 worker 已物化的 `SourceObservation` 自带捕获内容和投影，
 其存储 envelope 也使用同一解码器验证，但不需要加载 worker adapter。归档只携带所选 scope 实际引用的 Source Definition
@@ -123,6 +119,7 @@ powercontext archive restore ./backups/payments.pcb --yes
 | 作为 Source 保存的 Work contract、task outcome、Handoff boundary 和 receipt | Credential、bearer token、provider secret 和 host-local Skill 安装状态 |
 
 归档包含带版本的 manifest（`format_version`、producer version、scope、数量、排除项和总 checksum）以及 NDJSON record。
+逐条 digest 用于比较 canonical 内容是否冲突，总 digest 用于校验 record 流。
 它是权威的 round-trip 格式。CSV 可以单独用于有边界的分析，但无法保留不可变 revision、lineage 或 evidence reference，
 不得用于恢复。
 
@@ -178,6 +175,10 @@ powercontext archive restore ./payments.pcb --env-file ./oceanbase.env --yes
 `POWERCONTEXT_SERVER_DATABASE_URL`。写入前，dry-run 应报告不存在不支持的 family，且冲突数为零。
 
 ## 格式兼容窗口
+
+Bundle ID 必须使用带连字符、小写的标准 UUID 表示。完整归档文件连同 ZIP 前缀或尾随字节不得超过 512 MiB；manifest
+上限为 256 KiB，解压后的 record 流上限为 2 GiB，最多包含 2,000,000 条 record，每行 NDJSON 不超过 8 MiB。
+超限文件会在恢复复制前被拒绝；复制 snapshot 时也会执行相同上限，防止读取期间源文件变化绕过限制。
 
 格式版本 `1` reader 还必须支持归档中出现的全部 record type。即使归档使用格式版本 `1`，旧 reader 也可能拒绝新增的
 record type。producer version 仅用于诊断，不能替代 archive schema version 或记录类型兼容性检查。

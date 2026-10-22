@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
 import tracemalloc
 import zipfile
@@ -52,6 +53,7 @@ from powercontext.builtin.persistence.tables import (
     TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE,
 )
 from powercontext.builtin.portability import BundleConflictError, BundleFormatError, PortableBundleService
+from powercontext.builtin.portability import bundle as bundle_module
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY, ContentSource
 from powercontext.sources import SourceMaterialization
 
@@ -120,6 +122,85 @@ def test_export_preserves_its_callers_sqlite_transaction(tmp_path: Path) -> None
                 assert await connection.scalar(select(SCOPES_TABLE.c.scope_id)) == "project:one"
             async with source.database.transaction() as connection:
                 assert await connection.scalar(select(SCOPES_TABLE.c.scope_id)) == "project:one"
+
+    asyncio.run(scenario())
+
+
+def test_export_rejects_hard_link_to_source_database(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "source.db"
+        alias = tmp_path / "different-name.db"
+        config = SQLiteConfig(url=f"sqlite+aiosqlite:///{database}")
+        async with SQLiteProfile.open(config, tables=BUILTIN_TABLES) as source:
+            async with source.database.transaction() as connection:
+                await _insert_scope(connection)
+            try:
+                os.link(database, alias)
+            except OSError as error:
+                pytest.skip(f"hard links unavailable: {error}")
+            with pytest.raises(BundleFormatError, match="source database"):
+                await PortableBundleService(source.database).export(["project:one"], alias, authorize=_authorize_export)
+            assert alias.samefile(database)
+        assert database.read_bytes().startswith(b"SQLite format 3\0")
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("notation", ["urn", "braces", "compact", "uppercase"])
+def test_bundle_rejects_noncanonical_receipt_identity(tmp_path: Path, notation: str) -> None:
+    async def scenario() -> None:
+        archive = tmp_path / "identity.pcb"
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as source:
+            async with source.database.transaction() as connection:
+                await _insert_scope(connection)
+            await PortableBundleService(source.database).export(["project:one"], archive, authorize=_authorize_export)
+        original = archive.read_bytes()
+        with zipfile.ZipFile(archive) as bundle:
+            manifest = json.loads(bundle.read("manifest.json"))
+            records = bundle.read("records.ndjson")
+        identity = manifest["bundle_id"]
+        manifest["bundle_id"] = {
+            "urn": "urn:uuid:" + identity,
+            "braces": "{" + identity + "}",
+            "compact": identity.replace("-", ""),
+            "uppercase": identity.upper(),
+        }[notation]
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("manifest.json", json.dumps(manifest))
+            bundle.writestr("records.ndjson", records)
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as target:
+            service = PortableBundleService(target.database)
+            for operation in (service.inspect, service.validate, service.restore):
+                with pytest.raises(BundleFormatError, match="bundle identity"):
+                    await operation(archive)
+                async with target.database.transaction() as connection:
+                    assert await connection.scalar(select(SCOPES_TABLE.c.scope_id)) is None
+            archive.write_bytes(original)
+            assert (await service.validate(archive)).compatible
+            assert (await service.restore(archive)).inserted == 1
+
+    asyncio.run(scenario())
+
+
+def test_bundle_size_limit_includes_zip_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> None:
+        archive = tmp_path / "padded.pcb"
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as source:
+            async with source.database.transaction() as connection:
+                await _insert_scope(connection)
+            await PortableBundleService(source.database).export(["project:one"], archive, authorize=_authorize_export)
+        original = archive.read_bytes()
+        monkeypatch.setattr(bundle_module, "_MAX_ARCHIVE_BYTES", 32 * 1024)
+        archive.write_bytes(b"\0" * (32 * 1024 + 1) + original)
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as target:
+            service = PortableBundleService(target.database)
+            for operation in (service.inspect, service.validate, service.restore):
+                with pytest.raises(BundleFormatError, match="resource limit"):
+                    await operation(archive)
+                async with target.database.transaction() as connection:
+                    assert await connection.scalar(select(SCOPES_TABLE.c.scope_id)) is None
+            archive.write_bytes(original)
+            assert (await service.restore(archive)).inserted == 1
 
     asyncio.run(scenario())
 

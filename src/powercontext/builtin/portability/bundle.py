@@ -594,7 +594,7 @@ class PortableBundleService:
                 supported_source_types=configured,
                 total=inspection.record_count,
                 progress=progress,
-                publication_index=index,
+                dependency_index=index,
             )
         return BundleValidation(
             bundle_id=inspection.bundle_id,
@@ -633,7 +633,15 @@ class PortableBundleService:
         with tempfile.TemporaryDirectory(prefix="powercontext-restore-") as directory:
             snapshot = Path(directory) / "bundle.pcb"
             try:
-                shutil.copyfile(source, snapshot)
+                if (await asyncio.to_thread(source.stat)).st_size > _MAX_ARCHIVE_BYTES:
+                    raise BundleFormatError("bundle exceeds resource limit")
+                with source.open("rb") as original, snapshot.open("wb") as target:
+                    copied = 0
+                    while chunk := original.read(min(1024 * 1024, _MAX_ARCHIVE_BYTES - copied + 1)):
+                        copied += len(chunk)
+                        if copied > _MAX_ARCHIVE_BYTES:
+                            raise BundleFormatError("bundle exceeds resource limit")
+                        target.write(chunk)
             except OSError as error:
                 raise BundleFormatError("cannot read portable bundle") from error
             return await self._restore_snapshot(
@@ -743,7 +751,7 @@ class PortableBundleService:
         supported_source_types: frozenset[str] | None,
         total: int,
         progress: ProgressObserver | None,
-        publication_index: sqlite3.Connection,
+        dependency_index: sqlite3.Connection,
     ) -> tuple[int, int]:
         already_present = 0
         conflicts = 0
@@ -795,7 +803,13 @@ class PortableBundleService:
             if (
                 conflicts == 0
                 and ARTIFACT_PUBLICATIONS_TABLE.name in existing_tables
-                and not await _validate_target_publications(connection, publication_index)
+                and not await _validate_target_publications(connection, dependency_index)
+            ):
+                conflicts += 1
+            if (
+                conflicts == 0
+                and ARTIFACT_TAGS_TABLE.name in existing_tables
+                and not await _validate_target_tag_sets(connection, dependency_index)
             ):
                 conflicts += 1
         return already_present, conflicts
@@ -1032,8 +1046,11 @@ async def _validate_export_destination(connection: AsyncConnection, output: Path
             continue
         database = await asyncio.to_thread(Path(row[2]).resolve)
         reserved_names = {database.name.casefold() + suffix for suffix in ("", "-wal", "-shm", "-journal")}
-        if destination.name.casefold() in reserved_names and await asyncio.to_thread(
-            destination.parent.samefile, database.parent
+        if (
+            await asyncio.to_thread(destination.exists) and await asyncio.to_thread(destination.samefile, database)
+        ) or (
+            destination.name.casefold() in reserved_names
+            and await asyncio.to_thread(destination.parent.samefile, database.parent)
         ):
             raise BundleFormatError("export destination overlaps the source database or its journal")
 
@@ -1076,6 +1093,8 @@ def _parse_bundle(
     phase: Literal["inspect", "validate"] = "inspect",
 ) -> BundleInspection:
     try:
+        if source.stat().st_size > _MAX_ARCHIVE_BYTES:
+            raise BundleFormatError("bundle exceeds resource limit")
         with zipfile.ZipFile(source) as archive:
             _validate_container(archive)
             with archive.open(_MANIFEST_NAME) as stream:
@@ -1254,9 +1273,11 @@ def _validate_manifest(manifest: object) -> None:  # noqa: C901 - manifest field
     ):
         raise BundleFormatError("manifest has invalid identity or record count")
     try:
-        UUID(manifest["bundle_id"])
+        bundle_id = UUID(manifest["bundle_id"])
     except ValueError as error:
         raise BundleFormatError("manifest has invalid bundle identity") from error
+    if str(bundle_id) != manifest["bundle_id"]:
+        raise BundleFormatError("manifest has invalid bundle identity")
     producer = manifest["producer"]
     if not isinstance(producer, dict):
         raise BundleFormatError("manifest has invalid producer")
@@ -1736,6 +1757,7 @@ def _validate_dependencies(
                     required_sources.add(str(record.identity["source_type"]))
             required_families.update(_required_artifact_families((record,)))
         _validate_publication_chains(index)
+        _validate_tag_sets(index)
         yield required_sources, required_families, index
 
 
@@ -1801,6 +1823,64 @@ async def _validate_target_publications(connection: AsyncConnection, index: sqli
             target = _identity_key({field: row[field] for field in fields})
             if index.execute("SELECT 1 FROM publication_edges WHERE target = ?", (target,)).fetchone() is None:
                 return False
+    return True
+
+
+def _index_tag_set(index: sqlite3.Connection, record: _Record, /) -> None:
+    if record.record_type != "artifact_tag":
+        return
+    target = _identity_key({field: value for field, value in record.identity.items() if field != "tag_key"})
+    index.execute(
+        "INSERT OR IGNORE INTO tag_labels (target, tag_key, label) VALUES (?, ?, ?)",
+        (target, record.identity["tag_key"], record.payload["tag"]),
+    )
+    index.execute(
+        "INSERT OR IGNORE INTO identities (record_type, identity) VALUES ('artifact_tag_target', ?)", (target,)
+    )
+
+
+def _validate_tag_sets(index: sqlite3.Connection, /) -> None:
+    current: str | None = None
+    labels: list[str] = []
+    for target, label in index.execute("SELECT target, label FROM tag_labels ORDER BY target, tag_key"):
+        if current != target:
+            current = target
+            labels.clear()
+        labels.append(label)
+        try:
+            normalize_tags(tuple(labels))
+        except InvalidBaseAccessRequestError as error:
+            raise BundleFormatError("artifact tag set has invalid labels") from error
+
+
+async def _validate_target_tag_sets(connection: AsyncConnection, index: sqlite3.Connection, /) -> bool:
+    table = ARTIFACT_TAGS_TABLE
+    fields = tuple(field for field in _SPECS["artifact_tag"].identity if field != "tag_key")
+    pending = index.execute(
+        "SELECT identity FROM identities WHERE record_type = 'artifact_tag_target' ORDER BY identity"
+    )
+    while batch := pending.fetchmany(100):
+        identities = [json.loads(row[0]) for row in batch]
+        rows = (
+            await connection.execute(
+                select(table).where(
+                    tuple_(*(table.c[field] for field in fields)).in_([
+                        tuple(identity[field] for field in fields) for identity in identities
+                    ])
+                )
+            )
+        ).mappings()
+        for row in rows:
+            record = _record_from_row("artifact_tag", cast(Mapping[str, Any], row))
+            try:
+                _validate_record_values(record)
+            except BundleFormatError:
+                return False
+            _index_tag_set(index, record)
+    try:
+        _validate_tag_sets(index)
+    except BundleFormatError:
+        return False
     return True
 
 
@@ -1939,7 +2019,10 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
             {"scope_id": scope, "family": identity["family"], "artifact_id": identity["artifact_id"]},
         ):
             raise BundleFormatError("artifact tag references missing artifact head")
-        if identity["target_type"] == "memory_entry" and not _contains_memory_entry_target(record, contains):
+        if identity["target_type"] == "memory_entry" and not contains(
+            "memory_entry_target",
+            {"scope_id": scope, "memory_artifact_id": identity["artifact_id"], "entry_id": identity["target_id"]},
+        ):
             raise BundleFormatError("artifact tag references missing memory entry")
     elif record.record_type == "artifact_lineage_source":
         if not contains(
@@ -2101,21 +2184,6 @@ def _validate_record_dependencies(  # noqa: C901 - logical record kinds have dis
     _validate_embedded_references(record, contains)
 
 
-def _contains_memory_entry_target(
-    record: _Record,
-    contains: Callable[[str, Mapping[str, object]], bool],
-    /,
-) -> bool:
-    return contains(
-        "memory_entry_target",
-        {
-            "scope_id": record.identity["scope_id"],
-            "memory_artifact_id": record.identity["artifact_id"],
-            "entry_id": record.identity["target_id"],
-        },
-    )
-
-
 def _dependency_metadata(source: Path, /) -> tuple[dict[str, int], dict[tuple[str, str], tuple[str, int, int, int]]]:
     heads: dict[str, int] = {}
     packages: dict[tuple[str, str], tuple[str, int, int, int]] = {}
@@ -2239,6 +2307,10 @@ def _identity_index(source: Path, /) -> Iterator[sqlite3.Connection]:
         )
         connection.execute("CREATE INDEX publication_edges_state ON publication_edges(state, target)")
         connection.execute("CREATE TABLE publication_nodes (identity TEXT PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE tag_labels (target TEXT NOT NULL, tag_key TEXT NOT NULL, label TEXT NOT NULL, "
+            "PRIMARY KEY (target, tag_key))"
+        )
         for record in _iter_records(source):
             try:
                 connection.execute(
@@ -2259,6 +2331,7 @@ def _identity_index(source: Path, /) -> Iterator[sqlite3.Connection]:
             except sqlite3.IntegrityError as error:
                 raise BundleFormatError("bundle contains duplicate immutable or unique identity") from error
             _index_publication_dependencies(connection, record)
+            _index_tag_set(connection, record)
             if record.record_type == "candidate_version":
                 connection.execute(
                     "INSERT INTO identities (record_type, identity) VALUES (?, ?)",
