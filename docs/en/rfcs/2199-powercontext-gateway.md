@@ -6,7 +6,7 @@ description: Reuse Core context organization and privacy checks through an optio
 - Proposal Name: `powercontext_gateway`
 - Start Date: 2026-10-22
 - RFC PR: [oceanbase/powercontext#2199](https://github.com/oceanbase/powercontext/pull/2199)
-- Related RFCs: [RFC 2086](2086-core-inference-gates-and-optional-gateway.md),
+- Related RFCs: [RFC 2086](https://github.com/oceanbase/powercontext/pull/2086),
   [RFC 0016](0016_pydantic_ai_inference_integration.md), [RFC 0046](0046_observability_foundations.md),
   [RFC 1345](1345_scope_organization_and_agent_integration.md), [RFC 1396](1396_handoff_access_control.md),
   [RFC 1429](1429_project_bootstrap_context.md), [RFC 1770](1770-decision-policy-governance.md),
@@ -17,7 +17,7 @@ description: Reuse Core context organization and privacy checks through an optio
 PowerContext Gateway is an optional model-call entry point. It connects existing PowerContext organization to Agent
 model traffic while clients retain their history and tool execution. It owns Scope binding, preparation at supported
 boundaries, exact replay, actual-target selection, native cache adaptation, and controlled sends.
-Its product goals are the same as [RFC 2086](2086-core-inference-gates-and-optional-gateway.md):
+Its product goals are the same as [RFC 2086](https://github.com/oceanbase/powercontext/pull/2086):
 **privacy interception and token efficiency at the context layer**.
 
 The two RFCs describe one execution path. #2086 defines Core selection, representation strategies, privacy and budget
@@ -801,7 +801,7 @@ content delivery substantially.
 
 Existing scoped context/assembly/Builder, Source/Artifact, Bootstrap/Work/Handoff, Server authentication/authorization,
 DecisionPolicy, inference adapters, and usage wrappers provide the foundation.
-[RFC 2086](2086-core-inference-gates-and-optional-gateway.md) supplies the context-protection and efficiency contracts
+[RFC 2086](https://github.com/oceanbase/powercontext/pull/2086) supplies the context-protection and efficiency contracts
 consumed here, not a separate algorithm design to reimplement in Gateway.
 Concrete deployment adapters and acceptance fixtures describe model protocols and native provider caching.
 

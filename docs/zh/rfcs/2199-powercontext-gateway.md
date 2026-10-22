@@ -6,7 +6,7 @@ description: 复用 Core 的上下文组织和隐私检查，以可选网关完�
 - Proposal Name: `powercontext_gateway`
 - Start Date: 2026-10-22
 - RFC PR: [oceanbase/powercontext#2199](https://github.com/oceanbase/powercontext/pull/2199)
-- Related RFCs: [RFC 2086](2086-core-inference-gates-and-optional-gateway.md)、
+- Related RFCs: [RFC 2086](https://github.com/oceanbase/powercontext/pull/2086)、
   [RFC 0016](0016_pydantic_ai_inference_integration.md)、[RFC 0046](0046_observability_foundations.md)、
   [RFC 1345](1345_scope_organization_and_agent_integration.md)、[RFC 1396](1396_handoff_access_control.md)、
   [RFC 1429](1429_project_bootstrap_context.md)、[RFC 1770](1770-decision-policy-governance.md)、
@@ -16,7 +16,7 @@ description: 复用 Core 的上下文组织和隐私检查，以可选网关完�
 
 PowerContext Gateway 是可选的模型调用入口。它把现有 PowerContext 的上下文组织能力接到 Agent 的模型请求路径，
 在客户端保有历史和工具执行权的前提下，完成 Scope 绑定、按需准备、准确重放、实际目标选择、原生缓存适配和受控发送。
-核心产品目标与 [RFC 2086](2086-core-inference-gates-and-optional-gateway.md) 相同：
+核心产品目标与 [RFC 2086](https://github.com/oceanbase/powercontext/pull/2086) 相同：
 **上下文层的隐私安全拦截 + Token 效率优化**。
 
 两份 RFC 组成同一条链路。#2086 定义 Core 的内容选择、表示策略、隐私与预算检查、复用约束及检查接口；
@@ -732,7 +732,7 @@ Mock 上游适合证明本地字节/错误处理，不能证明真实缓存命�
 
 现有 scoped context/assembly/Builder、Source/Artifact、Bootstrap/Work/Handoff、
 Server 身份授权、DecisionPolicy、inference adapters 与 usage wrappers 提供可复用基础。
-[RFC 2086](2086-core-inference-gates-and-optional-gateway.md) 是本组件消费的上下文保护与效率契约，
+[RFC 2086](https://github.com/oceanbase/powercontext/pull/2086) 是本组件消费的上下文保护与效率契约，
 不是另一份由网关重新实现的算法设计。模型协议及 provider 原生缓存由具体部署的适配器和验收 fixture 描述。
 
 # Unresolved questions
