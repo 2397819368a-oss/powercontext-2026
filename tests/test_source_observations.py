@@ -63,9 +63,12 @@ class EmptySourceBackend:
         raise AssertionError(source)
 
 
-@pytest.mark.parametrize("case", ["nested", "title_collision", "reference_collision"])
+@pytest.mark.parametrize(
+    "case",
+    ["nested", "title_collision", "reference_collision", "custom_serializer", "aliased_declaration", "aliased_default"],
+)
 def test_source_contract_preserves_pre_declaration_schema_and_payload(case: str) -> None:
-    # Frozen output from these models against base b5bcfe24bcce9c574ee85175d623bb9963970a41.
+    # Frozen worker output produced without Source declaration metadata.
     baseline = json.loads(
         (Path(__file__).parent / "fixtures/source_declaration_upgrade.json").read_text(encoding="utf-8")
     )
@@ -111,10 +114,8 @@ def test_neutral_declaration_keeps_the_pre_change_definition_identity() -> None:
 
     declared_properties = cast("dict[str, object]", manifest.source_schema["properties"])
     assert "memory_evidence" not in declared_properties
-    # The upstream atomic-memory merge expanded ContentSource's captured schema;
-    # the neutral declaration is still excluded, so this is the new stable
-    # fingerprint for the merged contract.
-    assert manifest.fingerprint == ("sha256:02539903e42db50f9626df111df186bcafc195c9a33204c9df1d7ebc0ebebd12")
+    # Frozen from the same Definition on master caf2a35a, without declaration metadata.
+    assert manifest.fingerprint == ("sha256:4baf43bbfbfe384d33ecb2c8bfb79fca303a065bf9a51545af1de3fb34a87c99")
 
 
 def test_version_parts_are_rejected_before_they_cannot_be_transported() -> None:

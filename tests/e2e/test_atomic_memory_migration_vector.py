@@ -60,12 +60,7 @@ def test_clean_migration_and_rebuild_publish_searchable_vectors(migration_backen
             historical = await memory.get(_atomic("alpha", 1).artifact_id, revision=1)
         async with migration_profile(config, load_vector_extension=True) as profile:
             async with profile.database.transaction() as connection:
-                for table in (
-                    "pc_memory_artifact_archive",
-                    "pc_memory_entry_evidence",
-                    "pc_memory_entry_heads",
-                    "pc_memory_entry_versions",
-                ):
+                for table in ("pc_memory_artifact_archive", "pc_memory_entry_heads", "pc_memory_entry_versions"):
                     await connection.execute(text(f"DROP TABLE {table}"))
                 await connection.execute(text("DELETE FROM pc_atomic_memory_current"))
             rebuilt = await rebuild_atomic_memory_projection(

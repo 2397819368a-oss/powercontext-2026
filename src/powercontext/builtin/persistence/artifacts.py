@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
@@ -39,6 +40,11 @@ from powercontext.builtin.persistence.errors import (
     InvalidRepositoryArgumentError,
     RepositoryNotFoundError,
     StoredPayloadConflictError,
+)
+from powercontext.builtin.persistence.revision_meta import (
+    attach_revision_meta,
+    meta_from_row,
+    rollback_columns,
 )
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
@@ -105,6 +111,8 @@ class ArtifactRepository:
         artifact_id: str,
         draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
         /,
+        *,
+        allow_working_notes: bool = False,
     ) -> Artifact[Any]:
         """Create revision one, rejecting an already existing lifecycle."""
 
@@ -112,7 +120,13 @@ class ArtifactRepository:
         artifact_type = self._artifact_type(draft.family)
         self._require_content(draft.family, draft.content)
         ref = ArtifactRef(family=draft.family, artifact_id=artifact_id, revision=1)
-        await self._validate_lineage_sources(connection, scope_id, ref, draft.sources)
+        await self._validate_lineage_sources(
+            connection,
+            scope_id,
+            ref,
+            draft.sources,
+            allow_working_notes=allow_working_notes,
+        )
         conflict = await self._head_conflict(connection, scope_id, ref, draft)
         if conflict is not None:
             raise conflict
@@ -249,10 +263,18 @@ class ArtifactRepository:
         artifact: Artifact[Any],
         draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
         /,
+        *,
+        allow_working_notes: bool = False,
     ) -> Artifact[Any]:
         """Commit a next revision only when ``artifact`` remains the head."""
 
-        return await self._revise(connection, scope_id, artifact, draft)
+        return await self._revise(
+            connection,
+            scope_id,
+            artifact,
+            draft,
+            allow_working_notes=allow_working_notes,
+        )
 
     async def revise_for_restoration(
         self,
@@ -281,6 +303,7 @@ class ArtifactRepository:
         draft: ArtifactDraft[Any] | RepositoryArtifactDraft,
         *,
         restoration: ArtifactGovernance | None = None,
+        allow_working_notes: bool = False,
     ) -> Artifact[Any]:
         _require_scope(scope_id)
         artifact_type = self._artifact_type(artifact.family)
@@ -292,7 +315,13 @@ class ArtifactRepository:
             artifact_id=artifact.artifact_id,
             revision=artifact.revision + 1,
         )
-        await self._validate_lineage_sources(connection, scope_id, target, draft.sources)
+        await self._validate_lineage_sources(
+            connection,
+            scope_id,
+            target,
+            draft.sources,
+            allow_working_notes=allow_working_notes,
+        )
 
         locked = await connection.execute(
             update(ARTIFACT_HEADS_TABLE)
@@ -574,6 +603,8 @@ class ArtifactRepository:
         if not isinstance(content, BaseModel):
             raise TypeError("artifact content must be a BaseModel")  # noqa: TRY003
         payload = dump_model(content, kind="artifact", name=artifact_type.family)
+        created_at = datetime.now(UTC)
+        stamped = rollback_columns(ref.family, ref.artifact_id, ref.revision)
         await connection.execute(
             insert(ARTIFACTS_TABLE).values(
                 scope_id=scope_id,
@@ -581,6 +612,8 @@ class ArtifactRepository:
                 artifact_id=ref.artifact_id,
                 revision=ref.revision,
                 content=payload,
+                created_at=created_at,
+                **stamped,
             )
         )
         if lineage.sources:
@@ -622,6 +655,7 @@ class ArtifactRepository:
             content=content,
             lineage=lineage,
         )
+        attach_revision_meta(artifact, meta_from_row({"created_at": created_at, **stamped}))
         if artifact.as_ref() != ref:
             raise IdentityMismatchError("artifact", ref, artifact.as_ref())
         return artifact
@@ -664,6 +698,7 @@ class ArtifactRepository:
             content=content,
             lineage=lineage,
         )
+        attach_revision_meta(artifact, meta_from_row(row))
         if artifact.as_ref() != ref:
             raise IdentityMismatchError("artifact", ref, artifact.as_ref())
         return artifact
@@ -917,6 +952,8 @@ class ArtifactRepository:
         scope_id: str,
         target: ArtifactRef,
         sources: tuple[SourceRef, ...],
+        *,
+        allow_working_notes: bool = False,
     ) -> None:
         if self._sources is None:
             return
@@ -931,6 +968,7 @@ class ArtifactRepository:
                     artifact_id=target.artifact_id,
                     revision=target.revision,
                 ),
+                allow_working_notes=allow_working_notes,
             )
 
 

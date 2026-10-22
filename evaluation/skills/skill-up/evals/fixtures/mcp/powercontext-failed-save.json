@@ -12,6 +12,9 @@
     "capture_content_source": {
       "error": "unexpected"
     },
+    "capture_working_note": {
+      "error": "unexpected"
+    },
     "change_atomic_memory_lifecycle": {
       "error": "unexpected"
     },

@@ -229,7 +229,7 @@ class _SourceInputSchema(GenerateJsonSchema):
     @override
     def encode_default(self, dft: Any) -> Any:
         if isinstance(dft, (BaseModel, list, tuple, set, frozenset, dict)) or is_dataclass(dft):
-            dft = _normalize_default(dft)
+            dft = _normalize_default(dft, by_alias=self.by_alias)
         return super().encode_default(dft)
 
 
@@ -246,16 +246,18 @@ def _source_input_fields(schema: Any) -> Any:
     return schema
 
 
-def _normalize_default(value: Any) -> Any:
+def _normalize_default(value: Any, *, by_alias: bool) -> Any:
     """Serialize defaults while removing Source-owned declaration fields."""
     if isinstance(value, BaseModel):
-        return value.model_dump(mode="json", context={"source_transport_payload": True})
+        return value.model_dump(mode="json", by_alias=by_alias, context={"source_transport_payload": True})
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_normalize_default(item) for item in value]
+        return [_normalize_default(item, by_alias=by_alias) for item in value]
     if isinstance(value, dict):
-        return {key: _normalize_default(item) for key, item in value.items()}
+        return {key: _normalize_default(item, by_alias=by_alias) for key, item in value.items()}
     if is_dataclass(value) and not isinstance(value, type):
-        return TypeAdapter(type(value)).dump_python(value, mode="json", context={"source_transport_payload": True})
+        return TypeAdapter(type(value)).dump_python(
+            value, mode="json", by_alias=by_alias, context={"source_transport_payload": True}
+        )
     return value
 
 

@@ -38,6 +38,7 @@ from powercontext.limits import (
     MAX_ARTIFACT_FAMILY_LENGTH,
     MAX_ARTIFACT_HANDLE_KEY_LENGTH,
     MAX_ARTIFACT_ID_LENGTH,
+    MAX_ARTIFACT_REVISION_ACTOR_LENGTH,
     MAX_BINDING_NAME_LENGTH,
     MAX_EXTERNAL_SKILL_DESCRIPTION_LENGTH,
     MAX_EXTERNAL_SKILL_HOST_ID_LENGTH,
@@ -196,6 +197,10 @@ ARTIFACTS_TABLE = Table(
     Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
     Column("revision", Integer, primary_key=True),
     Column("content", _canonical_payload_type(), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=True),
+    Column("created_by", String(MAX_ARTIFACT_REVISION_ACTOR_LENGTH), nullable=True),
+    Column("restored_from_revision", Integer, nullable=True),
+    Column("rollback_reason", String(1024), nullable=True),
 )
 
 ARTIFACT_HANDLES_TABLE = Table(
@@ -1056,45 +1061,6 @@ MEMORY_ENTRY_VERSIONS_TABLE = Table(
     ),
 )
 
-MEMORY_ENTRY_EVIDENCE_TABLE = Table(
-    "pc_memory_entry_evidence",
-    SHARED_METADATA,
-    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
-    Column("memory_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
-    Column("entry_id", identity_string(MAX_MEMORY_ENTRY_ID_LENGTH), primary_key=True),
-    Column("entry_version_id", identity_string(MAX_MEMORY_ENTRY_ID_LENGTH), primary_key=True),
-    Column("ordinal", Integer, primary_key=True),
-    Column("source_type", identity_string(MAX_SOURCE_TYPE_LENGTH), nullable=False),
-    Column("source_id", identity_string(MAX_SOURCE_ID_LENGTH), nullable=False),
-    Column("authority", identity_string(32), nullable=False),
-    Column("verification", identity_string(32), nullable=False),
-    Column("declaration_version", identity_string(MAX_SOURCE_TYPE_LENGTH), nullable=False),
-    ForeignKeyConstraint(
-        ("scope_id", "memory_artifact_id", "entry_id", "entry_version_id"),
-        (
-            "pc_memory_entry_versions.scope_id",
-            "pc_memory_entry_versions.memory_artifact_id",
-            "pc_memory_entry_versions.entry_id",
-            "pc_memory_entry_versions.entry_version_id",
-        ),
-        ondelete="CASCADE",
-    ),
-    ForeignKeyConstraint(
-        ("scope_id", "source_type", "source_id"),
-        ("pc_sources.scope_id", "pc_sources.source_type", "pc_sources.source_id"),
-        ondelete="RESTRICT",
-    ),
-    CheckConstraint("ordinal >= 0", name="ck_pc_memory_entry_evidence_ordinal_nonnegative"),
-    CheckConstraint(
-        "authority IN ('untrusted', 'user_asserted', 'repository_attested', 'system_attested')",
-        name="ck_pc_memory_entry_evidence_authority",
-    ),
-    CheckConstraint(
-        "verification IN ('unknown', 'verified', 'not_verified')",
-        name="ck_pc_memory_entry_evidence_verification",
-    ),
-)
-
 MEMORY_ENTRY_HEADS_TABLE = Table(
     "pc_memory_entry_heads",
     SHARED_METADATA,
@@ -1119,11 +1085,8 @@ MEMORY_ENTRY_HEADS_TABLE = Table(
     CheckConstraint("head_revision > 0", name="ck_pc_memory_entry_heads_revision_positive"),
 )
 
-MEMORY_TABLES = (
-    MEMORY_ENTRY_VERSIONS_TABLE,
-    MEMORY_ENTRY_EVIDENCE_TABLE,
-    MEMORY_ENTRY_HEADS_TABLE,
-)
+
+MEMORY_TABLES = (MEMORY_ENTRY_VERSIONS_TABLE, MEMORY_ENTRY_HEADS_TABLE)
 
 TOPIC_MEMORY_TABLES = (
     TOPIC_MEMORY_RETRIEVAL_SHAPE_TABLE,
@@ -1361,6 +1324,13 @@ RECURRENCE_OBSERVATION_TABLE = Table(
 
 RECURRENCE_TABLES = (RECURRENCE_MATCH_TABLE, RECURRENCE_OBSERVATION_TABLE)
 
+LEXICAL_PROJECTION_VERSIONS_TABLE = Table(
+    "pc_lexical_projection_versions",
+    SHARED_METADATA,
+    Column("projection", String(128), primary_key=True),
+    Column("analyzer_version", String(64), nullable=False),
+)
+
 BUILTIN_TABLES = (
     SCOPE_TABLES
     + SHARED_TABLES
@@ -1374,5 +1344,6 @@ BUILTIN_TABLES = (
         DREAM_RUNS_TABLE,
         RECEIPT_MIGRATION_REVIEW_TABLE,
         CONTEXT_BOOTSTRAP_RECEIPTS_TABLE,
+        LEXICAL_PROJECTION_VERSIONS_TABLE,
     )
 )

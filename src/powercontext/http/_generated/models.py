@@ -260,6 +260,22 @@ class ReplaceProfileArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: ProfileWriteContent
+    restored_from_revision: Annotated[
+        StrictInt | None,
+        Field(
+            description="Historical Profile revision restored by this replacement. Must match content.restored_from_revision when both are set.",
+            ge=1,
+        ),
+    ] = None
+    reason: Annotated[
+        StrictStr | None,
+        Field(
+            description="Required when restored_from_revision or content.restored_from_revision is set.",
+            max_length=1024,
+            min_length=1,
+            pattern=".*\\S.*",
+        ),
+    ] = None
 
 
 class ArtifactReference(BaseModel):
@@ -1001,7 +1017,45 @@ class CaptureContentSourceRequest(BaseModel):
             min_length=1,
         ),
     ]
-    metadata: dict[str, Any] | None = None
+    metadata: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description="Caller metadata. The reserved kind value `working_note` is rejected; use the dedicated Working Note capture operation instead."
+        ),
+    ] = None
+
+
+class WorkingNoteKind(StrEnum):
+    INSPECTION = "inspection"
+    ABANDONED_APPROACH = "abandoned_approach"
+    VALIDATION = "validation"
+    UNRESOLVED = "unresolved"
+    HOST_CONTEXT = "host_context"
+
+
+class CaptureWorkingNoteRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    source_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    content: Annotated[StrictStr, Field(max_length=200000, min_length=1, pattern=".*\\S.*")]
+    session_id: Annotated[
+        StrictStr,
+        Field(
+            description="Host/session correlation only; it is not an authorization boundary.",
+            max_length=256,
+            min_length=1,
+            pattern=".*\\S.*",
+        ),
+    ]
+    note_kind: WorkingNoteKind
+    expires_at: Annotated[
+        AwareDatetime | None,
+        Field(
+            description="Optional logical expiry. It must be in the future when captured. Expiry makes the note unavailable to new Handoff evidence resolution but does not physically delete or rewrite the Source."
+        ),
+    ] = None
 
 
 class SourceProjectionKey(BaseModel):
@@ -2330,6 +2384,8 @@ class ReplaceTopicMemoryArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: TopicMemoryWriteContent
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class Family3(StrEnum):
@@ -3635,6 +3691,10 @@ class ArtifactCollectionItem(BaseModel):
     source_count: Annotated[
         StrictInt | None, Field(description="Family-provided number of direct Source inputs when available.", ge=0)
     ] = None
+    created_at: AwareDatetime | None = None
+    created_by: AccessPrincipal | None = None
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024)] = None
 
 
 class ArtifactCreated(BaseModel):
@@ -3668,6 +3728,17 @@ class ArtifactRevision(BaseModel):
     sources: list[SourceTypeReference]
     artifacts: list[ArtifactReference]
     content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
+    created_at: Annotated[
+        AwareDatetime | None,
+        Field(description="When this revision was committed. Absent for revisions stored before this field existed."),
+    ] = None
+    created_by: Annotated[
+        AccessPrincipal | None, Field(description="Principal that committed a rollback. Ordinary revisions omit it.")
+    ] = None
+    restored_from_revision: Annotated[
+        StrictInt | None, Field(description="Historical revision restored by this rollback.", ge=1)
+    ] = None
+    reason: Annotated[StrictStr | None, Field(description="Reason recorded for a rollback.", max_length=1024)] = None
 
 
 class HandoffReceiptIdentity(BaseModel):
@@ -4491,6 +4562,8 @@ class ReplaceExperienceArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: ExperienceProposal
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class ReplaceSkillArtifactRequest(BaseModel):
@@ -4498,6 +4571,8 @@ class ReplaceSkillArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: SkillProposal
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class SourceRecord(BaseModel):
@@ -4509,7 +4584,7 @@ class SourceRecord(BaseModel):
     ] = None
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     source_type: SourceType
-    source_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    source_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     content: Annotated[Any, Field(description="Persisted canonical JSON content.")]
     position: Annotated[StrictInt, Field(ge=1)]
     content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
@@ -4714,6 +4789,8 @@ class ReplacePromptArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: PromptContent
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class ReplaceMemoryArtifactRequest(BaseModel):
@@ -4993,6 +5070,8 @@ class ReplaceHandoffArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: HandoffContent
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class Candidate(BaseModel):

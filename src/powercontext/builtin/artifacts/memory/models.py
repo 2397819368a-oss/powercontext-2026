@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, model_validator
 from powercontext.artifacts import Artifact, ArtifactRef
 from powercontext.builtin.artifacts.search import AdmissionCounts
 from powercontext.builtin.inference.models import InferenceUsage
-from powercontext.sources import MemoryEvidenceDeclaration, Source, SourceRef
+from powercontext.sources import Source, SourceRef
 
 MemoryEntryState: TypeAlias = Literal["active", "inactive"]
 MemoryChangeOp: TypeAlias = Literal["add", "revise", "deactivate", "reactivate", "compact"]
@@ -32,20 +32,6 @@ MemoryCapacityDimension: TypeAlias = Literal["active_entries", "manifest_entries
 MemorySearchMode: TypeAlias = Literal["fts", "vector", "hybrid", "auto"]
 MemoryUsedSearchMode: TypeAlias = Literal["fts", "vector", "hybrid"]
 MemoryMatchedBy: TypeAlias = Literal["fts", "vector"]
-MemoryLifecycleValidity: TypeAlias = Literal["current", "inactive", "superseded", "unresolved_conflict"]
-MemoryTimeState: TypeAlias = Literal["unknown"]
-
-
-class MemoryEvidenceSnapshot(BaseModel):
-    """The definition-owned evidence declaration attached to an entry version.
-
-    The snapshot is intentionally independent of the entry content hash. It is
-    immutable provenance metadata that can be replayed into lifecycle
-    projections without changing the authoritative Memory body or citation.
-    """
-
-    source: SourceRef
-    declaration: MemoryEvidenceDeclaration
 
 
 class EmbeddingProfile(BaseModel):
@@ -152,7 +138,6 @@ class MemoryEntryVersion(BaseModel):
     entry_content_hash: str
     created_in_revision: int
     sources: tuple[SourceRef, ...] = ()
-    source_evidence: tuple[MemoryEvidenceSnapshot, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
 
 

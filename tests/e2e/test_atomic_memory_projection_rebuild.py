@@ -48,7 +48,6 @@ def test_rebuild_uses_current_authority_independently_of_legacy_retention(tmp_pa
                 if retention in {"entries_only", "removed"}:
                     await connection.execute(text("DROP TABLE pc_memory_artifact_archive"))
                 if retention in {"archive_only", "removed"}:
-                    await connection.execute(text("DROP TABLE pc_memory_entry_evidence"))
                     await connection.execute(text("DROP TABLE pc_memory_entry_heads"))
                     await connection.execute(text("DROP TABLE pc_memory_entry_versions"))
                 if retention == "unreadable":
@@ -127,7 +126,6 @@ def test_rebuild_rejects_damaged_current_authority_without_legacy_history(tmp_pa
         async with SQLiteProfile.open(config, tables=()) as profile:
             async with profile.database.transaction() as connection:
                 await connection.execute(text("DROP TABLE pc_memory_artifact_archive"))
-                await connection.execute(text("DROP TABLE pc_memory_entry_evidence"))
                 await connection.execute(text("DROP TABLE pc_memory_entry_heads"))
                 await connection.execute(text("DROP TABLE pc_memory_entry_versions"))
                 identity = {"scope": SCOPE, "id": _atomic("alpha", 2).artifact_id}

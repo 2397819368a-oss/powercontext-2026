@@ -375,6 +375,17 @@ const OPERATIONS = {
 		successStatuses: [202],
 		emptyStatuses: []
 	},
+	capture_working_note: {
+		method: "POST",
+		path: "/v1/sources/working-notes",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [202],
+		emptyStatuses: []
+	},
 	register_source_definition: {
 		method: "POST",
 		path: "/v1/source-definitions/register",
@@ -1812,6 +1823,7 @@ function containsSecret(text) {
 const WRITE_OPERATIONS = new Set([
 	"remember_memory",
 	"capture_content_source",
+	"capture_working_note",
 	"revise_memory_entry",
 	"retire_memory_entry",
 	"replace_artifact",

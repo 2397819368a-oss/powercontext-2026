@@ -1022,6 +1022,48 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/sources/working-notes:
+    post:
+      tags: [sources]
+      summary: Capture session-local working evidence
+      description: >-
+        Explicitly capture a short-lived Working Note as Source evidence. Use this only when the user or host flow asks
+        to retain intermediate work state such as inspected files, an abandoned approach, a validation result, an
+        unresolved question, or host context. The note is untrusted historical material, not an instruction or a
+        durable Memory entry. It is excluded from automatic Artifact generation and can support a Handoff only through
+        an exact Source citation. Capture does not end the session, expire older notes, or promote the note into Memory.
+        An exact replay of an accepted capture remains idempotent after its logical expiry.
+      operationId: capture_working_note
+      x-powercontext-access: {action: scope.contribute, resource: {type: scope, scope-id-from: scope_id}}
+      x-powercontext-scope-mode: current
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CaptureWorkingNoteRequest"
+      responses:
+        "202":
+          description: The Working Note is durably stored as Source evidence.
+          headers:
+            X-PowerContext-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptureContentSourceResponse"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/InvalidRequest"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/source-definitions/register:
     post:
       tags: [source-ingestion]
@@ -3850,7 +3892,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 256
-            pattern: '^[\x21-\x7E]+$'
+            pattern: '.*\S.*'
       responses:
         "200":
           description: The exact Source.
@@ -4148,6 +4190,10 @@ paths:
         an earlier revision. Artifact ownership does not authorize Prompt replacement after Scope role revocation.
         Topic Memory replacement also requires scope.admin and preserves independently versioned tags.
         Complete title, summary, and detail text replaces the head without semantic generation.
+        Profile replacement uses the same conditional write. To roll back Profile, Prompt, Experience, Skill,
+        Handoff, or Topic Memory, set restored_from_revision and reason. The server checks that the submitted
+        canonical content matches that revision and differs from the current head, then commits a new revision.
+        Atomic Memory replacement rejects both fields; restore Atomic Memory through its restoration flow.
       operationId: replace_artifact
       x-powercontext-scope-mode: current
       x-powercontext-access: {resolver: path_artifact_write_access}
@@ -4165,7 +4211,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [memory, atomic-memory, experience, skill, handoff, prompt, topic-memory]
+            enum: [memory, atomic-memory, experience, skill, handoff, prompt, topic-memory, profile]
         - name: artifact_id
           in: path
           required: true
@@ -5798,6 +5844,18 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/ProfileWriteContent"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Historical Profile revision restored by this replacement. Must match content.restored_from_revision when both are set.
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
+          description: Required when restored_from_revision or content.restored_from_revision is set.
     ActivateHandoffRequest:
       type: object
       additionalProperties: false
@@ -5881,6 +5939,22 @@ components:
           minimum: 0
           nullable: true
           description: Family-provided number of direct Source inputs when available.
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/AccessPrincipal"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          maxLength: 1024
+          nullable: true
     ArtifactCreated:
       type: object
       required: [scope_id, family, artifact_id, revision, sources, artifacts]
@@ -5964,6 +6038,26 @@ components:
         content_digest:
           type: string
           pattern: '^sha256:[0-9a-f]{64}$'
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When this revision was committed. Absent for revisions stored before this field existed.
+        created_by:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/AccessPrincipal"
+          description: Principal that committed a rollback. Ordinary revisions omit it.
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Historical revision restored by this rollback.
+        reason:
+          type: string
+          maxLength: 1024
+          nullable: true
+          description: Reason recorded for a rollback.
     ArtifactReference:
       type: object
       additionalProperties: false
@@ -7755,6 +7849,47 @@ components:
           type: object
           additionalProperties: true
           nullable: true
+          description: >-
+            Caller metadata. The reserved kind value `working_note` is rejected; use the dedicated Working Note
+            capture operation instead.
+    WorkingNoteKind:
+      type: string
+      enum: [inspection, abandoned_approach, validation, unresolved, host_context]
+    CaptureWorkingNoteRequest:
+      type: object
+      additionalProperties: false
+      required: [scope_id, source_id, content, session_id, note_kind]
+      properties:
+        scope_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '.*\S.*'
+        source_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '.*\S.*'
+        content:
+          type: string
+          minLength: 1
+          maxLength: 200000
+          pattern: '.*\S.*'
+        session_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '.*\S.*'
+          description: Host/session correlation only; it is not an authorization boundary.
+        note_kind:
+          $ref: "#/components/schemas/WorkingNoteKind"
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Optional logical expiry. It must be in the future when captured. Expiry makes the note unavailable to new
+            Handoff evidence resolution but does not physically delete or rewrite the Source.
     CaptureContentSourceResponse:
       type: object
       additionalProperties: false
@@ -11021,6 +11156,8 @@ components:
       required: [content]
       properties:
         content: {$ref: '#/components/schemas/TopicMemoryWriteContent'}
+        restored_from_revision: {type: integer, minimum: 1, nullable: true}
+        reason: {type: string, minLength: 1, maxLength: 1024, pattern: '.*\S.*', nullable: true}
     CreatePromptArtifactRequest:
       type: object
       additionalProperties: false
@@ -11286,6 +11423,16 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/PromptContent"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
     ListArtifactRevisionsRequest:
       type: object
       additionalProperties: false
@@ -11551,6 +11698,16 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/ExperienceProposal"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
     ReplaceSkillArtifactRequest:
       type: object
       additionalProperties: false
@@ -11558,6 +11715,16 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/SkillProposal"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
     ReplaceHandoffArtifactRequest:
       type: object
       additionalProperties: false
@@ -11565,6 +11732,16 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/HandoffContent"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
     SourceRecord:
       type: object
       required: [scope_id, source_type, source_id, content, position, content_digest]
@@ -11585,7 +11762,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[\x21-\x7E]+$'
+          pattern: '.*\S.*'
         content:
           description: Persisted canonical JSON content.
         position:

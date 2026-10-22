@@ -82,7 +82,6 @@ from powercontext.builtin.persistence.tables import (
     CANDIDATE_HEADS_TABLE,
     CANDIDATE_VERSIONS_TABLE,
     DREAM_RUNS_TABLE,
-    MEMORY_ENTRY_EVIDENCE_TABLE,
     MEMORY_ENTRY_HEADS_TABLE,
     MEMORY_ENTRY_VERSIONS_TABLE,
     SCOPES_TABLE,
@@ -1249,7 +1248,6 @@ def test_runtime_start_does_not_read_the_archive_or_legacy_entry_tables(migrated
     async def scenario() -> None:
         async with migration_profile(config) as profile, profile.database.transaction() as connection:
             await connection.execute(text(f"DROP TABLE {ARCHIVE_TABLE.name}"))
-            await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_EVIDENCE_TABLE.name}"))
             await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_HEADS_TABLE.name}"))
             await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_VERSIONS_TABLE.name}"))
         async with open_builtin_contexts(BuiltinConfig(database=config)) as contexts:
@@ -1290,7 +1288,6 @@ def test_unfinished_dream_receipt_address_stays_readable_without_rewriting_its_s
         await _seed_and_migrate(config, pinned)
         async with migration_profile(config) as profile, profile.database.transaction() as connection:
             await connection.execute(text(f"DROP TABLE {ARCHIVE_TABLE.name}"))
-            await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_EVIDENCE_TABLE.name}"))
             await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_HEADS_TABLE.name}"))
             await connection.execute(text(f"DROP TABLE {MEMORY_ENTRY_VERSIONS_TABLE.name}"))
         async with (
@@ -1394,10 +1391,6 @@ def test_clean_migration_retries_after_interrupted_public_column_removal(migrati
         # Restore the historical foreign keys with frozen SQL rows. Current table
         # metadata intentionally no longer attaches these tables to public Artifacts.
         versions = [dict(row) for row in (await connection.execute(select(MEMORY_ENTRY_VERSIONS_TABLE))).mappings()]
-        # OceanBase/SeekDB enforce the evidence-to-version FK while dropping the
-        # legacy parent tables; remove that child table before rebuilding the
-        # historical schema.
-        await connection.execute(text("DROP TABLE pc_memory_entry_evidence"))
         await connection.execute(text("DROP TABLE pc_memory_entry_heads"))
         await connection.execute(text("DROP TABLE pc_memory_entry_versions"))
         metadata = MetaData()

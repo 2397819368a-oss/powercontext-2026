@@ -65,6 +65,7 @@ _CODEX_FULL_MCP_TOOLS = frozenset({
     "activate_handoff",
     "capture_content_source",
     "change_atomic_memory_lifecycle",
+    "capture_working_note",
     "clear_scope_binding",
     "commit_handoff",
     "continue_handoff",
