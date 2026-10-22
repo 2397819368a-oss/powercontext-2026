@@ -277,17 +277,27 @@ class OwnerRecovery:
             while True:
                 await asyncio.sleep(5)
                 try:
-                    pending = await self.pending(after=after)
+                    # Decode each intent during replay so one damaged payload
+                    # cannot prevent delivery of every other item on its page.
+                    statement = select(OWNER_RECOVERY_TABLE.c.operation_id).where(
+                        OWNER_RECOVERY_TABLE.c.deployment_id == self.access.deployment_id,
+                        OWNER_RECOVERY_TABLE.c.completed.is_(False),
+                    )
+                    if after is not None:
+                        statement = statement.where(OWNER_RECOVERY_TABLE.c.operation_id > after)
+                    statement = statement.order_by(OWNER_RECOVERY_TABLE.c.operation_id).limit(100)
+                    async with self.database.transaction() as connection:
+                        pending = (await connection.execute(statement)).scalars().all()
                 except Exception:  # noqa: S112
                     # Leave durable work pending; do not emit external error values.
                     continue
                 for operation in pending:
                     try:
-                        await self.replay(operation.operation_id)
+                        await self.replay(operation)
                     except Exception:  # noqa: S112
                         # Explicit replay reports errors; this worker retains the intent.
                         continue
-                after = pending[-1].operation_id if len(pending) == 100 else None
+                after = pending[-1] if len(pending) == 100 else None
 
         task = asyncio.create_task(run(), name="powercontext-owner-recovery")
         try:

@@ -328,3 +328,30 @@ def test_audit_replay_rejects_changed_fields_and_preserves_transaction_rollback(
             assert await access.audit.list_audit(resource=RESOURCE) == (original,)
 
     asyncio.run(scenario())
+
+
+def test_corrupted_intent_does_not_block_background_recovery_of_other_objects(tmp_path):
+    async def scenario():
+        async with _stores(tmp_path) as (database, access, recovery):
+            damaged_id = await _create(database, recovery)
+            other = ResourceRef.artifact("scope", family="experience", artifact_id="second")
+            async with database.transaction() as connection:
+                await connection.execute(insert(OBJECTS).values(identity="second"))
+                await recovery.for_transaction(connection).establish_artifact_owner(
+                    other, ALICE, idempotency_key="second-owner", context=CONTEXT
+                )
+                await connection.execute(
+                    update(OWNER_RECOVERY_TABLE)
+                    .where(OWNER_RECOVERY_TABLE.c.operation_id == damaged_id)
+                    .values(scope_id="damaged-scope")
+                )
+            async with recovery.monitor(), asyncio.timeout(12):
+                while await access.artifact_owner(other) is None:  # noqa: ASYNC110 - observe persisted external state
+                    await asyncio.sleep(0.05)
+            assert await access.artifact_owner(RESOURCE) is None
+            audits = await access.audit.list_audit(resource=other)
+            assert len(audits) == 1 and audits[0].principal == ALICE
+            with pytest.raises(AccessUnavailableError):
+                await recovery.replay(damaged_id)
+
+    asyncio.run(scenario())
