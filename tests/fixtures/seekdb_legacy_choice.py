@@ -36,11 +36,6 @@ from powercontext.server.factory import create_server_app
 from powercontext.server.settings import ServerSettings
 
 
-def _recovery_budget_table() -> Table:
-    """Return the registered Topic budget table, whose presence initializes recovery."""
-    return next(table for table in BUILTIN_TABLES if table.name == "pc_topic_memory_work_budgets")
-
-
 def database_snapshot(options: dict[str, object]) -> None:
     """Inspect only this test's embedded socket, with bounded diagnostic reads."""
     socket = options.get("unix_socket")
@@ -137,10 +132,10 @@ async def scenario(directory: Path) -> None:
     try:
         async with asyncio.timeout(60):
             stage("seed: opening test")
-            # A migrated deployment owns the registered Topic recovery shapes; startup
-            # rejects a partial database on purpose. Selecting the budget table
-            # initializes both registered recovery tables before the marker is added.
-            async with SeekDBProfile.open(old, tables=(_recovery_budget_table(), records)) as profile:
+            # Model a provisioned deployment: a partial database is rejected on purpose,
+            # and creating the whole schema here keeps the fragile startup phase free of
+            # table DDL because it only observes that everything already exists.
+            async with SeekDBProfile.open(old, tables=(*BUILTIN_TABLES, records)) as profile:
                 stage("seed: insert")
                 async with profile.database.transaction() as connection:
                     await connection.execute(records.insert().values(id=1, value="preserved"))

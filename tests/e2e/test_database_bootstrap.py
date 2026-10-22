@@ -74,45 +74,74 @@ async def assert_record(profile, name: str) -> None:
         assert (await connection.exec_driver_sql("SELECT DATABASE()")).scalar_one() == name
 
 
+_STALL_SIGNATURES = ("Timeout (0:", "TimeoutError:")
+_MAXIMUM_REPORTED_OUTPUT = 6000
+
+
 def run_seekdb_scenario(directory: Path, filename: str) -> None:
+    """Run one embedded-engine scenario, retrying once past a known engine stall.
+
+    A stall blocks the child inside a native call, so an in-process timeout cannot
+    recover it; a fresh directory and a new engine instance can. Only a stall is
+    retried: any other failure is reported immediately.
+    """
     scenario = Path(__file__).resolve().parents[1] / "fixtures" / filename
-    output = ""
-    failed = True
+    reported: list[str] = []
+    for attempt in (1, 2):
+        target = directory / f"attempt-{attempt}"
+        target.mkdir()
+        output = ""
+        failed = True
+        stalled = False
+        try:
+            result = subprocess.run(
+                [sys.executable, "-u", str(scenario), str(target)],
+                cwd=target,
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+            output = result.stdout + result.stderr
+            failed = result.returncode != 0
+        except subprocess.TimeoutExpired as error:
+            # TimeoutExpired retains bytes even when subprocess.run uses text=True.
+            output = (error.stdout or b"").decode(errors="replace") + (error.stderr or b"").decode(errors="replace")
+            stalled = True
+        finally:
+            _retain_scenario_diagnostics(scenario, target, attempt, output, failed or stalled)
+        if not failed and not stalled:
+            return
+        reported.append(f"attempt {attempt}:\n{_bounded_output(output)}")
+        if attempt == 2 or not (stalled or any(signature in output for signature in _STALL_SIGNATURES)):
+            break
+    pytest.fail(f"{filename} failed after {len(reported)} attempt(s)\n" + "\n".join(reported))
+
+
+def _bounded_output(output: str) -> str:
+    return output if len(output) <= _MAXIMUM_REPORTED_OUTPUT else "..." + output[-_MAXIMUM_REPORTED_OUTPUT:]
+
+
+def _retain_scenario_diagnostics(scenario: Path, directory: Path, attempt: int, output: str, failed: bool) -> None:
+    diagnostic_root = os.environ.get("POWERCONTEXT_TEST_BOOTSTRAP_DIAGNOSTICS")
+    if not diagnostic_root:
+        return
     try:
-        result = subprocess.run(
-            [sys.executable, "-u", str(scenario), str(directory)],
-            cwd=directory,
-            capture_output=True,
-            text=True,
-            timeout=90,
-            check=False,
-        )
-        output = result.stdout + result.stderr
-        failed = result.returncode != 0
-        assert not failed, output
-    except subprocess.TimeoutExpired as error:
-        # TimeoutExpired retains bytes even when subprocess.run uses text=True.
-        output = (error.stdout or b"").decode(errors="replace") + (error.stderr or b"").decode(errors="replace")
-        pytest.fail(f"{filename} exceeded 90 seconds\n{output}")
-    finally:
-        if diagnostic_root := os.environ.get("POWERCONTEXT_TEST_BOOTSTRAP_DIAGNOSTICS"):
-            try:
-                destination = Path(diagnostic_root) / scenario.stem
-                destination.mkdir(parents=True, exist_ok=True)
-                (destination / "scenario.log").write_text(output, encoding="utf-8")
-                if failed:
-                    # Retain bounded native log tails before short_tmp_path removes storage.
-                    native_logs = directory / "seekdb" / "log"
-                    for path in native_logs.glob("*"):
-                        if path.is_file() and path.name.endswith((".log", ".log.wf")):
-                            with (
-                                path.open("rb") as source,
-                                gzip.open(destination / f"{path.name}.tail.gz", "wb") as target,
-                            ):
-                                source.seek(max(0, path.stat().st_size - 1024 * 1024))
-                                target.write(source.read())
-            except OSError as error:
-                print(f"seekdb diagnostics unavailable: {type(error).__name__}", file=sys.stderr)
+        destination = Path(diagnostic_root) / scenario.stem
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / f"attempt-{attempt}.log").write_text(output, encoding="utf-8")
+        if failed:
+            # Retain bounded native log tails before short_tmp_path removes storage.
+            for path in (directory / "seekdb" / "log").glob("*"):
+                if path.is_file() and path.name.endswith((".log", ".log.wf")):
+                    with (
+                        path.open("rb") as source,
+                        gzip.open(destination / f"attempt-{attempt}.{path.name}.tail.gz", "wb") as target,
+                    ):
+                        source.seek(max(0, path.stat().st_size - 1024 * 1024))
+                        target.write(source.read())
+    except OSError as error:
+        print(f"seekdb diagnostics unavailable: {type(error).__name__}", file=sys.stderr)
 
 
 @pytest.mark.skipif(not _SEEKDB, reason="set POWERCONTEXT_TEST_BOOTSTRAP_SEEKDB=1")
@@ -128,6 +157,11 @@ def test_seekdb_creates_selected_database_and_preserves_data(short_tmp_path: Pat
         )
         async with SeekDBProfile.open(config, tables=(_RECORDS,)) as profile:
             await insert_record(profile)
+            with pytest.raises(RuntimeError, match="abort business write"):
+                async with profile.database.transaction() as connection:
+                    await connection.execute(_RECORDS.update().values(value="must roll back"))
+                    raise RuntimeError("abort business write")  # noqa: TRY003
+            await assert_record(profile, name or "powercontext")
         async with SeekDBProfile.open(config, tables=(_RECORDS,)) as profile:
             await assert_record(profile, name or "powercontext")
 
