@@ -626,7 +626,7 @@ def test_statistics_selection_reports_the_same_scope_rows_as_scoped_overviews() 
 
 
 # Measured on the default text-recall path; slack of one statement above the observed value.
-_PREPARE_STATEMENT_CEILING = 41
+_PREPARE_STATEMENT_CEILING = 18
 
 
 def test_prepare_context_statement_count_does_not_grow_with_memory_count() -> None:
