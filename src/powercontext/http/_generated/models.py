@@ -2186,7 +2186,7 @@ class RememberMemoryRequest(BaseModel):
     description: Annotated[
         StrictStr | None,
         Field(
-            description="Optional supplied single-line summary. When omitted, the Server generates it before writing; without a generation model the write fails with inference_unavailable.",
+            description="Optional supplied single-line summary. When omitted, the Server stores a whitespace-collapsed text prefix of at most 200 Unicode characters, including a trailing ellipsis when truncated. Explicit writes do not invoke a generation model.",
             max_length=200,
             min_length=1,
             pattern="^[^\\r\\n\\u0085\\u2028\\u2029]*\\S[^\\r\\n\\u0085\\u2028\\u2029]*$",
@@ -3630,7 +3630,7 @@ class AtomicMemoryWriteContent(BaseModel):
     description: Annotated[
         StrictStr | None,
         Field(
-            description="Optional supplied single-line summary. When omitted, the Server generates it before writing; without a generation model the write fails with inference_unavailable.",
+            description="Optional supplied single-line summary. When omitted, the Server stores a whitespace-collapsed text prefix of at most 200 Unicode characters, including a trailing ellipsis when truncated. Explicit writes do not invoke a generation model.",
             max_length=200,
             min_length=1,
             pattern="^[^\\r\\n\\u0085\\u2028\\u2029]*\\S[^\\r\\n\\u0085\\u2028\\u2029]*$",

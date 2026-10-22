@@ -23,11 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent, AtomicMemoryCreation
-from powercontext.builtin.artifacts.atomic_memory.summary import (
-    DESCRIPTION_RULES,
-    AtomicMemorySummaryInput,
-    AtomicMemorySummaryOutput,
-)
+from powercontext.builtin.artifacts.atomic_memory.summary import DESCRIPTION_RULES
 from powercontext.builtin.artifacts.memory.prompts import MemoryExtractionProfile
 from powercontext.builtin.inference import InvalidInferenceOutputError, StructuredGenerator, TokenEstimator
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
@@ -123,7 +119,6 @@ class AtomicMemoryGenerationPipeline:
     extractor: StructuredGenerator[AtomicMemoryExtractionInput, AtomicMemoryExtractionOutput]
     reconciler: StructuredGenerator[AtomicMemoryReconciliationInput, AtomicMemoryReconciliationOutput]
     estimator: TokenEstimator
-    summarizer: StructuredGenerator[AtomicMemorySummaryInput, AtomicMemorySummaryOutput] | None = None
     extraction_instructions: str = atomic_memory_extraction_instructions(MemoryExtractionProfile.CODING)
 
     async def extract(self, value: AtomicMemoryExtractionInput) -> tuple[AtomicMemoryCandidate, ...]:

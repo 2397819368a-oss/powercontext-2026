@@ -227,7 +227,6 @@ class AtomicMemoryApplication:
         index: AtomicMemoryIndex,
         *,
         embedding_model=None,
-        summarizer=None,
         cursor_secret: bytes | None = None,
         id_factory=None,
         restore_retry_budget: int = 3,
@@ -261,7 +260,6 @@ class AtomicMemoryApplication:
             security=self.security,
             projections=self.publisher,
             merge_tags=self.merge_tags,
-            summarizer=summarizer,
             preview_signer=preview_signer,
         )
 

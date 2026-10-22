@@ -558,7 +558,6 @@ class RelationalContexts:
             database,
             artifact_repository,
             atomic_memory_index,
-            summarizer=None if candidate_pipeline is None else getattr(candidate_pipeline, "summarizer", None),
             embedding_model=embedding_model,
             reranker=memory_reranker,
             rerank_candidate_limit=memory_rerank_candidate_limit,

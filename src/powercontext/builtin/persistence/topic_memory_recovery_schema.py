@@ -172,7 +172,16 @@ def _atomic_maintenance_initialization(connection: Connection) -> bool:
         )
         if row[2] not in ignored
     ]
-    if actual != expected["schema"]:
+    # The manifest adds only nullable metadata to the pristine Atomic projection.
+    # Recognize that exact additive layout without changing the frozen v1 resource
+    # or accepting arbitrary columns, FTS helpers, triggers or persisted evidence.
+    with_description = [list(row) for row in expected["schema"]]
+    for row in with_description:
+        if row[:2] == ["table", "pc_atomic_memory_current"]:
+            row[3] = row[3].replace(
+                "\ttext TEXT NOT NULL, \n", "\ttext TEXT NOT NULL, \n\tdescription VARCHAR(200), \n", 1
+            )
+    if actual not in (expected["schema"], with_description):
         return False
     return all(
         connection.exec_driver_sql(f'SELECT 1 FROM "{name}" LIMIT 1').first() is None  # noqa: S608 - frozen identifiers

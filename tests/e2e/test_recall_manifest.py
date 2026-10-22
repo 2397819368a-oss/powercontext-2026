@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from sqlalchemy import Engine, event
 
 from tests.e2e.test_access_control_regressions import _scope, _server
@@ -27,16 +28,6 @@ def test_manifest_is_bounded_metadata_and_refs_are_readable(tmp_path):
     async def scenario():
         async with _server(tmp_path) as (app, client, _):
             scope = await _scope(client)
-            missing = await client.post(
-                "/v1/memory/remember",
-                json={
-                    "scope_id": scope,
-                    "kind": "fact",
-                    "text": "No summary and no model",
-                },
-            )
-            assert missing.status_code == 503, missing.text
-            assert missing.json()["error"]["code"] == "inference_unavailable"
             empty = await client.post("/v1/recall/manifest", json={"scope_id": scope})
             assert empty.status_code == 200, empty.text
             assert empty.json() == {"items": [], "next_cursor": None, "code": "empty_inventory"}
@@ -152,13 +143,21 @@ def test_manifest_is_bounded_metadata_and_refs_are_readable(tmp_path):
     asyncio.run(scenario())
 
 
-def test_explicit_writes_generate_summaries_through_configured_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("configured_model", [False, True])
+def test_explicit_writes_preserve_descriptions_without_model_requests(tmp_path, monkeypatch, configured_model):
     from pydantic_ai.messages import ModelResponse, TextPart
     from pydantic_ai.models.function import FunctionModel
 
     from powercontext.builtin.runtime import InferenceConfig, composition
 
-    model = FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart('{"description":"Login policy"}')]))
+    writing = False
+
+    def unexpected_generation(messages, info):
+        if writing:
+            pytest.fail("Explicit memory writes must not request model generation")
+        return ModelResponse(parts=[TextPart("OK")])
+
+    model = FunctionModel(unexpected_generation)
 
     async def open_local_model(*args, **kwargs):
         return model, model
@@ -166,8 +165,10 @@ def test_explicit_writes_generate_summaries_through_configured_model(tmp_path, m
     monkeypatch.setattr(composition, "_open_pydantic_ai_model", open_local_model)
 
     async def scenario():
-        # Controlled inference exercises real composition and SQLite, without contacting a provider.
-        async with _server(tmp_path, inference=InferenceConfig(generation_model="test")) as (app, client, _):
+        nonlocal writing
+        inference = InferenceConfig(generation_model="test") if configured_model else InferenceConfig()
+        async with _server(tmp_path, inference=inference) as (app, client, _):
+            writing = True
             scope = await _scope(client)
             created = await client.post(
                 "/v1/memory/remember",
@@ -181,7 +182,7 @@ def test_explicit_writes_generate_summaries_through_configured_model(tmp_path, m
             manifest = await client.post("/v1/recall/manifest", json={"scope_id": scope})
             assert manifest.status_code == 200, manifest.text
             entry = manifest.json()["items"][0]
-            assert entry["description"]
+            assert entry["description"] == "Use JWT for login."
             ref = entry["ref"]
             path = f"/v1/scopes/{scope}/artifacts/atomic-memory/{ref['artifact_id']}"
             current = await client.get(path)
@@ -193,11 +194,18 @@ def test_explicit_writes_generate_summaries_through_configured_model(tmp_path, m
                 },
             )
             assert revised.status_code == 200, revised.text
-            assert revised.json()["content"]["description"]
+            assert revised.json()["content"]["description"] == "Use a shorter JWT expiry."
             assert revised.json()["content"]["text"] == "Use a shorter JWT expiry."
             old = await client.get(path + "/revisions/1")
             assert old.status_code == 200
             assert old.json()["content"]["text"] == "Use JWT for login."
+            assert old.json()["content"]["description"] == "Use JWT for login."
+            stale = await client.put(
+                path,
+                headers={"If-Match": current.headers["ETag"]},
+                json={"content": {"kind": "decision", "text": "Stale change"}},
+            )
+            assert stale.status_code in {409, 412}, stale.text
 
             other = await client.post(
                 "/v1/memory/remember",
@@ -214,14 +222,15 @@ def test_explicit_writes_generate_summaries_through_configured_model(tmp_path, m
             generic = app.state.application.artifact_merge.for_scope(scope, "atomic-memory")
             first = await generic.get(ref["artifact_id"])
             second = await generic.get(other.json()["records"][0]["artifact"]["artifact_id"])
+            assert second.artifact.content.description == "Refresh token policy"
             merged = await generic.merge(
                 (first.as_read(), second.as_read()),
                 AtomicMemoryContent(kind="decision", text="Use JWT and retain refresh tokens."),
             )
-            assert merged.primary.artifact.content.description == "Login policy"
+            assert merged.primary.artifact.content.description == "Use JWT and retain refresh tokens."
             final_manifest = await client.post("/v1/recall/manifest", json={"scope_id": scope})
             assert len(final_manifest.json()["items"]) == 1
-            assert final_manifest.json()["items"][0]["description"] == "Login policy"
+            assert final_manifest.json()["items"][0]["description"] == "Use JWT and retain refresh tokens."
 
     asyncio.run(scenario())
 
@@ -274,104 +283,47 @@ def test_existing_projection_adds_summary_column_and_rebuild_copies_authority(tm
     asyncio.run(scenario())
 
 
-def test_summary_inference_releases_transaction_and_rechecks_revision(tmp_path, monkeypatch):
-    from pydantic_ai.messages import ModelResponse, TextPart
-    from pydantic_ai.models.function import FunctionModel
-
-    from powercontext.builtin.runtime import InferenceConfig, composition
-
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("登录采用 JWT。\n\t刷新令牌有效期为 7 天。", "登录采用 JWT。 刷新令牌有效期为 7 天。"),
+        ("记忆" * 120, "记忆" * 99 + "记…"),
+        ("x" * 200, "x" * 200),
+    ],
+    ids=["multiline", "truncated-unicode", "exact-limit"],
+)
+def test_default_description_is_a_bounded_single_line_persisted_on_write(tmp_path, body, expected):
     async def scenario():
-        started, resume = asyncio.Event(), asyncio.Event()
-
-        async def respond(messages, info):
-            started.set()
-            await resume.wait()
-            return ModelResponse(parts=[TextPart('{"description":"Generated summary"}')])
-
-        model = FunctionModel(respond)
-
-        async def open_local_model(*args, **kwargs):
-            return model, model
-
-        monkeypatch.setattr(composition, "_open_pydantic_ai_model", open_local_model)
-        async with _server(tmp_path, inference=InferenceConfig(generation_model="test")) as (_, client, _):
+        async with _server(tmp_path) as (_, client, _):
             scope = await _scope(client)
             created = await client.post(
                 f"/v1/scopes/{scope}/artifacts",
-                json={
-                    "family": "atomic-memory",
-                    "content": {
-                        "kind": "decision",
-                        "text": "Original policy",
-                        "description": "Original summary",
-                    },
-                },
+                json={"family": "atomic-memory", "content": {"kind": "fact", "text": body}},
             )
             assert created.status_code == 201, created.text
-            path = f"/v1/scopes/{scope}/artifacts/atomic-memory/{created.json()['artifact_id']}"
-            current = await client.get(path)
-            headers = {"If-Match": current.headers["ETag"]}
-            pending = asyncio.create_task(
-                client.put(
-                    path,
-                    headers=headers,
-                    json={
-                        "content": {"kind": "decision", "text": "Pending policy"},
-                    },
-                )
-            )
-            try:
-                await asyncio.wait_for(started.wait(), timeout=5)
-                concurrent = await asyncio.wait_for(
-                    client.put(
-                        path,
-                        headers=headers,
-                        json={
-                            "content": {
-                                "kind": "decision",
-                                "text": "Concurrent policy",
-                                "description": "Concurrent summary",
-                            },
-                        },
-                    ),
-                    timeout=5,
-                )
-                assert concurrent.status_code == 200, concurrent.text
-            finally:
-                resume.set()
-            stale = await asyncio.wait_for(pending, timeout=5)
-            assert stale.status_code in {409, 412}, stale.text
-            latest = await client.get(path)
-            assert latest.json()["content"]["text"] == "Concurrent policy"
+            identifier = created.json()["artifact_id"]
+        async with _server(tmp_path) as (_, client, _):
+            exact = await client.get(f"/v1/scopes/{scope}/artifacts/atomic-memory/{identifier}/revisions/1")
+            assert exact.status_code == 200, exact.text
+            assert exact.json()["content"]["description"] == expected
+            assert exact.json()["content"]["text"] == body
             manifest = await client.post("/v1/recall/manifest", json={"scope_id": scope})
-            assert manifest.json()["items"][0]["description"] == "Concurrent summary"
+            assert manifest.json()["items"][0]["description"] == expected
 
     asyncio.run(scenario())
 
 
-def test_invalid_injected_summary_is_not_published_or_logged(tmp_path, caplog):
-    from types import SimpleNamespace
-
-    class InvalidSummarizer:
-        async def generate(self, value):
-            return SimpleNamespace(output={"description": "private-summary-marker\nsecond line"})
-
+@pytest.mark.parametrize("description", [" ", "first\nsecond", "x" * 201])
+def test_invalid_supplied_description_is_rejected(tmp_path, description):
     async def scenario():
-        async with _server(tmp_path) as (app, client, _):
+        async with _server(tmp_path) as (_, client, _):
             scope = await _scope(client)
-            app.state.application.atomic_memory._application.service.shared.summarizer = InvalidSummarizer()
             response = await client.post(
                 "/v1/memory/remember",
-                json={
-                    "scope_id": scope,
-                    "kind": "fact",
-                    "text": "A new fact",
-                },
+                json={"scope_id": scope, "kind": "fact", "text": "A new fact", "description": description},
             )
-            assert response.status_code == 500, response.text
+            assert response.status_code in {400, 422}, response.text
             manifest = await client.post("/v1/recall/manifest", json={"scope_id": scope})
             assert manifest.json()["items"] == []
-            assert "private-summary-marker" not in response.text
 
     asyncio.run(scenario())
-    assert "private-summary-marker" not in caplog.text

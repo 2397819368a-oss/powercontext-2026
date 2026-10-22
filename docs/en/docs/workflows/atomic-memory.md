@@ -4,7 +4,7 @@ description: Create, search, revise and restore independent memories, and adapt 
 ---
 
 Atomic Memory stores each fact, preference or decision as an independent `atomic-memory` Artifact. Content revisions
-are immutable; the current lifecycle is stored separately. Explicit creation and replacement need no generation model when a description is supplied.
+are immutable; the current lifecycle is stored separately. Explicit creation and replacement need no generation model.
 With Embedding configured, publication also prepares the current search vector. Existing collection databases require
 [offline migration](../operate/atomic-memory-migration.md) first.
 
@@ -297,11 +297,10 @@ scan more metadata rows than the returned page. This interface does not promise 
 
 Every successful new write, including direct creation/replacement, merges and `remember_memory`, contains a nonblank,
 single-line `description` of 1–200 Unicode characters in the same language as final text. Callers may supply it.
-When omitted, the Server uses the configured generation model to summarize normalized text after authorization and
-outside the database transaction; without a model it returns `503 inference_unavailable` without publishing a memory.
-Existing integrations may continue sending only text when generation is configured. Missing summaries add a
-structured generation operation, subject to the configured timeout and retry limits; Runtime write usage is counted
-under the existing `memory_extraction` purpose. Automatic extraction and
+When omitted, the write path collapses whitespace in the final normalized text into single spaces and saves a
+prefix of at most 200 Unicode characters (including a trailing `…` when truncated). This is a default preview,
+not a model-generated summary. Explicit writes do not call a generation model, even when one is configured;
+existing integrations can continue sending only text. Automatic extraction and
 reconciliation generate descriptions alongside text in their existing call; they need no extra summary request.
 Invalid generation output fails instead of silently publishing incomplete metadata. Custom Atomic Memory
 prompt demonstrations must be updated for the v2 extraction/reconciliation definitions.
@@ -310,6 +309,8 @@ Descriptions are authoritative revision content and copied transactionally to `p
 Manifest queries select narrow metadata columns, never `text`, `searchable_text`, vectors or `pc_artifacts.content`.
 Neither reading the manifest nor opening an existing database generates summaries. Startup adds the nullable projection
 column without scanning bodies. Existing projection rows remain null until explicit projection repair or a new write.
+Topic recovery initialization accepts both the original pristine Atomic maintenance layout and its exact nullable-description
+variant; unknown columns, changed FTS objects, and existing Atomic evidence remain rejected.
 The existing offline `atomic-memory-rebuild-projection` command copies stored descriptions; it never generates new ones.
 Its full verification/rebuild scans authoritative history and current rows and may re-embed active memories: this is
 maintenance work, not part of incremental writes or manifest reads.
@@ -317,7 +318,7 @@ maintenance work, not part of incremental writes or manifest reads.
 Historical revisions without a description remain readable and serialize without an extra null field. A null manifest
 description explicitly means missing metadata, not a missing memory. To complete a historical summary, an authorized
 writer reads the current revision and submits complete unchanged kind/text through ordinary replacement with the
-current `If-Match` ETag. Supply a reviewed summary or omit it to invoke the configured model. This creates a new revision; a stale ETag is
+current `If-Match` ETag. Supply a reviewed summary or omit it to store the bounded text preview. This creates a new revision; a stale ETag is
 rejected. Never update historical JSON or its content hash in place. Restoring an old revision preserves its historical
 absence of summary. Size, token estimates, timestamps, provenance summaries and other families are outside this first
 manifest contract; no such field is computed by reading bodies.

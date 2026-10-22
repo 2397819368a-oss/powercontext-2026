@@ -21,7 +21,6 @@ from contextlib import suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
 from typing_extensions import override
 
@@ -51,7 +50,7 @@ from powercontext.builtin.artifacts.atomic_memory.models import (
     AtomicMemoryWrite,
     PreparedAtomicMemory,
 )
-from powercontext.builtin.artifacts.atomic_memory.summary import AtomicMemorySummaryInput, AtomicMemorySummaryOutput
+from powercontext.builtin.artifacts.atomic_memory.summary import default_description
 from powercontext.builtin.artifacts.memory.canonical import canonical_error_code, normalize_text
 from powercontext.builtin.artifacts.memory.errors import InvalidMemoryCandidateError
 from powercontext.builtin.artifacts.merge import ArtifactMergeSecurity, ArtifactMergeService, MergeTags
@@ -65,7 +64,6 @@ from powercontext.builtin.artifacts.merge_models import (
     ArtifactMergeWrite,
     PreparedArtifactMerge,
 )
-from powercontext.builtin.inference import InferenceUnavailableError, InvalidInferenceOutputError, StructuredGenerator
 from powercontext.builtin.persistence.artifact_governance import (
     ArtifactGovernance,
     ArtifactLifecycleState,
@@ -302,33 +300,18 @@ class _AtomicPreviewAdapter:
 class _AtomicMemoryMergeService(ArtifactMergeService):
     """Apply the same summary invariant to generic and Atomic-specific merge entry points."""
 
-    summarizer: StructuredGenerator[AtomicMemorySummaryInput, AtomicMemorySummaryOutput] | None = None
-
     @override
     async def prepare_change(self, plan: ArtifactMergePlan) -> PreparedArtifactMerge:
-        # Inspection has already authorized every write. Inference runs only after its read transaction closes.
+        # Persist the description with the final normalized body before preparing its projection.
         if plan.operation in {"change", "merge"}:
             writes = []
             for write in plan.writes:
                 draft = write.draft
                 if draft is not None and draft.content.description is None:
-                    if self.summarizer is None:
-                        raise InferenceUnavailableError(
-                            "atomic-memory-summary", "Supply description or configure a generation model"
-                        )
-                    result = await self.summarizer.generate(
-                        AtomicMemorySummaryInput(kind=draft.content.kind, text=draft.content.text)
-                    )
-                    try:
-                        summary = AtomicMemorySummaryOutput.model_validate(result.output)
-                        content = AtomicMemoryContent.model_validate({
-                            **draft.content.model_dump(mode="json", by_alias=True),
-                            "description": summary.description,
-                        })
-                    except ValidationError:
-                        raise InvalidInferenceOutputError(
-                            "atomic-memory-summary", "summary does not satisfy the content contract"
-                        ) from None
+                    content = AtomicMemoryContent.model_validate({
+                        **draft.content.model_dump(mode="json", by_alias=True),
+                        "description": default_description(draft.content.text),
+                    })
                     draft = draft.model_copy(update={"content": content})
                 writes.append(replace(write, draft=draft))
             plan = replace(plan, writes=tuple(writes))
@@ -372,7 +355,6 @@ class AtomicMemoryService:
         projections: AtomicMemoryProjections,
         merge_tags: MergeTags,
         preview_signer: AtomicMemoryPreviewSigner | None = None,
-        summarizer: StructuredGenerator[AtomicMemorySummaryInput, AtomicMemorySummaryOutput] | None = None,
     ) -> None:
         self.artifacts, self.states, self.security = artifacts, states, security
         self.projections, self.merge_tags, self.preview_signer = projections, merge_tags, preview_signer
@@ -384,7 +366,6 @@ class AtomicMemoryService:
             errors=ATOMIC_MERGE_ERRORS,
             preview_signer=None if preview_signer is None else _AtomicPreviewAdapter(preview_signer),
         )
-        self.shared.summarizer = summarizer
 
     async def get(
         self,
