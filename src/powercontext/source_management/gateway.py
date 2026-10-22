@@ -246,7 +246,7 @@ class SourceGateway:
                     }
                     public["can_write"] = can_write
                     if not online:
-                        public["available"] = False
+                        public["availability"] = "unavailable"
                     visible.append(public)
                     instances[instance["id"]] = public
                 if visible:

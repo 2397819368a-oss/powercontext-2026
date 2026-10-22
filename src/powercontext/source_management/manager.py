@@ -463,8 +463,8 @@ class SourceManager:
             if target["tracking"] == "stopping":
                 snapshot = {"target_id": target["target_id"]}
                 destination = stopping
-            elif target["tracking"] == "enabled":
-                snapshot = {k: target[k] for k in SourceTarget.model_fields if k in target and k != "source_refs"}
+            elif target["tracking"] == "enabled" and target["scope_id"] in instance["scope_ids"]:
+                snapshot = {k: target[k] for k in SourceTarget.model_fields if k in target}
                 destination = targets
             else:
                 continue

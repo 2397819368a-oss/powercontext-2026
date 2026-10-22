@@ -39,7 +39,7 @@ class ManagedTargets:
             if (
                 item.target_id in seen
                 or known is None
-                or known.model_dump(exclude={"source_refs"}) != item.model_dump(exclude={"source_refs"})
+                or known != item
                 or item.instance_id != self.instance_id
                 or item.scope_id != binding.scope_id
                 or item.target_id in self._stopping

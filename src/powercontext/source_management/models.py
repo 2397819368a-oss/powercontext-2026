@@ -83,7 +83,6 @@ class SourceTarget(Model):
     capability: str
     capability_version: str
     input: dict[str, JsonValue]
-    source_refs: tuple[SourceRef, ...] = ()
 
 
 class InstanceRegistration(Model):

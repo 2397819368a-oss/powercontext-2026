@@ -170,3 +170,127 @@ async def apply(ctx, config):
             assert len((await received(admin, scopes[1], targets["second", scopes[1]], 3))["source_refs"]) == 3
         finally:
             await stop_services(directory, state)
+
+
+def test_scope_shrink_preserves_progress_and_offline_discovery(tmp_path):
+    asyncio.run(_scope_shrink_and_discovery(tmp_path))
+
+
+async def _scope_shrink_and_discovery(directory):
+    from fastmcp import Client
+
+    from tests.source_helpers import TOKENS, call
+
+    envfile, state = prepare_environment(directory)
+    environment = {
+        "POWERCONTEXT_SERVER_SOURCE_PLUGINS_DIR": str(directory / "source-plugins"),
+        "POWERCONTEXT_SERVER_SOURCE_MANAGEMENT": json.dumps({"state_dir": str(state)}),
+    }
+    async with running_server(directory, environment=environment) as (admin, url, _process):
+        bind_server(envfile, url)
+        scopes = [await create_scope(admin, name) for name in ("kept", "removed")]
+        for scope in scopes:
+            await grant_scope(admin, scope)
+        plugin = directory / "collector"
+        shutil.copytree(EXAMPLE, plugin, ignore=shutil.ignore_patterns("__pycache__"))
+        manifest = {
+            "id": "scope-review",
+            "plugin": str(plugin),
+            "scope_ids": scopes,
+            "config": {"namespace": "scope-review", "interval_seconds": 0.1},
+            "targets": [
+                {"scope_id": s, "capability": "ticket-chat.dataset", "capability_version": "1", "input": {}}
+                for s in scopes
+            ],
+        }
+        path = plugin / "powercontext.yml"
+        path.write_text(yaml.safe_dump(manifest))
+        try:
+            await cli(directory, "source", "load", "--config", str(path), "--env-file", str(envfile))
+            await instance_state(admin, "scope-review", "running")
+            targets = {}
+            for scope in scopes:
+                response = await admin.post(
+                    "/v1/source-management/add",
+                    json={
+                        "scope_id": scope,
+                        "instance_id": "scope-review",
+                        "capability": "ticket-chat.dataset",
+                        "capability_version": "1",
+                        "input": {},
+                    },
+                )
+                assert response.status_code == 200, response.text
+                targets[scope] = response.json()["target_id"]
+                await received(admin, scope, targets[scope], 2)
+            previous = await checkpoint(admin, scopes[1], "scope-review")
+            await set_enabled(admin, "scope-review", False)
+            runtime_config = state / "instances/scope-review/runtime-config.json"
+            await cli(directory, "source", "runtime", "stop", "--config", str(runtime_config))
+            manifest["scope_ids"] = scopes[:1]
+            manifest["targets"] = manifest["targets"][:1]
+            path.write_text(yaml.safe_dump(manifest))
+            await cli(directory, "source", "load", "--config", str(path), "--env-file", str(envfile), "--update")
+            await instance_state(admin, "scope-review", "stopped")
+            fixture = json.loads((plugin / "events.json").read_text())
+            fixture["tickets"][0]["body"] = "Changed after removing a Scope"
+            (plugin / "events.json").write_text(json.dumps(fixture))
+            await set_enabled(admin, "scope-review", True)
+            await received(admin, scopes[0], targets[scopes[0]], 3)
+            # Observe another collection cycle before draining, regardless of target iteration order.
+            fixture["tickets"][0]["body"] = "Another change while the Scope remains excluded"
+            replacement = plugin / "events.next.json"
+            replacement.write_text(json.dumps(fixture))
+            replacement.replace(plugin / "events.json")
+            await received(admin, scopes[0], targets[scopes[0]], 4)
+            # Stop and drain actual work before checking the removed Scope's stored progress.
+            await set_enabled(admin, "scope-review", False)
+            assert await checkpoint(admin, scopes[1], "scope-review") == previous
+            assert len((await received(admin, scopes[1], targets[scopes[1]], 2))["source_refs"]) == 2
+            page = await admin.get(f"/v1/scopes/{scopes[1]}/sources")
+            assert page.status_code == 200 and len(page.json()["items"]) == 2
+
+            # Re-admit the Scope through the public management API, without recreating its target.
+            registration = json.loads((state / "instances/scope-review/registration.json").read_text())
+            registration["scope_ids"] = scopes
+            response = await admin.post(
+                "/v1/source-management/configure", json={"registration": registration, "update": True}
+            )
+            assert response.status_code == 200, response.text
+            await set_enabled(admin, "scope-review", True)
+            restored = await received(admin, scopes[1], targets[scopes[1]], 3)
+            assert restored["target_id"] == targets[scopes[1]]
+            receipts = [json.loads(line) for line in (plugin / "receipts.jsonl").read_text().splitlines()]
+            assert any(r["scope_id"] == scopes[1] and r["source"] in restored["source_refs"] for r in receipts)
+
+            async with Client(url + "/mcp", auth=TOKENS["deployer"]) as host:
+                query = {"scope_id": scopes[0], "instance_id": "scope-review"}
+                async with asyncio.timeout(40):
+                    while True:
+                        result = await call(host, "pc_source_instances", query)
+                        if result["instances"] and result["instances"][0]["availability"] == "online":
+                            break
+                        await asyncio.sleep(0.1)
+                await cli(directory, "source", "manager", "stop", "--config", str(state / "manager.json"))
+                async with asyncio.timeout(40):
+                    while True:
+                        result = await call(host, "pc_source_instances", query)
+                        if result["management"] == "unavailable":
+                            break
+                        await asyncio.sleep(0.1)
+                assert result["instances"][0]["availability"] == "unavailable"
+                capabilities = await call(host, "pc_source_capabilities", query)
+                assert capabilities["capabilities"][0]["instances"][0]["availability"] == "unavailable"
+                written = await call(
+                    host,
+                    "pc_source_add",
+                    {
+                        "scope_id": scopes[0],
+                        "capability": "content.inline",
+                        "capability_version": "2",
+                        "input": {"source_id": "offline-write", "text": "write remains available"},
+                    },
+                )
+                assert written["result"]["source_refs"] == [{"source_type": "content", "source_id": "offline-write"}]
+        finally:
+            await stop_services(directory, state)
