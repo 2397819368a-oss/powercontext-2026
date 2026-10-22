@@ -568,13 +568,21 @@ class Ops:
                     )
                 current["phase"] = "executing"
                 self.store.save(record)
-                emit({
-                    "type": "progress",
-                    "operation_id": operation_id,
-                    "attempt": current["attempt"],
-                    "sequence": 1,
-                    "phase": "service",
-                })
+                try:
+                    emit({
+                        "type": "progress",
+                        "operation_id": operation_id,
+                        "attempt": current["attempt"],
+                        "sequence": 1,
+                        "phase": "service",
+                    })
+                except (OSError, ValueError, ServiceError, subprocess.SubprocessError, KeyError, TypeError):
+                    # No native mutation has started. A broken progress channel
+                    # must not turn this known failure into unresolved work.
+                    current["phase"] = "finished"
+                    current["result"] = {"outcome": "failed", "error": {"code": "progress_unavailable"}}
+                    self.store.save(record)
+                    return
                 if cancelled():
                     current["result"] = {"outcome": "cancelled", "components": self.inspect()}
                     current["phase"] = "finished"

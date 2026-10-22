@@ -253,6 +253,23 @@ def test_cancel_after_progress_does_not_start_native_mutation(fixture: tuple[Ops
     assert adapter.definition is None
 
 
+def test_lost_progress_before_mutation_is_durable_and_allows_new_work(fixture: tuple[Ops, FakeAdapter]) -> None:
+    ops, adapter = fixture
+
+    def disconnected(message: dict[str, Any]) -> None:
+        if message["type"] == "progress":
+            raise BrokenPipeError
+
+    request = _apply_request(_plan(ops, "register"))
+    result = ops.handle(request, emit=disconnected)
+    assert result["outcome"] == "failed", result
+    assert result["result"]["error"]["code"] == "progress_unavailable"
+    assert adapter.definition is None
+    assert ops.handle(_request("operation_status", operation_id="operation"))["result"] == result["result"]
+    assert ops.handle(_apply_request(_plan(ops, "register"), "next"))["outcome"] == "succeeded"
+    assert ops.handle(request)["result"] == result["result"]
+
+
 def test_configuration_recovery_does_not_mistake_unverified_start_for_stopped_completion(
     fixture: tuple[Ops, FakeAdapter], monkeypatch: pytest.MonkeyPatch
 ) -> None:

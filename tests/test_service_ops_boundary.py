@@ -74,6 +74,7 @@ def test_windows_manager_support_does_not_require_ops_pythonw(tmp_path: Path, mo
     monkeypatch.setattr(windows.sys, "platform", "win32")
     monkeypatch.setattr(windows.sys, "executable", str(tmp_path / "missing" / "python.exe"))
     monkeypatch.setattr(windows.shutil, "which", lambda name: name)
+    monkeypatch.setattr(windows, "_current_user_identity", lambda: ("test\\user", "S-1-5-21-1000"))
     adapter = WindowsTaskSchedulerAdapter(home=tmp_path, user_account="test\\user", user_sid="S-1-5-21-1000")
     assert adapter.platform_support()[0] is SupportState.SUPPORTED
 
