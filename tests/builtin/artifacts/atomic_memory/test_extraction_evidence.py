@@ -258,7 +258,7 @@ def test_an_observation_that_projections_text_keeps_one_body() -> None:
     assert evidence.content["content"] == _BODY
     assert "content" not in evidence.source_metadata["payload"]
     # The projection's value was the ``content`` object itself, so the entry carries nothing new.
-    assert evidence.source_metadata["projections"] == []
+    assert "projections" not in evidence.source_metadata
 
 
 def test_an_observation_keeps_metadata_and_the_rest_of_its_payload() -> None:
@@ -276,8 +276,8 @@ def test_an_observation_without_a_text_projection_still_pays_once() -> None:
     evidence = asyncio.run(_evidence(_observation(())))
 
     assert _body_copies(evidence) == 1
-    assert "content" not in evidence.source_metadata["payload"]
-    assert evidence.source_metadata["payload"]["tool"] == "bash"
+    assert "payload" not in evidence.source_metadata
+    assert evidence.content["tool"] == "bash"
 
 
 def test_another_projection_keeps_its_keys_but_not_a_repeated_body() -> None:

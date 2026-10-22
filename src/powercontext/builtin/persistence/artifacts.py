@@ -499,14 +499,21 @@ class ArtifactRepository:
         /,
         *,
         for_update: bool = False,
+        known: Artifact[Any] | None = None,
     ) -> Artifact[Any]:
-        """Load the current revision selected by the authoritative head."""
+        """Load the current revision selected by the authoritative head.
+
+        ``known`` lets a caller that already holds one exact revision skip the second read when the
+        head still selects it. The head is always read, so the decision itself is unchanged.
+        """
 
         _require_scope(scope_id)
         ArtifactRef(family=family, artifact_id=artifact_id, revision=1)
         revision = await self._find_head(connection, scope_id, family, artifact_id, for_update=for_update)
         if revision is None:
             raise RepositoryNotFoundError("artifact", (scope_id, family, artifact_id))
+        if known is not None and not for_update and known.revision == int(revision):
+            return known
         return await self.get(
             connection,
             scope_id,

@@ -69,9 +69,10 @@ def test_artifact_head_search_projection_schema_is_mysql_compilable() -> None:
     assert "pc_experience_heads" not in {table.name for table in BUILTIN_TABLES}
 
 
-def test_sqlite_startup_upgrades_legacy_artifact_heads_without_searchable_text(tmp_path) -> None:
-    database = tmp_path / "legacy.db"
+def test_sqlite_startup_upgrades_legacy_artifact_heads_without_searchable_text(initialized_sqlite_database) -> None:
+    database = initialized_sqlite_database
     with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE pc_artifact_heads")
         connection.execute(
             """
             CREATE TABLE pc_artifact_heads (

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
@@ -30,6 +30,7 @@ from powercontext.builtin.persistence.sources import SourceRepository, StoredSou
 from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, Source, SourceObservation, SourceRef, TextEvidence
 
 _JSON = TypeAdapter(JsonValue)
+_TEXT_EVIDENCE_KEY = TEXT_EVIDENCE_PROJECTION_KEY.model_dump(mode="json")
 
 if TYPE_CHECKING:
     from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
@@ -130,100 +131,78 @@ class AtomicMemoryGenerationPipeline:
         return output.candidates
 
 
-def _text_of(value: JsonValue) -> str | None:
-    """The text a reader gets from one JSON value: a string as itself, anything else canonicalised.
+def _duplicates_body(value: JsonValue, body: JsonValue) -> bool:
+    """Whether a metadata value serializes to exactly the evidential body text."""
 
-    A stored ``ContentSource.content`` is derived from its ``wire_content`` exactly this way, so two
-    values with the same text here are the same bytes on the wire — a string body and the structured
-    body that encodes it answer alike.
-    """
-
-    if isinstance(value, str):
-        return value
-    if value is None:
-        return None
+    if not isinstance(body, str) or value is None:
+        return False
     try:
-        return _canonical_source_text(value)
+        return _canonical_source_text(value) == body
     except (TypeError, ValueError):
-        return None
+        return False
 
 
-def _body_text(body: JsonValue) -> str | None:
-    """The body text the model reads out of one projected ``content`` value."""
-
-    if isinstance(body, str):
-        return body
-    if isinstance(body, dict):
-        inner = body.get("content")
-        if isinstance(inner, str):
-            return inner
-    return None
+def _is_text_evidence_projection(projection: JsonValue) -> bool:
+    return isinstance(projection, dict) and projection.get("key") == _TEXT_EVIDENCE_KEY
 
 
-def _repeats(candidate: JsonValue, body_text: str | None) -> bool:
-    """Whether ``candidate`` carries nothing the extraction input's body does not already say."""
+def _drop_body_carriers(dumped: dict[str, Any], body_text: JsonValue) -> None:
+    """Remove content and wire carriers that only reproduce the body text."""
 
-    return body_text is not None and _text_of(candidate) == body_text
+    if _duplicates_body(dumped.get("content"), body_text):
+        dumped.pop("content", None)
+    if _duplicates_body(dumped.get("wire_content"), body_text):
+        dumped.pop("wire_content", None)
+        dumped.pop("wire_content_present", None)
 
 
-def _compact_projections(projections: list[JsonValue], *, body: JsonValue, body_text: str) -> list[JsonValue]:
-    """Drop the projection that *is* the body, and any projected ``content`` that merely restates it."""
+def _compact_projections(dumped: dict[str, Any], *, body: JsonValue, body_text: JsonValue) -> None:
+    """Remove the consumed projection and repeated bodies while preserving distinct evidence."""
 
-    text_evidence_key = TEXT_EVIDENCE_PROJECTION_KEY.model_dump(mode="json")
-    body_encoding = _text_of(body)
-    kept: list[JsonValue] = []
-    for projection in projections:
-        if not isinstance(projection, dict):
-            kept.append(projection)
+    projections = dumped.get("projections")
+    if not isinstance(projections, list):
+        return
+    remaining: list[JsonValue] = []
+    for item in projections:
+        if _is_text_evidence_projection(item) and isinstance(item, dict) and item.get("value") == body:
             continue
-        if projection.get("key") == text_evidence_key and _text_of(projection.get("value")) == body_encoding:
-            # Its value *is* the ``content`` object, body and metadata included.
-            continue
-        projected = projection.get("value")
-        if isinstance(projected, dict):
-            projection = {
-                **projection,
-                "value": {
-                    key: item for key, item in projected.items() if not (key == "content" and _repeats(item, body_text))
-                },
-            }
-        kept.append(projection)
-    return kept
+        if isinstance(item, dict):
+            projected = item.get("value")
+            if isinstance(projected, dict) and _duplicates_body(projected.get("content"), body_text):
+                item = {**item, "value": {key: value for key, value in projected.items() if key != "content"}}
+        remaining.append(item)
+    if remaining:
+        dumped["projections"] = remaining
+    else:
+        dumped.pop("projections", None)
 
 
-def _compact_source_metadata(value: Source, *, body: JsonValue) -> JsonValue:
-    """Keep Source provenance without repeating a body that ``content`` already carries.
+def _compact_source_metadata(value: Source, *, body: JsonValue, body_from_text_projection: bool) -> JsonValue:
+    """Keep provenance without re-sending a body that the evidence already carries.
 
-    The extraction input supplies the body in ``content``. A full Source dump can put the same bytes
-    back two or three more times — ``ContentSource.content``, ``payload.content``, the text-evidence
-    projection whose value *is* that object, and a ``wire_content`` that only ever encoded it — which
-    spends the input token budget on text the model has already read.
-
-    A value is removed only when it is *provably* that same text. A different Source may project a
-    different fact under a ``content`` key, and an adapter read may disagree with the stored content;
-    those are evidence the extractor was meant to see, so they stay even though the name matches.
-    Every other provenance key stays too, including ``metadata``, ``payload.metadata``,
-    ``definition_version`` and ``working_note``.
+    ``content`` and each wire carrier are dropped only when they reproduce the body
+    text. The observation ``payload`` follows the same rule, and the consumed
+    text-evidence projection is dropped when it equals the selected body. Repeated
+    ``content`` values in other projections are removed by the same comparison;
+    independent facts and provenance, including ``payload.metadata``, are kept.
     """
 
     dumped = value.model_dump(mode="json", by_alias=True)
-    body_text = _body_text(body)
-    if body_text is None:
-        return _JSON.validate_python(dumped)
+    body_text = body.get("content") if isinstance(body, dict) else body
+    _drop_body_carriers(dumped, body_text)
+
     if not isinstance(value, SourceObservation):
-        if _repeats(dumped.get("content"), body_text):
-            dumped.pop("content", None)
-        if _repeats(dumped.get("wire_content"), body_text):
-            # A wire body that canonicalises to the stored text repeats it; any other is evidence.
-            dumped.pop("wire_content", None)
-            dumped.pop("wire_content_present", None)
         return _JSON.validate_python(dumped)
     payload = dumped.get("payload")
-    if isinstance(payload, dict) and _repeats(payload.get("content"), body_text):
-        payload.pop("content", None)
-    projections = dumped.get("projections")
-    if isinstance(projections, list):
-        dumped["projections"] = _compact_projections(projections, body=body, body_text=body_text)
+    if body_from_text_projection:
+        if isinstance(payload, dict):
+            compacted = dict(payload)
+            _drop_body_carriers(compacted, body_text)
+            if compacted != payload:
+                dumped["payload"] = compacted
+    elif payload == body:
+        dumped.pop("payload", None)
+    _compact_projections(dumped, body=body, body_text=body_text)
     return _JSON.validate_python(dumped)
 
 
@@ -237,23 +216,26 @@ async def project_atomic_memory_evidence(
     """Expose source-provided dates in content/metadata without synthesizing time."""
 
     value = stored.value
+    body_from_text_projection = False
     if isinstance(value, SourceObservation):
         content = value.payload
         for projection in value.projections:
             if projection.key == TEXT_EVIDENCE_PROJECTION_KEY:
                 content = TextEvidence.model_validate(projection.value).model_dump(mode="json")
+                body_from_text_projection = True
                 break
     else:
         materialized = await sources.read_value(value)
         content = (
             materialized.model_dump(mode="json", by_alias=True) if isinstance(materialized, BaseModel) else materialized
         )
+    body = _JSON.validate_python(content)
     return AtomicMemoryEvidence(
         evidence_id=evidence_id,
         source_ref=stored.ref,
         journal_position=stored.journal_position,
-        content=_JSON.validate_python(content),
-        source_metadata=_compact_source_metadata(value, body=_JSON.validate_python(content)),
+        content=body,
+        source_metadata=_compact_source_metadata(value, body=body, body_from_text_projection=body_from_text_projection),
         via_artifact=via_artifact,
     )
 
