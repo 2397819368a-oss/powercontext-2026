@@ -10,7 +10,7 @@ telemetry 系统。
 
 | 字段 | 含义 | 取值 |
 |---|---|---|
-| `processing_stage` | 失败所属的处理阶段 | `generation`、`embedding`、`output_parsing`、`business_validation`、`persistence`、`usage_accounting` |
+| `processing_stage` | 失败所属的处理阶段 | `generation`、`embedding`、`output_parsing`、`business_validation`、`persistence`、`usage_accounting`（预留给账务上报或持久化） |
 | `failure_reason` | 有证据支持时才给出的有界原因 | `context_overflow`、`output_truncated`、`rate_limit`、`timeout`、`schema_invalid`、`provider_unavailable`、`configuration`、`invalid_output`、`storage_failure`、`usage_limit` |
 | `input_item_count` | 失败调用涉及的输入条目数 | 非负整数 |
 | `estimated_input_tokens` | 估算的输入 token 数 | 非负整数 |
@@ -21,8 +21,11 @@ telemetry 系统。
 | `failure_location` | 稳定的内部位置或操作标识 | 有界字符串 |
 | `cause_exception_type` | 映射前的原始 provider/库异常类型 | 有界字符串 |
 
-`processing_stage` 与既有的 `stage` 字段不同：后者表示 Worker 或 supervisor 边界
-（`worker_process`、`work_admission` 等）。计数与标识在写入日志前会被限界；未知或不受支持的值直接省略，
+`processing_stage` 与既有的 `stage` 字段不同：`stage` 表示发出失败的位置或领域位置，包括
+Worker/supervisor 值（`worker_process`、`work_admission`、`supervisor`、`lease_renewal`、`scope_discovery`、
+`pending_observation`、`term_revocation`、`worker_termination`）、领域 block 名称（如 `topic_memory`），
+以及异常未携带 stage 时 child Worker 的 `worker` 兜底；没有领域 block 的 child 失败可能完全省略 `stage`。
+`processing_stage` 表示有界的领域阶段。计数与标识在写入日志前会被限界；未知或不受支持的值直接省略，
 不做猜测。
 
 ## 隐私边界
@@ -57,7 +60,7 @@ Memory / Atomic Memory 作为当前切片，按 operation 粒度跟踪：
 | `atomic-memory.reconcile` | Business validation | Covered | 对账输出与内容规则输出 `business_validation` / `invalid_output`。 |
 | Embedding（提取、对账、查询） | Embedding | Covered | provider 状态、向量数量/顺序/类型错误、profile/input 失败均已分类。 |
 | Publish / index | Persistence | Partial | `AtomicMemoryIndexError` 的 code 已映射；其他存储失败保持 unknown。 |
-| Usage accounting | Usage accounting | Missing | 尚未分类账务上报与持久化失败；推理用量限制归入其来源的 generation 阶段，embedding adapter 上报同一限制时使用相同 reason。 |
+| Usage accounting | Usage accounting | Missing | 尚未分类账务上报与持久化失败；推理用量限制归入其来源阶段（generation，或 embedding adapter 上报时归入 embedding）。 |
 
 第一个落地切片覆盖 Memory / Atomic Memory：provider 失败、预算耗尽、提取/对账校验均有分类，安全计数字段
 可从子 Worker 传播到 supervisor 日志。其他 Family 在各自切片落地前保持现有行为；每次切片在同一变更中更新

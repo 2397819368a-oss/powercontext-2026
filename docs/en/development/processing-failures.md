@@ -11,7 +11,7 @@ Every processing failure keeps the existing identity and outcome fields (`family
 
 | Field | Meaning | Values |
 |---|---|---|
-| `processing_stage` | The stage that owned the failure | `generation`, `embedding`, `output_parsing`, `business_validation`, `persistence`, `usage_accounting` |
+| `processing_stage` | The stage that owned the failure | `generation`, `embedding`, `output_parsing`, `business_validation`, `persistence`, `usage_accounting` (reserved for usage reporting or persistence) |
 | `failure_reason` | A bounded reason, only when evidence supports it | `context_overflow`, `output_truncated`, `rate_limit`, `timeout`, `schema_invalid`, `provider_unavailable`, `configuration`, `invalid_output`, `storage_failure`, `usage_limit` |
 | `input_item_count` | Number of input items in the failing call | Non-negative integer |
 | `estimated_input_tokens` | Estimated input tokens | Non-negative integer |
@@ -22,10 +22,13 @@ Every processing failure keeps the existing identity and outcome fields (`family
 | `failure_location` | Stable internal location or operation identifier | Bounded string |
 | `cause_exception_type` | Original provider or library exception type before mapping | Bounded string |
 
-`processing_stage` is distinct from the existing `stage` field, which names the Worker or
-supervisor boundary (`worker_process`, `work_admission`, and so on). Counts and identifiers are
-bounded before they reach a log record, and unknown or unsupported values are omitted rather than
-guessed.
+`processing_stage` is distinct from the existing `stage` field. `stage` names the emitting boundary or
+domain location: Worker and supervisor values (`worker_process`, `work_admission`, `supervisor`,
+`lease_renewal`, `scope_discovery`, `pending_observation`, `term_revocation`, `worker_termination`),
+domain block names such as `topic_memory`, and the child Worker's `worker` fallback when an exception
+carries no stage. A child failure without a domain block may omit `stage` entirely. `processing_stage`
+is the bounded domain stage. Counts and identifiers are bounded before they reach a log record, and
+unknown or unsupported values are omitted rather than guessed.
 
 ## Privacy boundary
 
@@ -63,7 +66,7 @@ Memory / Atomic Memory is tracked at operation granularity while it is the activ
 | `atomic-memory.reconcile` | Business validation | Covered | Reconciliation output and content rules carry `business_validation` / `invalid_output`. |
 | Embedding (extract, reconcile, query) | Embedding | Covered | Provider status, wrong vector count/order/type, and embedding profile/input failures are classified. |
 | Publish / index | Persistence | Partial | `AtomicMemoryIndexError` codes are mapped; other storage failures keep unknown. |
-| Usage accounting | Usage accounting | Missing | Usage-reporting and persistence failures are not classified; inference usage limits are reported in their originating generation stage, and the same reason is available when an embedding adapter reports the limit. |
+| Usage accounting | Usage accounting | Missing | Usage-reporting and persistence failures are not classified; inference usage limits are reported in their originating stage (generation, or embedding when an adapter reports the limit). |
 
 The first rollout slice covers Memory / Atomic Memory: provider failures, budget exhaustion, and
 extraction/reconciliation validation are classified, and safe accounting fields travel from the

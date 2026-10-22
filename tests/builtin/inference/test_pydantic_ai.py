@@ -1113,3 +1113,22 @@ def test_embedding_public_path_maps_validation_error_to_invalid_output() -> None
         assert diagnostics.cause_exception_type == "ValidationError"
 
     asyncio.run(scenario())
+
+
+def test_embedding_public_path_reports_usage_limit_in_embedding_stage() -> None:
+    async def scenario() -> None:
+        adapter = PydanticAIEmbeddingModel(
+            embedder=Embedder(ResultEmbeddingModel((), error=UsageLimitExceeded("limit"))),
+            profile=TEST_PROFILE,
+        )
+
+        with pytest.raises(InvalidInferenceOutputError) as error:
+            await adapter.embed(("bounded text",))
+
+        diagnostics = classify_processing_error(error.value)
+        assert diagnostics is not None
+        assert diagnostics.stage is ProcessingStage.EMBEDDING
+        assert diagnostics.reason is ProcessingFailureReason.USAGE_LIMIT
+        assert diagnostics.cause_exception_type == "UsageLimitExceeded"
+
+    asyncio.run(scenario())

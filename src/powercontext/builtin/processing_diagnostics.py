@@ -31,6 +31,7 @@ class ProcessingStage(StrEnum):
     OUTPUT_PARSING = "output_parsing"
     BUSINESS_VALIDATION = "business_validation"
     PERSISTENCE = "persistence"
+    # Reserved for usage reporting or persistence failures.
     USAGE_ACCOUNTING = "usage_accounting"
 
 
