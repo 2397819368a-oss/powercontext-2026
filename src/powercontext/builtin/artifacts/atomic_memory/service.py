@@ -18,9 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
+from typing_extensions import override
 
 from powercontext.artifacts import ArtifactLineage, ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.errors import (
@@ -48,11 +51,13 @@ from powercontext.builtin.artifacts.atomic_memory.models import (
     AtomicMemoryWrite,
     PreparedAtomicMemory,
 )
+from powercontext.builtin.artifacts.atomic_memory.summary import AtomicMemorySummaryInput, AtomicMemorySummaryOutput
 from powercontext.builtin.artifacts.memory.canonical import canonical_error_code, normalize_text
 from powercontext.builtin.artifacts.memory.errors import InvalidMemoryCandidateError
 from powercontext.builtin.artifacts.merge import ArtifactMergeSecurity, ArtifactMergeService, MergeTags
 from powercontext.builtin.artifacts.merge_models import (
     ArtifactMergeErrors,
+    ArtifactMergeMutationResult,
     ArtifactMergePlan,
     ArtifactMergeRead,
     ArtifactMergeRecord,
@@ -60,6 +65,7 @@ from powercontext.builtin.artifacts.merge_models import (
     ArtifactMergeWrite,
     PreparedArtifactMerge,
 )
+from powercontext.builtin.inference import InferenceUnavailableError, InvalidInferenceOutputError, StructuredGenerator
 from powercontext.builtin.persistence.artifact_governance import (
     ArtifactGovernance,
     ArtifactLifecycleState,
@@ -293,6 +299,67 @@ class _AtomicPreviewAdapter:
         return _common_read(self.signer.validate(*args, **kwargs))
 
 
+class _AtomicMemoryMergeService(ArtifactMergeService):
+    """Apply the same summary invariant to generic and Atomic-specific merge entry points."""
+
+    summarizer: StructuredGenerator[AtomicMemorySummaryInput, AtomicMemorySummaryOutput] | None = None
+
+    @override
+    async def prepare_change(self, plan: ArtifactMergePlan) -> PreparedArtifactMerge:
+        # Inspection has already authorized every write. Inference runs only after its read transaction closes.
+        if plan.operation in {"change", "merge"}:
+            writes = []
+            for write in plan.writes:
+                draft = write.draft
+                if draft is not None and draft.content.description is None:
+                    if self.summarizer is None:
+                        raise InferenceUnavailableError(
+                            "atomic-memory-summary", "Supply description or configure a generation model"
+                        )
+                    result = await self.summarizer.generate(
+                        AtomicMemorySummaryInput(kind=draft.content.kind, text=draft.content.text)
+                    )
+                    try:
+                        summary = AtomicMemorySummaryOutput.model_validate(result.output)
+                        content = AtomicMemoryContent.model_validate({
+                            **draft.content.model_dump(mode="json", by_alias=True),
+                            "description": summary.description,
+                        })
+                    except ValidationError:
+                        raise InvalidInferenceOutputError(
+                            "atomic-memory-summary", "summary does not satisfy the content contract"
+                        ) from None
+                    draft = draft.model_copy(update={"content": content})
+                writes.append(replace(write, draft=draft))
+            plan = replace(plan, writes=tuple(writes))
+        return await super().prepare_change(plan)
+
+    @override
+    async def commit_window(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        prepared: Sequence[PreparedArtifactMerge],
+        context: Any,
+        *,
+        read_set: Sequence[ArtifactMergeRead] = (),
+        direct_source: SourceRef | None = None,
+    ) -> tuple[ArtifactMergeMutationResult, ...]:
+        for item in prepared:
+            if item.plan.operation in {"change", "merge"}:
+                for write in item.plan.writes:
+                    if write.draft is not None and write.draft.content.description is None:
+                        raise InvalidMemoryCandidateError("canonical", "description is required for new writes")
+        return await super().commit_window(
+            connection,
+            scope_id,
+            prepared,
+            context,
+            read_set=read_set,
+            direct_source=direct_source,
+        )
+
+
 class AtomicMemoryService:
     """Keep Atomic public contracts while delegating all transitions to the common service."""
 
@@ -305,10 +372,11 @@ class AtomicMemoryService:
         projections: AtomicMemoryProjections,
         merge_tags: MergeTags,
         preview_signer: AtomicMemoryPreviewSigner | None = None,
+        summarizer: StructuredGenerator[AtomicMemorySummaryInput, AtomicMemorySummaryOutput] | None = None,
     ) -> None:
         self.artifacts, self.states, self.security = artifacts, states, security
         self.projections, self.merge_tags, self.preview_signer = projections, merge_tags, preview_signer
-        self.shared = ArtifactMergeService(
+        self.shared = _AtomicMemoryMergeService(
             artifacts=artifacts,
             adapter=AtomicMemoryMergeAdapter(projections),
             security=security,
@@ -316,6 +384,7 @@ class AtomicMemoryService:
             errors=ATOMIC_MERGE_ERRORS,
             preview_signer=None if preview_signer is None else _AtomicPreviewAdapter(preview_signer),
         )
+        self.shared.summarizer = summarizer
 
     async def get(
         self,
@@ -465,7 +534,7 @@ class AtomicMemoryService:
 
     async def prepare_change(self, plan: AtomicMemoryPlan) -> PreparedAtomicMemory:
         prepared = await self.shared.prepare_change(_common_plan(plan))
-        return PreparedAtomicMemory(plan=plan, projections=prepared.projections)
+        return PreparedAtomicMemory(plan=_atomic_plan(prepared.plan), projections=prepared.projections)
 
     prepare_merge = prepare_change
     prepare_forget = prepare_change

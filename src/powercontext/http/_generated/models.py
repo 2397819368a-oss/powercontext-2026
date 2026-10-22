@@ -58,6 +58,15 @@ class ServerInfo(BaseModel):
     ]
 
 
+class Tag(RootModel[StrictStr]):
+    root: Annotated[StrictStr, Field(min_length=1)]
+
+
+class Code(StrEnum):
+    PAGE = "page"
+    EMPTY_INVENTORY = "empty_inventory"
+
+
 class AtomicMemoryState(StrEnum):
     ACTIVE = "active"
     FORGOTTEN = "forgotten"
@@ -75,10 +84,6 @@ class AtomicMemoryTarget(BaseModel):
     )
     artifact_id: Annotated[StrictStr, Field(max_length=128, min_length=1)]
     revision: Annotated[StrictInt | None, Field(ge=1)] = None
-
-
-class Tag(RootModel[StrictStr]):
-    root: Annotated[StrictStr, Field(min_length=1)]
 
 
 class MatchedByEnum(StrEnum):
@@ -2088,6 +2093,15 @@ class RememberMemoryRequest(BaseModel):
     text: Annotated[StrictStr, Field(description="Must not exceed 8192 UTF-8 bytes after normalization.", min_length=1)]
     reason: Annotated[StrictStr | None, Field(max_length=512)] = None
     expected_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    description: Annotated[
+        StrictStr | None,
+        Field(
+            description="Optional supplied single-line summary. When omitted, the Server generates it before writing; without a generation model the write fails with inference_unavailable.",
+            max_length=200,
+            min_length=1,
+            pattern="^[^\\r\\n\\u0085\\u2028\\u2029]*\\S[^\\r\\n\\u0085\\u2028\\u2029]*$",
+        ),
+    ] = None
 
 
 class RetireMemoryEntryRequest(BaseModel):
@@ -2477,7 +2491,7 @@ class TagTarget(RootModel[ArtifactTagTarget | MemoryEntryTagTarget]):
     root: Annotated[ArtifactTagTarget | MemoryEntryTagTarget, Field(discriminator="type")]
 
 
-class Tag2(RootModel[StrictStr]):
+class Tag3(RootModel[StrictStr]):
     root: Annotated[StrictStr, Field(max_length=64, min_length=1)]
 
 
@@ -2485,7 +2499,7 @@ class TagFilter(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    tags: Annotated[list[Tag2], Field(max_length=16, min_length=1)]
+    tags: Annotated[list[Tag3], Field(max_length=16, min_length=1)]
     match: TagMatch = TagMatch.ALL
 
 
@@ -2493,14 +2507,14 @@ class ReplaceArtifactTagsRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    tags: Annotated[list[Tag2], Field(max_length=32, min_length=0)]
+    tags: Annotated[list[Tag3], Field(max_length=32, min_length=0)]
 
 
 class QueryArtifactTagsRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    tags: Annotated[list[Tag2], Field(max_length=16, min_length=1)]
+    tags: Annotated[list[Tag3], Field(max_length=16, min_length=1)]
     match: TagMatch = TagMatch.ALL
     families: Annotated[
         list[TaggableArtifactFamily] | None,
@@ -2522,7 +2536,7 @@ class ArtifactTagSet(BaseModel):
     )
     scope_id: StrictStr
     target: TagTarget
-    tags: Annotated[list[Tag2], Field(max_length=32, min_length=0)]
+    tags: Annotated[list[Tag3], Field(max_length=32, min_length=0)]
     tag_digest: Annotated[
         StrictStr,
         Field(
@@ -2538,7 +2552,7 @@ class TaggedTarget(BaseModel):
     )
     scope_id: StrictStr
     target: TagTarget
-    tags: Annotated[list[Tag2], Field(max_length=32, min_length=0)]
+    tags: Annotated[list[Tag3], Field(max_length=32, min_length=0)]
     tag_digest: Annotated[
         StrictStr,
         Field(
@@ -3438,9 +3452,74 @@ class CatalogTagResult(BaseModel):
     )
     scope_id: Annotated[StrictStr, Field(min_length=1)]
     target: TagTarget
-    tags: Annotated[list[Tag2], Field(max_length=32)]
+    tags: Annotated[list[Tag3], Field(max_length=32)]
     tag_digest: Annotated[StrictStr, Field(min_length=1)]
     etag: Annotated[StrictStr, Field(min_length=1)]
+
+
+class RecallManifestRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    kind: Annotated[StrictStr | None, Field(min_length=1)] = None
+    tags: Annotated[list[Tag] | None, Field(max_length=16)] = None
+    tag_match: TagMatch | None = None
+    limit: Annotated[StrictInt, Field(ge=1, le=100)] = 50
+    cursor: Annotated[StrictStr | None, Field(max_length=4096)] = None
+
+
+class RecallManifestEntry(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ref: ArtifactReference
+    kind: StrictStr
+    description: Annotated[
+        StrictStr | None,
+        Field(
+            description="Stored summary, or null for historical records awaiting explicit summary completion. No body is read to synthesize it.",
+            max_length=200,
+            min_length=1,
+            pattern="^[^\\r\\n\\u0085\\u2028\\u2029]*\\S[^\\r\\n\\u0085\\u2028\\u2029]*$",
+        ),
+    ]
+    state_version: Annotated[StrictInt, Field(ge=0)]
+
+
+class RecallManifestResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    items: Annotated[list[RecallManifestEntry], Field(max_length=100)]
+    next_cursor: Annotated[StrictStr | None, Field(...)]
+    code: Code
+
+
+class AtomicMemoryReadContent(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    schema_: Annotated[AtomicMemoryContentSchema, Field(alias="schema")] = (
+        AtomicMemoryContentSchema.POWERCONTEXT_ATOMIC_MEMORY_V1
+    )
+    kind: Annotated[StrictStr, Field(max_length=128, min_length=1)]
+    text: Annotated[
+        StrictStr,
+        Field(
+            description="Memory text is NFC-normalized and trimmed before enforcing an 8192 UTF-8 byte limit.",
+            min_length=1,
+        ),
+    ]
+    description: Annotated[
+        StrictStr | None,
+        Field(
+            description="A concise single-line summary of final text, in the same language. Required for new writes.",
+            max_length=200,
+            min_length=1,
+            pattern="^[^\\r\\n\\u0085\\u2028\\u2029]*\\S[^\\r\\n\\u0085\\u2028\\u2029]*$",
+        ),
+    ] = None
 
 
 class AtomicMemoryWriteContent(BaseModel):
@@ -3458,6 +3537,15 @@ class AtomicMemoryWriteContent(BaseModel):
             min_length=1,
         ),
     ]
+    description: Annotated[
+        StrictStr | None,
+        Field(
+            description="Optional supplied single-line summary. When omitted, the Server generates it before writing; without a generation model the write fails with inference_unavailable.",
+            max_length=200,
+            min_length=1,
+            pattern="^[^\\r\\n\\u0085\\u2028\\u2029]*\\S[^\\r\\n\\u0085\\u2028\\u2029]*$",
+        ),
+    ] = None
 
 
 class CreateAtomicMemoryArtifactRequest(BaseModel):
@@ -5067,7 +5155,7 @@ class Candidate(BaseModel):
         ExperienceProposal
         | SkillProposal
         | ProfileCandidateProposal
-        | AtomicMemoryWriteContent
+        | AtomicMemoryReadContent
         | TopicMemoryDreamProposal
         | HandoffContent
         | PromptContent

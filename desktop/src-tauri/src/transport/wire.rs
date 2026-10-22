@@ -402,6 +402,9 @@ pub struct RememberMemoryRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub r#expected_revision: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub r#description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize, ts_rs::TS)]

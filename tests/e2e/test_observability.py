@@ -383,7 +383,12 @@ def test_database_failure_log_does_not_include_memory_content(caplog, tmp_path) 
         with caplog.at_level(logging.ERROR, logger="powercontext.server.app"):
             response = client.post(
                 "/v1/memory/remember",
-                json={"scope_id": scope_id, "kind": "fact", "text": memory_content},
+                json={
+                    "scope_id": scope_id,
+                    "kind": "fact",
+                    "text": memory_content,
+                    "description": "Explicit fixture memory",
+                },
             )
 
     records = [
@@ -452,6 +457,7 @@ def test_memory_write_stage_spans_are_bounded_and_nested(monkeypatch, tmp_path) 
                 "kind": "decision",
                 "text": private_memory_content,
                 "evidence_ids": ["source:1"],
+                "description": "Explicit fixture memory",
             }
         ]
     })
@@ -466,7 +472,11 @@ def test_memory_write_stage_spans_are_bounded_and_nested(monkeypatch, tmp_path) 
                 model.custom_output_text = json.dumps({
                     "action": "create",
                     "compared_ids": [],
-                    "content": {"kind": "decision", "text": private_memory_content},
+                    "content": {
+                        "kind": "decision",
+                        "text": private_memory_content,
+                        "description": "Explicit fixture memory",
+                    },
                     "evidence_ids": ["source:1"],
                     "reason": "Preserve the exact fixture Source.",
                 })
@@ -754,7 +764,12 @@ def test_memory_read_stage_spans_are_bounded_and_nested(monkeypatch, tmp_path) -
         )
         remembered = client.post(
             "/v1/memory/remember",
-            json={"scope_id": scope_id, "kind": "fact", "text": memory_content},
+            json={
+                "scope_id": scope_id,
+                "kind": "fact",
+                "text": memory_content,
+                "description": "Explicit fixture memory",
+            },
         )
         searched = client.post(
             "/v1/memory/search",
@@ -1033,7 +1048,10 @@ class _FixedCandidatePipeline:
             output=AtomicMemoryExtractionOutput(
                 candidates=(
                     AtomicMemoryCandidate(
-                        kind="fact", text=self._text, evidence_ids=tuple(item.evidence_id for item in request.evidence)
+                        kind="fact",
+                        text=self._text,
+                        evidence_ids=tuple(item.evidence_id for item in request.evidence),
+                        description="Extracted fixture fact",
                     ),
                 )
             )
@@ -1264,7 +1282,12 @@ def test_vector_search_exports_embedding_under_memory_search_without_recording_t
         scope_id = _get_default_scope_id(client)
         remembered = client.post(
             "/v1/memory/remember",
-            json={"scope_id": scope_id, "kind": "fact", "text": memory_content},
+            json={
+                "scope_id": scope_id,
+                "kind": "fact",
+                "text": memory_content,
+                "description": "Explicit fixture memory",
+            },
         )
         searched = client.post(
             "/v1/memory/search",
@@ -1336,7 +1359,12 @@ def test_injected_always_on_embedding_skips_readiness_but_traces_vector_search(m
         scope_id = _get_default_scope_id(client)
         remembered = client.post(
             "/v1/memory/remember",
-            json={"scope_id": scope_id, "kind": "fact", "text": "Private injected vector memory."},
+            json={
+                "scope_id": scope_id,
+                "kind": "fact",
+                "text": "Private injected vector memory.",
+                "description": "Explicit fixture memory",
+            },
         )
         exporter.clear()
         searched = client.post(

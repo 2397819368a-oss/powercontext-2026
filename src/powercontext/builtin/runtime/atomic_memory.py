@@ -42,6 +42,8 @@ from powercontext.builtin.artifacts.atomic_memory.models import (
     AtomicMemoryRead,
     AtomicMemoryRecord,
     AtomicMemoryStateValue,
+    RecallManifestEntry,
+    RecallManifestPage,
 )
 from powercontext.builtin.artifacts.atomic_memory.restoration import AtomicMemoryPreviewSigner
 from powercontext.builtin.artifacts.atomic_memory.search import AtomicArtifactSearchRequest, plan_atomic_search
@@ -202,6 +204,7 @@ class AtomicMemoryApplication:
         index: AtomicMemoryIndex,
         *,
         embedding_model=None,
+        summarizer=None,
         cursor_secret: bytes | None = None,
         id_factory=None,
         restore_retry_budget: int = 3,
@@ -235,6 +238,7 @@ class AtomicMemoryApplication:
             security=self.security,
             projections=self.publisher,
             merge_tags=self.merge_tags,
+            summarizer=summarizer,
             preview_signer=preview_signer,
         )
 
@@ -278,6 +282,92 @@ class ScopedAtomicMemory:
                 connection, self.scope_id, artifact_id, context, revision=revision
             )
 
+    async def manifest(
+        self,
+        *,
+        kind: str | None = None,
+        tag_filter: TagFilter | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+        context=None,
+    ) -> RecallManifestPage:
+        """Read only current metadata; never assemble content or infer summaries."""
+        _validate_limit(limit)
+        if kind is not None:
+            AtomicMemoryContent(kind=kind, text="validation", description="validation")
+        bound = {
+            "endpoint": "recall_manifest",
+            "version": 1,
+            "scope_id": self.scope_id,
+            "subject": self.application.security.subject(context),
+            "kind": kind,
+            "tags": None if tag_filter is None else list(tag_filter.keys),
+            "tag_match": None if tag_filter is None else tag_filter.match,
+        }
+        after = self.application.cursor.after_text(cursor, bound)
+        async with self._read(context) as connection:
+            await self.application.security.filters(connection, self.scope_id, context, tags=tag_filter)
+            current = self.application.index.table
+            heads = ARTIFACT_HEADS_TABLE
+            statement = (
+                select(
+                    current.c.artifact_id,
+                    current.c.revision,
+                    current.c.state_version,
+                    current.c.kind,
+                    current.c.description,
+                )
+                .select_from(
+                    current.join(
+                        heads,
+                        and_(
+                            current.c.scope_id == heads.c.scope_id,
+                            current.c.artifact_id == heads.c.artifact_id,
+                            current.c.revision == heads.c.revision,
+                            current.c.state_version == heads.c.governance_generation,
+                            heads.c.family == "atomic-memory",
+                        ),
+                    )
+                )
+                .where(
+                    current.c.scope_id == self.scope_id,
+                    current.c.artifact_id > after,
+                    heads.c.lifecycle_state == "active",
+                    heads.c.merged_into_id.is_(None),
+                    current.c.projection_format == ATOMIC_MEMORY_PROJECTION_FORMAT,
+                )
+                .order_by(current.c.artifact_id)
+                .limit(limit + 1)
+            )
+            if kind is not None:
+                statement = statement.where(current.c.kind == kind)
+            if tag_filter is not None:
+                statement = statement.where(
+                    tag_predicate(
+                        self.scope_id,
+                        "atomic-memory",
+                        current.c.artifact_id,
+                        "artifact",
+                        current.c.artifact_id,
+                        tag_filter,
+                    )
+                )
+            rows = (await connection.execute(statement)).mappings().all()
+        items = tuple(
+            RecallManifestEntry(
+                ref=ArtifactRef(family="atomic-memory", artifact_id=row["artifact_id"], revision=row["revision"]),
+                kind=row["kind"],
+                description=row["description"],
+                state_version=row["state_version"],
+            )
+            for row in rows[:limit]
+        )
+        return RecallManifestPage(
+            items=items,
+            code="page" if items else "empty_inventory",
+            next_cursor=self.application.cursor.encode(bound, items[-1].ref.artifact_id) if len(rows) > limit else None,
+        )
+
     def list_query(
         self,
         connection: AsyncConnection,
@@ -295,7 +385,11 @@ class ScopedAtomicMemory:
             raise InvalidBaseAccessRequestError("states", "must contain distinct lifecycle values")
         states = tuple(AtomicMemoryStateValue(state).value for state in states)
         if kind is not None:
-            AtomicMemoryContent(kind=kind, text="validation")
+            AtomicMemoryContent(
+                kind=kind,
+                text="validation",
+                description="validation",
+            )
         bound = {
             "endpoint": "atomic_memory_list",
             "version": 1,
@@ -446,7 +540,11 @@ class ScopedAtomicMemory:
         if mode not in {"auto", "text", "vector", "hybrid"}:
             raise InvalidBaseAccessRequestError("mode", "must be auto, text, vector, or hybrid")
         if kind is not None:
-            AtomicMemoryContent(kind=kind, text="validation")
+            AtomicMemoryContent(
+                kind=kind,
+                text="validation",
+                description="validation",
+            )
         mode, vector, query_embedding, embedding_calls = await self._resolve_query_embedding(
             query,
             mode,

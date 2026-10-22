@@ -70,6 +70,9 @@ capabilities = ["memory_read"]
 id = "list_atomic_memories"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
+id = "get_recall_manifest"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
 id = "search_atomic_memory"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
@@ -280,6 +283,9 @@ id = "mcp__powercontext__get_atomic_memory_state"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
 id = "mcp__powercontext__list_atomic_memories"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "mcp__powercontext__get_recall_manifest"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
 id = "mcp__powercontext__search_atomic_memory"

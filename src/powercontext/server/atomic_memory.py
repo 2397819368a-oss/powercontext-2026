@@ -85,6 +85,20 @@ def add_atomic_memory_routes(  # noqa: C901
             **state.model_dump(mode="json", exclude={"ref"}),
         })
 
+    async def get_recall_manifest(
+        request: models.RecallManifestRequest,
+        http_request: Request,
+        application: Annotated[Any, Depends(application_dependency)],
+    ) -> models.RecallManifestResponse:
+        result = await _scoped(application, request.scope_id).manifest(
+            kind=request.kind,
+            tag_filter=_tag_filter(request),
+            limit=request.limit,
+            cursor=request.cursor,
+            context=execution_context(http_request, "get_recall_manifest"),
+        )
+        return models.RecallManifestResponse.model_validate(result.model_dump(mode="json"))
+
     async def list_atomic_memories(
         request: models.ListAtomicMemoryRequest,
         http_request: Request,
@@ -227,6 +241,7 @@ def add_atomic_memory_routes(  # noqa: C901
 
     for operation, endpoint in (
         (operations.GET_ATOMIC_MEMORY_STATE, get_atomic_memory_state),
+        (operations.GET_RECALL_MANIFEST, get_recall_manifest),
         (operations.LIST_ATOMIC_MEMORIES, list_atomic_memories),
         (operations.SEARCH_ATOMIC_MEMORY, search_atomic_memory),
         (operations.MERGE_ATOMIC_MEMORIES, merge_atomic_memories),

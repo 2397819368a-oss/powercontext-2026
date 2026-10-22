@@ -4,7 +4,7 @@ description: Create, search, revise and restore independent memories, and adapt 
 ---
 
 Atomic Memory stores each fact, preference or decision as an independent `atomic-memory` Artifact. Content revisions
-are immutable; the current lifecycle is stored separately. Explicit creation and replacement need no generation model.
+are immutable; the current lifecycle is stored separately. Explicit creation and replacement need no generation model when a description is supplied.
 With Embedding configured, publication also prepares the current search vector. Existing collection databases require
 [offline migration](../operate/atomic-memory-migration.md) first.
 
@@ -21,7 +21,8 @@ Submit to `POST /v1/scopes/S/artifacts`:
   "content": {
     "schema": "powercontext.atomic-memory.v1",
     "kind": "decision",
-    "text": "Keep the public API asynchronous."
+    "text": "Keep the public API asynchronous.",
+    "description": "Asynchronous public API"
   }
 }
 ```
@@ -42,7 +43,8 @@ Submit complete content to `PUT /v1/scopes/S/artifacts/atomic-memory/M`, sending
 {
   "content": {
     "kind": "decision",
-    "text": "Keep the public API asynchronous and provide a separate internal synchronous adapter."
+    "text": "Keep the public API asynchronous and provide a separate internal synchronous adapter.",
+    "description": "Async public API with a separate internal synchronous adapter"
   }
 }
 ```
@@ -266,3 +268,51 @@ authorization failures stop processing. The immutable Owner columns are only an 
 
 Scope checks using the same database with supported Builtin or Casbin providers share the business snapshot.
 Independent decision stores and custom providers retain their configured read consistency contracts.
+
+
+## Metadata-only recall manifest
+
+`POST /v1/recall/manifest` (MCP/Python client: `get_recall_manifest`) lists metadata for active Atomic Memory only.
+It does not cover Topic Memory, Experience, Skill, or Sources and does not replace `prepare_context`.
+
+```json
+{"scope_id": "S", "limit": 50, "kind": "decision"}
+```
+
+The response contains `items`, `next_cursor`, and `code` (`page` or `empty_inventory`). Each item has an exact `ref`,
+`kind`, `description`, and `state_version`. Select useful refs, then use `get_artifact_revision` to read and cite their
+full content. A description is a selection aid, not evidence. An empty filtered page never proves a Scope empty or
+permits skipping `prepare_context`.
+
+The limit defaults to 50 and accepts 1–100; oversized requests fail explicitly. Copy `next_cursor` into the next
+request with the same Scope, principal, kind and tag filters. Cursors are signed and endpoint-bound. Ordering is by
+Artifact ID using live keyset pagination, not a snapshot across requests: concurrent new IDs behind the cursor
+require restarting traversal. A null cursor is the explicit end marker. Scope read permission is required. The primary key bounds traversal by Scope and ID; kind/tag filters may
+scan more metadata rows than the returned page. This interface does not promise task-success or latency gains.
+
+Every successful new write, including direct creation/replacement, merges and `remember_memory`, contains a nonblank,
+single-line `description` of 1–200 Unicode characters in the same language as final text. Callers may supply it.
+When omitted, the Server uses the configured generation model to summarize normalized text after authorization and
+outside the database transaction; without a model it returns `503 inference_unavailable` without publishing a memory.
+Existing integrations may continue sending only text when generation is configured. Missing summaries add a
+structured generation operation, subject to the configured timeout and retry limits; Runtime write usage is counted
+under the existing `memory_extraction` purpose. Automatic extraction and
+reconciliation generate descriptions alongside text in their existing call; they need no extra summary request.
+Invalid generation output fails instead of silently publishing incomplete metadata. Custom Atomic Memory
+prompt demonstrations must be updated for the v2 extraction/reconciliation definitions.
+
+Descriptions are authoritative revision content and copied transactionally to `pc_atomic_memory_current.description`.
+Manifest queries select narrow metadata columns, never `text`, `searchable_text`, vectors or `pc_artifacts.content`.
+Neither reading the manifest nor opening an existing database generates summaries. Startup adds the nullable projection
+column without scanning bodies. Existing projection rows remain null until explicit projection repair or a new write.
+The existing offline `atomic-memory-rebuild-projection` command copies stored descriptions; it never generates new ones.
+Its full verification/rebuild scans authoritative history and current rows and may re-embed active memories: this is
+maintenance work, not part of incremental writes or manifest reads.
+
+Historical revisions without a description remain readable and serialize without an extra null field. A null manifest
+description explicitly means missing metadata, not a missing memory. To complete a historical summary, an authorized
+writer reads the current revision and submits complete unchanged kind/text through ordinary replacement with the
+current `If-Match` ETag. Supply a reviewed summary or omit it to invoke the configured model. This creates a new revision; a stale ETag is
+rejected. Never update historical JSON or its content hash in place. Restoring an old revision preserves its historical
+absence of summary. Size, token estimates, timestamps, provenance summaries and other families are outside this first
+manifest contract; no such field is computed by reading bodies.

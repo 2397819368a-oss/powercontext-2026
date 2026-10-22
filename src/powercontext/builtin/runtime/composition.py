@@ -21,6 +21,7 @@ import logging
 import os
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
+from dataclasses import replace
 from datetime import timedelta
 from functools import partial
 from ipaddress import ip_address
@@ -476,6 +477,16 @@ def _artifact_merge_application(contexts: RelationalContexts, config: RuntimeCon
     )
 
 
+def _select_atomic_memory_pipeline(override, generated):
+    """Keep injected extraction/reconciliation while retaining the configured explicit-write summarizer."""
+    if override is None:
+        return generated
+    pipeline = require_atomic_memory_pipeline(override)
+    if pipeline.summarizer is None and generated is not None:
+        return replace(pipeline, summarizer=generated.summarizer)
+    return pipeline
+
+
 @asynccontextmanager
 async def open_builtin_runtime(
     config: BuiltinConfig,
@@ -552,7 +563,8 @@ async def open_builtin_runtime(
                 prompt_demonstrators=prompt_demonstrators,
             )
             if (
-                profile_generator is None
+                config.inference.generation_model is not None
+                or profile_generator is None
                 or candidate_pipeline is None
                 or experience_pipeline is None
                 or experience_generator is None
@@ -566,9 +578,7 @@ async def open_builtin_runtime(
             )
             else (None, None, None, None, None, None, None, None, None, None, None)
         )
-        configured_pipeline = (
-            generated_memory if candidate_pipeline is None else require_atomic_memory_pipeline(candidate_pipeline)
-        )
+        configured_pipeline = _select_atomic_memory_pipeline(candidate_pipeline, generated_memory)
         configured_incubation = generated_incubation if experience_pipeline is None else experience_pipeline
         configured_experience = generated_experience if experience_generator is None else experience_generator
         configured_skill = generated_skill if skill_generator is None else skill_generator
@@ -1508,7 +1518,23 @@ async def _generation_pipelines(
             name="handoff_generation",
             prompt_key="handoff.generate",
         )
+        from powercontext.builtin.artifacts.atomic_memory.summary import (
+            SUMMARY_INSTRUCTIONS,
+            AtomicMemorySummaryInput,
+            AtomicMemorySummaryOutput,
+        )
+
+        memory_summarizer = PydanticAIStructuredGenerator(
+            model=generation_model,
+            instructions=SUMMARY_INSTRUCTIONS,
+            input_type=AtomicMemorySummaryInput,
+            output_type=AtomicMemorySummaryOutput,
+            limits=generation_limits,
+            model_settings=generation_request_settings,
+            name="atomic_memory_summary",
+        )
         generated_memory = AtomicMemoryGenerationPipeline(
+            summarizer=UsageReportingStructuredGenerator(memory_summarizer),
             extractor=UsageReportingStructuredGenerator(memory_generator),
             reconciler=UsageReportingStructuredGenerator(memory_reconciler),
             estimator=character_token_estimator(),
