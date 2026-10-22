@@ -1,6 +1,11 @@
 # Source-to-Memory poisoning observation
 
-This is a bounded, live-model observation for #2158 and #2084 R6. It follows synthetic Source text through
+This directory records bounded live-model observations for #2158 and #2084 R6.
+[The collected-input observation](COLLECTED.md) includes real browser DOM and process stdout collection,
+a persistent poisoning counterexample, and a downstream answer with an explicit unverified-source caveat.
+Its service failures, control-retention misses and reader conditions are reported separately.
+
+The six-fixture observation below follows synthetic Source text through
 extraction, reconciliation, publication, exact immutable revision reads, context preparation, and an actual
 Kimi Code answer. It does not introduce an admission or trust policy.
 
