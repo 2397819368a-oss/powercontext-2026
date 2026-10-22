@@ -69,19 +69,42 @@ export type DiagnosticFailure = (
   extra?: Record<string, unknown>,
 ) => void
 
+function settleWithinBoundary<T>(
+  task: Promise<T>,
+  signal: AbortSignal,
+  onAbort: () => T,
+): Promise<T> {
+  if (signal.aborted) return Promise.resolve(onAbort())
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => resolve(onAbort())
+    signal.addEventListener('abort', abort, { once: true })
+    task.then(
+      (value) => {
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      },
+    )
+  })
+}
+
 export function createPendingSourceFlusher(
   client: PowerContextClient,
   config: ResolvedConfig,
   onFailure?: DiagnosticFailure,
+  createBoundarySignal: () => AbortSignal = () => (
+    createTimeoutSignal(Math.min(config.httpBudgetMs, CLOSING_BUDGET_MS))
+  ),
 ): PendingSourceFlusher {
   const pending = new Map<string, number>()
   let queue = Promise.resolve<PendingFlushResult>({ acknowledged: true, pendingScopes: 0 })
 
   async function flushAll(lifecycleEvent: string, signal?: AbortSignal): Promise<PendingFlushResult> {
     if (pending.size === 0) return { acknowledged: true, pendingScopes: 0 }
-    const signals = [createTimeoutSignal(Math.min(config.httpBudgetMs, CLOSING_BUDGET_MS))]
-    if (signal) signals.push(signal)
-    const combined = combineSignals(signals)
+    if (signal?.aborted) return { acknowledged: false, pendingScopes: pending.size }
     let acknowledged = true
     for (const [scopeId, position] of [...pending]) {
       let observedCursor: number | undefined
@@ -89,7 +112,7 @@ export function createPendingSourceFlusher(
       let scopeAcknowledged = false
       for (let attempt = 0; attempt < config.flushMaxCalls; attempt += 1) {
         try {
-          const result = await client.request('flush_memory', { scope_id: scopeId }, combined)
+          const result = await client.request('flush_memory', { scope_id: scopeId }, signal)
           const progress = flushProgress(result.kind === 'json' ? result.value : undefined)
           observedCursor = progress.currentCursor
           scopeAcknowledged ||= progress.currentCursor >= position
@@ -131,9 +154,14 @@ export function createPendingSourceFlusher(
       pending.set(scopeId, Math.max(current ?? 0, position))
     },
     flush(lifecycleEvent, signal) {
-      const task = queue.then(() => flushAll(lifecycleEvent, signal))
+      const boundarySignal = createBoundarySignal()
+      const combined = signal ? combineSignals([boundarySignal, signal]) : boundarySignal
+      const task = queue.then(() => flushAll(lifecycleEvent, combined))
       queue = task.catch(() => ({ acknowledged: false, pendingScopes: pending.size }))
-      return task
+      return settleWithinBoundary(task, boundarySignal, () => ({
+        acknowledged: false,
+        pendingScopes: pending.size,
+      }))
     },
   }
 }

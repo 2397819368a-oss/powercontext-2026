@@ -643,66 +643,51 @@ describe("PowerContext lifecycle", () => {
     expect(harness.flushScopes).toEqual(["scp_default"]);
   });
 
-  it("starts a closing deadline only after the task leaves the flush queue", async () => {
+  it("includes queue waiting in closing deadlines and retains pending work", async () => {
     const harness = createLifecycleHarness();
     harness.config.flushMaxCalls = 1;
-    const base = {
+    const context = {
       agentId: "main",
       sessionId: "session-queued-deadline",
       sessionKey: "agent:main:telegram:direct:user-1",
     };
     await harness.hooks.get("agent_end")!(
-      { success: true, runId: "run-pending", messages: [{ role: "user", content: "scope b" }] },
-      { ...base, activeProjectKeys: ["/workspace/project-b"] },
+      { success: true, runId: "run-pending", messages: [{ role: "user", content: "remember this" }] },
+      context,
     );
 
-    let releaseFirstFlush: (() => void) | undefined;
-    let firstFlushStarted: (() => void) | undefined;
-    const started = new Promise<void>((resolve) => { firstFlushStarted = resolve; });
-    const blocked = new Promise<void>((resolve) => { releaseFirstFlush = resolve; });
-    let flushCalls = 0;
-    harness.setFlushHandler(async (scopeId, signal) => {
-      flushCalls += 1;
-      if (flushCalls === 1) {
-        firstFlushStarted?.();
-        await blocked;
-      }
-      if (signal?.aborted) throw signal.reason ?? new DOMException("aborted", "AbortError");
-      return flushProgress(scopeId === "scp_project_a" ? 2 : scopeId === "scp_project_b" ? 1 : 3);
+    const firstBoundary = new AbortController();
+    const queuedBoundary = new AbortController();
+    const retryBoundary = new AbortController();
+    const boundaries = [firstBoundary.signal, queuedBoundary.signal, retryBoundary.signal];
+    harness.setClosingSignalFactory(() => boundaries.shift()!);
+    let releaseCapabilities: (() => void) | undefined;
+    let capabilitiesStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { capabilitiesStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseCapabilities = resolve; });
+    harness.setCapabilitiesHandler(async () => {
+      capabilitiesStarted?.();
+      await blocked;
+      return { memory_extraction: false };
     });
 
-    const beforeCompaction = harness.hooks.get("before_compaction")!(
-      {
-        messageCount: 1,
-        compactingCount: 1,
-        messages: [{ role: "user", content: "scope a" }],
-      },
-      { ...base, activeProjectKeys: ["/workspace/project-a"] },
+    const sessionEnd = harness.hooks.get("session_end")!(
+      { sessionId: context.sessionId, messageCount: 1 },
+      context,
     ) as Promise<void>;
     await started;
-    const queuedBeforeCompaction = harness.hooks.get("before_compaction")!(
-      {
-        messageCount: 1,
-        compactingCount: 1,
-        messages: [{ role: "user", content: "scope default" }],
-      },
-      base,
-    ) as Promise<void>;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    let signalCreations = 0;
-    harness.setClosingSignalFactory(() => {
-      signalCreations += 1;
-      return AbortSignal.timeout(20);
-    });
     const gatewayStop = harness.hooks.get("gateway_stop")!({}, {}) as Promise<void>;
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(signalCreations).toBe(0);
+    queuedBoundary.abort(new DOMException("deadline exceeded", "TimeoutError"));
 
-    releaseFirstFlush?.();
-    await Promise.all([beforeCompaction, queuedBeforeCompaction, gatewayStop]);
+    await gatewayStop;
+    expect(harness.flushScopes).toEqual([]);
 
-    expect(signalCreations).toBe(1);
-    expect(harness.flushScopes).toEqual(["scp_project_a", "scp_project_b", "scp_default"]);
+    releaseCapabilities?.();
+    await sessionEnd;
+    harness.setCapabilitiesHandler(() => ({ memory_extraction: true }));
+    await harness.hooks.get("gateway_stop")!({}, {});
+
+    expect(harness.flushScopes).toEqual(["scp_default"]);
   });
 
   it("does not let one Scope cursor acknowledge another Scope", async () => {

@@ -216,6 +216,49 @@ describe('pending Source flusher', () => {
     expect(calls).toBe(1)
   })
 
+  it('includes queue waiting in the lifecycle deadline and retains pending work', async () => {
+    const firstBoundary = new AbortController()
+    const queuedBoundary = new AbortController()
+    const retryBoundary = new AbortController()
+    const boundaries = [firstBoundary.signal, queuedBoundary.signal, retryBoundary.signal]
+    let releaseFirst: (() => void) | undefined
+    let firstStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => { firstStarted = resolve })
+    const blocked = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let calls = 0
+    const client = {
+      request: vi.fn(async () => {
+        calls += 1
+        if (calls === 1) {
+          firstStarted?.()
+          await blocked
+          return { kind: 'json' as const, value: progress(0), status: 200, requestId: undefined }
+        }
+        return { kind: 'json' as const, value: progress(1), status: 200, requestId: undefined }
+      }),
+    } as unknown as PowerContextClient
+    const flusher = createPendingSourceFlusher(
+      client,
+      resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '1' }),
+      undefined,
+      () => boundaries.shift()!,
+    )
+    flusher.record('scope-a', 1)
+
+    const first = flusher.flush('agent_end')
+    await started
+    const queued = flusher.flush('session_shutdown')
+    queuedBoundary.abort(new DOMException('deadline exceeded', 'TimeoutError'))
+
+    await expect(queued).resolves.toEqual({ acknowledged: false, pendingScopes: 1 })
+    expect(client.request).toHaveBeenCalledTimes(1)
+
+    releaseFirst?.()
+    await expect(first).resolves.toEqual({ acknowledged: false, pendingScopes: 1 })
+    await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
+    expect(client.request).toHaveBeenCalledTimes(2)
+  })
+
   it('flushes only accepted positions at both Pi closing boundaries', async () => {
     const vector = conformanceCase('closing_boundaries')
     const client = clientWith(progress(vector.input.target_position), progress(vector.input.target_position))

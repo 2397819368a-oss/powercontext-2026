@@ -21,8 +21,8 @@ explicit override, and automatic prompt capture.
 
 Pi's public `session_before_compact` event performs a best-effort checkpoint for accepted prompt Sources. A Source
 position remains pending until a complete flush response reports `current_cursor` at or beyond it. The package
-retries cursor lag or `remaining_work` within `POWERCONTEXT_PI_FLUSH_MAX_CALLS` and a shared one-second closing
-budget; session switch and shutdown flush only accepted pending positions. Pi continues compaction after handler
+retries cursor lag or `remaining_work` within `POWERCONTEXT_PI_FLUSH_MAX_CALLS` and a shared one-second boundary
+budget that includes queue waiting; session switch and shutdown flush only accepted pending positions. Pi continues compaction after handler
 errors unless a handler explicitly returns `{ cancel: true }`; this package does not return that result and therefore
 does not provide a required checkpoint mode.
 

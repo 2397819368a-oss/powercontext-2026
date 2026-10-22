@@ -63,10 +63,10 @@ checkpoint is acknowledged only by a complete, valid flush response whose `curre
 position. A 2xx response alone is not an acknowledgement.
 
 If the cursor is behind or `remaining_work` is true, the plugin makes at most `flushMaxCalls` calls (default `4`,
-valid range `1`–`16`) within a one-second boundary budget; `timeoutMs` (default 2500 ms) remains the per-request
+valid range `1`–`16`) within a one-second boundary budget that starts when the flush is queued; `timeoutMs` (default 2500 ms) remains the per-request
 ceiling. Accepted positions that are not acknowledged remain pending for Server scheduling or a later bounded flush
-at `session_end` or `gateway_stop`. Closing work has priority over queued pre-compaction work: it waits for at most
-the currently running one-second boundary, then receives its own one-second deadline. Closing events flush only
+at `session_end` or `gateway_stop`. Closing work has priority over queued pre-compaction work, while queue waiting
+counts against each event's boundary budget. Closing events flush only
 already accepted positions and are not reported as pre-compaction events.
 
 OpenClaw catches `before_compaction` hook failures and continues compaction, so this integration is not

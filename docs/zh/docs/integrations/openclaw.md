@@ -59,10 +59,10 @@ messages；语义相同的重复 payload 会保留同一个 identity，后续不
 `current_cursor >= position` 时才确认
 checkpoint；仅有 HTTP 2xx 不算确认。
 
-当 cursor 落后或 `remaining_work` 为 true 时，插件会在一秒边界总预算内最多调用 `flushMaxCalls` 次（默认 `4`，
+当 cursor 落后或 `remaining_work` 为 true 时，插件会在从 flush 入队时开始计算的一秒边界总预算内最多调用 `flushMaxCalls` 次（默认 `4`，
 有效范围 `1`–`16`）；`timeoutMs`（默认 2500 ms）仍是单次请求上限。未确认的已接受 position 会继续保留，供 Server
-调度或之后在 `session_end`、`gateway_stop` 执行有界 flush。关闭任务的优先级高于尚未开始的压缩前任务：它最多等待
-当前正在运行的一秒边界，随后获得自己独立的一秒 deadline。关闭事件只 flush 已接受的 position，不会被报告成压缩前事件。
+调度或之后在 `session_end`、`gateway_stop` 执行有界 flush。关闭任务的优先级高于尚未开始的压缩前任务，但排队等待
+也计入各事件的边界预算。关闭事件只 flush 已接受的 position，不会被报告成压缩前事件。
 
 OpenClaw 会捕获 `before_compaction` hook 的失败并继续压缩，因此该集成不具备 `required_capable` 语义。失败诊断
 只包含宿主、生命周期事件、Scope 哈希关联值、已知的目标/观测 position 和稳定失败分类；不会包含 transcript、

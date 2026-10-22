@@ -128,6 +128,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     run: () => Promise<void>;
     resolve: () => void;
     reject: (error: unknown) => void;
+    signal?: AbortSignal;
   };
   const normalFlushQueue: QueuedFlush[] = [];
   const closingFlushQueue: QueuedFlush[] = [];
@@ -138,6 +139,10 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     try {
       while (closingFlushQueue.length || normalFlushQueue.length) {
         const queued = closingFlushQueue.shift() ?? normalFlushQueue.shift()!;
+        if (queued.signal?.aborted) {
+          queued.resolve();
+          continue;
+        }
         try {
           await queued.run();
           queued.resolve();
@@ -149,12 +154,31 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       flushQueueRunning = false;
     }
   };
-  const enqueueFlush = (task: () => Promise<void>, priority: "normal" | "closing" = "normal"): Promise<void> => {
-    const result = new Promise<void>((resolve, reject) => {
-      (priority === "closing" ? closingFlushQueue : normalFlushQueue).push({ run: task, resolve, reject });
+  const enqueueFlush = (
+    task: () => Promise<void>,
+    priority: "normal" | "closing" = "normal",
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const execution = new Promise<void>((resolve, reject) => {
+      (priority === "closing" ? closingFlushQueue : normalFlushQueue).push({ run: task, resolve, reject, signal });
     });
     void drainFlushQueue();
-    return result;
+    if (!signal) return execution;
+    if (signal.aborted) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const abort = () => resolve();
+      signal.addEventListener("abort", abort, { once: true });
+      execution.then(
+        () => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        },
+        (error) => {
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        },
+      );
+    });
   };
   const readAgentId = (agentId: string | undefined): string | undefined => {
     const value = agentId?.trim();
@@ -405,12 +429,12 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     if (targetPosition === undefined) {
       return;
     }
+    const signal = createClosingSignal();
     await enqueueFlush(async () => {
       const currentTarget = pendingPositions.get(scopeId);
       if (currentTarget === undefined) {
         return;
       }
-      const signal = createClosingSignal();
       try {
         if (await canExtractMemory(signal)) {
           const result = await flush(scopeId, Math.max(targetPosition, currentTarget), signal);
@@ -443,7 +467,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           target_position: Math.max(targetPosition, currentTarget),
         });
       }
-    }, "normal");
+    }, "normal", signal);
   });
 
   api.on("session_end", async (event, ctx) => {
@@ -455,12 +479,12 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     const observedScopes = sessionScopes.get(event.sessionId);
     sessionScopes.delete(event.sessionId);
     const scopes = observedScopes?.size ? [...observedScopes] : [];
+    const signal = createClosingSignal();
     await enqueueFlush(async () => {
       const pendingScopes = scopes.filter((scopeId) => pendingPositions.has(scopeId));
       if (!pendingScopes.length) {
         return;
       }
-      const signal = createClosingSignal();
       try {
         if (!(await canExtractMemory(signal))) {
           return;
@@ -487,15 +511,15 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           lifecycle_event: "session_end",
         });
       }
-    }, "closing");
+    }, "closing", signal);
   });
 
   api.on("gateway_stop", async () => {
+    const signal = createClosingSignal();
     await enqueueFlush(async () => {
       if (!pendingPositions.size) {
         return;
       }
-      const signal = createClosingSignal();
       try {
         if (!(await canExtractMemory(signal))) {
           return;
@@ -522,6 +546,6 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           lifecycle_event: "gateway_stop",
         });
       }
-    }, "closing");
+    }, "closing", signal);
   });
 }
