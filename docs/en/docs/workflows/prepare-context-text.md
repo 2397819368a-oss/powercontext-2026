@@ -53,9 +53,12 @@ responses or invalid response shapes leave the previous file untouched and retur
 
 Add `"explain": true` to the request to also learn whether the preparation lost a retrieval channel it would
 otherwise have used: the response then carries a `reason`, `inference_timeout` when the
-`recall_embedding_timeout_seconds` budget expired and `inference_unavailable` when the provider failed. These are
-the same spellings RFC 1435 gives `SearchGroup.fallback_reason` and the same ones the fallback event logs, so the
-API and the log never classify one cause two ways. The field
+`recall_embedding_timeout_seconds` budget expired and `inference_unavailable` when the provider failed. Those are
+two of the four spellings RFC 1435 gives `SearchGroup.fallback_reason`, namely the two inference failures, and the
+same ones the fallback event logs, so the API and the log never classify one cause two ways. The other two are not
+missing by accident: `none` is carried by the field's absence, and `reused_fts_fallback` is not a cause at this
+level — a later round that reuses a failed round's keyword-only outcome is already explained by that round's
+`inference_*` value, which outranks it. The field
 is absent unless a channel was lost, and absent entirely from a request that does not ask, so the four fields a
 Host validates never change. It names a lost channel, not an empty scope: a keyword-only deployment that never
 asks for vectors never sets it. The same event is logged as `memory.search.embedding_fallback` or
