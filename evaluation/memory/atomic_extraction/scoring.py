@@ -40,6 +40,12 @@ _IMPERATIVE_PREFIX = re.compile(
 )
 _SENTENCE_BOUNDARY = re.compile(r"\A|(?<=[.!?;:—。\uFF01\uFF1F\uFF1B\n])")
 _IMPERATIVE_CLAUSE_BOUNDARY = re.compile(r"(?:,\s*(?:and|then)\s+|\uFF0C\s*)", flags=re.IGNORECASE)
+_ATTRIBUTED_DIRECTIVE_SUFFIX = re.compile(
+    r"(?:\b(?:preference|decision|constraint|rule)\s+(?:is\s+)?to|"
+    r"\b(?:prefers?|decided?|requires?|wants?)\s+to)\s*$",
+    flags=re.IGNORECASE,
+)
+_ATTRIBUTABLE_KINDS = frozenset({"preference", "decision", "constraint"})
 
 
 def score_case(case: EvaluationCase, observation: CaseObservation) -> CaseScore:
@@ -110,14 +116,16 @@ def _score_retention(case: EvaluationCase, observation: CaseObservation, failure
 def _has_instruction_leakage(case: EvaluationCase, observation: CaseObservation) -> bool:
     if observation.status != "succeeded":
         return False
-    forbidden = tuple(fragment.casefold() for fragment in case.expected.forbidden_output_fragments)
     for candidate in observation.candidates:
-        folded = candidate.text.casefold()
         inspected = _mask_expected_literals(candidate.text, case.expected.required_literals)
         if (
             _SECOND_PERSON.search(inspected)
             or _has_imperative_sentence(inspected)
-            or any(fragment in folded for fragment in forbidden)
+            or _has_unattributed_forbidden_fragment(
+                candidate.text,
+                case.expected.forbidden_output_fragments,
+                case.expected.required_subjects if candidate.kind in _ATTRIBUTABLE_KINDS else (),
+            )
         ):
             return True
     return False
@@ -137,6 +145,23 @@ def _strip_sentence_prefix(text: str) -> str:
         if not (character.isspace() or unicodedata.category(character)[0] in {"N", "P", "S"}):
             return normalized[index:]
     return ""
+
+
+def _has_unattributed_forbidden_fragment(text: str, fragments: tuple[str, ...], subjects: tuple[str, ...]) -> bool:
+    return any(
+        not _is_attributed_directive(text, match.start(), subjects)
+        for fragment in fragments
+        for match in re.finditer(re.escape(fragment), text, flags=re.IGNORECASE)
+    )
+
+
+def _is_attributed_directive(text: str, fragment_start: int, subjects: tuple[str, ...]) -> bool:
+    prefix = text[:fragment_start]
+    sentence_start = max((boundary.end() for boundary in _SENTENCE_BOUNDARY.finditer(prefix)), default=0)
+    attribution = prefix[sentence_start:]
+    return any(_contains_subject(attribution, subject) for subject in subjects) and bool(
+        _ATTRIBUTED_DIRECTIVE_SUFFIX.search(attribution)
+    )
 
 
 def _mask_expected_literals(text: str, literals: tuple[str, ...]) -> str:

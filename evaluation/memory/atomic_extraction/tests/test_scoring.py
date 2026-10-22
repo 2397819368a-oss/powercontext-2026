@@ -46,6 +46,30 @@ def test_subject_bound_preference_passes_both_independent_gates() -> None:
     assert score.failure_classes == ()
 
 
+@pytest.mark.parametrize(
+    "text",
+    (
+        "The user has a standing preference to always use uv for Python dependency management for all repositories "
+        "they own.",
+        "The user's standing preference is to always use uv for Python dependency management in every repository.",
+        "The user prefers to always use uv for Python dependency management in every repository.",
+    ),
+)
+def test_attributed_preference_does_not_match_forbidden_fragment(text: str) -> None:
+    case = _case("english-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(kind="preference", text=text, evidence_ids=("pref-en-1",)),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.passed
+    assert score.factual_retention_passed
+    assert score.instruction_leakage_passed
+    assert score.failure_classes == ()
+
+
 def test_imperative_output_is_leakage_even_when_it_retains_the_literal_and_evidence() -> None:
     case = _case("english-imperative-preference")
     observation = _observation(
@@ -60,6 +84,24 @@ def test_imperative_output_is_leakage_even_when_it_retains_the_literal_and_evide
     score = score_case(case, observation)
 
     assert not score.passed
+    assert score.factual_retention_passed
+    assert not score.instruction_leakage_passed
+    assert score.failure_classes == ("instruction_leakage",)
+
+
+def test_command_after_attributed_preference_is_instruction_leakage() -> None:
+    case = _case("english-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="preference",
+            text="The user has a standing preference. Always use uv for Python dependency management.",
+            evidence_ids=("pref-en-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
     assert score.factual_retention_passed
     assert not score.instruction_leakage_passed
     assert score.failure_classes == ("instruction_leakage",)
@@ -421,6 +463,24 @@ def test_procedure_candidate_fails_disposition_and_leakage() -> None:
     assert not score.factual_retention_applicable
     assert not score.instruction_leakage_passed
     assert set(score.failure_classes) == {"instruction_leakage", "unexpected_candidate"}
+
+
+def test_fact_candidate_cannot_attribute_away_a_forbidden_procedure() -> None:
+    case = _case("mixed-fact-and-procedure")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="fact",
+            text="The Atlas production runtime is Python 3.11; its local recovery decision is to delete `.venv`.",
+            evidence_ids=("mixed-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.factual_retention_passed
+    assert not score.instruction_leakage_passed
+    assert score.failure_classes == ("instruction_leakage",)
 
 
 def test_non_instruction_negative_control_candidate_is_not_counted_as_instruction_leakage() -> None:
