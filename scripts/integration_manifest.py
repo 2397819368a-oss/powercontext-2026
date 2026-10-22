@@ -588,7 +588,10 @@ def _probe_toolset(probe: ToolSurfaceProbe, root: Path) -> set[str]:
             entry = manifest["mcpServers"]["powercontext"]
             if entry.get("url") != "http://127.0.0.1:8000/mcp":
                 raise ValueError("missing Kimi HTTP MCP endpoint")
-            return set(entry["enabledTools"])
+            profiles = json.loads((plugin / "profiles.json").read_text(encoding="utf-8"))["profiles"]
+            if entry["enabledTools"] != profiles["minimal"]:
+                raise ValueError("Kimi default tools do not match its minimal profile")
+            return set(profiles["full"])
         script = (plugin / "hooks/user_prompt_submit.mjs").read_text(encoding="utf-8")
         expected = {"event": "UserPromptSubmit", "command": "node ./hooks/user_prompt_submit.mjs", "timeout": 5}
         if manifest.get("hooks") != [expected] or not all(

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
-from contextlib import AsyncExitStack, nullcontext, suppress
+from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from sqlite3 import SQLITE_CANTOPEN
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -47,6 +47,7 @@ from powercontext.cli.inference_notice import write_inference_capability_notice
 from powercontext.server.app import access_readiness_checks
 from powercontext.server.authz import PrincipalRef
 from powercontext.server.authz.composition import open_builtin_access_control
+from powercontext.server.background_metrics import serve_background_metrics
 from powercontext.server.configuration import (
     ServerConfigurationError,
     resolve_server_environment_file,
@@ -69,6 +70,7 @@ from powercontext.server.worker_tracing import WorkerTracing
 
 if TYPE_CHECKING:
     from powercontext.builtin.persistence.migrations.atomic_memory_references import CandidateDecision
+    from powercontext.builtin.persistence.migrations.atomic_memory_v1 import OwnerDecision
 
 HELP_OPTION_NAMES = ("-h", "--help")
 
@@ -143,10 +145,13 @@ async def _processing_maintenance(
     )
     manifest = canonical_processing_manifest(config)
     database = settings.database
+    # A plan only inspects an existing database: opening it read-only keeps the
+    # command from creating the directory, the file or a journal mode it reports on.
+    read_only = action == "plan"
     if isinstance(database, SQLiteConfig):
         if not database.is_persistent:
             raise typer.BadParameter("offline migration requires a persistent database")  # noqa: TRY003
-        opened = SQLiteProfile.open(database, tables=())
+        opened = SQLiteProfile.open_readonly(database) if read_only else SQLiteProfile.open(database, tables=())
     elif isinstance(database, OceanBaseConfig):
         opened = OceanBaseProfile.open(database, tables=())
     elif isinstance(database, SeekDBConfig):
@@ -215,22 +220,43 @@ def atomic_memory_migrate(
         Path | None,
         typer.Option(help="JSON decisions replacing Candidate evidence that cited only whole Memory collections."),
     ] = None,
+    snapshot_budget_mib: Annotated[
+        int,
+        typer.Option(
+            min=1, help="Conservative processing-snapshot working-set budget in MiB, not total process memory."
+        ),
+    ] = 256,
+    owner_decisions: Annotated[
+        Path | None,
+        typer.Option(help="JSON attestations establishing Owners for ownerless legacy Memory entries."),
+    ] = None,
 ) -> None:
     """Archive Memory v1, convert its history and references to Atomic Memory, and remove it from public tables."""
 
     from powercontext.builtin.persistence.migrations.atomic_memory_references import load_decisions
+    from powercontext.builtin.persistence.migrations.atomic_memory_v1 import load_owner_decisions
 
     if action == "apply" and not maintenance_confirmed:
         raise typer.BadParameter("apply requires --maintenance-confirmed after stopping every old writer")  # noqa: TRY003
     try:
         loaded = {} if decisions is None else load_decisions(json.loads(decisions.read_text(encoding="utf-8")))
+        loaded_owners = (
+            {}
+            if owner_decisions is None
+            else load_owner_decisions(json.loads(owner_decisions.read_text(encoding="utf-8")))
+        )
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise typer.BadParameter(f"invalid decision file: {error}") from error  # noqa: TRY003
     with server_settings_context(env_file=env_file) as settings:
         try:
             ready = asyncio.run(
                 _atomic_memory_maintenance(
-                    settings, action, maintenance_confirmed=maintenance_confirmed, decisions=loaded
+                    settings,
+                    action,
+                    maintenance_confirmed=maintenance_confirmed,
+                    decisions=loaded,
+                    snapshot_budget_bytes=snapshot_budget_mib * 1024 * 1024,
+                    owner_decisions=loaded_owners,
                 )
             )
         except OperationalError as error:
@@ -269,6 +295,32 @@ def atomic_memory_rebuild_projection(
         raise typer.Exit(code=1)
 
 
+async def _sqlite_snapshot_budget_preflight(database: SQLiteConfig, snapshot_budget_bytes: int) -> bool:
+    from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
+        AtomicMemoryMigrationReport,
+        AtomicMemorySnapshotBudgetError,
+        preflight_processing_snapshot,
+    )
+
+    try:
+        # Reject existing inputs before writable opening can switch journal
+        # mode. Apply retains creation behavior when no database can be opened;
+        # its initial inventory repeats admission before migration writes.
+        async with (
+            SQLiteProfile.open_readonly(database) as inspection,
+            inspection.database.transaction() as connection,
+        ):
+            await preflight_processing_snapshot(connection, snapshot_budget_bytes=snapshot_budget_bytes)
+    except AtomicMemorySnapshotBudgetError as error:
+        typer.echo(AtomicMemoryMigrationReport(action="apply", errors=error.errors).model_dump_json())
+        return False
+    except OperationalError as error:
+        sqlite_code = getattr(error.orig, "sqlite_errorcode", None)
+        if not isinstance(sqlite_code, int) or sqlite_code & 0xFF != SQLITE_CANTOPEN:
+            raise
+    return True
+
+
 async def _atomic_memory_maintenance(
     settings: ServerSettings,
     action: Literal["plan", "apply", "verify", "rebuild-projection"],
@@ -276,6 +328,8 @@ async def _atomic_memory_maintenance(
     maintenance_confirmed: bool,
     batch_size: int = 100,
     decisions: dict[tuple[str, str, int], CandidateDecision] | None = None,
+    snapshot_budget_bytes: int = 256 * 1024 * 1024,
+    owner_decisions: dict[tuple[str, str, str], OwnerDecision] | None = None,
 ) -> bool:
     from powercontext.builtin.artifacts.memory import EmbeddingProfile
 
@@ -296,6 +350,8 @@ async def _atomic_memory_maintenance(
     if isinstance(database, SQLiteConfig):
         if not database.is_persistent:
             raise typer.BadParameter("offline migration requires a persistent database")  # noqa: TRY003
+        if action == "apply" and not await _sqlite_snapshot_budget_preflight(database, snapshot_budget_bytes):
+            return False
         opened = (
             SQLiteProfile.open_readonly(database, load_vector_extension=embedding_profile is not None)
             if read_only
@@ -331,6 +387,9 @@ async def _atomic_memory_maintenance(
                     maintenance_confirmed=maintenance_confirmed,
                     embedding_model=embedding_model,
                     decisions=decisions,
+                    snapshot_budget_bytes=snapshot_budget_bytes,
+                    owner_decisions=owner_decisions,
+                    require_owners=settings.access.mode == "enforced",
                 )
         else:
             from powercontext.builtin.persistence.migrations.atomic_memory_v1 import (
@@ -340,9 +399,22 @@ async def _atomic_memory_maintenance(
 
             async with profile.database.transaction() as connection:
                 report = (
-                    await plan_atomic_memory_migration(connection, index=index, decisions=decisions)
+                    await plan_atomic_memory_migration(
+                        connection,
+                        index=index,
+                        decisions=decisions,
+                        snapshot_budget_bytes=snapshot_budget_bytes,
+                        owner_decisions=owner_decisions,
+                        require_owners=settings.access.mode == "enforced",
+                    )
                     if action == "plan"
-                    else await verify_atomic_memory_migration(connection, index=index)
+                    else await verify_atomic_memory_migration(
+                        connection,
+                        index=index,
+                        snapshot_budget_bytes=snapshot_budget_bytes,
+                        owner_decisions=owner_decisions,
+                        require_owners=settings.access.mode == "enforced",
+                    )
                 )
         typer.echo(report.model_dump_json())
         return report.ready if action != "plan" else not report.errors
@@ -455,7 +527,7 @@ def _run_server(application: Any, *, host: str, port: int) -> None:
 
 
 def _run_background(settings: ServerSettings, tracing: Any) -> None:
-    """Run a Supervisor-only process until SIGINT or SIGTERM."""
+    """Run a Supervisor and optional metrics listener until SIGINT or SIGTERM."""
 
     asyncio.run(_run_background_async(settings, tracing))
 
@@ -469,7 +541,7 @@ async def _run_background_async(settings: ServerSettings, tracing: Any) -> None:
         inference=settings.inference,
         external_skills=settings.external_skills,
     )
-    metrics = ServerMetrics() if settings.metrics.enabled else None
+    metrics = ServerMetrics(role="background") if settings.metrics.enabled else None
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     installed: list[signal.Signals] = []
@@ -512,44 +584,19 @@ async def _run_background_async(settings: ServerSettings, tracing: Any) -> None:
             if metrics is None or stopped.is_set():
                 await stopped.wait()
             else:
-                import uvicorn
-
-                probe = _ServerReadinessProbe(metrics, tracing=tracing)
-                probe.bind(runtime)
-                await probe()
-                await resources.enter_async_context(probe.monitor())
-                app = create_background_metrics_app(settings, runtime, metrics, access)
+                application = create_background_metrics_app(
+                    settings, runtime=runtime, metrics=metrics, access_control=access
+                )
 
                 async def background_access_checks() -> dict[str, str]:
-                    return await access_readiness_checks(app.state)
+                    return await access_readiness_checks(application.state)
 
-                probe.set_access_checks(background_access_checks)
+                probe = _ServerReadinessProbe(metrics, tracing=tracing, access_checks=background_access_checks)
+                probe.bind(runtime)
+                resources.callback(probe.unbind)
                 await probe()
-                server = uvicorn.Server(
-                    uvicorn.Config(
-                        app,
-                        host=settings.http.host,
-                        port=settings.metrics.background_port,
-                        access_log=False,
-                        log_config=None,
-                        timeout_graceful_shutdown=2,
-                    )
-                )
-                serving = asyncio.create_task(server.serve(), name="background-metrics-http")
-                stopping = asyncio.create_task(stopped.wait())
-                try:
-                    await asyncio.wait((serving, stopping), return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    server.should_exit = True
-                    stopping.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await stopping
-                    try:
-                        await asyncio.wait_for(asyncio.shield(serving), timeout=5)
-                    except TimeoutError:
-                        serving.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await serving
+                await resources.enter_async_context(probe.monitor())
+                await serve_background_metrics(application, settings, stopped)
     finally:
         for signum in installed:
             loop.remove_signal_handler(signum)

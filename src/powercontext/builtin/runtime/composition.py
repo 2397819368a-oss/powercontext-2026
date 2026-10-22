@@ -96,7 +96,9 @@ from powercontext.builtin.inference.usage import (
     UsageReportingEmbeddingModel,
     UsageReportingStructuredGenerator,
 )
-from powercontext.builtin.persistence.atomic_memory_index import AtomicMemoryIndexCapabilities
+from powercontext.builtin.persistence.atomic_memory_index import (
+    AtomicMemoryIndexCapabilities,
+)
 from powercontext.builtin.persistence.atomic_memory_readiness import (
     assert_atomic_memory_migration_ready,
     ensure_supported_atomic_memory_schema,
@@ -129,6 +131,7 @@ from powercontext.builtin.persistence.sqlite.topic_memory_index import (
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.persistence.tag_schema import ensure_topic_memory_tag_schema
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
+from powercontext.builtin.persistence.topic_memory_budget import record_topic_memory_work_failure
 from powercontext.builtin.persistence.topic_memory_index import (
     CompositeTopicMemoryIndex,
     TopicMemoryIndex,
@@ -197,6 +200,7 @@ from powercontext.builtin.runtime.topic_memory_processing import (
     run_topic_memory_worker,
     validate_topic_memory_provider_settings,
 )
+from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecoveryService
 from powercontext.builtin.runtime.topic_memory_scope import topic_memory_processing_block
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.runtime.worker_observability import worker_model_usage_collector
@@ -748,8 +752,6 @@ async def open_builtin_runtime(
         artifact_search.register(contexts.list_skills)
         topic_memory_searcher = TopicMemorySearcher(
             search=contexts.search_topic_memories,
-            get=contexts.get_topic_memory,
-            browse=contexts.browse_topic_memories,
             embedding_model=configured_embedding,
             observer=topic_memory_search_observer,
             capabilities=contexts.topic_memory_index.capabilities,
@@ -764,6 +766,8 @@ async def open_builtin_runtime(
                 code_service=await resources.enter_async_context(open_code_service(config.code, config.database)),
                 provider=contexts,
                 primary_database=contexts.database,
+                owner_write_transactions=True,
+                handoff_committer=contexts.commit_handoff,
                 capabilities=RuntimeCapabilities(
                     memory_extraction=contexts.memory_extraction,
                     experience_generation=contexts.experience_generation,
@@ -797,10 +801,12 @@ async def open_builtin_runtime(
                 ),
                 context_assembly_max_entries=config.runtime.context_assembly_max_entries,
                 recall_sufficiency_policy=RecallSufficiencyPolicy.from_runtime_config(config.runtime),
+                recall_embedding_timeout_seconds=config.runtime.recall_embedding_timeout_seconds,
                 scope_cache_size=config.runtime.scope_cache_size,
                 scope_evictor=contexts.evict,
                 scope_cache_observer=scope_cache_observer,
                 scope_ids=contexts.scope_ids,
+                source_scope_ids=contexts.unconsumed_source_scope_ids,
                 review_service=contexts.review,
                 catalog_change_service=contexts.catalog_changes,
                 profiles=contexts.profiles,
@@ -834,6 +840,7 @@ async def open_builtin_runtime(
                 topic_memory_get=contexts.get_topic_memory,
                 topic_memory_browse=contexts.browse_topic_memories,
                 topic_memory_flush=contexts.request_topic_memory_flush,
+                topic_memory_recovery=TopicMemoryRecoveryService(contexts.database),
                 topic_memory_embedding_model=configured_embedding,
                 topic_memory_processing_available=topic_memory_processing_available,
                 topic_memory_search_observer=topic_memory_search_observer,
@@ -852,7 +859,10 @@ async def open_builtin_runtime(
                 decision_model=configured_decision,
                 publication_application=contexts.publications,
                 scope_application=contexts.scopes,
-                readiness=RuntimeReadinessChecks(readiness_probes),
+                readiness=RuntimeReadinessChecks(
+                    readiness_probes,
+                    disabled_dependencies=(name for name, probe in inference_readiness if probe is None),
+                ),
                 tracing=tracing,
                 scheduled_source_runner=scheduled_source_runner,
                 scheduled_experience_runner=scheduled_experience_runner,
@@ -1009,6 +1019,7 @@ def _artifact_processing_bindings(  # noqa: C901 - validate and assemble one reg
                 if family == "topic-memory"
                 else None,
                 worker_model_usage_observer=worker_model_usage_observer,
+                work_failure=record_topic_memory_work_failure if family == "topic-memory" else None,
             )
         )
     _validate_processing_registrations(configured)
@@ -1139,6 +1150,7 @@ async def open_builtin_contexts(
                 if not _topic_memory_worker:
                     await _initialize_atomic_memory_authority(connection)
                     await atomic_index.initialize(connection)
+                    await atomic_index.validate_current(connection)
                     await refresh_lexical_projections(
                         connection, atomic_index.table if atomic_index.table in atomic_index.tables else None
                     )
@@ -1220,6 +1232,7 @@ async def open_builtin_contexts(
             if not _topic_memory_worker:
                 await _initialize_atomic_memory_authority(connection)
                 await atomic_index.initialize(connection)
+                await atomic_index.validate_current(connection)
                 await refresh_lexical_projections(
                     connection, atomic_index.table if atomic_index.table in atomic_index.tables else None
                 )

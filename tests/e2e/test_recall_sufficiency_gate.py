@@ -312,6 +312,12 @@ def test_sqlite_vector_prepare_reports_cosine_and_expands_past_a_weak_top(tmp_pa
         ) as runtime:
             scope_id = await _create_scope(runtime, "vector-gate")
             await _seed(runtime, scope_id, ["alpha beta gamma vector evidence", "unrelated vector evidence"])
+            # SQLite's optional math functions are not part of the backend requirements.
+            provider = cast(Any, runtime._provider)
+            async with provider.database.transaction() as connection:
+                driver = (await connection.get_raw_connection()).driver_connection
+                assert driver is not None
+                await driver.create_function("power", 2, None)
             build, effort = await _prepare_build(runtime, scope_id, _memory_request())
 
         # weak-top-1 is not terminal: the recoverable below-floor hit is re-admitted by one
@@ -773,8 +779,6 @@ def test_topic_embedding_timeout_is_paid_once_per_prepare(tmp_path, monkeypatch)
             assert runtime._topic_memory_search is not None
             runtime._topic_memory_searcher = TopicMemorySearcher(
                 search=runtime._topic_memory_search,
-                get=runtime._topic_memory_get,
-                browse=runtime._topic_memory_browse,
                 embedding_model=embedding,
                 observer=runtime._topic_memory_search_observer,
             )

@@ -23,7 +23,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -72,6 +72,7 @@ class ModelGateway(ThreadingHTTPServer):
         self.scope_id = scope_id
         self.requests = []
         self.generation_requests = []
+        self.choose_tool: Callable[..., tuple[str | None, dict[str, Any] | None]] | None = None
 
 
 class ModelHandler(BaseHTTPRequestHandler):
@@ -120,6 +121,8 @@ class ModelHandler(BaseHTTPRequestHandler):
         elif "PC_KIMI_SEARCH" in user_text and not tool_messages:
             tool = "search_memory"
             arguments = {"scope_id": scope_id, "query": "amber", "mode": "fts"}
+        elif self.server.choose_tool is not None:
+            tool, arguments = self.server.choose_tool(body, scope_id, tool_messages)
         delta = {"content": "PC_KIMI_OK"}
         finish = "stop"
         if tool:
@@ -319,7 +322,7 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
         )
         installed = install_plugin("kimi-code", source=str(REPOSITORY), server_url=endpoint, scope_id=scope_id)
         install_plugin("kimi-code", source=str(REPOSITORY))
-        diagnostics = KimiInstaller().verify()
+        diagnostics = KimiInstaller().verify(mcp=True)
         assert all(check.ok for check in diagnostics.values()), diagnostics
         command = [node, str(cli)] if cli.suffix in {".mjs", ".js", ".cjs"} else [str(cli)]
         version = subprocess.run([*command, "--version"], capture_output=True, text=True, check=True, timeout=15)

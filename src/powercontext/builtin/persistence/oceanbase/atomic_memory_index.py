@@ -56,16 +56,36 @@ _VECTOR_TYPE = text(
 _HIT_COLUMNS = "artifact_id, revision, state_version, kind, text"
 
 
+def oceanbase_atomic_memory_vector_sql(eligibility: str, /) -> str:
+    """Bounded ANN over current usable vectors with same-row qualification."""
+    return (
+        f"WITH candidates AS (SELECT {_HIT_COLUMNS}, l2_distance(embedding, :query_vector) AS distance "  # noqa: S608
+        "FROM pc_atomic_memory_current "
+        f"WHERE scope_id = :scope_id AND ({eligibility}) "
+        "AND embedding IS NOT NULL AND embedding_input_hash IS NOT NULL "
+        "AND profile_fingerprint = :profile AND projection_format = :projection_format "
+        "ORDER BY l2_distance(embedding, :query_vector) APPROXIMATE LIMIT :result_limit "
+        "PARAMETERS(ef_search=:ef_search)) "
+        f"SELECT {_HIT_COLUMNS}, distance, 0 AS invalid_vectors FROM candidates "
+        "WHERE greatest(-1.0, least(1.0, 1.0 - distance * distance / 2.0)) >= :min_semantic_similarity "
+        "ORDER BY distance, artifact_id"
+    )
+
+
 class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
     """Native same-row retrieval; complete enumeration always uses exact L2.
 
-    Ordinary vector search also uses exact distance, preserving same-row kind and tag filters
-    before LIMIT without relying on ANN filtering.
-    The native index exists for backend-native support and future bounded modes.
+    Ordinary vector search uses native ANN with eligibility inside the candidate
+    query. Complete related enumeration retains the separate exact-distance SQL.
+    Search breadth is statement-local and conservative: aggregate neighbor recall
+    alone can hide missed multilingual outliers. Calibrate it for the deployment.
     """
 
-    def __init__(self, profile: EmbeddingProfile | None = None) -> None:
+    def __init__(self, profile: EmbeddingProfile | None = None, *, ef_search: int = 1000) -> None:
+        if isinstance(ef_search, bool) or not 1 <= ef_search <= 1000:
+            raise AtomicMemoryIndexError("vector-search", "Vector search breadth must be between 1 and 1000")
         super().__init__(atomic_memory_current_table(None if profile is None else VECTOR(profile.dimension)), profile)
+        self._ef_search = ef_search
         self._vector_index = (
             None
             if profile is None
@@ -94,23 +114,29 @@ class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                 "oceanbase-fts",
                 "OceanBase Atomic Memory requires native FULLTEXT SPACE parser and inline JSON predicates",
             ) from error
-        if self.profile is not None:
-            column_type = await connection.scalar(_VECTOR_TYPE)
-            expected = f"VECTOR({self.profile.dimension})"
-            if str(column_type).upper() != expected:
+        await self._initialize_vectors(connection)
+
+    async def _initialize_vectors(self, connection: AsyncConnection) -> None:
+        if self.profile is None:
+            return
+        column_type = await connection.scalar(_VECTOR_TYPE)
+        expected = f"VECTOR({self.profile.dimension})"
+        if str(column_type).upper() != expected:
+            raise AtomicMemoryIndexError(
+                "vector-schema",
+                f"Atomic Memory uses {column_type!r}; expected {expected}. "
+                "Reconfigure the current vector column offline and rebuild vectors before vector search.",
+            )
+        if self._vector_index is not None and not await connection.scalar(
+            _INDEX_EXISTS, {"index_name": _VECTOR_INDEX_NAME}
+        ):
+            vector_index = self._vector_index
+            try:
+                await connection.run_sync(lambda sync: vector_index.create(sync, checkfirst=False))
+            except SQLAlchemyError as error:
                 raise AtomicMemoryIndexError(
-                    "vector-schema",
-                    f"Atomic Memory uses {column_type!r}; expected {expected}. "
-                    "Reconfigure the current vector column offline and rebuild vectors before vector search.",
-                )
-            if self._vector_index is not None:
-                vector_index = self._vector_index
-                try:
-                    await connection.run_sync(lambda sync: vector_index.create(sync, checkfirst=True))
-                except SQLAlchemyError as error:
-                    raise AtomicMemoryIndexError(
-                        "oceanbase-vector", "OceanBase native Atomic Memory vector index is unavailable"
-                    ) from error
+                    "oceanbase-vector", "OceanBase native Atomic Memory vector index is unavailable"
+                ) from error
 
     async def reconfigure_vector_column(self, connection: AsyncConnection, /) -> None:
         """Offline derived-schema operation, followed by authoritative vector rebuild.
@@ -196,13 +222,16 @@ class OceanBaseAtomicMemoryIndex(RelationalAtomicMemoryIndex):
                 query_vector=query_vector,
                 profile=atomic_memory_profile_fingerprint(profile),
                 projection_format=ATOMIC_MEMORY_PROJECTION_FORMAT,
+                ef_search=self._ef_search,
                 max_distance=request.max_distance if isinstance(request, AtomicMemoryRelatedRequest) else None,
                 min_semantic_similarity=(
                     DEFAULT_ADMISSION_FLOOR if request.admission is None else request.admission
                 ).min_semantic_similarity,
             )
             statement = text(
-                atomic_memory_vector_sql(
+                oceanbase_atomic_memory_vector_sql(eligibility)
+                if limit is not None and limit <= 16384
+                else atomic_memory_vector_sql(
                     eligibility,
                     "mysql",
                     bounded=limit is not None,

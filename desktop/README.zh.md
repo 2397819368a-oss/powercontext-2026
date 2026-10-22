@@ -16,7 +16,9 @@
 
 ## 开发与构建
 
-Windows 11 x64 上需要 Node 24.14.1、pnpm 11.13.1、Rust 1.95.0 MSVC、Visual Studio C++ Build Tools、Windows SDK 和 WebView2。安装后的用户程序不依赖 Node、Rust、Python 或本地 Server。
+Windows 11 x64 上需要 Node 24.14.1、pnpm 11.13.1、Rust 1.95.0 MSVC、JDK 11 或更高版本（确保 `java` 位于 `PATH` 中）、Visual Studio C++ Build Tools、Windows SDK 和 WebView2。安装后的用户程序不依赖 Node、Rust、Python 或本地 Server。
+
+`generate` 和 `generate:check` 会启动基于 Java 的 OpenAPI Generator。首次运行时，`openapi-generator-cli` 可能从 Maven Central 下载固定版本的 Generator JAR，因此首次生成或漂移检查需要网络访问；后续运行可以复用已下载的 JAR。
 
 从仓库根目录执行：
 
@@ -44,6 +46,7 @@ pnpm --dir desktop desktop:dev
 工程边界：
 
 - OpenAPI 自动派生的 TypeScript schema 和十项 operation 映射，包含契约摘要及漂移检查。
+- `desktop/openapitools.json` 固定 OpenAPI Generator CLI 版本，Rust 模板位于 `desktop/scripts/openapi-generator/rust/`。修改 OpenAPI 合同或模板后，在仓库根目录执行 `pnpm --dir desktop generate`，不要手动编辑生成的 `src-tauri/src/transport/wire.rs`；CI 通过 `pnpm --dir desktop generate:check` 检查生成结果是否漂移。
 - Rust 自动派生的 IPC 类型与安全错误；凭据只写请求必须显式选择持久化或仅会话，成功回执只含存储模式，不含秘密或凭据标识。
 - Windows Credential Manager 原生适配器；保存失败直接报错，只有显式选择才采用仅会话内存。秘密类型不支持序列化，不实现 Debug。
 - 使用系统证书信任的原生 HTTPS；可为单个客户端添加显式 CA，继续校验主机名。
