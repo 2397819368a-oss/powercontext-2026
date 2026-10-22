@@ -210,7 +210,7 @@ Registration provides get / list by default. Applications access custom families
 | Declared search | `POST /v1/scopes/{scope_id}/artifacts/{family}/search` |
 | Deployment capabilities | `GET /v1/capabilities` |
 
-To enable full-text search, add a declaration to the output family instead of implementing a query callback:
+To enable full-text search, add a declaration to the output family before initial registration instead of implementing a query callback:
 
 ```python
 from powercontext.artifact_plugins import ArtifactSearchDeclaration, TextIndex
@@ -363,13 +363,26 @@ conflicting changes during transition fail. A time-limited validation child chec
 or creating model connections. Validation failure preserves the old definition and state; failed initial validation creates
 no valid registration.
 
-After validation, changes to plugin definitions or configuration (including generation code, content schemas, and index
-declarations) proceed through expected_generation checking and durable acceptance with a generation increment, stopping dispatch and reclaiming old Workers, confirming exit, attaching the new definition, then resuming
+In the first release, initial registration fixes the family search declaration's version, complete index definitions (`indexes`),
+and schema identity. Changing the declaration version, adding, removing, or renaming indexes, or changing their types,
+projection_version, profiles, field or fragment mappings, or other index definitions returns a conflict (HTTP 409) before acceptance, preserving the previous declaration and
+index state without interrupting existing search. This applies even to empty databases and survives unload and restart.
+Reloads may update generation code, ordinary configuration, Scopes, and only these query-policy fields of ArtifactSearchDeclaration:
+modes, default_mode, defaults, candidate_limit, rrf_k, text_weight, and vector_weight. Policy updates must pass existing declaration
+validation and are persisted through the reload acceptance flow below, without changing the normal Worker lifecycle.
+Section 8.2 defines availability and policy reads.
+An existing family with search also rejects a previously unregistered schema_version under the same rules, even if search is identical.
+A family without search may add schema_version values under the content-version rules, but must remain without search;
+search omitted at initial registration cannot be added later.
+
+After validation, permitted changes to plugin definitions or configuration proceed through expected_generation checking
+and durable acceptance with a generation increment, stopping dispatch and reclaiming old Workers, confirming exit,
+attaching the new definition, then resuming
 permitted scheduling and reconciling backlog. Reclamation runs outside database transactions. Failure after acceptance
 enters failed without restoring an old generation. Unconfirmed old Worker exit prevents successful unload reporting or
 replacement execution.
 
-Accepting index declaration changes also invalidates affected search readiness. Generation for the target binding remains
+Management transitions preserve existing search readiness. Generation for the target binding remains
 paused during the management transition; after it completes, resuming generation does not wait for index building.
 
 Whenever Supervisor dispatches a task, it records the plugin's current registration generation (`binding_generation`)
@@ -410,14 +423,16 @@ Historical replay and identity migration need separate design. Ordinary generati
 | Data | Arrangement |
 | --- | --- |
 | Plugin registration | Extend `pc_artifact_processing_binding_states` with ownership, configuration snapshot, binding_generation, desired_state, phase, and last_error |
-| Content declarations | Add `pc_artifact_family_schemas`; persist immutable content schemas and independently versioned search declarations |
+| Content declarations | Add `pc_artifact_family_schemas`; persist immutable content schemas, fixed index definitions, and updatable query policies |
 | Artifact content | Reuse `pc_artifacts`, `pc_artifact_heads`, lineage, and the shared writer; store schema_version with each revision |
 | Consumption and scheduling | Reuse `pc_source_cursors`, intent, lease, and acknowledgment without new execution-history or commit-receipt tables |
 | Indexes | Framework-owned derived projections, a single target configuration, and build progress |
 
-A generic JSON codec reads using the revision's durable schema rather than an importable Python class. Structural changes
-register a new schema_version; historical content retains its original interpretation. Indexes version separately, so
-rebuilding does not rewrite content or lineage. Unload preserves historical reads and schemas. Registering a family does
+A generic JSON codec reads using the revision's durable schema rather than an importable Python class. The content structure
+of an existing `(family, schema_version)` is immutable. Families without search may evolve content through new schema_version
+values; existing families with search cannot add unregistered content versions. Historical content retains its original
+interpretation, and rebuilding does not rewrite content or lineage. Unload preserves historical reads and schemas.
+Registering a family does
 not automatically expose generic creation, tags, review, or Recall; discovery must reflect implemented operations.
 
 OpenAPI, the SDK, runtime family registration, and public read interfaces must support custom families registered by plugins.
@@ -464,10 +479,17 @@ budgets; registering a family does not enable it automatically.
 
 ### 8.2 Index declarations and result selection
 
-A search declaration names indexes, applicable content schemas, extraction rules, projection_version, supported modes,
-defaults, and parameter constraints. The declaration is independently versioned. Index names are unique within a family,
-and definitions under the same projection_version are immutable. Different content schemas may have their own extraction
-rules. Search covers all active heads applicable to selected indexes, without skipping declared but incompletely built parts.
+A plugin declares one content schema_version at a time. Its search declaration defines index names, extraction rules,
+projection_version, supported modes, defaults, and parameter constraints for that content schema. Index names are unique
+within a family. The version, indexes, and schema identity are fixed; only the query-policy fields listed in Section 6 may change.
+The first release does not provide extraction-rule configuration for multiple schemas. Search covers all active heads applicable
+to selected indexes, without skipping declared but incompletely built parts.
+
+Policy updates keep ready indexes available without rebuilding, suspending search, re-encoding, or changing unfinished build
+progress. Queries read the latest policy from the durable declaration, including during building and after restart or unload;
+concurrent in-flight queries retain their consistent read snapshots. Build manifests retain their build-time snapshots, index
+identities, and progress rather than serving as the source of current query policy. Policy updates do not traverse or update
+all Scopes and introduce no configuration endpoint.
 
 | Capability | Plugin declares or supplies | Framework responsibility |
 | --- | --- | --- |
@@ -528,39 +550,42 @@ concurrent writes cannot omit change records or bypass maintenance of newly read
 evidence checks remain in force in every state. A complete but empty index may be ready. An empty text Scope without
 current heads or index state may return empty results after request validation and authorization.
 
-A family's first content write establishes index state if search is declared. Accepting an index declaration change
-immediately stops affected searches, followed by:
+A family's first content write establishes index state if search is declared. The first release retains initial building,
+incremental content maintenance, and recovery after failures or restarts. The framework may internally rebuild the complete
+index set for repair under the same index definitions; selective rebuilding and new public management endpoints are not provided.
+During initial building or internal repair rebuilding, search for the Scope/family is unavailable as shown above:
 
-1. **Register the target and clean up:** persist the target and a new build_id, then remove old projections and completion records in batches.
+1. **Register the build and clean up:** use the fixed index definitions and persist build_id; repair rebuilding removes existing projections and completion records in batches.
 2. **Backfill and catch up:** scan current content and use commit-ordered change records to process concurrent writes, deletions,
    and eligibility changes; projections, completion records, and progress commit together.
 3. **Validate and resume:** verify that all applicable content is processed, no obsolete fragments remain, and no concurrent
    changes are missed, then mark the entire index set ready atomically. Further changes require catch-up;
-   do not open individual channels or fall back to an old configuration.
+   do not open individual channels.
 
 build_id is independent of content revisions and plugin registration generations. Cleanup, building, and search resumption
 check it so obsolete tasks cannot affect a new build. Model computation runs outside transactions; saving rechecks content
-version, eligibility, and build identity. Failures and restarts resume from durable progress. Another target change retains
-unfinished cleanup work. Cleanup affects only that Scope/family's derived data, preserving shared storage and other data,
+version, eligibility, and build identity. Failures and restarts resume from durable progress, including unfinished cleanup work.
+Cleanup affects only that Scope/family's derived data, preserving shared storage and other data,
 and protects in-flight consistent read views, waiting for queries to finish when necessary.
 
-Rebuilding neither reruns generation nor advances Source cursors or rewrites content and lineage. Framework-generated
-text vectors can be re-encoded from original text. When changing models for plugin-owned vectors, the plugin must save
-recomputed content revisions while search is stopped; the framework accepts only vectors compatible with the target space.
-Structural changes still require a new schema_version; historical revisions retain their original schema and model meaning.
+Rebuilding does not rerun generation, advance Source cursors, or rewrite content or lineage. Framework-generated text
+vectors can be re-encoded from persisted text. Plugin-owned vectors are restored from persisted content under the original
+index definitions. Online index-definition migration and vector migration are not provided. Historical revisions retain their original
+schema and model meaning.
 
 Disabling or unloading generation does not prevent index recovery. Missing resources preserve progress for retry;
 ongoing writes can extend readiness time. Maintenance handles only explicitly triggered and unfinished work, without
 periodic traversal of every family/Scope combination or a new scheduler, queue table, or configuration.
-Ready indexes with unchanged declarations are not rebuilt on restart.
+Ready indexes are not rebuilt on restart.
 
 The framework manages storage: SQLite shares a vector table; OceanBase/seekDB use native VECTOR(d) tables per complete
 space, without reusing Memory-specific tables. Projections retain Scope, family, revision, index, fragment, and build
 identities and validate complete profile associations; plugins do not specify physical tables or DDL.
 Unified database initialization creates and validates missing management tables, text indexes, and vector spaces;
-reload, content writes, and background builds only manipulate data. Introducing an unprovisioned native vector space
-requires another database initialization, such as a Server restart, before building can resume; the rebuilding behavior
-in the table above applies meanwhile. Existing-table upgrades and full versioned migrations remain outside this proposal.
+reload, content writes, and background builds only manipulate data. If a new plugin's initial registration requires a native
+vector space that is not yet provisioned, database initialization must run again, for example on Server restart, before building
+can start; the unavailable state in the table above applies meanwhile.
+Existing-table upgrades and full versioned migrations remain outside this proposal.
 Backends must provide atomic updates and consistent reads before exposing the corresponding capabilities.
 
 # Drawbacks
@@ -630,7 +655,7 @@ The following extensions can be designed separately and are outside this proposa
 
 - **Generation**: remote generation, resident pipelines, multi-family output, historical replay, and consuming multiple Projections of one Source.
 - **Plugin management**: complete plugin-data deletion, execution histories and receipts, code distribution, signatures, and security sandboxes.
-- **Search**: other distance metrics, arbitrary JSON indexes, and historical-revision search, with separate budget, compatibility, and accuracy decisions.
+- **Search**: online index-definition migration, vector migration, selective rebuilding, other distance metrics, arbitrary JSON indexes, and historical-revision search, with separate budget, compatibility, and accuracy decisions.
 
 Cross-Scope generation, arbitrary Artifact dependency triggers, automatic window splitting to skip bad input, business query
 handlers, and a generic task queue remain outside this proposal.

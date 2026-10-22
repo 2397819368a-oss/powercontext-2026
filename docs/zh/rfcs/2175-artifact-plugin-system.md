@@ -201,7 +201,7 @@ LLM 插件使用相同接口，在工厂中自行创建模型或网络客户端�
 | 声明式检索 | `POST /v1/scopes/{scope_id}/artifacts/{family}/search` |
 | 部署能力 | `GET /v1/capabilities` |
 
-需要全文检索时，插件为输出 family 增加声明，不实现查询回调：
+需要全文检索时，插件须在首次注册前为输出 family 增加声明，不实现查询回调：
 
 ```python
 from powercontext.artifact_plugins import ArtifactSearchDeclaration, TextIndex
@@ -337,11 +337,19 @@ sequenceDiagram
 持久保存 desired_state 和 phase；只有 phase=enabled 可派发和提交。同一 binding 的转换串行，转换中重复变更冲突。
 候选校验在限时子进程中完成，不调用工厂或创建模型连接；校验失败保留原定义和状态，首次校验失败不建立有效注册。
 
-插件定义或配置变更（包括生成代码、内容 schema 及索引声明）通过校验后，按以下顺序执行：
+一期在首次注册时固定 family 检索声明的 version、完整 indexes 定义和 schema 身份。声明 version 变化及索引新增、删除、
+改名、类型、projection_version、profile、字段或片段映射等定义变化，均在接受前返回冲突（HTTP 409），保留原声明和索引状态，
+不中断原有搜索。空库同样适用，卸载或重启不解除限制。reload 可更新生成代码、普通配置、Scope，以及以下查询策略字段：
+ArtifactSearchDeclaration 的 modes、default_mode、defaults、candidate_limit、rrf_k、text_weight、vector_weight。
+策略更新须通过原有声明校验，并沿用下述 reload 接受流程持久保存，不改变常规 Worker 生命周期；可用性和读取规则见第 8.2 节。
+已有检索 family 新增此前未登记的 schema_version 也按上述规则拒绝，即使 search 完全相同。
+无检索 family 可按内容版本规则新增 schema_version，但必须保持无检索；首次未声明检索不能后补。
+
+允许的插件定义或配置变更通过校验后，按以下顺序执行：
 检查 expected_generation 并接受变更、递增代次 → 停止目标派发并回收旧 Worker
 → 确认退出后装配新定义 → 恢复允许的调度并对账积压。进程回收在数据库事务外。接受后的装配或回收失败进入 failed，
 不会自动恢复旧代次；旧 Worker 未退出不得报告卸载完成或启动替代执行。
-接受索引声明变化时同步撤销受影响检索的 ready 资格；管理切换期间仍暂停目标 binding 的生成，
+管理切换不撤销已有检索的 ready 资格；期间暂停目标 binding 的生成，
 完成切换后恢复生成调度不以索引构建完成为前提。
 
 每次派发任务时，Supervisor 将插件当前的注册代次（`binding_generation`）写入任务；
@@ -377,13 +385,14 @@ Worker 在启动和提交结果时检查该代次是否仍然有效。管理撤�
 | 数据 | 安排 |
 | --- | --- |
 | 插件注册 | 扩展 `pc_artifact_processing_binding_states`：归属、配置快照、binding_generation、desired_state、phase、last_error |
-| 内容声明 | 新增 `pc_artifact_family_schemas`；不可变内容 schema 与独立版本化的检索声明持久保存 |
+| 内容声明 | 新增 `pc_artifact_family_schemas`；持久保存不可变内容 schema、固定索引定义及可更新的查询策略 |
 | Artifact 内容 | 复用 `pc_artifacts`、`pc_artifact_heads`、lineage 和公共写入层，每个 revision 保存 schema_version |
 | 消费与调度 | 复用 `pc_source_cursors`、intent、lease 和完成确认，不新建执行历史或提交回执表 |
 | 索引 | 框架管理派生投影、单份目标配置和构建进度 |
 
-通用 JSON codec 按该 revision 的持久 schema 读取，不依赖 Python 类仍可导入。内容结构变化注册新 schema_version，
-历史按原版本解释；索引变化独立版本化，不为重建索引重写正文或 lineage。卸载后历史仍可读，旧 schema 不自动删除。
+通用 JSON codec 按该 revision 的持久 schema 读取，不依赖 Python 类仍可导入。同一 `(family, schema_version)`
+的内容结构不可变。无检索 family 可通过新 schema_version 演进内容结构，已有检索 family 不允许新增未登记的内容版本。
+历史按原版本解释，不为重建索引重写正文或 lineage；卸载后历史仍可读，旧 schema 不自动删除。
 注册 family 不自动开放通用创建、tags、审核或 Recall；能力发现与已实现操作一致。
 
 OpenAPI、SDK、运行时 family 注册与公共读取接口需支持插件注册的自定义 family。
@@ -422,9 +431,14 @@ Recall 需要显式接入既有编排并保留权限、精确引用和候选／�
 
 ### 8.2 索引声明与结果选择
 
-search 声明索引名称、适用的内容 schema、提取规则、projection_version、支持模式、默认选择和参数约束，声明本身独立版本化。
-索引名称在 family 内唯一，同一 projection_version 的定义不可修改。不同内容 schema 可配置各自的提取规则；
+插件每次声明一个内容 schema_version，search 为该内容 schema 声明索引名称、提取规则、projection_version、
+支持模式、默认选择和参数约束。索引名称在 family 内唯一；version、indexes 和 schema 身份固定，仅第 6 节列出的查询策略
+字段可更新，一期不提供多 schema 提取规则配置。
 搜索覆盖所选索引全部适用的 active head，不能跳过已声明但尚未构建完整的部分。
+
+策略更新后，原 ready 索引继续可用，不触发重建、停搜或重新编码，也不改变未完成构建的进度。查询从持久声明读取
+最新策略，构建期间、重启后和卸载后均遵循此规则；并发在途查询保持其一致读快照。构建 manifest 保留构建时快照、
+索引身份和进度，不作为最新查询策略的来源；策略更新不遍历或更新所有 Scope，不新增配置接口。
 
 | 能力 | 插件声明或提供 | 框架负责 |
 | --- | --- | --- |
@@ -473,29 +487,30 @@ min_score 应用于最终归一化分数，再按 Artifact limit 截取；并列
 鉴权、版本和证据校验在所有状态下继续生效。完整但无内容的索引可以 ready；无当前 head 且无索引状态的空文本 Scope，
 合法请求鉴权后可直接返回空结果。
 
-声明了检索能力的 family 首次写入内容时建立索引状态。接受索引声明变化时立即停止受影响检索，随后执行：
+声明了检索能力的 family 首次写入内容时建立索引状态。一期保留首次构建、正文增量维护及失败 / 重启恢复，
+允许框架内部按原索引定义修复重建整套索引，不提供选择性重建或新的公开管理入口。首次构建或内部修复重建时，
+该 Scope / family 按上表暂停搜索，并执行：
 
-1. **登记目标并清理**：保存目标与新的构建身份 build_id，分批清理旧投影和完成记录。
+1. **登记构建并清理**：沿用固定索引定义，保存构建身份 build_id；修复重建时分批清理原投影和完成记录。
 2. **回填并追平**：扫描当前内容，按提交顺序记录的变更补处理并发写入、删除和资格变化；投影、完成记录与进度共同提交。
 3. **校验并恢复**：确认全部适用内容均已处理、没有旧片段残留且没有遗漏并发变化，再原子地将整套索引置为 ready。
-   期间发生变化则继续追平，不分通道开放、不回退旧配置。
+   期间发生变化则继续追平，不分通道开放。
 
 build_id 独立于内容 revision 和插件注册代次，清理、构建和恢复检索均须核验它，旧任务不能影响新构建。
-模型计算在事务外完成，保存前复核内容版本、资格和构建身份。失败或重启从持久进度接续；再次变更目标也须保留未完成的
-清理工作。清理只影响当前 Scope / family 的派生数据，保留共享存储及其他数据，并保护在途查询的一致读视图；必要时等待其结束。
+模型计算在事务外完成，保存前复核内容版本、资格和构建身份。失败或重启从持久进度接续，包括未完成的清理工作。
+清理只影响当前 Scope / family 的派生数据，保留共享存储及其他数据，并保护在途查询的一致读视图；必要时等待其结束。
 
-重建不重跑生成插件、不推进 Source cursor、不改写正文或 lineage。框架生成的文本向量可从原文重新编码；
-插件自带向量换模型时，插件须在停搜期间保存重新计算的正文 revision，框架仅接受与目标空间兼容的向量。
-内容结构变化仍使用新 schema_version，历史版本保留原 schema 和模型含义。
+重建不重跑生成插件、不推进 Source cursor、不改写正文或 lineage。框架生成的文本向量可从持久文本重新编码。
+插件自带向量按原索引定义从持久内容恢复，不提供在线索引定义迁移或向量迁移。历史版本保留原 schema 和模型含义。
 
 生成停用或卸载不影响索引恢复，资源缺失时保留进度等待重试；持续写入可能延长就绪时间。
 维护只处理明确触发和未完成的工作，不周期性遍历全部 family / Scope，不新增调度器、队列表或配置；
-声明未变且已 ready 的索引在重启时不重建。
+已 ready 的索引在重启时不重建。
 
 存储由框架管理：SQLite 使用共享向量表，OceanBase / seekDB 按完整空间使用原生 VECTOR(d) 表，不复用 Memory 专用表。
 投影保留 Scope、family、revision、索引、片段和构建身份，并校验完整 profile 关联；插件不指定物理表或 DDL。
 统一数据库初始化负责创建并校验缺失的管理表、文本索引和向量空间；reload、正文写入和后台构建只操作数据。
-引入未预配的原生向量空间后，需再次执行数据库初始化（例如重启 Server）才能恢复构建，其间适用上表的重建行为。
+新插件首次注册所需的原生向量空间若尚未预配，需再次执行数据库初始化（例如重启 Server）才能开始构建，其间适用上表的不可用状态。
 已有表升级与完整版本迁移不在本提案范围内；后端须满足原子更新和一致读要求，才可开放相应能力。
 
 # 缺点
@@ -560,6 +575,6 @@ build_id 独立于内容 revision 和插件注册代次，清理、构建和恢�
 
 - **生成能力**：远程生成、常驻 pipeline、多 family 联合输出、历史重放，以及消费同一 Source 的多个 Projection。
 - **插件管理**：插件数据彻底清理、执行历史与回执、代码分发、签名和安全沙箱。
-- **检索能力**：其他距离度量、任意 JSON 条件索引和历史 revision 搜索，需另行明确预算、兼容与准确性边界。
+- **检索能力**：在线索引定义迁移、向量迁移、选择性重建、其他距离度量、任意 JSON 条件索引和历史 revision 搜索，需另行明确预算、兼容与准确性边界。
 
 跨 Scope 生成、任意 Artifact 依赖触发链、自动拆窗跳过坏输入、业务查询 handler 和通用任务队列不在本提案范围内。
