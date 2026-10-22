@@ -22,7 +22,7 @@ OceanBase 使用 `--backend oceanbase`，通过 `POWERCONTEXT_TEST_OCEANBASE_URL
 
 ## 固定场景与指标
 
-`scope-local-lineage-fixtures-v1` 包括独立 Scope 中的完全相同条目、同证据改写、同 Source 不同事实、修订与历史事实、周期自动来源、未知证据、#1976 的六种中文正例及英文和无关查询对照。另有不参与阈值调整的共享来源与字节预算保留验证案例。
+`scope-local-lineage-fixtures-v2` 包括独立 Scope 中的完全相同条目、同证据改写、同 Source 不同事实、修订与历史事实、周期自动来源、未知证据、#1976 的六种中文正例及英文和无关查询对照。另有不参与阈值调整的共享来源、字节预算，以及无直接 Source、正文相同但引用不同历史 Artifact 修订的保留验证案例。
 
 事实答案由合成 fixture 显式声明，不是模型判断或可信度推断。每个查询只取一次最多 16 条的准入后 RRF 候选序列，所有实验复用其成员和顺序。精确历史读取及评测前后的权威记录快照用于验证内容、谱系和状态没有被评测修改。
 
@@ -37,6 +37,8 @@ OceanBase 使用 `--backend oceanbase`，通过 `POWERCONTEXT_TEST_OCEANBASE_URL
 Jev 不是必需依赖，本模式明确记录为 `not_provided`，不作为权威。模型调用和模型费用均为零。
 
 候选池和最终选中来源分别统计 top-k 集中度、精确冗余槽位、词汇邻近占比、独立证据及事实数、未知证据和中性声明。选中条目的事实数不等同于实际交付事实数：答案召回直接检查最终渲染字节，避免将截断后的内容当作完整交付。
+
+证据计数使用 `scoped-source-artifact-evidence-v1`，通过 manifest 和报告中的 `evidence_version` 固定。`unique_evidence_count` 是直接 Source materialization 与精确 Artifact 引用的去重并集，Artifact 身份保留 Scope、family、ID 和 revision。`unique_source_evidence_count` 与 `unique_artifact_evidence_count` 分别报告两类数量。覆盖和 `lost_baseline_evidence` 使用相同身份规则，损失也按 Source 与 Artifact 拆分。统计不追随当前 head，也不递归展开引用；不同直接引用不代表不同事实。缺少证据计数版本的 manifest 无法参与比较。
 
 检索漏召回、关系不确定、预算丢弃/截断、条数上限遗漏、相对基线的事实与证据损失、任务退化、负例误命中分别记录。耗时拆分为检索、精确证据读取和构建。每个类别对应一个 Scope，只导出该 Scope 查询的聚合计数和比率，不提供逐条诊断或跨 Scope 标识。
 

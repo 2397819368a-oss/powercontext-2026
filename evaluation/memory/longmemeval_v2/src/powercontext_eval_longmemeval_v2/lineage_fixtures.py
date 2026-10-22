@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-FIXTURE_VERSION = "scope-local-lineage-fixtures-v1"
+FIXTURE_VERSION = "scope-local-lineage-fixtures-v2"
 
 
 @dataclass(frozen=True)
@@ -120,6 +120,21 @@ def fixture_cases() -> tuple[Case, ...]:
                 Entry("two", "Atlas deployment unknown entry has UNKNOWNTWO.", ("UNKNOWNTWO",), None),
             ),
             (Query("Atlas deployment unknown", ("UNKNOWNONE", "UNKNOWNTWO")),),
+        ),
+        Case(
+            "artifact_only_evidence",
+            (
+                Entry("retained", "Retained ledger reference version HISTORYONE.", ("HISTORYONE",), None),
+                Entry("retained", "Retained ledger reference version HISTORYTWO.", ("HISTORYTWO",), None),
+                Entry(
+                    "copy-a", "Atlas deployment artifact fact is ARTIFACTFACT.", ("ARTIFACTFACT",), None, "retained:1"
+                ),
+                Entry(
+                    "copy-b", "Atlas deployment artifact fact is ARTIFACTFACT.", ("ARTIFACTFACT",), None, "retained:2"
+                ),
+            ),
+            (Query("Atlas deployment artifact", ("ARTIFACTFACT",)),),
+            True,
         ),
         Case(
             "query_form_baseline",

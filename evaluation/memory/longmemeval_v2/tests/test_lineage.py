@@ -23,6 +23,7 @@ import pytest
 
 from powercontext_eval_longmemeval_v2.lineage import (
     ARMS,
+    EVIDENCE_VERSION,
     GROUPING_VERSION,
     LEXICAL_THRESHOLD,
     LEXICAL_VERSION,
@@ -79,6 +80,30 @@ def test_equal_material_digest_does_not_merge_source_identities():
     assert measure_pool(pool)["unique_evidence_count"] == 2
 
 
+@pytest.mark.parametrize(
+    "second",
+    [EntryRef("scope", "retained", 2), EntryRef("scope", "retained", 1, "profile")],
+)
+def test_artifact_only_coverage_preserves_exact_family_and_revision(second):
+    first = EntryRef("scope", "retained", 1)
+    pool = (observation("a", artifacts=(first, first)), observation("b", artifacts=(second,)))
+    assert measure_pool(pool)["unique_evidence_count"] == 2
+    assert measure_pool(pool[:1])["unique_evidence_count"] == 1
+    assert measure_pool(pool)["unique_source_evidence_count"] == 0
+    assert measure_pool(pool)["unique_artifact_evidence_count"] == 2
+
+
+def test_source_and_artifact_evidence_share_one_deduplicated_coverage_contract():
+    ref = EntryRef("scope", "retained", 1)
+    pool = (
+        observation("a", sources=(material(),), artifacts=(ref,)),
+        observation("b", sources=(material(),), artifacts=(ref,)),
+    )
+    assert measure_pool(pool)["unique_evidence_count"] == 2
+    assert measure_pool(pool)["unique_source_evidence_count"] == 1
+    assert measure_pool(pool)["unique_artifact_evidence_count"] == 1
+
+
 def test_unknown_source_is_not_one_shared_lineage():
     metrics = measure_pool((observation("a"), observation("b")))
     assert metrics["unknown_source_evidence_count"] == 2
@@ -131,6 +156,7 @@ def manifest():
         "capabilities": {"fts": True},
         "dependency_state": "unmerged",
         "grouping_version": GROUPING_VERSION,
+        "evidence_version": EVIDENCE_VERSION,
         "lexical_version": LEXICAL_VERSION,
         "lexical_threshold": LEXICAL_THRESHOLD,
         "candidate_limit": 16,
@@ -159,3 +185,10 @@ def test_comparison_refuses_two_equally_incomplete_manifests():
     incomplete = {"schema": MANIFEST_SCHEMA, "experiment_arm": ARMS[0]}
     with pytest.raises(LineageEvaluationError):
         ensure_comparable_lineage_runs(incomplete, incomplete)
+
+
+def test_comparison_refuses_source_only_accounting_manifests():
+    source_only = manifest()
+    source_only.pop("evidence_version")
+    with pytest.raises(LineageEvaluationError):
+        ensure_comparable_lineage_runs(source_only, source_only)

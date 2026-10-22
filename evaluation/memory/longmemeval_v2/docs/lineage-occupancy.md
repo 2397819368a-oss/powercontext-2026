@@ -42,7 +42,7 @@ be reported as successful or equivalent SQLite execution.
 
 ## Workload and measurement
 
-`scope-local-lineage-fixtures-v1` fixes small, separate Scope partitions for:
+`scope-local-lineage-fixtures-v2` fixes small, separate Scope partitions for:
 
 - byte-identical concentration and a less-represented relevant fact;
 - paraphrases grounded in shared evidence;
@@ -50,6 +50,7 @@ be reported as successful or equivalent SQLite execution.
 - revised and historical entries with exact retained revision reads;
 - recurring automation with distinct event facts;
 - entries without Source evidence;
+- held-out byte-identical entries without Sources citing different retained Artifact revisions;
 - all six mandatory CJK forms from #1976, literal English and negative controls;
 - held-out shared-source facts and held-out byte-budget pressure.
 
@@ -88,6 +89,17 @@ selected records; actual answer recall is measured against the rendered Context
 bytes, so truncation cannot be mistaken for successful factual delivery.
 For held-out fixtures, disjoint declared facts in a lexical-neighbour pair count
 as a false relation annotation, independently of actual suppression.
+
+Evidence accounting uses `scoped-source-artifact-evidence-v1`, pinned as
+`evidence_version` in manifests and reports. `unique_evidence_count` is the
+deduplicated union of direct Source materialization identities and exact scoped
+Artifact citations, including family and revision. `unique_source_evidence_count`
+and `unique_artifact_evidence_count` expose each part. Coverage and
+`lost_baseline_evidence` use the same identity rules; Source and Artifact losses
+are also reported separately. Artifact references are counted at the retained
+cited version, without following current heads or recursively expanding lineage.
+These are distinct direct references, not a claim of independent factual content.
+Manifests without the evidence-accounting version are rejected for comparison.
 
 Task outcomes separately record retrieval misses, final omitted facts, explicit
 byte-budget drops/truncations, entry-limit omissions, baseline facts/evidence

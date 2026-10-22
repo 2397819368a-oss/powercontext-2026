@@ -34,6 +34,7 @@ from uuid import uuid4
 
 from powercontext_eval_longmemeval_v2.lineage import (
     ARMS,
+    EVIDENCE_VERSION,
     GROUPING_VERSION,
     LEXICAL_THRESHOLD,
     LEXICAL_VERSION,
@@ -43,6 +44,7 @@ from powercontext_eval_longmemeval_v2.lineage import (
     Material,
     Observation,
     ensure_comparable_lineage_runs,
+    evidence_identities,
     exact_representatives,
     measure_pool,
 )
@@ -316,8 +318,9 @@ async def _replay(config: Any, cases: tuple[Case, ...]) -> tuple[list[dict[str, 
                         answer in (base_content or "") and answer not in (built.context.content or "")
                         for answer in query.answers
                     )
-                    base_evidence = {source.identity for entry in base_delivered for source in entry.sources}
-                    delivered_evidence = {source.identity for entry in delivered for source in entry.sources}
+                    base_evidence = evidence_identities(base_delivered)
+                    delivered_evidence = evidence_identities(delivered)
+                    lost_evidence = base_evidence - delivered_evidence
                     rows.append(
                         {
                             "case_category": case.category,
@@ -336,7 +339,13 @@ async def _replay(config: Any, cases: tuple[Case, ...]) -> tuple[list[dict[str, 
                             },
                             "comparison": {
                                 "false_suppressed_baseline_facts": lost,
-                                "lost_baseline_evidence": len(base_evidence - delivered_evidence),
+                                "lost_baseline_evidence": len(lost_evidence),
+                                "lost_baseline_source_evidence": sum(
+                                    identity[0] == "source" for identity in lost_evidence
+                                ),
+                                "lost_baseline_artifact_evidence": sum(
+                                    identity[0] == "artifact" for identity in lost_evidence
+                                ),
                                 "task_regressions": int(
                                     (outcome["task_success"] or 0) < (base_outcome["task_success"] or 0)
                                 ),
@@ -418,6 +427,7 @@ async def run_lineage_fixture(
         "capabilities": capabilities,
         "dependency_state": dependency_state,
         "grouping_version": GROUPING_VERSION,
+        "evidence_version": EVIDENCE_VERSION,
         "lexical_version": LEXICAL_VERSION,
         "lexical_threshold": LEXICAL_THRESHOLD,
         "candidate_limit": 16,
@@ -448,6 +458,7 @@ async def run_lineage_fixture(
     ]
     report = {
         "schema": "powercontext.lineage-evaluation-report.v1",
+        "evidence_version": EVIDENCE_VERSION,
         "classification": "bounded-synthetic-fixture-evaluation",
         "recommendation": "no_product_change",
         "dependency_state": dependency_state,
@@ -469,6 +480,7 @@ async def run_lineage_fixture(
             "alternative_false_suppressed_facts": sum(
                 row["comparison"]["false_suppressed_baseline_facts"] for row in aggregates
             ),
+            "alternative_lost_evidence": sum(row["comparison"]["lost_baseline_evidence"] for row in aggregates),
         },
         "cost": {"model_calls": 0, "model_cost_usd": 0, "currency": "USD"},
         "limits": [
@@ -517,6 +529,8 @@ async def run_lineage_fixture(
         f"Equality-measurement task improvements: {report['findings']['equality_measurement_task_improvements']}. "
         f"Alternative task regressions: {report['findings']['alternative_task_regressions']}. "
         f"False-suppressed baseline facts: {report['findings']['alternative_false_suppressed_facts']}.\n\n"
+        f"Lost baseline evidence references: {report['findings']['alternative_lost_evidence']}. "
+        "Evidence loss is independent of whether identical text still delivers the same fact.\n\n"
         "A later fixed-pool stable reorder experiment or review-gated relation proposal requires broader held-out "
         "task evidence, merged prerequisites, and separately executed backend validation. No production ranking, "
         "write behavior, lifecycle state, citations, public APIs, or delivery contract is changed.\n\n"
@@ -557,6 +571,24 @@ def _markdown(report: Mapping[str, Any], rows: list[dict[str, Any]]) -> str:
             f"| {row['case_category']} | {row['experiment_arm']} | {row['samples']} | "
             f"{result['retrieved_required_facts']} | {result['delivered_required_facts']} | {result['required_facts']} | "
             f"{comparison['false_suppressed_baseline_facts']} | {comparison['task_regressions']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Direct evidence coverage",
+            "",
+            "Source materializations and exact Artifact citations are distinct evidence identities; counts sum over queries.",
+            "",
+            "| Case | Arm | Delivered Sources | Delivered Artifacts | Lost Sources | Lost Artifacts |",
+            "| --- | --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for row in rows:
+        delivered, comparison = row["delivered"], row["comparison"]
+        lines.append(
+            f"| {row['case_category']} | {row['experiment_arm']} | "
+            f"{delivered['unique_source_evidence_count']} | {delivered['unique_artifact_evidence_count']} | "
+            f"{comparison['lost_baseline_source_evidence']} | {comparison['lost_baseline_artifact_evidence']} |"
         )
     lines.extend(["", "## Interpretation and limits", ""])
     lines.extend(f"- {value}" for value in report["limits"])

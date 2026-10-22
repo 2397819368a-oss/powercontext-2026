@@ -30,6 +30,7 @@ from itertools import combinations
 from powercontext_eval_longmemeval_v2.errors import LongMemEvalError
 
 GROUPING_VERSION = "exact-scoped-evidence-v1"
+EVIDENCE_VERSION = "scoped-source-artifact-evidence-v1"
 LEXICAL_VERSION = "unicode-character-trigram-jaccard-v1"
 LEXICAL_THRESHOLD = 0.75
 MANIFEST_SCHEMA = "powercontext.lineage-evaluation-manifest.v1"
@@ -115,6 +116,20 @@ def exact_representatives(pool: Sequence[Observation]) -> tuple[int, ...]:
     return tuple(kept)
 
 
+def evidence_identities(pool: Sequence[Observation]) -> frozenset[tuple[object, ...]]:
+    """Distinct direct evidence, with separate Source and exact Artifact identity domains.
+
+    Artifact evidence is the cited historical revision, not its current head or
+    recursively expanded lineage. Identities stay in-process; only counts leave.
+    """
+    validate_pool(pool)
+    sources = frozenset(("source", *source.identity) for entry in pool for source in entry.sources)
+    artifacts = frozenset(
+        ("artifact", ref.scope, ref.family, ref.artifact, ref.revision) for entry in pool for ref in entry.artifacts
+    )
+    return sources | artifacts
+
+
 def _shingles(text: str) -> frozenset[str]:
     value = " ".join(unicodedata.normalize("NFC", text).casefold().split())
     return frozenset(value[index : index + 3] for index in range(len(value) - 2))
@@ -176,6 +191,7 @@ def measure_pool(pool: Sequence[Observation], *, top_k: int = 8) -> dict[str, ob
     )
     unknown_pairs = sum(not pool[a].facts or not pool[b].facts for a, b in neighbours)
     facts = set().union(*(entry.facts for entry in pool)) if pool else set()
+    evidence = evidence_identities(pool)
     return {
         "candidate_count": len(pool),
         "top_k_count": len(top),
@@ -197,7 +213,9 @@ def measure_pool(pool: Sequence[Observation], *, top_k: int = 8) -> dict[str, ob
         "lexical_false_relation_pairs": false_pairs,
         "lexical_unknown_relation_pairs": unknown_pairs,
         "advisory_unverified_relation_pairs": len(neighbours),
-        "unique_evidence_count": len({source.identity for entry in pool for source in entry.sources}),
+        "unique_evidence_count": len(evidence),
+        "unique_source_evidence_count": sum(identity[0] == "source" for identity in evidence),
+        "unique_artifact_evidence_count": sum(identity[0] == "artifact" for identity in evidence),
         "unique_fact_count": len(facts),
     }
 
@@ -218,6 +236,7 @@ def ensure_comparable_lineage_runs(first: Mapping[str, object], second: Mapping[
         "capabilities",
         "dependency_state",
         "grouping_version",
+        "evidence_version",
         "lexical_version",
         "lexical_threshold",
         "candidate_limit",
@@ -231,6 +250,7 @@ def ensure_comparable_lineage_runs(first: Mapping[str, object], second: Mapping[
             raise LineageEvaluationError("lineage manifest lacks pinned comparison conditions")
         if (
             value["grouping_version"] != GROUPING_VERSION
+            or value["evidence_version"] != EVIDENCE_VERSION
             or value["lexical_version"] != LEXICAL_VERSION
             or value["candidate_limit"] != MAX_POOL
             or value["top_k"] != 8

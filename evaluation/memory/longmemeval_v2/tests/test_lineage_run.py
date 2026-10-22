@@ -57,6 +57,24 @@ def test_native_sqlite_replay_exports_only_aggregates_and_preserves_shared_facts
     assert report["backend_matrix"][0]["capabilities"]["authoritative_records_unchanged"]
     assert report["backend_matrix"][1]["status"] == "not_run"
     for row in report["aggregates"]:
+        for section in ("pool", "delivered"):
+            assert row[section]["unique_evidence_count"] == (
+                row[section]["unique_source_evidence_count"] + row[section]["unique_artifact_evidence_count"]
+            )
+        assert row["comparison"]["lost_baseline_evidence"] == (
+            row["comparison"]["lost_baseline_source_evidence"] + row["comparison"]["lost_baseline_artifact_evidence"]
+        )
+        if row["case_category"] == "artifact_only_evidence":
+            assert row["pool"]["candidate_count"] == 2
+            assert row["pool"]["unique_evidence_count"] == 2
+            assert row["pool"]["unique_source_evidence_count"] == 0
+            assert row["pool"]["unique_artifact_evidence_count"] == 2
+            collapsed = row["experiment_arm"] == ARMS[1]
+            assert row["delivered"]["candidate_count"] == (1 if collapsed else 2)
+            assert row["delivered"]["unique_evidence_count"] == (1 if collapsed else 2)
+            assert row["comparison"]["lost_baseline_evidence"] == int(collapsed)
+            assert row["comparison"]["lost_baseline_source_evidence"] == 0
+            assert row["comparison"]["lost_baseline_artifact_evidence"] == int(collapsed)
         if row["case_category"] in {"legitimate_shared_source", "held_out_shared_source"}:
             assert row["outcome"]["task_success"] == row["samples"]
             assert row["comparison"]["false_suppressed_baseline_facts"] == 0
