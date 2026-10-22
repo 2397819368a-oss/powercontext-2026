@@ -397,12 +397,19 @@ async fn verify_scope_pages(
     let first = manager.scopes(generation, &title, None).await.unwrap();
     assert_eq!(first.items.len(), 50);
     let second = manager
-        .scopes(generation, &title, first.next_cursor.as_deref())
+        .scopes(
+            generation,
+            &title,
+            first
+                .next_cursor
+                .as_ref()
+                .and_then(|cursor| cursor.as_deref()),
+        )
         .await
         .unwrap();
     assert!(first.next_cursor.is_some());
     assert_eq!(second.items.len(), 1);
-    assert!(second.next_cursor.is_none());
+    assert!(second.next_cursor.flatten().is_none());
     let found: std::collections::BTreeSet<_> = first
         .items
         .iter()

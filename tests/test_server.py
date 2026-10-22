@@ -518,7 +518,8 @@ def test_scheduled_experience_owns_only_candidates_created_by_its_incubation() -
         )
         incubate = AsyncMock(return_value=result)
         runtime = SimpleNamespace(
-            experience=SimpleNamespace(for_scope=lambda _scope_id: SimpleNamespace(incubate=incubate))
+            owner_write_database=None,
+            experience=SimpleNamespace(for_scope=lambda _scope_id: SimpleNamespace(incubate=incubate)),
         )
         access = AsyncMock(spec=AccessControlService)
         settings = ServerSettings(

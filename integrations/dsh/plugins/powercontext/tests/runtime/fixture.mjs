@@ -331,6 +331,9 @@ export async function environment({ realModel, fullCatalog = false } = {}) {
     const commandAddress = join(dshHome, 'command-address.txt')
     const commandObserver = join(dshHome, 'command-observer.mjs')
     if (options.commands) cpSync(join(import.meta.dirname, 'command-observer.mjs'), commandObserver)
+    const contextTraceFile = join(dshHome, 'dsh-context.jsonl')
+    const contextObserver = join(dshHome, 'context-observer.mjs')
+    if (options.contextObserver) cpSync(join(import.meta.dirname, 'context-observer.mjs'), contextObserver)
     const diagnosticsFile = join(dshHome, 'diagnostics.jsonl')
     const loggerObserver = join(dshHome, 'logger-observer.mjs')
     // Observe the real Cordis logger through its public exporter API.
@@ -348,6 +351,10 @@ export function apply(ctx) {
       ...options.commands ? [{ insert: [{ id: 'command-observer',
         name: pathToFileURL(commandObserver).href,
         config: { addressFile: commandAddress },
+      }] }] : [],
+      ...options.contextObserver ? [{ insert: [{ id: 'context-observer',
+        name: pathToFileURL(contextObserver).href,
+        config: { traceFile: contextTraceFile },
       }] }] : [],
       { id: 'skill-filesystem', config: { includeDefaultRoots: false, watch: false } },
       { id: 'session-persistence-jsonl', config: { root: join(dshHome, 'sessions'), compression: 'none' } },
@@ -370,6 +377,8 @@ export function apply(ctx) {
     harnesses.push(instance)
     const diagnostics = () => existsSync(diagnosticsFile)
       ? readFileSync(diagnosticsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : []
+    const contextTraces = () => existsSync(contextTraceFile)
+      ? readFileSync(contextTraceFile, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : []
     const command = async (sessionId, view) => {
       const response = await fetch(readFileSync(commandAddress, 'utf8') + '/?session=' + encodeURIComponent(sessionId) + '&view=' + view)
       if (!response.ok) throw new Error(await response.text())
@@ -383,7 +392,7 @@ export function apply(ctx) {
       const result = await command(sessionId, 'status')
       return { kind: result.kind, ...JSON.parse(result.text.split('\nautomatic=')[1]) }
     }
-    return { instance, dshHome, workspace, installed, patch, env, diagnostics, doctor, status }
+    return { instance, dshHome, workspace, installed, patch, env, diagnostics, contextTraces, doctor, status }
   }
   return {
     home, api, scopeId, calls, mcpCalls, modelRequests, harness, baseUrl: proxy.url,

@@ -143,6 +143,42 @@ test('documented setup installs the matched plugin, diagnoses the running host a
   } finally { await env.close() }
 })
 
+test('real DSH correlates native PowerContext calls with the injected snapshot without retaining content',
+  { timeout: 120000 }, async () => {
+    const env = await environment()
+    try {
+      await env.api('/v1/memory/remember', { scope_id: env.scopeId, kind: 'decision', text: CANARY })
+      const { instance, contextTraces } = env.harness({}, { contextObserver: true })
+      const prompt = 'RUN_PC_SEARCH: What is the aurora deployment color?'
+      const run = await instance.run(prompt)
+      assert.ok(run.finalResponse)
+      const snapshot = run.events.find(event => event.type === 'user/message'
+        && event.data?.source?.sections?.some(section => section.name === 'PowerContext'))
+      const toolCall = run.events.find(event => event.type === 'tool/call'
+        && event.data.name === 'mcp__powercontext__search_memory')
+      const toolResult = run.events.find(event => event.type === 'tool/result'
+        && event.data.message?.source?.callId === toolCall?.data.callId)
+      assert.ok(snapshot)
+      assert.ok(toolCall)
+      assert.ok(toolResult)
+      assert.deepEqual(contextTraces(), [{
+        schema: 'powercontext.dsh.context-observation.v1',
+        session_id_hash: createHash('sha256').update(run.sessionId).digest('hex'),
+        turn_id: toolCall.data.turn,
+        step_id: toolCall.data.step,
+        call_id: toolCall.data.callId,
+        tool: toolCall.data.name,
+        snapshot_injection: { event_seq: snapshot.seq },
+        tool_call: { event_seq: toolCall.seq },
+        tool_result: { event_seq: toolResult.seq, is_error: false },
+      }])
+      const serialized = JSON.stringify(contextTraces())
+      for (const privateValue of [run.sessionId, env.scopeId, CANARY, prompt]) {
+        assert.ok(!serialized.includes(privateValue))
+      }
+    } finally { await env.close() }
+  })
+
 test('real DSH rejects secret native writes including nested work, candidate and Handoff content before approval or MCP dispatch', { timeout: 120000 }, async () => {
   const env = await environment()
   try {
