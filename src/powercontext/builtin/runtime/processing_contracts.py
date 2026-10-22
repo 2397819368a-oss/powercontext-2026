@@ -22,6 +22,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from powercontext.builtin.persistence.supervision import ArtifactProcessingFence
+from powercontext.builtin.processing_diagnostics import ProcessingDiagnostics
 
 
 class ArtifactProcessingWorkerOutcome(StrEnum):
@@ -100,6 +101,7 @@ class ArtifactProcessingWorkerFailure:
     block: ArtifactProcessingBlock | None = None
     cancelled: bool = False
     model_usage: ArtifactProcessingModelUsageDelta | None = None
+    diagnostics: ProcessingDiagnostics | None = None
 
 
 @dataclass(frozen=True, slots=True)

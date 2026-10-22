@@ -41,6 +41,12 @@ from powercontext.builtin.inference.errors import (
     InvalidInferenceOutputError,
 )
 from powercontext.builtin.inference.models import EmbeddingResult, InferenceUsage
+from powercontext.builtin.processing_diagnostics import (
+    ProcessingDiagnostics,
+    ProcessingFailureReason,
+    ProcessingStage,
+    attach_diagnostics,
+)
 
 _MINIMAX_DOCUMENT_TYPE = "db"
 _MINIMAX_QUERY_TYPE = "query"
@@ -109,11 +115,46 @@ class MiniMaxEmbeddingModel:
         except (InvalidInferenceOutputError, InferenceConfigurationError):
             raise
         except TimeoutError as error:
-            raise InferenceTimeoutError("embed", self._timeout) from error
+            raise attach_diagnostics(
+                InferenceTimeoutError("embed", self._timeout),
+                ProcessingDiagnostics(
+                    stage=ProcessingStage.EMBEDDING,
+                    reason=ProcessingFailureReason.TIMEOUT,
+                    cause_exception_type=type(error).__name__,
+                ),
+            ) from error
         except httpx.TimeoutException as error:
-            raise InferenceTimeoutError("embed", self._timeout) from error
+            raise attach_diagnostics(
+                InferenceTimeoutError("embed", self._timeout),
+                ProcessingDiagnostics(
+                    stage=ProcessingStage.EMBEDDING,
+                    reason=ProcessingFailureReason.TIMEOUT,
+                    cause_exception_type=type(error).__name__,
+                ),
+            ) from error
+        except httpx.HTTPStatusError as error:
+            rate_limited = error.response.status_code == 429
+            raise attach_diagnostics(
+                InferenceUnavailableError("embed"),
+                ProcessingDiagnostics(
+                    stage=ProcessingStage.EMBEDDING,
+                    reason=(
+                        ProcessingFailureReason.RATE_LIMIT
+                        if rate_limited
+                        else ProcessingFailureReason.PROVIDER_UNAVAILABLE
+                    ),
+                    cause_exception_type=type(error).__name__,
+                ),
+            ) from error
         except httpx.HTTPError as error:
-            raise InferenceUnavailableError("embed") from error
+            raise attach_diagnostics(
+                InferenceUnavailableError("embed"),
+                ProcessingDiagnostics(
+                    stage=ProcessingStage.EMBEDDING,
+                    reason=ProcessingFailureReason.PROVIDER_UNAVAILABLE,
+                    cause_exception_type=type(error).__name__,
+                ),
+            ) from error
         return result
 
     async def _embed_batches(self, texts: tuple[str, ...], *, embedding_type: str) -> EmbeddingResult:
