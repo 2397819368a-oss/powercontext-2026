@@ -22,9 +22,10 @@ reused. Queue state and retry history are deliberately absent.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -51,6 +52,15 @@ class StoredArtifactProcessingIntent(BaseModel):
     handled_generation: int
     last_auto_scan_generation: int
     consecutive_dream_attempts: int = 0
+
+
+class PendingInvocationObservation(BaseModel):
+    """Global pending Scope count and the database snapshot time in naive UTC."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pending_count: int
+    observed_at: datetime
 
 
 class ArtifactProcessingIntentRepository:
@@ -129,8 +139,14 @@ class ArtifactProcessingIntentRepository:
         )
 
     async def request(
-        self, connection: AsyncConnection, scope_id: str, binding_name: str, /
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        binding_name: str,
+        /,
     ) -> StoredArtifactProcessingIntent:
+        """Accept an invocation in the caller's transaction."""
+
         await self.ensure(connection, scope_id, binding_name)
         table = ARTIFACT_PROCESSING_INTENTS_TABLE
         await connection.execute(
@@ -138,9 +154,10 @@ class ArtifactProcessingIntentRepository:
             .where(table.c.scope_id == scope_id, table.c.binding_name == binding_name)
             .values(requested_generation=table.c.requested_generation + 1)
         )
-        return cast(
+        current = cast(
             StoredArtifactProcessingIntent, await self.load(connection, scope_id, binding_name, for_update=True)
         )
+        return current
 
     async def acknowledge(
         self,
@@ -176,6 +193,32 @@ class ArtifactProcessingIntentRepository:
             )
         )
         return cast(StoredArtifactProcessingIntent, await self.load(connection, scope_id, binding_name))
+
+    async def pending_observation(
+        self, connection: AsyncConnection, binding_name: str, /
+    ) -> PendingInvocationObservation:
+        """Count all pending Scopes, independently of discovery pages/capacity.
+
+        Call in a consistent-snapshot transaction from background observation,
+        never on scrape. The count examines this binding's existing intent rows.
+        """
+
+        from powercontext.builtin.persistence.supervision import database_utc_now
+
+        _require_identifier("binding_name", binding_name, MAX_BINDING_NAME_LENGTH)
+        intents = ARTIFACT_PROCESSING_INTENTS_TABLE
+        pending_count = await connection.scalar(
+            select(func.count())
+            .select_from(intents)
+            .where(
+                intents.c.binding_name == binding_name,
+                intents.c.requested_generation > intents.c.handled_generation,
+            )
+        )
+        return PendingInvocationObservation(
+            pending_count=int(pending_count or 0),
+            observed_at=await database_utc_now(connection),
+        )
 
     async def scan(
         self,
@@ -278,4 +321,9 @@ def _require_nonnegative(field: str, value: int) -> None:
 
 StoredIntent = StoredArtifactProcessingIntent
 
-__all__ = ["ArtifactProcessingIntentRepository", "StoredArtifactProcessingIntent", "StoredIntent"]
+__all__ = [
+    "ArtifactProcessingIntentRepository",
+    "PendingInvocationObservation",
+    "StoredArtifactProcessingIntent",
+    "StoredIntent",
+]

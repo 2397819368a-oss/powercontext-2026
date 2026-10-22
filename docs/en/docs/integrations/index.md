@@ -40,10 +40,10 @@ allow loopback HTTP by default and require explicit consent for non-loopback HTT
 To select multiple hosts interactively, run:
 
 ```bash
-powercontext setup select
+powercontext setup
 ```
 
-Use the same ref as the Server. ZCode uses its dedicated `powercontext setup zcode` command and is not in the selector; consult each Agent guide for its supported installation path.
+Use the same ref as the Server. `powercontext setup codex dsh` installs, configures, and diagnoses both agents. Use `powercontext config agent codex dsh` to update installed connections without reinstalling or enabling them; consult each Agent guide for native requirements.
 
 ## Python Agent frameworks
 

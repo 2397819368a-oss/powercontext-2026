@@ -1673,6 +1673,96 @@ class FlushMemoryRequest(BaseModel):
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
 
 
+class TopicMemoryProcessingStatusRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+
+
+class GetTopicMemoryProcessingBlockRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    block_id: Annotated[StrictStr, Field(max_length=36, min_length=1)]
+
+
+class RetryTopicMemoryProcessingRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    block_id: Annotated[StrictStr, Field(max_length=36, min_length=1)]
+
+
+class TopicMemoryProcessingBlock(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    block_id: StrictStr
+    attempt_id: StrictStr
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    binding_name: StrictStr
+    source_after: Annotated[StrictInt, Field(ge=0)]
+    source_through: Annotated[
+        StrictInt | None,
+        Field(description="Exact selected Source end; null when historical selection is unknown.", ge=1),
+    ]
+    budget_source_through: Annotated[
+        StrictInt | None,
+        Field(
+            description="Cumulative coverage of the original allowance; null only for imported blocks without that allowance.",
+            ge=1,
+        ),
+    ]
+    legacy_source_through: Annotated[
+        StrictInt | None,
+        Field(
+            description="Original ambiguous range of an imported attempts-table block; neither exact selection nor cumulative coverage.",
+            ge=1,
+        ),
+    ]
+    target_source_through: Annotated[StrictInt, Field(ge=1)]
+    attempts: Annotated[StrictInt, Field(ge=1)]
+    requests: Annotated[StrictInt, Field(ge=0)]
+    tokens: Annotated[StrictInt, Field(ge=0)]
+    error_code: StrictStr
+    last_error_code: Annotated[StrictStr | None, Field(...)]
+    blocked_at: AwareDatetime
+    retried_at: Annotated[AwareDatetime | None, Field(...)]
+    retry_request_generation: Annotated[StrictInt | None, Field(ge=1)]
+
+
+class TopicMemoryProcessingState(StrEnum):
+    IDLE = "idle"
+    PENDING = "pending"
+    BLOCKED = "blocked"
+
+
+class TopicMemoryProcessingRetryStatus(StrEnum):
+    ACCEPTED = "accepted"
+
+
+class TopicMemoryProcessingStatus(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    state: TopicMemoryProcessingState
+    source_cursor: Annotated[StrictInt, Field(ge=0)]
+    source_head: Annotated[StrictInt, Field(ge=0)]
+    target_source_through: Annotated[StrictInt | None, Field(ge=0)]
+    block: Annotated[TopicMemoryProcessingBlock | None, Field(...)]
+
+
+class RetryTopicMemoryProcessingResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    status: TopicMemoryProcessingRetryStatus
+    block: TopicMemoryProcessingBlock
+
+
 class FlushTopicMemoryRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -4144,11 +4234,15 @@ class FlushMemoryResponse(BaseModel):
         StrictBool, Field(description="More Source journal work remains after the committed window.")
     ] = False
     held_count: Annotated[
-        StrictInt, Field(description="Compatibility field; Atomic Memory processing always returns zero.", ge=0)
+        StrictInt,
+        Field(
+            description="Indicator that the write gate held this window: 0 for no HOLD, 1 for HOLD, regardless of how many Sources the window contains. A held window is consumed: current_cursor advances past those Sources and the Runtime does not retry them, so a caller that needs the content re-captures it.",
+            ge=0,
+        ),
     ] = 0
     hold_codes: Annotated[
         list[StrictStr],
-        Field(description="Compatibility field; Atomic Memory processing always returns an empty array."),
+        Field(description="Gate rejection codes reported for this window; empty unless held_count is 1."),
     ] = []
 
 

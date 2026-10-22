@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from itertools import chain
 from typing import TypeVar
 
-from powercontext.artifacts import ArtifactAddress, ArtifactRef
+from powercontext.artifacts import ArtifactAddress, ArtifactLineage, ArtifactRef
 from powercontext.builtin.artifacts.experience import Experience, ExperienceSearchHit, render_experience
 from powercontext.builtin.artifacts.profile.models import Profile
 from powercontext.builtin.artifacts.topic_memory import TopicMemory, TopicMemorySearchHit
@@ -101,6 +101,9 @@ class PreparedContextOmissions:
 class PreparedContextBuild:
     """Final public context and the exact origins selected to produce it.
 
+    ``lineages`` carries exact, immutable facts for token accounting, never current
+    head or authorization decisions.
+
     ``omissions`` is always filled by the Builder. The RFC 1560 recall trace is deliberately
     **not** a field here: ``ScopedContextApplication._prepare`` returns ``build.context`` and
     discards the rest, so such a field would have no production observer. The trace is
@@ -112,6 +115,7 @@ class PreparedContextBuild:
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
     code_origins: tuple[CodeEvidenceRef, ...] = ()
+    lineages: tuple[tuple[ArtifactAddress, ArtifactLineage], ...] = ()
 
 
 PreparedContextOrigin = ArtifactRef | ArtifactAddress
