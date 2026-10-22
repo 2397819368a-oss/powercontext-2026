@@ -146,6 +146,20 @@ jobs:
               raise SystemExit("All three live OceanBase contracts must execute; skipped tests are not acceptance.")
           PY
 
+      - name: Run the real OceanBase recovery upgrade without skips
+        run: |
+          uv run --locked pytest tests/e2e/test_topic_memory_recovery_migration.py -k oceanbase \
+            --junitxml=.powercontext/recall-effort-ci/topic-recovery.xml -q -rs
+          uv run --locked python - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          suites = ElementTree.parse(Path(".powercontext/recall-effort-ci/topic-recovery.xml")).getroot()
+          cases = list(suites.iter("testcase"))
+          if len(cases) != 2 or any(case.find("skipped") is not None for case in cases):
+              raise SystemExit("Both live OceanBase recovery upgrades must execute; skipped tests are not acceptance.")
+          PY
+
       - name: Run recall, statistics and prepared-context regressions
         run: |
           uv run --locked pytest \
@@ -261,11 +275,25 @@ jobs:
           echo 'OceanBase did not become ready within 10 minutes.' >&2
           exit 1
 
+      - name: Test interrupted Scope search migrations without skips
+        timeout-minutes: 10
+        run: |
+          uv run --locked python scripts/run_atomic_memory_clean_migration.py \
+            oceanbase --output "$MIGRATION_REPORTS/scope-search" --tests \
+            tests/e2e/test_scope_search_migration.py
+
+      - name: Test background listener lifecycle without skips
+        timeout-minutes: 5
+        run: |
+          uv run --locked --extra server python scripts/run_atomic_memory_clean_migration.py \
+            oceanbase --output "$MIGRATION_REPORTS/background-metrics" --tests \
+            tests/e2e/test_background_metrics.py
+
       - name: Run clean migration evidence, grants and vectors without skips
         timeout-minutes: 45
         run: |
           uv run --locked python scripts/run_atomic_memory_clean_migration.py \
-            oceanbase --output "$MIGRATION_REPORTS"
+            oceanbase --output "$MIGRATION_REPORTS/clean-migration"
 
       - name: Test long-query retrieval and admission without skips
         timeout-minutes: 10
@@ -399,6 +427,7 @@ jobs:
           uv run --locked --extra server python -m pytest -vv -ra \
             tests/e2e/test_atomic_memory_search_authorization_snapshot.py \
             tests/e2e/test_atomic_memory_read_snapshot.py \
+            tests/e2e/test_server_metrics_oceanbase.py \
             tests/e2e/test_runtime_server.py -k oceanbase \
             --junitxml="$RUNNER_TEMP/atomic-memory-oceanbase-snapshots.xml"
           uv run --locked --extra server python - <<'PY'

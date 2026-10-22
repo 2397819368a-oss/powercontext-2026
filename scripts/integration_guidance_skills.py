@@ -87,7 +87,6 @@ def generated_guidance(root: Path = ROOT) -> dict[Path, bytes]:
         autoescape=select_autoescape(enabled_extensions=("html", "xml"), default_for_string=False, default=False),
     )
     resources = json.loads((templates / "resources.json").read_text(encoding="utf-8"))
-    legacy = json.loads((templates / "legacy.json").read_text(encoding="utf-8"))
     manifest = tomllib.loads((root / "integrations/capabilities.toml").read_text(encoding="utf-8"))
     discovered = {
         path.parent.relative_to(root).as_posix() for path in (root / "integrations").glob(f"**/{ENTRY_NAME}/SKILL.md")
@@ -121,12 +120,11 @@ def generated_guidance(root: Path = ROOT) -> dict[Path, bytes]:
                     content = merge_guidance(
                         destination.read_bytes().decode("utf-8"),
                         content,
-                        legacy_sha256=legacy[host].get(relative),
                     )
             output[root / descriptor.skill / relative] = content.encode("utf-8")
         output[root / descriptor.skill / RESOURCE_MANIFEST] = (
             json.dumps(
-                {"schema_version": 1, "resources": sorted(paths), "legacy_sha256": legacy[host]},
+                {"schema_version": 1, "resources": sorted(paths)},
                 sort_keys=True,
                 indent=2,
             )

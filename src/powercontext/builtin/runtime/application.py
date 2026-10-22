@@ -33,7 +33,7 @@ from uuid import uuid4
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactLineage, ArtifactRef, StableHandle
+from powercontext.artifacts import ArtifactAddress, ArtifactLineage, ArtifactRef, StableHandle
 from powercontext.artifacts.search import (
     ArtifactSearchExecutionContext,
     ArtifactSearchOutcome,
@@ -127,6 +127,11 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemorySearchMode,
     TopicMemorySearchResult,
 )
+from powercontext.builtin.artifacts.topic_memory.processing import (
+    TopicMemoryProcessingStatus,
+    TopicMemoryRetryResult,
+    TopicMemoryWorkBlock,
+)
 from powercontext.builtin.artifacts.topic_memory.search import bounded_topic_memory_query
 from powercontext.builtin.catalog_changes.application import CatalogChangeApplication
 from powercontext.builtin.catalog_changes.models import CatalogChangeProposal, TagDreamTarget
@@ -176,7 +181,7 @@ from powercontext.builtin.records import (
 from powercontext.builtin.review.errors import InvalidCandidateError
 from powercontext.builtin.review.generation import GeneratedCandidateResult, ReviewedGenerationService
 from powercontext.builtin.review.models import Candidate
-from powercontext.builtin.review.service import ReviewService
+from powercontext.builtin.review.service import CandidateCommitHook, ReviewService
 from powercontext.builtin.runtime._scope_cache import (
     DEFAULT_SCOPE_CACHE_SIZE,
     ScopeCache,
@@ -258,6 +263,7 @@ from powercontext.builtin.runtime.readiness import (
     ReadinessCheckStatus,
     RuntimeReadiness,
     RuntimeReadinessChecks,
+    RuntimeReadinessSnapshot,
     RuntimeReadinessStatus,
 )
 from powercontext.builtin.runtime.recall_sufficiency import (
@@ -276,6 +282,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
 )
 from powercontext.builtin.runtime.skill_search import SkillArtifactSearcher, search_skill_library
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics, overview_selection
+from powercontext.builtin.runtime.topic_memory_recovery import TopicMemoryRecoveryService
 from powercontext.builtin.runtime.topic_memory_search import TopicMemorySearcher
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -363,10 +370,6 @@ TopicMemoryFlush = Callable[[str], Awaitable[bool]]
 TopicMemorySearchObserver = Callable[[str, bool], None]
 
 logger = logging.getLogger(__name__)
-
-# Leave room for database reads and assembly within the default one-second Hook request.
-_CONTEXT_TOPIC_EMBEDDING_TIMEOUT_SECONDS = 0.25
-_CONTEXT_MEMORY_EMBEDDING_TIMEOUT_SECONDS = 0.25
 
 _MEMORY_CAPTURE_STAGE = "memory.capture"
 _MEMORY_CAPTURE_SOURCE_COUNT = "powercontext.memory.capture.source_count"
@@ -659,10 +662,15 @@ class ScopedRecordApplication:
         /,
         *,
         execution_context: Any = None,
+        on_commit: Callable[[Any, ArtifactCreated], Awaitable[None]] | None = None,
     ) -> ArtifactCreated:
         async with self._runtime._scope_operation(self.scope_id), self._runtime._locked(self.scope_id):
             return await self._runtime._records().create_artifact(
-                self.scope_id, family, write, execution_context=execution_context
+                self.scope_id,
+                family,
+                write,
+                execution_context=execution_context,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
     async def bind_artifact_handle(self, handle: StableHandle, target: ArtifactRef, /) -> ArtifactRef:
@@ -1138,6 +1146,15 @@ class ScopedContextApplication:
                 profile_candidates=profile_candidates,
                 code_candidates=code,
             )
+            build = replace(
+                build,
+                lineages=tuple(
+                    (ArtifactAddress(scope_id=group.scope_id, artifact=hit.hit.artifact_ref), hit.lineage)
+                    for group in memory_candidates
+                    for hit in group.hits
+                    if hit.lineage is not None
+                ),
+            )
             if recall_effort is not None:
                 recall_effort = replace(
                     recall_effort,
@@ -1467,6 +1484,7 @@ class ScopedContextApplication:
         embedding_calls = 0
         generation_calls = 0
         memory_recoverable = False
+        shared_embedding = next((embedding for embedding in reuse.values() if embedding is not None), None)
         for scope_id in scope_ids:
             memory_limit = (
                 builder.memory_candidate_limit + sum(identity[0] == scope_id for identity in excluded_memory)
@@ -1479,7 +1497,7 @@ class ScopedContextApplication:
                 memory_limit=memory_limit,
                 experience_limit=builder.experience_candidate_limit if EXPERIENCE_FAMILY in families else 0,
                 admission=admission,
-                reuse=reuse.get(scope_id),
+                reuse=reuse.get(scope_id, shared_embedding),
                 allow_embedding=scope_id not in reuse or reuse[scope_id] is not None,
             )
             memory_recoverable |= outcome.memory_recoverable
@@ -1497,6 +1515,8 @@ class ScopedContextApplication:
             )
             experience_candidates.append(outcome.experience)
             reuse[scope_id] = outcome.memory_query_embedding
+            if outcome.memory_query_embedding is not None:
+                shared_embedding = outcome.memory_query_embedding
             admissions.extend(
                 count for count in (outcome.memory_admission, outcome.experience_admission) if count is not None
             )
@@ -1507,12 +1527,21 @@ class ScopedContextApplication:
             experience_candidates,
             builder.experience_candidate_limit,
         )
+        atomic = self._runtime.atomic_memory
+        topic_embedding = topic_reuse.get(self.scope_id)
+        if (
+            self.scope_id not in topic_reuse
+            and atomic is not None
+            and self._runtime._topic_memory_embedding_model is atomic._application.embedding_model
+            and bounded_topic_memory_query(request.query.strip()) == request.query
+        ):
+            topic_embedding = shared_embedding
         topic_outcome = (
             await self._topic_memory_hits(
                 request.query.strip(),
                 builder.topic_memory_candidate_limit,
                 admission=admission,
-                reuse=topic_reuse.get(self.scope_id),
+                reuse=topic_embedding,
                 allow_embedding=self.scope_id not in topic_reuse or topic_reuse[self.scope_id] is not None,
             )
             if TOPIC_MEMORY_FAMILY in families
@@ -1561,7 +1590,7 @@ class ScopedContextApplication:
                         mode="auto",
                         admission=admission,
                         query_embedding=reuse,
-                        embedding_timeout_seconds=_CONTEXT_MEMORY_EMBEDDING_TIMEOUT_SECONDS,
+                        embedding_timeout_seconds=self._runtime.recall_embedding_timeout_seconds,
                         allow_embedding=allow_embedding,
                         recovery_admission=None if policy is None else policy.round2_admission,
                         context=_PREPARE_ATOMIC_CONTEXT.get(),
@@ -1650,7 +1679,7 @@ class ScopedContextApplication:
                         SearchTopicMemoryRequest(query=bounded_query, limit=limit),
                         admission=admission,
                         query_embedding=reuse,
-                        embedding_timeout_seconds=_CONTEXT_TOPIC_EMBEDDING_TIMEOUT_SECONDS,
+                        embedding_timeout_seconds=self._runtime.recall_embedding_timeout_seconds,
                         allow_embedding=allow_embedding,
                     )
                 )
@@ -2306,7 +2335,13 @@ class ScopedExperienceApplication:
         self._runtime = runtime
         self.scope_id = validate_scope_id(scope_id)
 
-    async def propose(self, request: ProposeExperienceRequest, /) -> ExperienceCandidate:
+    async def propose(
+        self,
+        request: ProposeExperienceRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> ExperienceCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
             service = self._runtime._review(self.scope_id)
             return await service.propose_experience(
@@ -2315,9 +2350,16 @@ class ScopedExperienceApplication:
                 artifacts=request.artifacts,
                 target=request.target,
                 reason=request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
-    async def generate(self, request: GenerateExperienceRequest, /) -> GeneratedCandidateResult:
+    async def generate(
+        self,
+        request: GenerateExperienceRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> GeneratedCandidateResult:
         async with (
             self._runtime._scoped_operation(
                 self.scope_id,
@@ -2330,13 +2372,20 @@ class ScopedExperienceApplication:
                 artifacts=request.artifacts,
                 target=request.target,
                 reason=request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
     async def get(self, request: GetExperienceRequest, /) -> Experience:
         async with self._runtime._scoped_operation(self.scope_id):
             return await self._runtime._review(self.scope_id).get_experience(request.artifact)
 
-    async def incubate(self, /, *, limit: int | None = None) -> ExperienceIncubationResult:
+    async def incubate(
+        self,
+        /,
+        *,
+        limit: int | None = None,
+        on_commit: Callable[..., Awaitable[None]] | None = None,
+    ) -> ExperienceIncubationResult:
         """Process one independent Task Outcome Source window into Review."""
 
         incubator = self._runtime._experience_incubator
@@ -2353,7 +2402,9 @@ class ScopedExperienceApplication:
             self._runtime._locked(self.scope_id),
         ):
             with self._runtime._stage("experience.incubation", attributes={}) as span:
-                result = await incubator(self.scope_id, window_limit)
+                result = await incubator(
+                    self.scope_id, window_limit, **({"on_commit": on_commit} if on_commit is not None else {})
+                )
                 if span is not None:
                     span.set_attributes({
                         "powercontext.experience.incubation.source_count": result.source_count,
@@ -2412,7 +2463,13 @@ class ScopedSkillApplication:
         self._runtime = runtime
         self.scope_id = validate_scope_id(scope_id)
 
-    async def propose(self, request: ProposeSkillRequest, /) -> SkillCandidate:
+    async def propose(
+        self,
+        request: ProposeSkillRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> SkillCandidate:
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
             service = self._runtime._review(self.scope_id)
             return await service.propose_skill(
@@ -2421,9 +2478,16 @@ class ScopedSkillApplication:
                 artifacts=request.artifacts,
                 target=request.target,
                 reason=request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
-    async def generate(self, request: GenerateSkillRequest, /) -> GeneratedCandidateResult:
+    async def generate(
+        self,
+        request: GenerateSkillRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> GeneratedCandidateResult:
         async with (
             self._runtime._scoped_operation(
                 self.scope_id,
@@ -2437,6 +2501,7 @@ class ScopedSkillApplication:
                 artifacts=request.artifacts,
                 target=request.target,
                 reason=request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
     async def get(self, request: GetSkillRequest, /) -> Skill:
@@ -2502,12 +2567,20 @@ class ScopedSkillApplication:
         reason: str | None,
         target: ArtifactRef | None,
         /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
     ) -> SkillCandidate:
         uploader = self._runtime._skill_package_uploader
         if uploader is None:
             raise _RuntimeStateError("skill-package")
         async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
-            return await uploader(self.scope_id, archive_bytes, reason, target)
+            return await uploader(
+                self.scope_id,
+                archive_bytes,
+                reason,
+                target,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
+            )
 
     async def record_usage(self, observation: SkillUsageCapture, /) -> SourceReceipt:
         recorder = self._runtime._skill_usage_recorder
@@ -2767,8 +2840,13 @@ class ScopedHandoffApplication:
             content_bytes=0 if content is None else len(content.encode("utf-8")),
         )
 
-    async def commit(self, prepared: PreparedHandoff, /) -> Handoff:
+    async def commit(self, prepared: PreparedHandoff, /, *, on_commit=None) -> Handoff:
         async with self._runtime._context(self.scope_id) as context, self._runtime._locked(self.scope_id):
+            if on_commit is not None:
+                committer = self._runtime._handoff_committer
+                if committer is None:
+                    raise _RuntimeStateError("handoff-commit")
+                return await committer(self.scope_id, prepared, on_commit=on_commit)
             return await context.artifacts.handoff.commit(prepared)
 
     async def continue_from(
@@ -2975,7 +3053,13 @@ class ScopedExternalSkillApplication:
                 request.fingerprint,
             )
 
-    async def import_managed(self, request: ImportExternalSkillRequest, /) -> GeneratedCandidateResult:
+    async def import_managed(
+        self,
+        request: ImportExternalSkillRequest,
+        /,
+        *,
+        on_commit: CandidateCommitHook | None = None,
+    ) -> GeneratedCandidateResult:
         importer = self._runtime._external_skill_importer
         if importer is None:
             raise ExternalSkillRegistryUnavailableError()
@@ -2992,6 +3076,7 @@ class ScopedExternalSkillApplication:
                 request.fingerprint,
                 request.mode,
                 request.reason,
+                **({"on_commit": on_commit} if on_commit is not None else {}),
             )
 
 
@@ -3427,6 +3512,45 @@ class ScopedTopicMemoryApplication:
         async with self._runtime._scoped_operation(self.scope_id):
             return await self._runtime._topic_memory_browse(self.scope_id, limit=limit, after=after)
 
+    async def processing_status(self) -> TopicMemoryProcessingStatus:
+        if self._runtime._topic_memory_recovery is None:
+            raise TopicMemoryProcessingUnavailableError
+        async with self._runtime._scoped_operation(self.scope_id):
+            return await self._runtime._topic_memory_recovery.status(self.scope_id)
+
+    async def get_block(self, block_id: str) -> TopicMemoryWorkBlock:
+        if self._runtime._topic_memory_recovery is None:
+            raise TopicMemoryProcessingUnavailableError
+        async with self._runtime._scoped_operation(self.scope_id):
+            return await self._runtime._topic_memory_recovery.get_block(self.scope_id, block_id)
+
+    async def retry(self, block_id: str) -> TopicMemoryRetryResult:
+        if self._runtime._topic_memory_recovery is None:
+            raise TopicMemoryProcessingUnavailableError
+        async with self._runtime._scoped_operation(self.scope_id), self._runtime._locked(self.scope_id):
+            if not self._runtime._topic_memory_processing_available:
+                block = await self._runtime._topic_memory_recovery.get_block(self.scope_id, block_id)
+                if block.retried_at is None:
+                    raise TopicMemoryProcessingUnavailableError
+                # Reading an old acceptance does not require a configured Worker.
+                return TopicMemoryRetryResult(block=block)
+            result = await self._runtime._topic_memory_recovery.retry(self.scope_id, block_id)
+        if self._runtime.artifact_processing_supervisor is not None:
+            try:
+                self._runtime.artifact_processing_supervisor.wake(TOPIC_MEMORY_SOURCE_WINDOW_BINDING)
+            except Exception:
+                log_safely(
+                    logger,
+                    logging.WARNING,
+                    "Topic Memory supervisor wake failed after retry acceptance",
+                    extra={
+                        "event": "topic_memory.retry.wake_failed",
+                        "outcome": "accepted",
+                        "unit": "topic-memory",
+                    },
+                )
+        return result
+
     async def flush(self) -> TopicMemoryFlushResult:
         if not self._runtime._topic_memory_processing_available or self._runtime._topic_memory_flush is None:
             raise TopicMemoryProcessingUnavailableError
@@ -3625,15 +3749,19 @@ class BuiltinRuntime:
         provider: PowerContextProvider[BuiltinSources, BuiltinArtifacts, BuiltinTriggers],
         capabilities: RuntimeCapabilities,
         primary_database: AsyncDatabase | None = None,
+        owner_write_transactions: bool = False,
+        handoff_committer: Callable[..., Awaitable[Handoff]] | None = None,
         extraction_diagnostics: ExtractionDiagnostics | None = None,
         code_service: CodeService | None = None,
         source_window_limit: int = 100,
         context_assembly_max_entries: int = 8,
         recall_sufficiency_policy: RecallSufficiencyPolicy | None = None,
+        recall_embedding_timeout_seconds: float = 0.25,
         scope_cache_size: int = DEFAULT_SCOPE_CACHE_SIZE,
         scope_evictor: ScopeEvictor | None = None,
         scope_cache_observer: ScopeCacheObserver | None = None,
         scope_ids: ScopeIds | None = None,
+        source_scope_ids: ScopeIds | None = None,
         review_service: ReviewServiceFactory | None = None,
         catalog_change_service: Callable[[str], CatalogChangeService] | None = None,
         profiles: RelationalProfileService | None = None,
@@ -3654,6 +3782,7 @@ class BuiltinRuntime:
         topic_memory_get: TopicMemoryGet | None = None,
         topic_memory_browse: TopicMemoryBrowse | None = None,
         topic_memory_flush: TopicMemoryFlush | None = None,
+        topic_memory_recovery: TopicMemoryRecoveryService | None = None,
         topic_memory_embedding_model: EmbeddingModel | None = None,
         topic_memory_processing_available: bool = False,
         topic_memory_search_observer: TopicMemorySearchObserver | None = None,
@@ -3687,10 +3816,14 @@ class BuiltinRuntime:
             raise _RuntimeConfigurationError("source_window_limit")
         if context_assembly_max_entries < 1:
             raise _RuntimeConfigurationError("context_assembly_max_entries")
+        if not recall_embedding_timeout_seconds > 0:
+            raise _RuntimeConfigurationError("recall_embedding_timeout_seconds")
         if scope_cache_size < 1:
             raise _RuntimeConfigurationError("scope_cache_size")
         self._provider = provider
         self._primary_database = primary_database
+        self._owner_write_transactions = owner_write_transactions
+        self._handoff_committer = handoff_committer
         self._capabilities = capabilities
         self._extraction_diagnostics = extraction_diagnostics
         self._review_service = review_service
@@ -3721,6 +3854,7 @@ class BuiltinRuntime:
         self._topic_memory_get = topic_memory_get
         self._topic_memory_browse = topic_memory_browse
         self._topic_memory_flush = topic_memory_flush
+        self._topic_memory_recovery = topic_memory_recovery
         self._topic_memory_embedding_model = topic_memory_embedding_model
         self._topic_memory_processing_available = topic_memory_processing_available
         self._topic_memory_search_observer = topic_memory_search_observer
@@ -3728,8 +3862,6 @@ class BuiltinRuntime:
         if self._topic_memory_searcher is None and topic_memory_search is not None:
             self._topic_memory_searcher = TopicMemorySearcher(
                 search=topic_memory_search,
-                get=topic_memory_get,
-                browse=topic_memory_browse,
                 embedding_model=topic_memory_embedding_model,
                 observer=topic_memory_search_observer,
             )
@@ -3768,6 +3900,7 @@ class BuiltinRuntime:
         self.source_window_limit = source_window_limit
         self.context_assembly_max_entries = context_assembly_max_entries
         self.recall_sufficiency_policy = recall_sufficiency_policy
+        self.recall_embedding_timeout_seconds = recall_embedding_timeout_seconds
         self._scope_cache = ScopeCache(
             scope_cache_size,
             evictor=scope_evictor,
@@ -3805,7 +3938,8 @@ class BuiltinRuntime:
         self.statistics = StatisticsApplication(self)
         self.handoff_report: HandoffReportApplication | None = None
         self.artifact_processing_supervisor: ArtifactProcessingSupervisors | None = None
-        self.processor = None if scope_ids is None else ScheduledSourceProcessor(self, scope_ids)
+        source_ids = scope_ids if source_scope_ids is None else source_scope_ids
+        self.processor = None if source_ids is None else ScheduledSourceProcessor(self, source_ids)
         self.experience_processor = (
             None if scope_ids is None or experience_incubator is None else ScheduledExperienceProcessor(self, scope_ids)
         )
@@ -3820,6 +3954,11 @@ class BuiltinRuntime:
         if self._primary_database is None:
             raise _RuntimeStateError("database")
         return self._primary_database
+
+    @property
+    def owner_write_database(self) -> AsyncDatabase | None:
+        """Return the database when composition guarantees owner commit hooks."""
+        return self._primary_database if self._owner_write_transactions else None
 
     @asynccontextmanager
     async def read_snapshot(self, scope_id: str, *, flush_usage: bool = False) -> AsyncIterator[ScopeReadSnapshot]:
@@ -3861,6 +4000,21 @@ class BuiltinRuntime:
         if self._extraction_diagnostics is None:
             return None
         return self._extraction_diagnostics.snapshot(self.artifact_processing_supervisor)
+
+    def readiness_snapshot(self) -> RuntimeReadinessSnapshot:
+        """Read dependency observations without probing storage or inference providers."""
+
+        snapshot = self._readiness.snapshot()
+        if (
+            self._closing
+            or self._closed
+            or (
+                self.artifact_processing_supervisor is not None
+                and self.artifact_processing_supervisor.status.value == "degraded"
+            )
+        ):
+            return replace(snapshot, status=RuntimeReadinessStatus.NOT_READY)
+        return snapshot
 
     async def readiness(self) -> RuntimeReadiness:
         """Check whether the Runtime and its assembled dependencies can accept work."""
@@ -4122,13 +4276,19 @@ class BuiltinRuntime:
         return self._scope_cache.lock(validate_scope_id(scope_id))
 
     async def _flush_sources(self, scope_id: str, *, limit: int | None = None, context=None) -> MemoryFlushResult:
+        from powercontext.builtin.runtime.relational import _RelationalTriggers
+
         async with self._context(
             scope_id,
             generation_purpose=ModelUsagePurpose.MEMORY_EXTRACTION,
             embedding_purpose=ModelUsagePurpose.MEMORY_INDEXING,
         ) as runtime_context:
             window_limit = self.source_window_limit if limit is None else limit
-            async with self._locked(scope_id):
+            # Relational triggers serialize activations and recheck cursor,
+            # window and Artifact reads at commit. Capture may proceed while
+            # their model prepares; custom triggers retain Runtime serialization.
+            lock = nullcontext() if type(runtime_context.triggers) is _RelationalTriggers else self._locked(scope_id)
+            async with lock:
                 try:
                     result = await runtime_context.triggers.flush(limit=window_limit, atomic_context=context)
                 except Exception as error:

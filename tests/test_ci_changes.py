@@ -32,8 +32,8 @@ RULES = tomllib.loads((ROOT / ".github/ci-paths.toml").read_text(encoding="utf-8
 @pytest.mark.parametrize(
     ("paths", "expected"),
     [
-        (["docs/zh/docs/quickstart.md"], {"website"}),
-        (["docs/en/rfcs/0001_design.md", "README_CN.md"], {"website"}),
+        (["docs/zh/docs/quickstart.md"], {"website", "docs_tests"}),
+        (["docs/en/rfcs/0001_design.md", "README_CN.md"], {"website", "docs_tests"}),
         (["website/src/app/page.tsx"], {"website"}),
         (["AGENTS.md", "CONTRIBUTING.md"], set()),
         (["integrations/pi/plugins/powercontext/index.ts"], {"tests", "pi", "zcode"}),
@@ -48,7 +48,10 @@ RULES = tomllib.loads((ROOT / ".github/ci-paths.toml").read_text(encoding="utf-8
         (["scripts/scan_e2e_evidence.sh"], {"tests", "harness"}),
         (["scripts/sync_dsh_plugin_tree.py"], {"tests", "dsh"}),
         (["integrations/bub/src/powercontext_bub/__init__.py"], {"tests", "harness"}),
-        (["docs/en/docs/quickstart.md", "integrations/opencode/package.json"], {"website", "tests", "opencode"}),
+        (
+            ["docs/en/docs/quickstart.md", "integrations/opencode/package.json"],
+            {"website", "docs_tests", "tests", "opencode"},
+        ),
         (
             ["scripts/guidance_templates/base/SKILL.md.j2"],
             {"tests", "dify", "hermes", "dsh", "pi", "opencode", "openclaw", "zcode", "kimi"},
@@ -161,7 +164,13 @@ def test_diff_covers_all_pr_commits_and_excludes_base_branch_changes(repository:
 
     selected = run_selector(repository, "pull_request", base, head)
 
-    assert {suite for suite, enabled in selected.items() if enabled} == {"tests", "pi", "website", "zcode"}
+    assert {suite for suite, enabled in selected.items() if enabled} == {
+        "tests",
+        "pi",
+        "website",
+        "docs_tests",
+        "zcode",
+    }
 
 
 def test_moves_and_deletions_keep_the_original_suite(repository: Path) -> None:
@@ -174,7 +183,14 @@ def test_moves_and_deletions_keep_the_original_suite(repository: Path) -> None:
 
     selected = run_selector(repository, "pull_request", base, head)
 
-    assert {suite for suite, enabled in selected.items() if enabled} == {"tests", "pi", "website", "native", "zcode"}
+    assert {suite for suite, enabled in selected.items() if enabled} == {
+        "tests",
+        "pi",
+        "website",
+        "docs_tests",
+        "native",
+        "zcode",
+    }
 
 
 def test_large_diff_includes_code_after_hundreds_of_docs(repository: Path) -> None:

@@ -21,12 +21,14 @@ import json
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.builtin.runtime import InferenceConfig, RuntimeConfig
+from powercontext.builtin.records import RecordService
+from powercontext.builtin.runtime import BuiltinRuntime, InferenceConfig, RuntimeCapabilities, RuntimeConfig
 from powercontext.server.authentication import AuthenticationResult, ProviderReadiness
 from powercontext.server.authz import (
     AccessAction,
@@ -936,6 +938,317 @@ def test_owner_failure_rolls_back_new_atomic_writes_without_blocking_explicit_re
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("with_database", [False, True])
+@pytest.mark.parametrize("legacy_records", [False, True])
+def test_custom_runtime_preserves_record_service_composition(tmp_path, with_database, legacy_records):
+    async def scenario():
+        async with _server(tmp_path) as (app, client, access):
+            scope_id = await _scope(client)
+            original = app.state.application
+            records = original._records()
+
+            class LegacyRecords:
+                def __getattr__(self, name):
+                    return getattr(records, name)
+
+                async def create_artifact(self, scope_id, family, write, /, *, execution_context=None):
+                    return await records.create_artifact(scope_id, family, write, execution_context=execution_context)
+
+            async with BuiltinRuntime(
+                provider=original._provider,
+                capabilities=RuntimeCapabilities(memory_extraction=False, memory_search_modes=()),
+                primary_database=original.primary_database if with_database else None,
+                scope_application=original.scopes,
+                record_service=cast(RecordService, LegacyRecords()) if legacy_records else records,
+            ) as custom:
+                app.state.application = custom
+                try:
+                    created = await client.post(
+                        f"/v1/scopes/{scope_id}/artifacts",
+                        json={"family": "profile", "content": {"content": "# An externally composed runtime"}},
+                    )
+                    assert created.status_code == 201, created.text
+                    resource = ResourceRef.artifact(
+                        scope_id, family="profile", artifact_id=created.json()["artifact_id"]
+                    )
+                    owner = await access.artifact_owner(resource)
+                    assert owner is not None and owner.owner == ADMIN
+                finally:
+                    app.state.application = original
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("backend", ["builtin", "casbin"])
+def test_owner_failure_rolls_back_base_artifact_creation(tmp_path, monkeypatch, backend):
+    async def scenario():
+        async with _server(tmp_path, backend) as (app, client, access):
+            scope_id = await _scope(client)
+
+            async def unavailable(*args, **kwargs):
+                raise AccessUnavailableError("artifact_owner_pending")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(type(access), "establish_artifact_owner", unavailable)
+                created = await client.post(
+                    f"/v1/scopes/{scope_id}/artifacts",
+                    json={"family": "profile", "content": {"content": "# Owned profile"}},
+                )
+                assert created.status_code == 503, created.text
+            records = app.state.application.records.for_scope(scope_id)
+            assert await records.logical_artifacts() == ()
+            assert (
+                await client.post(
+                    f"/v1/scopes/{scope_id}/artifacts",
+                    json={"family": "profile", "content": {"content": "# Owned profile"}},
+                )
+            ).status_code == 201
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("backend", ["builtin", "casbin"])
+@pytest.mark.parametrize("operation", ["propose", "generate"])
+@pytest.mark.parametrize("family", ["experience", "skill"])
+def test_owner_failure_rolls_back_candidate_creation(tmp_path, monkeypatch, backend, operation, family):
+    async def scenario():
+        async with _server(tmp_path, backend) as (app, client, access):
+            scope_id = await _scope(client)
+            source = await client.post(f"/v1/scopes/{scope_id}/sources", json={"content": "Exact proposal evidence."})
+            proposal = (
+                {
+                    "situation": "An owner store failed.",
+                    "action": "Retry the proposal.",
+                    "outcome": "No stranded candidate.",
+                    "lesson": "Commit ownership with the proposal.",
+                }
+                if family == "experience"
+                else {
+                    "name": "owner-safe-proposal",
+                    "description": "Persist an owned proposal.",
+                    "instructions": "Commit ownership with the candidate.",
+                    "validation": ["The candidate can be approved."],
+                }
+            )
+            payload = {
+                "scope_id": scope_id,
+                "proposal": proposal,
+                "source_refs": [{"name": "content", "source_id": source.json()["source_id"]}],
+                "artifact_refs": [],
+            }
+            if operation == "generate":
+                from powercontext.builtin.artifacts.experience import ExperienceContent
+                from powercontext.builtin.artifacts.skill import SkillContent
+
+                class Generator:
+                    async def generate(self, value):
+                        model = ExperienceContent if family == "experience" else SkillContent
+                        return model.model_validate(proposal)
+
+                monkeypatch.setattr(app.state.application._provider, f"_{family}_generator", Generator())
+                del payload["proposal"]
+                if family == "skill":
+                    payload["origin"] = "source"
+            path = f"/v1/{family}/{operation}"
+
+            async def unavailable(*args, **kwargs):
+                raise AccessUnavailableError("artifact_owner_pending")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(type(access), "attest_candidate_owner", unavailable)
+                created = await client.post(path, json=payload)
+                assert created.status_code == 503, created.text
+            listed = await client.post("/v1/candidates/list", json={"scope_id": scope_id})
+            assert listed.status_code == 200, listed.text
+            assert listed.json()["candidates"] == []
+            retried = await client.post(path, json=payload)
+            assert retried.is_success, retried.text
+            candidate = retried.json()["candidate"] if operation == "generate" else retried.json()
+            approved = await client.post(
+                "/v1/candidates/approve",
+                json={"scope_id": scope_id, "candidate_id": candidate["candidate_id"], "expected_version": 1},
+            )
+            assert approved.status_code == 200, approved.text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["handoff", "publication"])
+def test_owner_failure_rolls_back_handoff_and_publication(tmp_path, monkeypatch, operation):
+    async def scenario():
+        async with _server(tmp_path) as (app, client, access):
+            scope_id = await _scope(client)
+            if operation == "publication":
+                revision = await _handoff(client, scope_id)
+                target = await client.post(
+                    "/v1/scopes",
+                    json={"title": "Target", "summary": "Owner rollback", "idempotency_key": "owner-target"},
+                )
+                destination = target.json()["scope_id"]
+                path = "/v1/artifact-publications"
+                payload = {
+                    "source": {"scope_id": scope_id, "artifact": revision},
+                    "target_scope_id": destination,
+                    "idempotency_key": "owner-publication",
+                }
+            else:
+                destination = scope_id
+                source = await client.post(
+                    f"/v1/scopes/{scope_id}/sources", json={"content": "Evidence for a first Handoff."}
+                )
+                statement = {
+                    "text": "Continue the verified task.",
+                    "citations": [
+                        {
+                            "kind": "source",
+                            "source_ref": {
+                                "name": "content",
+                                "source_id": source.json()["source_id"],
+                            },
+                        }
+                    ],
+                }
+                path = "/v1/handoff/commit"
+                payload = {
+                    "scope_id": scope_id,
+                    "handoff": {
+                        "schema": "powercontext.prepared-handoff.v1",
+                        "scope_id": scope_id,
+                        "base": None,
+                        "content": {
+                            "schema": "powercontext.handoff.v1",
+                            "objective": "Continue verified work.",
+                            "state": [statement],
+                            "disposition": "continuable",
+                            "next_action": statement,
+                            "omissions": [],
+                        },
+                    },
+                }
+
+            async def unavailable(*args, **kwargs):
+                raise AccessUnavailableError("artifact_owner_pending")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(type(access), "establish_artifact_owner", unavailable)
+                failed = await client.post(path, json=payload)
+                assert failed.status_code == 503, failed.text
+            assert await app.state.application.records.for_scope(destination).logical_artifacts() == ()
+            retried = await client.post(path, json=payload)
+            assert retried.is_success, retried.text
+            artifacts = await app.state.application.records.for_scope(destination).logical_artifacts()
+            assert len(artifacts) == 1
+            resource = ResourceRef.artifact(destination, family="handoff", artifact_id=artifacts[0].artifact_id)
+            owner = await access.artifact_owner(resource)
+            assert owner is not None and owner.owner == ADMIN
+            replay = await client.post(path, json=payload)
+            assert replay.is_success, replay.text
+            with sqlite3.connect(tmp_path / "regressions.db") as connection:
+                connection.execute(
+                    "DELETE FROM pc_access_owners WHERE scope_id = ? AND owner_kind = 'artifact'",
+                    (destination,),
+                )
+            pending = await client.post(path, json=payload)
+            assert pending.status_code == 503, pending.text
+            assert await access.artifact_owner(resource) is None
+
+    asyncio.run(scenario())
+
+
+def test_scheduled_owner_failure_preserves_experience_window_for_retry(tmp_path, monkeypatch):
+    from powercontext.builtin.artifacts.experience import ExperienceCandidateInput, ExperienceContent
+    from powercontext.server.factory import _scheduled_access_runners
+    from powercontext.sources import SourceRef
+
+    class Pipeline:
+        async def incubate(self, sources):
+            return tuple(
+                ExperienceCandidateInput(
+                    proposal=ExperienceContent(
+                        situation="An owner store failed.",
+                        action="Retry the window.",
+                        outcome="The candidate stays reviewable.",
+                        lesson="Commit the attestation before advancing the cursor.",
+                    ),
+                    sources=(SourceRef(source_type="content", source_id=source.name),),
+                )
+                for source in sources
+            )
+
+    async def scenario():
+        async with _server(tmp_path) as (app, client, access):
+            scope_id = await _scope(client)
+            runtime = app.state.application
+            monkeypatch.setattr(runtime._provider, "_experience_pipeline", Pipeline())
+            monkeypatch.setattr(runtime, "_experience_incubator", runtime._provider.incubate_experience)
+            source = await client.post(
+                "/v1/sources/content",
+                json={
+                    "scope_id": scope_id,
+                    "source_id": "task-outcome",
+                    "content": "The strict fixture passed.",
+                    "metadata": {"kind": "task-outcome"},
+                },
+            )
+            assert source.is_success, source.text
+            _, runner = _scheduled_access_runners(
+                ServerSettings(
+                    runtime=RuntimeConfig(experience_schedule_seconds=60),
+                    access=AccessControlConfig(mode="enforced", background_principal_id="admin"),
+                ),
+                access,
+                legacy_static_principal=None,
+            )
+            assert runner is not None
+
+            async def unavailable(*args, **kwargs):
+                raise AccessUnavailableError("artifact_owner_pending")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(type(access), "attest_candidate_owner", unavailable)
+                with pytest.raises(AccessUnavailableError):
+                    await runner(scope_id, runtime)
+            listed = await client.post("/v1/candidates/list", json={"scope_id": scope_id})
+            assert listed.json()["candidates"] == []
+            retried = await runner(scope_id, runtime)
+            assert retried.previous_cursor == 0
+            assert retried.candidate_count == 1
+            attested = await access.candidate_owner(scope_id, retried.candidate_ids[0])
+            assert attested is not None and attested.proposed_owner == ADMIN
+            replay = await runner(scope_id, runtime)
+            assert replay.candidate_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_custom_relationship_writer_preserves_its_owner_failure_semantics(tmp_path):
+    from powercontext.server.authz.repository import RelationalAccessRepository
+
+    class CustomRelationships(RelationalAccessRepository):
+        async def establish_artifact_owner(self, relation):
+            raise AccessUnavailableError("custom_owner_store_unavailable")
+
+    async def scenario():
+        async with _server(tmp_path) as (app, client, access):
+            scope_id = await _scope(client)
+            custom = CustomRelationships(access.relationships._database)
+            access.relationships = access.audit = custom
+            created = await client.post(
+                f"/v1/scopes/{scope_id}/artifacts",
+                json={"family": "profile", "content": {"content": "# Custom owner store"}},
+            )
+            assert created.status_code == 503, created.text
+            assert (
+                await access.artifact_owner(ResourceRef.artifact(scope_id, family="profile", artifact_id="profile"))
+                is None
+            )
+            # External stores retain RFC-1396's commit-then-fail-closed contract.
+            records = await app.state.application.records.for_scope(scope_id).logical_artifacts()
+            assert len(records) == 1
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("dependency", ["provider", "audit", "relationships"])
 def test_readiness_probes_dependencies_and_recovers(tmp_path, monkeypatch, dependency):
     async def scenario():
@@ -1539,30 +1852,31 @@ def test_prompt_owner_cannot_mutate_after_scope_role_revocation(
 
 
 @pytest.mark.parametrize("backend", ["builtin", "casbin"])
-def test_prompt_configuration_reads_saved_content_through_scope_grant_without_owner(tmp_path, monkeypatch, backend):
+def test_prompt_configuration_reads_saved_content_through_scope_grant_without_owner(tmp_path, backend):
     async def scenario():
-        async with _server(tmp_path, backend) as (_, client, access):
+        async with _server(tmp_path, backend) as (_, client, _):
             scope = await _scope(client)
 
-            async def unavailable(*args, **kwargs):
-                raise AccessUnavailableError("artifact_owner_pending")
-
-            with monkeypatch.context() as patch:
-                patch.setattr(access, "establish_artifact_owner", unavailable)
-                created = await client.post(
-                    f"/v1/scopes/{scope}/artifacts",
-                    json={
-                        "family": "prompt",
-                        "prompt_key": "atomic_memory.extract",
-                        "content": {
-                            "schema_version": "powercontext.prompt.v1",
-                            "mode": "auto",
-                            "instructions": "",
-                            "demonstrations": [],
-                        },
+            created = await client.post(
+                f"/v1/scopes/{scope}/artifacts",
+                json={
+                    "family": "prompt",
+                    "prompt_key": "atomic_memory.extract",
+                    "content": {
+                        "schema_version": "powercontext.prompt.v1",
+                        "mode": "auto",
+                        "instructions": "",
+                        "demonstrations": [],
                     },
+                },
+            )
+            assert created.status_code == 201, created.text
+            # Preserve the legacy ownerless-read scenario without creating a new partial write.
+            with sqlite3.connect(tmp_path / "regressions.db") as connection:
+                connection.execute(
+                    "DELETE FROM pc_access_owners WHERE scope_id = ? AND family = 'prompt'",
+                    (scope,),
                 )
-                assert created.status_code == 503
             response = await client.get(f"/v1/scopes/{scope}/prompts/atomic_memory.extract")
             assert response.status_code == 200, response.text
             assert response.json()["artifact"] == {
