@@ -1,6 +1,6 @@
 ---
-title: Privacy Interception and Token Efficiency in PowerContext
-description: Integrate privacy checks and token-efficiency algorithms into existing context preparation, decision governance, and inference adapters, with an optional Rust GatewayRuntime.
+title: Context Privacy Interception and Token Efficiency in PowerContext
+description: Integrate privacy interception and token efficiency into existing context organization, policy governance, and inference adapters, with contracts for first-party and third-party gateway integration.
 ---
 
 - Proposal Name: `integrated_privacy_interception_and_token_efficiency`
@@ -13,36 +13,43 @@ description: Integrate privacy checks and token-efficiency algorithms into exist
 
 # Summary
 
-This RFC has two product goals: **intercept prohibited privacy/security disclosures** and **improve token efficiency
-without weakening task quality or evidence fidelity**. Both capabilities extend existing PowerContext modules. They do
-not introduce an independent policy runtime, a second context system, or a new execution database.
+This RFC focuses on two product goals at the context layer: **privacy and security interception**, preventing prohibited
+context from leaving its trusted boundary or reaching recipients through model results; and **token efficiency**,
+reducing unnecessary context, repeated computation and output while preserving authorization, freshness, task quality
+and evidence fidelity. Safety comes first, then correctness/evidence, complete-task cost, and cache-hit rate.
 
-ContextRuntime names the existing `ContextApplication.for_scope(scope_id).prepare(...)` capability: authorized recall,
-assembly, `PreparedContextBuilder`, and explicit Bootstrap/Work/Handoff composition. Token selection and representation
-algorithms belong in this path. Existing inference stages and provider adapters own input inspection before actual
-sending, complete-request budgets, native cache planning, output limits, and raw-response inspection before delivery.
-Existing `DecisionPolicy`, `DecisionAssessment`, and projection contracts supply versioned governance where applicable.
-Mandatory checks do not depend on an LLM judge or inherit advisory fail-open behavior.
+Both capabilities extend existing context preparation, policy governance, stage projections and inference adapters.
+ContextRuntime names existing `ContextApplication.for_scope(scope_id).prepare(...)`, recall/assembly,
+`PreparedContextBuilder` and Bootstrap/Work/Handoff composition. It is not a new context engine, policy runtime or
+execution database. The public result remains ephemeral `PreparedContext`; history, injection and acceptance stay
+host-owned.
 
-SDK/embedded execution and optional Rust GatewayRuntime are **two execution paths configurable per call**. A deployment
-may use both. They execute the same Core decisions; Gateway handles protocol mapping, transport, buffering, cancellation,
-owned retries, and usage evidence. The actual KV cache remains at the inference service.
+Core owns context selection, approved representation, stable reuse boundaries, refresh conditions and safety constraints.
+The execution adapter controlling the final model request maps those constraints to native caching for the actual
+model, API and deployment. It enforces required checks after final rendering and before sending, and before raw results
+are released. The inference service owns the actual KV cache.
+
+This RFC defines existing entry points, in-process access and two optional remote check operations.
+**PowerContext Gateway and third-party gateways are optional external integrations. Gateway implementation, language,
+routing, rate limits, shared caches and operational governance are outside this RFC.** Supported SDK/provider integration
+can enforce complete checks without a gateway; context-fragment-only access cannot claim control of the complete request.
 
 The implementation baseline is repository commit e4efb39b. This is a design proposal, not a claim that general outbound
-privacy interception, complete-request checks, cache adapters, or measured savings are implemented in that baseline.
+privacy interception, complete-request checks, native cache adapters or measured savings exist in that baseline.
 
 | Decision | Contract |
 | --- | --- |
-| Primary goals | Privacy interception and token efficiency, with safety and task correctness taking precedence over savings. |
-| Algorithm ownership | Extend existing context preparation, stage projections, inference adapters, and policy consumers. |
-| ContextRuntime | Existing context organization capability; no second selector, transcript store, or forwarding runtime class. |
-| Security checkpoints | Inspect before model egress and before response release; these are steps inside existing call boundaries. |
-| Executor | Embedded/SDK or optional Rust GatewayRuntime, selected per invocation; both may coexist. |
-| Public API | Reuse context/continuity APIs; at most two new check operations for remote execution. Embedded use needs no HTTP. |
-| Storage | Zero new tables, zero new Artifact families, and no inference migration in v1. |
-| Default optimization | Existing bounded selection, stable reuse, approved structural encoding, cache compatibility, explicit output limits. |
+| Primary goals | Privacy interception and token efficiency at the context layer. |
+| Algorithm ownership | Existing context, stage projection and inference components, with applicable DecisionPolicy/Assessment/projection consumers. |
+| ContextRuntime | Existing context organization; no second selector, transcript store or forwarding runtime class. |
+| Security checkpoints | Before sending each complete supported request and before raw-response release, including auxiliary model boundaries. |
+| Cache ownership | Core supplies reuse constraints; the final execution adapter generates target-specific native settings; the provider supplies usage evidence. |
+| Gateway boundary | Reserve PowerContext Gateway and third-party integration; do not design or deliver a gateway component. |
+| Public API | Reuse context/continuity APIs; at most two remote check operations, with no HTTP required for embedded use. |
+| Storage | Zero new tables, zero new Artifact families, no inference migration or generic cache store in v1. |
+| Default optimization | Existing bounded selection, exact prepared-value reuse, approved structural encoding, cache compatibility and explicit output limits. |
 | V1 privacy behavior | Allow unchanged semantic content or block/withhold; no automatic general redaction or secret restoration. |
-| Acceptance | Actual disclosure counterexamples, false blocks, task quality, complete usage/cost, and end-to-end latency. |
+| Acceptance | Disclosure counterexamples, false blocks, task quality, complete usage/cost, end-to-end latency and explicit coverage. |
 
 # Motivation
 
@@ -61,21 +68,38 @@ The priority order is mandatory safety, correctness/evidence, complete-task cost
 that loses a constraint, causes more retries, or destroys a valuable cache prefix is not established improvement.
 Keeping a prohibited prefix stable is never an acceptable cache optimization.
 
+## Scope and non-goals
+
+This RFC covers retrieval/delivery rules for context organized by PowerContext, context checks in supported model calls,
+deterministic representation optimization, stable reuse constraints and execution-feedback contracts. Inspecting the
+complete request prevents host-added instructions, history and tool results from bypassing context protection. It does
+not transfer Agent history, tool execution or all network traffic to Core.
+
+The initial scope introduces no new Context Engine, Execution Kit, ContextPlan resource or feedback bus. Gateway
+authentication implementations, routing algorithms, load balancing, connection pools, queues, distributed caches,
+request coalescing, management surfaces and financial ledgers are outside scope. General lossy summaries, compaction,
+response/semantic caches and tool-result caches are also excluded. Each needs separate scenarios, quality evidence,
+authorization/freshness rules and state-cost justification; none is a prerequisite for integration.
+
+Cohesive helpers may be extracted beside existing components where contracts and failure semantics match.
+A desire to share algorithms does not justify a new universal orchestration layer.
+
 # Guide-level explanation
 
 ## One coding task
 
 A user asks an Agent to fix an API client in a registered project Scope:
 
-1. The host calls existing `/v1/context/prepare` at its supported recall boundary. Existing runtime policy retrieves and assembles relevant authorized evidence, retaining citations and the historical-data trust envelope.
-2. The host retains that exact prepared value across ordinary tool turns. Current instructions, accepted history, and tool execution remain host-owned. A refresh uses the same prepare API at an explicit boundary.
-3. The executor constructs the complete model request. Existing inference-boundary code applies configured privacy rules, full-request token admission, approved cache settings, and output limits. Prohibited content is blocked before sending.
-4. The executor sends admitted bytes to the configured target, obtains the complete raw response, and requests its required release checks. In strict mode nothing containing model content is delivered before approval.
-5. The host accepts the checked answer or authorizes a tool. Core background results still pass their existing schema, evidence, eligibility, and Artifact commit validation. A successful inspection does not imply a tool execution or durable write.
+1. The host calls existing `/v1/context/prepare` at a supported recall boundary. Current runtime policy retrieves and assembles evidence within authorized Scope/family boundaries, retaining citations and historical-data trust wrapping. Callers need not enumerate every Memory.
+2. The host retains that exact prepared value and injection position across ordinary tool turns. Task, freshness, permission or explicit refresh changes establish a new boundary through the existing prepare or explicit Handoff operation.
+3. The actual execution adapter resolves the approved target and its cache capabilities, assembles context at permitted protocol positions and generates native cache settings. When SDK and gateway coexist, one owner controls representation optimization, final rendering and sending; preparation or compression must not run twice.
+4. The owning inference boundary checks privacy, target, complete token window and output limits in the final input. Required checks must pass before sending; model or final-payload changes require rechecking.
+5. The adapter obtains the complete raw response and completes required release checks before delivering it. Strict mode releases no model content before approval.
+6. The host accepts the checked answer or authorizes a tool. Background results still pass existing schema, evidence, eligibility and Artifact commit validation. Approval does not imply tool execution or persistence.
 
-A configured secret in a tool result must be caught even when it was never part of PreparedContext. An ordinary tool
-turn must not trigger a new context search solely to run a security check. Empty prepared context remains a normal result;
-a privacy refusal is explicit and cannot be disguised as an empty success.
+A secret in a host-added tool result must be checked even if it was never part of PreparedContext. Ordinary tool turns
+must not repeat context search solely for inspection. Empty context remains normal; a privacy refusal is explicit and
+cannot be disguised as an empty success.
 
 ## A Core background stage
 
@@ -125,52 +149,77 @@ Source baseline:
 
 ```mermaid
 flowchart TB
-    HOST["Host / Agent: history, tools, acceptance"]
-    EXEC["Execution path per call<br/>SDK / embedded or optional Rust GatewayRuntime"]
+    HOST["Host / Agent<br/>History, injection, tools and acceptance"]
+    SDK["Supported SDK / embedded provider integration"]
 
-    subgraph CORE["PowerContext Core: existing composition root"]
-        AUTH["Existing trusted Scope / authorization boundary"]
-        CONTEXT["Existing context preparation / ContextRuntime<br/>Recall + assembly + PreparedContextBuilder<br/>Selection, citations, representation, byte budget"]
-        INFERENCE["Existing inference stages / provider adapters<br/>Before send: privacy checks + token/cache/output limits<br/>After response: raw checks before parse / delivery"]
-        POLICY["Existing DecisionPolicy / Assessment / projection<br/>Versioned rules, coverage, consumer-owned failure action"]
+    subgraph CORE["This RFC: existing PowerContext components"]
+        AUTH["Existing Scope / trusted caller / authorization"]
+        CONTEXT["Existing ContextRuntime<br/>prepare / assembly / PreparedContextBuilder<br/>Selection, citations, approved representation and reuse constraints"]
+        CHECK["Existing inference / stage boundaries<br/>Complete input privacy and budget checks<br/>Raw-response release checks"]
+        POLICY["Existing DecisionPolicy / Assessment / projection<br/>Policy versions, coverage and consumer failure actions"]
         DATA["Existing Source / Artifact / Bootstrap / Work / Handoff"]
         USAGE["Existing usage / statistics / bounded observations"]
+        API["Integration contracts<br/>Existing context entry points + two optional checks"]
         AUTH -.-> CONTEXT
-        AUTH -.-> INFERENCE
+        AUTH -.-> CHECK
         CONTEXT --> DATA
-        POLICY -.-> INFERENCE
         POLICY -.-> CONTEXT
-        INFERENCE -.-> USAGE
+        POLICY -.-> CHECK
+        CHECK -.-> USAGE
+        API --> CONTEXT
+        API --> CHECK
     end
 
-    MODEL["Configured model service / verified route<br/>Actual inference and KV Cache"]
-    HOST --> EXEC
-    EXEC -. "Existing prepare / checked values" .-> CONTEXT
-    EXEC -. "Shared input / output checks" .-> INFERENCE
-    EXEC <-->|"Admitted requests / raw responses"| MODEL
+    subgraph EXTERNAL["Optional external integrations: component design outside this RFC"]
+        PCGW["PowerContext Gateway"]
+        THIRD["Third-party gateway / execution adapter plugin"]
+    end
+    MODEL["Actual model service<br/>Native cache and usage evidence"]
+
+    HOST --> SDK
+    HOST -. "Context-only integration" .-> API
+    SDK --> CONTEXT
+    SDK <-->|"In-process checks"| CHECK
+    SDK <-->|"Admitted request / raw response"| MODEL
+    HOST --> PCGW
+    HOST --> THIRD
+    PCGW -. "Same integration contract" .-> API
+    THIRD -. "Same integration contract" .-> API
+    PCGW <-->|"External execution"| MODEL
+    THIRD <-->|"External execution"| MODEL
 ```
 
-The boxes identify existing component owners; checks and optimizations are internal algorithms and call steps. Context
-preparation retains its own policy and byte budget. Inference helpers consume the complete request assembled by the
-executor. A policy consumer cannot authorize retrieval or replace an Artifact commit. The dotted check requests carry
-content to inspect, not metadata alone.
-Deterministic preparation/encoding helpers are not automatically DecisionPolicy consumers. Only a registered narrow
-consumer uses its governance contract; existing advisory and mandatory call boundaries retain their own actions.
+Solid data paths and dashed checking/integration paths show ownership; external integrations are not internal Core
+dependencies. Checks carry actual content, not only fingerprints. External execution arrows imply protection only
+where their final boundaries have passed acceptance. ContextRuntime retains selection authority; inference checks
+consume complete requests. Policy consumers cannot grant retrieval rights or replace Artifact validation.
 
-Core background calls can use the embedded executor. Remote Gateway uses existing Core APIs plus the two check
-operations below. Both execution paths may coexist in one deployment; each invocation has one declared owner for
-sending and retries. Gateway implements protocol behavior and transport, not another context selector or rule engine.
+### Implementation and reuse boundaries
 
-### Implementation boundaries
+Place cohesive new algorithms beside existing context or inference code. Share scanners, codecs and budget algorithms
+only where carrier contracts and failure semantics agree. Deterministic preparation helpers are not automatically
+DecisionPolicy consumers; only registered narrow consumers use that governance contract.
 
-New cohesive algorithm functions may live beside current context or inference code. Share a scanner, codec, or budget
-algorithm only when callers have the same carrier contract and failure semantics. Do not add a forwarding runtime,
-generic plugin framework, parallel policy registry, or session facade just to group those functions.
+Share domain rules, versioned contracts and conformance examples. Reuse implementations where language and contract
+permit it. External or different-language integrations consume Core decisions through check operations; this RFC does
+not assume that a Python SDK and a gateway link the same binary or execution component. Do not introduce parallel rule
+engines, generic plugin frameworks, session facades or grouping-only runtimes.
 
-Existing narrow decision consumers retain their behavior. A `DecisionRequest` is bounded for its own purpose; forcing
-a full prompt into that DTO and scanning only its truncated prefix is not complete-request protection. A structured
-high-level generator wrapper alone also cannot prove coverage of final serialization, internal retries, raw errors,
-and first response release. Each promised provider path must integrate and test its actual boundary.
+Existing narrow decision consumers keep their behavior. `DecisionRequest` bounds serve their own purpose; inspecting a
+small prompt prefix is not a complete-request check. A high-level structured-generator wrapper cannot establish coverage
+of final serialization, internal retries, raw errors or first release. Verify each promised provider path at real boundaries.
+
+### Declare integration capabilities by visibility
+
+| Integration | Permitted claim | Required limitation |
+| --- | --- | --- |
+| Context Provider / MCP / Hook obtaining only a fragment | Optimize and inspect the context PowerContext actually delivers, retaining citations and byte budget. | Unknown final host prompt, model and subsequent changes prevent complete egress/release or real billing claims. |
+| Supported SDK / embedded provider integration | Check complete payloads at verified final send/release boundaries, apply target-specific cache settings and collect available usage. | Other application traffic can bypass it; coverage is declared by protocol, carrier, model and version. |
+| PowerContext Gateway integration | Consume Core through the same preparation/check contracts and enforce decisions at its actual send/release boundaries. | Separately designed and delivered; this RFC requires no gateway deployment. |
+| Third-party gateway integration | Call check operations through final-boundary plugins, or integrate through a verified passthrough route. | Transparency, actual target, retries, transformations and usage define coverage; branding or an OpenAI-compatible label is not conformance evidence. |
+
+MCP, Hook and SDK names do not determine authority. A host with greater boundary control is verified for its actual
+capability. Without usage, report delivered bytes, estimates or local reuse only; unknown is not zero.
 
 ## Goal 1: privacy and security interception
 
@@ -287,39 +336,77 @@ When the request does not fit, withhold sending. The host can request a smaller 
 use an explicit Handoff. Inference code does not silently recall another set of Memory, truncate a built trust envelope,
 remove tool exchanges, or pretend that a byte limit is a token limit.
 
-### Cache reuse and Gateway compatibility
+### Stable context reuse and model cache integration
+
+| Reused value | Treatment in this RFC |
+| --- | --- |
+| Exact prepared context | Bounded host/invocation reuse, retaining position, current authorization and refresh boundaries. |
+| Existing durable Artifact | Existing exact reads, revisions and freshness, without a new cache identity. |
+| Model prefix KV | Execution-side native adaptation improves eligibility; the model still generates the current answer. |
+| Generic derived-result/compilation cache | Not an initial deliverable; state and benefits require separate justification. |
+| Full responses, semantic answers and tool results | No default caching/replay; side effects and idempotency remain host/tool-domain responsibilities. |
 
 ```text
 Turn 1: Stable instructions / tools + exact PreparedContext | Current request
 Turn 2: Same prefix + original accepted history             | New messages / tool results
 ```
 
-The layout is logical: actual roles, trust levels, message boundaries and tool pairs retain the target protocol's
-semantics. The host owns history and accepted results. Preserve the prepared value and injection location across an
-explicit local task epoch; new intent, permissions or a deliberate refresh establish an appropriate new boundary.
-An epoch is not a server session resource. Output inspection affects future permitted replay, not a hit already decided
-for the request that produced that output.
+This is a logical layout. Actual roles, trust levels, message boundaries and tool pairing follow the target protocol.
+The host owns history and acceptance, retaining the exact prepared value and injection position within an explicit local
+task epoch; an epoch is not a server session resource. New intent, freshness changes, revoked permissions or explicit
+refresh establish appropriate new boundaries. Cache reuse cannot justify sending material that is no longer permitted.
 
-Cache planning is an algorithm in the existing inference path. An approved `UpstreamProfile` describes model/version,
-protocol/renderer, relevant tools/schema/settings, account/region or non-sharing deployment boundaries, supported cache
-modes/breakpoints/retention, and usage evidence. These are controlled configuration and transient plan data, not a new
-database service. Profiles must distinguish native caching mechanisms rather than applying one vendor's fields everywhere.
+| Layer | Decision and responsibility |
+| --- | --- |
+| Existing context / Builder / policy | Select and represent content; supply reusable regions, semantic order/trust invariants, refresh conditions and permitted retention scope. |
+| Final execution-side provider adapter | After resolving the actual model/API/deployment, map constraints to native modes, eligible message/content-block breakpoints, TTLs, keys and routing requirements; render, send and parse usage. |
+| Model service | Store, find and evict KV; supply provider-defined cache accounting. Clients cannot promise actual computational reuse. |
 
-Gateway preserves roles, tool ordering, content blocks, reusable boundaries and approved native cache settings. It does
-not insert request IDs/timestamps into stable prompt content, merge old messages arbitrarily, or silently remap the
-target. A required affinity constraint that the path cannot enforce makes the profile ineligible. Cache hints do not
-pin a provider machine or guarantee availability. Hidden downstream retries/fallbacks must be controlled and visible or
-excluded from execution and cost guarantees.
+Core does not generate universal native cache parameters. An approved `UpstreamProfile` is trusted configuration and a
+transient target binding. It declares model/version, protocol/renderer, prefix-affecting tools/schema/settings, account/
+region/cache-sharing boundaries, supported modes/breakpoints/retention semantics and observable usage fields. An adapter
+generates settings within those approved capabilities. Caller-reported profiles or capabilities are not trusted
+authorization; unsupported targets must be explicit.
 
-Final outbound-body integrity and prefix-cache eligibility are distinct. A body digest binds the approved request;
-a change requires fresh admission. A digest of the entire growing request is not a stable cache-routing key. HTTP JSON
-formatting alone does not establish whether the provider-rendered token prefix changed. Local visible-prefix fingerprints
-and boundary metadata help diagnose misses but cannot substitute for provider cache evidence.
+Reuse constraints are bounded transient metadata attached to existing preparation/check paths, not a ContextPlan or
+cache resource. The public PreparedContext default shape is unchanged. Remote callers needing Core constraints obtain
+them through a preflight on the same input/check operation. An adapter with valid constraints and final rendering may
+submit the final check directly; an extra planning RPC every turn is not required.
 
-Gateway instances can change without erasing provider KV. Their renderer/profile must remain compatible, and the host
-must retain the exact context/history or reprepare explicitly. If a lost local value is rebuilt differently, reuse may
-fall. Scope isolation does not physically partition provider caches; upstream account/privacy configuration is separately
-verified. The first demonstration uses one Scope without context references and a host-authorized history boundary.
+Adapters preserve roles, tool order, content blocks and reusable boundaries. Do not insert random IDs/timestamps into
+stable prompts, arbitrarily merge old messages or strip native cache controls. One owner optimizes representation and
+sends each call. Replan and re-admit when changing model, API, account, region, renderer or fallback target.
+Withhold when mandatory target/retention/isolation constraints cannot be met. An ordinary cache miss does not trigger
+automatic retries, and unrelated padding to reach a cache minimum is not enabled by default.
+
+Caching is best effort by default; an actual hit is not a condition for sending. If optional caching is unavailable,
+use an uncached configuration only when privacy, target, format and complete budget still permit the request.
+Recheck any resulting final-payload change. Mandatory data-retention/isolation constraints cannot be disabled with
+cache optimization.
+
+Verify cache-protocol compatibility separately from actual reuse. Equal semantics or prefix text does not establish
+equal native boundaries. A final-body digest binds the approved request but cannot prove the provider's internal token
+rendering or KV reuse. The digest of an entire growing request is not a stable cache-routing key; a cache hint neither
+pins a machine nor guarantees a hit.
+
+Scope partitioning and cache keys do not imply physical provider isolation. Verify target account, processing region
+and privacy/retention policies. The approved profile distinguishes minimum billing coverage, retention hints and actual
+deletion deadlines; a cache TTL is not automatically a privacy-deletion guarantee. Provider cache counters are evidence
+under that provider's accounting semantics, not proof that every call reuses computation or gets lower latency.
+Measure performance independently. Output checks affect future permitted replay, not the cache eligibility already
+determined by the request that produced the current response.
+
+### Joint representation and reuse tradeoffs
+
+Within quality, authorization, freshness and target-window constraints, compare keeping the existing exact prepared
+value, using an existing approved representation, applying an accepted deterministic codec, and explicitly refreshing
+or reducing prepare. A longer reusable prefix can be cheaper than rewriting it; a smaller input can increase current
+cost by losing reuse.
+
+The initial scope uses explainable conservative rules and controlled experiments. It does not predict unknown remaining
+task length, start summaries/judges automatically or tune policies online. Window, safety and freshness requirements
+take precedence. Compression ratio alone must not trigger a representation change; cache-hit rate does not replace
+complete cost per successful task and end-to-end latency.
 
 ### Provenance and index compatibility
 
@@ -369,11 +456,12 @@ not repeat prepare solely to execute a check or opt into diagnostic receipts.
 
 | Proposed POST path | operationId | Behavior |
 | --- | --- | --- |
-| `/v1/inference/input/check` | `check_inference_input` | Reuse Core inference algorithms to inspect complete input, return required cache rendering or final target-bound admission. |
+| `/v1/inference/input/check` | `check_inference_input` | Inspect privacy, target and complete-input budget; optionally return reuse constraints, with final admission bound to the actual payload and target. |
 | `/v1/inference/output/check` | `check_inference_output` | Reuse the same boundary algorithms to inspect a complete raw response and decide release. |
 
-These are remote access to integrated algorithms, not an independently deployed subsystem. Embedded execution calls
-those algorithms directly with existing bound Scope/caller context. HTTP handlers translate DTOs into the same behavior;
+These operations expose integrated algorithms to first-party and third-party integrations; they are not gateway proxy
+APIs. No gateway configuration, routing, cache management, ContextPlan or generic observe API is added.
+Embedded execution calls algorithms directly with existing bound Scope/caller context. HTTP handlers translate DTOs into the same behavior;
 no `application.gates` facade or forwarding runtime is required. The checks do not send a provider request, perform a
 second context recall, append Source, or commit Artifact.
 
@@ -389,7 +477,9 @@ verified at the owning boundary; native provider session IDs or user-supplied co
 
 Input check values carry the complete target payload, trusted invocation identity, relevant layout and output limits.
 Results carry `allow`, `block` or `withhold`, content-free reasons, coverage, current policy/profile identity, and final
-body/target binding. Optional cache-render requirements are bound to the same semantic input and expire promptly.
+body/target binding. Optional `reuse_constraints` express only reusable regions, preservation invariants, refresh/
+retention limits and supported coverage, bound to the same semantic input with short validity. The final execution
+adapter chooses native cache settings. Layout metadata proves neither provenance, injection nor permission.
 Output requests carry that input binding, complete raw response, actual target/completion state and available usage;
 results bind the permitted release to the inspected content and current policy.
 
@@ -398,47 +488,70 @@ concrete target, protocol/profile, final bytes, relevant headers, limits, policy
 single-use permission or exactly-once execution. A check-only API cannot prove an untrusted caller sent or received the
 claimed content; managed-executor coverage requires actual transport integration.
 
-If cache fields require native rendering, return withhold, render only approved fields, and call the same input check
-again. Preserve semantic content and prepared context; allow at most one such rerender in v1. Only final admission permits
-sending. Any later body/target/settings change requires fresh admission. Unsupported formats/versions, missing required
+When reuse constraints need preflight, return withhold and bounded constraints. The adapter renders within actual target
+capabilities, then submits the final payload to the same input/check. Without preflight, check the final request directly.
+Preserve semantic content and prepared context; v1 permits at most one rerender. Only final admission permits sending. Any later body/target/settings change requires fresh admission. Unsupported formats/versions, missing required
 coverage and expired policy do not silently downgrade to allow.
 
 Implement new HTTP paths in `openapi/powercontext.yaml`, generate clients and run `make contract-test` when implementing;
 this RFC changes no runtime or generated API. Keep existing flat client operation names and scoped domain semantics.
 
-### One managed invocation
+### One managed context invocation
 
 ```mermaid
 sequenceDiagram
     participant H as Host / stage owner
-    participant E as Embedded executor / GatewayRuntime
+    participant E as SDK / external execution adapter
     participant C as Existing PowerContext services
-    participant U as Upstream model
+    participant U as Actual upstream model
     opt Context lifecycle boundary
         H->>C: Existing prepare / Bootstrap / Handoff
         C-->>H: Existing bounded context
     end
-    H->>E: Complete authorized input and target
-    E->>C: input/check or in-process equivalent
-    C->>C: Existing policy + privacy / budget / cache algorithms
-    opt Native cache rendering required
-        C-->>E: withhold + bounded render requirements
-        E->>C: Same input/check with final payload
+    H->>E: Complete authorized input
+    E->>E: Resolve approved actual target and capabilities
+    opt Reuse constraints needed
+        E->>C: Same input/check preflight
+        C-->>E: withhold + bounded reuse constraints
     end
-    C-->>E: Target-bound final admission
-    E->>U: Send admitted bytes
-    U-->>E: Raw response and actual usage
+    E->>E: Native cache adaptation and final rendering
+    E->>C: Final input/check or in-process equivalent
+    C->>C: Current privacy + target + complete budget checks
+    C-->>E: Payload-bound and target-bound admission
+    E->>U: Send admitted request
+    U-->>E: Complete raw response and available usage
     E->>C: output/check or in-process equivalent
-    C->>C: Raw-output privacy / release checks
-    C-->>E: Release decision
+    C->>C: Current raw-output release checks
+    C-->>E: Content-bound release decision
     E-->>H: Checked result or explicit refusal
     H->>H: Acceptance / tool authorization / domain validation
 ```
 
-Core stage representation optimization happens before final provider rendering and is followed by mandatory final
-inspection. Inspect the original stage projection before encoding as well, so a codec cannot hide a prohibited value
-from later carrier checks. Optional optimization failures may fall back only to an otherwise permitted, valid, within-budget input.
-There is no security bypass when optimization is disabled, fails, or produces a shorter candidate.
+Core stage representation optimization precedes final provider rendering, after which the final input must be inspected.
+Inspect the original stage projection before encoding as well, so a codec cannot hide prohibited values from later carrier
+checks. Optional optimization may fall back only to an otherwise permitted, valid and budget-compliant input. Disabled,
+failed or shorter optimization candidates cannot create a security bypass.
+
+### First-party and third-party gateway integration
+
+**PowerContext Gateway:** an external caller of existing prepare/continuity operations and the two checks, using the same
+Scope, trusted delegation, policy, target profile, admission binding and usage contracts. Its internals and delivery plan
+belong to a separate design. Completion of this RFC does not depend on a gateway.
+
+**Third-party final-boundary plugin:** invoke input/check after the final protocol mapping and before actual sending;
+invoke output/check before any raw response content, tool arguments or error body first reaches a recipient.
+Report the actual target for each attempt, re-admit changed targets/payloads, propagate cancellation and report available
+usage and missing coverage. The plugin must perform these actions; calling a check API alone proves no enforcement.
+
+**Third-party upstream passthrough route:** a managed SDK/provider adapter may send through an approved endpoint only
+under a profile that verifies content/cache-field preservation, actual target, hidden retries/fallback and response
+mapping. Opaque transformations after inspection limit protection to the observed boundary. Withhold or reject the
+profile when required end-to-end coverage cannot be established; unknown is not transparent. Context-only integration
+advertises its actual scope rather than complete-request protection.
+
+These are integration duties and acceptance conditions, not specifications of gateway routing, authentication
+implementation, shared-cache backends or management protocols. Formal compatibility claims for a third-party product
+require separate acceptance of its real version, configuration and complete path.
 
 ## Streaming, failure, and recovery
 
@@ -485,10 +598,13 @@ Do not repurpose review candidates, processing leases, Topic Memory work budgets
 inference storage. Rules and profiles extend existing trusted runtime/inference configuration and policy manifests;
 there is no new policy database or universal workflow registry.
 
-Host history retains conversation truth. Gateway-local prepared-value reuse is optional, bounded, and keyed by the
-actual authorization/context boundary, not query text alone. Reusing it still requires current policy. On restart the
-host can supply retained context or reprepare; existing committed Handoff remains available through its own read path.
-Core does not recover an unpersisted transcript/response or establish a distributed selection frontier.
+Host history retains conversation truth. Prepared-value reuse is optional and bounded, with eligibility based on Scope,
+trusted access partition, exact content/revision, current policy, target/rendering profile and valid boundaries.
+Neither query text nor a content hash replaces current authorization. V1 introduces no generic derived-result or
+compilation cache. Existing Artifact reuse follows its own reads, revisions and freshness contract; Artifact blobs must
+not become a cache to avoid new-table justification. On restart the host supplies retained context or reprepares;
+committed Handoff stays available through its existing read path. Core neither recovers unpersisted transcripts/responses
+nor establishes a distributed selection frontier.
 
 Durable invocation recovery, global hard spending reservations and single-use distributed send permits require a
 separate minimal-state proposal. It must first compare current repositories, define the missing guarantee, then justify
@@ -509,6 +625,9 @@ failed attempts and cache writes where observable.
 Baseline `InferenceUsage` has request/input/output counts only. Cache read/write, reasoning usage and actual target
 evidence need typed optional metadata at the existing inference/usage boundary when implemented, with unknown values
 preserved. Existing daily aggregates cannot reconstruct those counters; v1 need not persist them to demonstrate a task.
+Execution feedback uses compatible existing usage/sinks, statistics or decision observations. Trigger Signals are inputs
+to pure transitions, not a ready-made inference-feedback database; no per-request Source write is required.
+The host/domain facts establish task success and tool effects; model-call success does not establish task completion.
 
 Before adding operational fields, follow the existing [observability guide](../development/observability.md): stable
 operation/unit/outcome vocabulary, bound identities, registered field allowlists and `log_safely`. Logs/traces omit
@@ -517,19 +636,23 @@ metric labels or convert sampled diagnostics into an audit or billing claim.
 
 ## Delivery and acceptance
 
-### P0: integrated Core vertical slice
+### P0: context vertical slice without a gateway dependency
 
 Choose one existing context preparation path, one background generation stage, a fixed supported text/tool protocol and
-model, one Scope without context references, and explicit enforcing rules. Integrate algorithms in current context/stage/
-provider boundaries. Deliver strict raw-response checks and one opt-in structural efficiency strategy with shadow first.
-Use existing host history and explicit Handoff. No new runtime service, table, Artifact family, or session setup.
+model, one Scope without context references, and explicit enforcing rules. Integrate algorithms into current context/
+stage/provider boundaries. Deliver final-input and strict raw-response checks, exact prepared-value reuse and one opt-in
+structural efficiency strategy with shadow first. Use host-owned history and explicit Handoff; add no runtime service,
+table, Artifact family or session initialization. Verify native cache adaptation on a supported embedded/provider path,
+recording cache accounting separately from actual latency.
 
-### P1: optional Gateway and native cache proof
+### P1: remote integration contracts and conformance
 
-Expose the two remote checks only as needed by remote execution, add optional Rust GatewayRuntime, and validate the same
-Core rules with one pinned real upstream route and host. Embedded background and Gateway Agent traffic may coexist.
-Verify native cache fields/boundaries, final input, retries, actual targets, usage and latency. More protocols/carriers,
-redaction, lossy compaction, routing and response caches require separate acceptance.
+Expose two remote checks and bounded reuse constraints when remote use requires them. Verify Scope/trusted delegation,
+actual content and target, policy/expiry binding, unknown handling and final admission/release.
+Use a controlled external calling adapter to verify the same Core decisions as in-process access, including limited
+claims for context-only integration. This delivers neither PowerContext Gateway nor a third-party gateway. A test adapter
+does not establish compatibility with any actual gateway. Internal gateway features and product/version integrations
+receive separate acceptance.
 
 ### Privacy and behavior acceptance
 
@@ -541,6 +664,9 @@ redaction, lossy compaction, routing and response caches require separate accept
 - Cover unchanged Embedding semantics, rerank identity mapping, no recursive judges/recall, per-attempt provider checks, unknown sends/usage, process loss and the stated recovery limits.
 - Verify ordinary checks create no Source/Artifact content, and existing domain commits retain validation, transactions and supported exact reads.
 
+- Verify one optimization/send owner when SDK and external adapters compose. A caller claiming prior optimization cannot skip checks or trigger a second prepare.
+- Verify matching remote/in-process decisions under the same policy; forged plan/hash claims, expired constraints and opaque targets cannot upgrade coverage.
+
 ### Token efficiency and complete-task experiments
 
 Hold repository task, starting state, model/profile, tools/schema, policies and quality criteria fixed. Mandatory privacy
@@ -549,14 +675,16 @@ and the same reuse with opt-in representation/cache planning. Baselines reflect 
 repeated retrieval to exaggerate improvement. Shadow without a second model call is distinct from a paid paired experiment.
 
 Measure cold/warm conditions and message-boundary, tool/schema, context refresh, policy, model and route changes.
-Compare direct versus Gateway execution under controlled equivalent prefixes and warm-up conditions. Provider defaults
-may already cache; do not claim a cache-disabled baseline without a verified control.
+Verify that execution adapters preserve reuse eligibility under the same target, eligible native boundaries and
+controlled warm-up; semantic equivalence alone is not cache equivalence. Core experiments require no deployed gateway.
+Future gateway compatibility experiments separately compare direct/proxied paths and record transformations and coverage.
+Provider defaults may already cache; do not claim a cache-disabled baseline without a verified control.
 
 | Goal | Required evidence |
 | --- | --- |
 | Privacy interception | Coverage by carrier/rule, known leakage counterexamples, observed blocks, false positives, unknown/unavailable rate. |
 | Task quality | Correct final result/tests, required constraints, evidence fidelity, tool errors, retry/repair work. |
-| Input efficiency | Preparation frequency, original/candidate estimates with estimator/version, actual ordinary input/cache reads/writes. |
+| Input efficiency | Preparation frequency, exact prepared-value reuse, original/candidate estimates with estimator/version, provider-defined ordinary input/cache reads/writes; distinguish cache categories. |
 | Output efficiency | Actual output/reasoning usage where available, valid completion/schema/evidence, total attempts. |
 | Complete cost | Retrieval/Embedding/rerank/decision/auxiliary costs, warm-up/cache writes, retries/failures, estimates and missing usage; avoid double counting overlapping cache counters. |
 | Performance | Local scan/encoding/token CPU, request bytes, buffers/memory/concurrency, preparation/check latency, upstream first token, released content and final delivery, P95/P99. |
@@ -608,6 +736,8 @@ cross-Scope frozen replay or additional native protocol support needs its own ve
 # Future possibilities
 
 After the vertical slice passes, independently evaluate more structural codecs, approved context representations,
-multimodal scanning, bounded streaming, specialized redaction, quality-validated lossy compaction, dynamic routing and
-response caching. Each extension states its evidence, trust, semantic and storage costs. Durable invocation accounting
+multimodal scanning, bounded streaming, specialized redaction, quality-validated lossy compaction and justified derived-
+result/compilation/response caches. Each extension states its evidence, trust, semantic and storage costs. Durable invocation accounting
 or recovery requires a separate minimal-state justification; these capabilities are not hidden prerequisites of v1.
+PowerContext Gateway and third-party gateway routing, governance and shared caches belong to separate component designs
+that consume this RFC's integration contracts.

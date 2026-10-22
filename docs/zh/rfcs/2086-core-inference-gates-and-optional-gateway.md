@@ -1,6 +1,6 @@
 ---
-title: PowerContext 隐私安全拦截与 Token 效率优化
-description: 将隐私检查和 Token 效率算法融入现有上下文准备、决策治理与推理适配，通过可选 Rust GatewayRuntime 执行。
+title: PowerContext 上下文隐私安全拦截与 Token 效率优化
+description: 在现有上下文组织、策略治理和推理适配中实现隐私安全拦截与 Token 效率优化，预留自有及第三方网关接入契约。
 ---
 
 - Proposal Name: `integrated_privacy_interception_and_token_efficiency`
@@ -13,33 +13,38 @@ description: 将隐私检查和 Token 效率算法融入现有上下文准备、
 
 # Summary
 
-本 RFC 的两个产品目标是：**隐私安全拦截**，阻止策略禁止的内容外发或交付；**Token 效率优化**，在任务质量与证据保真不下降的前提下，减少无效输入、重复计算和不必要输出。
-两项能力直接扩展 PowerContext 既有模块，不引入独立的策略运行时、第二套上下文体系或新的执行数据库。
+本 RFC 聚焦上下文这一层的两个产品目标：**隐私安全拦截**，阻止策略禁止的上下文外发或经模型结果交付；
+**Token 效率优化**，在授权、资料新鲜度、任务质量与证据保真约束下，减少无效上下文、重复计算和不必要输出。
+优先级为安全、正确性与证据、完整任务成本，再到缓存命中率。
 
-ContextRuntime 是现有 `ContextApplication.for_scope(scope_id).prepare(...)` 能力的名称，包括已授权召回、装配、
-`PreparedContextBuilder`，以及显式 Bootstrap/Work/Handoff 组合。上下文选择与表示算法就放在这条链路中。
-现有推理阶段和 provider adapters 负责真正发送前的输入检查、完整请求预算、原生缓存规划、输出限制，以及交付前的原始响应检查。
-适用的策略复用 `DecisionPolicy`、`DecisionAssessment` 和投影契约进行版本化治理。
-强制检查不依赖 LLM Judge，也不继承 advisory 判断的失败放行行为。
+两项能力扩展 PowerContext 现有上下文准备、策略治理、阶段投影和推理适配。
+ContextRuntime 是已有 `ContextApplication.for_scope(scope_id).prepare(...)`、召回/assembly、
+`PreparedContextBuilder` 与 Bootstrap/Work/Handoff 组合能力的名称，不新增上下文引擎、独立策略运行时或执行数据库。
+公共准备结果仍是临时 `PreparedContext`，宿主保留历史、注入和采用权。
 
-SDK/内置执行和可选 Rust GatewayRuntime 是**按调用配置的两种执行路径**，同一部署可以并存。
-它们落实同一套 Core 决策；Gateway 负责协议映射、传输、缓冲、取消、归属明确的重试和用量证据。
-实际 KV Cache 留在推理服务侧。
+Core 负责上下文选择、获准表示、稳定复用边界、刷新条件及安全约束。
+控制最终模型请求的执行适配器根据实际模型、API 和部署能力落实原生缓存设置，
+并在最终渲染后、发送前，以及原始结果释放前执行必需检查。实际 KV Cache 属于推理服务。
 
-实现基线为仓库提交 e4efb39b。本 RFC 是设计提案，不表示通用模型外发拦截、完整请求检查、缓存适配或节省收益已经在基线实现。
+本 RFC 定义既有入口、嵌入式调用和两个按需远端检查操作的接入契约。
+**PowerContext Gateway 与第三方网关都是外部可选接入方；网关组件的实现、语言、路由、限流、共享缓存和运行治理不在本 RFC 范围内。**
+没有网关也可通过受支持 SDK/provider 接入执行完整检查；只有上下文片段的接入不能声称控制完整请求。
+
+实现基线为仓库提交 e4efb39b。本 RFC 是设计提案，不表示通用模型外发拦截、完整请求检查、原生缓存适配或节省收益已经在基线实现。
 
 | 决策项 | 契约 |
 | --- | --- |
-| 核心目标 | 隐私安全拦截与 Token 效率优化，安全和任务正确性优先于节省。 |
-| 算法归属 | 扩展现有上下文准备、阶段投影、推理适配和策略消费者。 |
-| ContextRuntime | 现有上下文组织能力，不另建选择器、转录库或只做转发的运行时类。 |
-| 安全检查点 | 模型外发前、响应释放前；它们是已有调用边界内的步骤。 |
-| 执行器 | 按单次调用选择内置/SDK 或可选 Rust GatewayRuntime，同部署可并存。 |
-| 公共接口 | 复用上下文/连续性 API；远端执行最多新增两个检查操作，嵌入式无需 HTTP。 |
-| 存储 | v1 零张新增表、零个新 Artifact 家族，不增加推理迁移。 |
-| 默认优化方向 | 既有有界选择、稳定复用、获准结构编码、缓存兼容和显式输出限制。 |
+| 核心目标 | 上下文层的隐私安全拦截与 Token 效率优化。 |
+| 算法归属 | 复用现有 context、阶段投影、inference 与适用的 DecisionPolicy/Assessment/projection 消费者。 |
+| ContextRuntime | 现有上下文组织能力，不新增选择器、转录库或只做转发的运行时类。 |
+| 安全检查点 | 完整受支持请求发送前、原始响应释放前；辅助模型调用也遵守各自边界。 |
+| 缓存职责 | Core 提供复用约束；最终执行侧 adapter 生成目标相关原生配置，供应商提供用量证据。 |
+| 网关边界 | 预留 PowerContext Gateway 和第三方网关接入，不设计或交付网关组件。 |
+| 公共接口 | 复用上下文/连续性 API；远端至多新增两个检查操作，嵌入式无需 HTTP。 |
+| 存储 | v1 零张新增表、零个新 Artifact 家族，不增加推理迁移或通用缓存库。 |
+| 默认优化方向 | 既有有界选择、精确准备值复用、获准结构编码、缓存兼容和显式输出限制。 |
 | v1 隐私处理 | 语义内容原样通过，或阻断/暂缓；不自动通用脱敏或恢复秘密。 |
-| 验收口径 | 实际泄露反例、误阻断、任务质量、完整用量/费用和端到端延迟。 |
+| 验收口径 | 泄露反例、误阻断、任务质量、完整用量/费用、端到端延迟及明确覆盖范围。 |
 
 # Motivation
 
@@ -56,19 +61,33 @@ PowerContext 已能选择并交付带引用的项目上下文、管理 Source/Ar
 输入变短但丢失约束、增加重试或破坏高价值缓存前缀，不能视作已经优化。
 为了保持被禁止资料的前缀稳定而继续外发，也不是可接受的缓存策略。
 
+## 范围与非目标
+
+本 RFC 覆盖 PowerContext 所组织上下文的检索/交付规则、受支持模型调用中的上下文检查、
+确定性表示优化、稳定复用约束和执行反馈契约。检查完整请求是防止宿主附加指令、历史或工具结果绕过上下文保护，
+不意味着 Core 接管 Agent 历史、工具执行或全部网络流量。
+
+首期不建设新的 Context Engine、Execution Kit、ContextPlan 资源或反馈总线。
+不设计网关的认证实现、路由算法、负载均衡、连接池、队列、分布式缓存、请求合并、管理面和财务账本。
+不新增通用有损摘要、compaction、响应/语义缓存或工具结果缓存。
+这些能力需要独立场景、质量证据、权限/新鲜度与状态成本论证，不是接入本能力的前提。
+
+内部可以在已有组件旁提取契约和失败语义相同的函数；不能因为共享算法诉求，先增加一个新的统一编排层。
+
 # Guide-level explanation
 
 ## 一个 Coding 任务
 
 用户让 Agent 在已注册项目 Scope 中修复 API 客户端：
 
-1. 宿主在受支持召回边界调用现有 `/v1/context/prepare`。原运行时检索和装配相关、获准的证据，保留引用与历史资料信任包装。
-2. 宿主跨普通工具轮次保留这份精确准备值。当前指令、已采用历史和工具执行仍由宿主管理，刷新使用相同 prepare API，并明确新的边界。
-3. 执行器构造完整模型请求。已有推理边界代码执行已配置的隐私规则、完整请求 token 准入、获准缓存设置和输出限制，禁止内容在发送前被拦截。
-4. 执行器向配置目标发送获准字节，取得完整原始响应，并请求必需的释放检查。Strict 模式在批准前不交付任何模型内容。
-5. 宿主采用检查后的回答或授权工具。Core 后台结果仍需通过既有 schema、证据、资格和 Artifact 提交校验。检查通过不代表工具已执行或数据已持久化。
+1. 宿主在受支持召回边界调用现有 `/v1/context/prepare`。原运行时在获准 Scope 与 family 范围内检索、装配证据，保留引用和历史资料信任包装，不要求调用方逐条指定 Memory。
+2. 宿主跨普通工具轮次保留这份精确准备值及注入位置。任务、资料新鲜度、权限或主动刷新要求变化时，通过原 prepare 或显式 Handoff 建立新边界。
+3. 实际执行适配器确认获准目标及其缓存能力，在协议允许的位置装配上下文并生成原生缓存设置。SDK 与网关同时存在时，单次调用只有一个表示优化、最终渲染和发送所有者，不能重复准备或二次压缩。
+4. 所属推理边界检查最终完整输入的隐私、目标、token 窗口和输出限制。强制检查通过后才允许发送；模型或最终载荷变化必须重新检查。
+5. 适配器取得完整原始响应，完成必需释放检查后交给宿主。Strict 模式在批准前不交付模型内容。
+6. 宿主采用检查后的回答或授权工具。后台结果仍需既有 schema、证据、资格和 Artifact 提交校验。获准不代表工具已执行或数据已持久化。
 
-即使配置的秘密只出现在工具结果中、从未进入 PreparedContext，也必须检查。
+即使秘密只出现在宿主附加的工具结果中、从未进入 PreparedContext，也必须检查。
 普通工具轮次不应为安全检查而重新召回上下文。准备结果 empty 仍然正常，隐私拒绝必须显式，不能伪装成空结果成功。
 
 ## 一个 Core 后台阶段
@@ -116,50 +135,76 @@ Strict 分别报告上游首 token 与首次内容释放时间，不能只根据
 
 ```mermaid
 flowchart TB
-    HOST["宿主 / Agent：历史、工具与采用"]
-    EXEC["按调用配置执行路径<br/>SDK / 内置或可选 Rust GatewayRuntime"]
+    HOST["宿主 / Agent<br/>历史、注入、工具与采用"]
+    SDK["受支持 SDK / 内置 provider 接入"]
 
-    subgraph CORE["PowerContext Core：既有组合根"]
-        AUTH["既有可信 Scope / 授权边界"]
-        CONTEXT["现有上下文准备 / ContextRuntime<br/>召回 + 装配 + PreparedContextBuilder<br/>选择、引用、表示与字节预算"]
-        INFERENCE["现有推理阶段 / provider adapters<br/>发送前：隐私检查 + token/缓存/输出限制<br/>响应后：解析与交付前检查原始结果"]
-        POLICY["现有 DecisionPolicy / Assessment / projection<br/>版本化规则、覆盖、消费者自定失败动作"]
+    subgraph CORE["本 RFC：PowerContext 现有组件"]
+        AUTH["既有 Scope / 可信调用者 / 授权"]
+        CONTEXT["现有 ContextRuntime<br/>prepare / assembly / PreparedContextBuilder<br/>选择、引用、获准表示与复用约束"]
+        CHECK["现有 inference / 阶段边界<br/>完整输入隐私与预算检查<br/>原始响应释放检查"]
+        POLICY["现有 DecisionPolicy / Assessment / projection<br/>策略版本、覆盖与消费者失败动作"]
         DATA["既有 Source / Artifact / Bootstrap / Work / Handoff"]
-        USAGE["既有用量 / 统计 / 有界 observations"]
+        USAGE["既有 usage / 统计 / 有界 observations"]
+        API["接入契约<br/>既有上下文入口 + 两个按需检查操作"]
         AUTH -.-> CONTEXT
-        AUTH -.-> INFERENCE
+        AUTH -.-> CHECK
         CONTEXT --> DATA
-        POLICY -.-> INFERENCE
         POLICY -.-> CONTEXT
-        INFERENCE -.-> USAGE
+        POLICY -.-> CHECK
+        CHECK -.-> USAGE
+        API --> CONTEXT
+        API --> CHECK
     end
 
-    MODEL["配置的模型服务 / 已验收路由<br/>实际推理与 KV Cache"]
-    HOST --> EXEC
-    EXEC -. "原 prepare / 检查结果" .-> CONTEXT
-    EXEC -. "复用输入 / 输出检查" .-> INFERENCE
-    EXEC <-->|"获准请求 / 原始响应"| MODEL
+    subgraph EXTERNAL["外部可选接入方：组件设计不在本 RFC 范围"]
+        PCGW["PowerContext Gateway"]
+        THIRD["第三方网关 / 执行适配插件"]
+    end
+    MODEL["实际模型服务<br/>原生缓存与用量证据"]
+
+    HOST --> SDK
+    HOST -. "仅上下文接入" .-> API
+    SDK --> CONTEXT
+    SDK <-->|"进程内检查"| CHECK
+    SDK <-->|"获准请求 / 原始响应"| MODEL
+    HOST --> PCGW
+    HOST --> THIRD
+    PCGW -. "同一接入契约" .-> API
+    THIRD -. "同一接入契约" .-> API
+    PCGW <-->|"外部执行"| MODEL
+    THIRD <-->|"外部执行"| MODEL
 ```
 
-方框表示已有组件归属，检查和优化是组件内部算法与调用步骤。
-上下文准备保留自己的策略和字节预算，推理函数消费执行器装配的完整请求。
-策略消费者不能授予检索权或替代 Artifact 提交；虚线检查请求携带待检内容，并非只传元数据。
-确定性的准备/编码 helper 不会自动成为 DecisionPolicy 消费者，只有注册的窄域消费者使用其治理契约；
-已有 advisory 和强制调用边界保留各自动作。
+实线数据路径与虚线检查/接入路径表示职责，外部方不是 Core 的内部依赖。
+检查请求携带真实待检内容，不是只传指纹；图中的外部执行箭头只有在相应最终边界已验收时才具有保护覆盖。
+ContextRuntime 保留选择权威，推理边界消费完整请求；策略消费者不能授予检索权或替代 Artifact 提交。
 
-Core 后台调用可使用嵌入式执行器，远端 Gateway 调用现有 Core API 与下述两个检查操作。
-两种执行路径可在同一部署并存，每次调用有唯一明确的发送与重试所有者。
-Gateway 实现协议行为和传输，不另建上下文选择器或规则引擎。
+### 实现与复用边界
 
-### 实现边界
+新的内聚算法函数放在当前 context 或 inference 代码旁。
+只有载体契约与失败语义相同时才共享扫描器、codec 或预算算法；
+确定性准备 helper 不会自动成为 DecisionPolicy 消费者，只有注册的窄域消费者使用其治理契约。
 
-新的内聚算法函数可以放在当前 context 或 inference 代码旁。
-只有载体契约与失败语义相同时才共享扫描器、codec 或预算算法，不为分组而增加转发运行时、通用插件框架、平行策略注册中心或会话门面。
+共享的是领域规则、版本化契约和一致性样例。同一语言且契约一致时复用实现；
+外部或不同语言接入通过检查接口消费 Core 决策，不预设 Python SDK 与网关链接同一份二进制或执行组件。
+不增加平行规则引擎、通用插件框架、会话门面或为分组而存在的运行时。
 
 现有窄域决策消费者保留原行为。`DecisionRequest` 的有界限制服务于自己的用途，
-不能为了复用 DTO，把完整 prompt 截成一小段再声称已检查完整请求。
+不能截取完整 prompt 的一小段就声称已检查全部内容。
 只包装高层 structured generator 也不能证明覆盖最终序列化、内部重试、原始错误和首次释放。
-每条承诺的 provider 路径都必须接入并验证真实边界。
+每条承诺的 provider 路径必须接入并验证真实边界。
+
+### 按可见性声明接入能力
+
+| 接入方式 | 可承诺的能力 | 必须说明的限制 |
+| --- | --- | --- |
+| Context Provider / MCP / Hook 仅取得上下文片段 | 优化和检查 PowerContext 实际交付的上下文，保留引用与字节预算。 | 不知道宿主最终 prompt、模型和后续变更，不能承诺完整外发/释放保护或真实账单收益。 |
+| 受支持 SDK / 内置 provider 接入 | 在已验证的最终发送与释放边界检查完整载荷，落实目标相关缓存设置并取得可用 usage。 | 不控制应用绕过该适配器的其他流量；覆盖按协议、载体、模型与版本声明。 |
+| PowerContext Gateway 接入 | 通过同一准备与检查契约使用 Core 能力，在其实际发送/释放边界落实决策。 | 网关单独设计与交付，本 RFC 不要求部署它。 |
+| 第三方网关接入 | 通过最终边界插件调用检查接口，或经受验证的透传路径接入。 | 透明程度、实际目标、重试、内容变换与 usage 决定覆盖，品牌或 OpenAI-compatible 标签不是兼容证明。 |
+
+MCP、Hook 和 SDK 名称本身不决定权限；若某个宿主能控制更完整边界，按其实际能力验收。
+没有 usage 时只报告交付字节、估算或本地复用，不把 unknown 当零。
 
 ## 目标一：隐私安全拦截
 
@@ -265,7 +310,15 @@ v1 不自动脱敏代码、工具参数、标识符或签名内容，不维护�
 放不下就暂缓发送。宿主可通过原 prepare API 请求更小上下文，或显式 Handoff。
 推理代码不能静默召回另一组 Memory、截断已构建信任包装、删除工具交换，或把字节限制当成 token 限制。
 
-### 缓存复用与 Gateway 兼容
+### 稳定上下文复用与模型缓存接入
+
+| 复用对象 | 本 RFC 的处理 |
+| --- | --- |
+| 已准备的准确上下文 | 宿主/调用内有界复用，保留位置、当前授权与刷新边界。 |
+| 已有持久 Artifact | 沿用领域精确读取、版本与新鲜度，不新增缓存身份。 |
+| 模型前缀 KV | 通过执行侧原生适配改善资格，仍由模型生成本次回答。 |
+| 通用派生结果/编译缓存 | 不作为首期交付，后续独立论证状态与收益。 |
+| 完整响应、语义回答和工具结果 | 不默认缓存或重放；副作用与幂等仍归宿主/工具领域。 |
 
 ```text
 Turn 1: Stable instructions / tools + exact PreparedContext | Current request
@@ -273,26 +326,51 @@ Turn 2: Same prefix + original accepted history             | New messages / too
 ```
 
 这是逻辑布局，实际角色、信任级别、消息边界和工具配对遵守目标协议。
-宿主拥有历史和采用权，在显式本地任务 epoch 中保留准备值与注入位置；
-新意图、权限变化或主动刷新建立适当新边界。Epoch 不是服务端会话资源。
-输出检查影响后续获准重放，不能改变产生这次响应的请求已经决定的命中。
+宿主拥有历史和采用权，在显式本地任务 epoch 中保留准备值与注入位置；epoch 不是服务端会话资源。
+新意图、资料新鲜度变化、权限撤销或主动刷新建立适当新边界。不能为缓存而继续使用已不获准内容。
 
-缓存规划是已有推理路径中的算法。获准 `UpstreamProfile` 声明模型/版本、协议/渲染器、
-相关工具/schema/设置、账号/区域或不共享缓存的部署边界、支持的模式/断点/保留策略和用量证据。
-这些是可信配置与临时计划，不是新数据库服务；不能把某一家供应商的字段套给所有目标。
+| 层次 | 决策与责任 |
+| --- | --- |
+| 现有 context / Builder / 策略 | 选择与表示内容，给出可复用区段、语义顺序/信任约束、刷新条件与允许的保留范围。 |
+| 最终执行侧 provider adapter | 在实际模型/API/部署确定后，将约束映射到原生模式、合格消息/内容块断点、TTL、键和路由要求；完成最终渲染、发送及 usage 解析。 |
+| 模型服务 | 保存、查找与淘汰 KV，提供供应商定义的缓存计量；客户端不能承诺实际计算命中。 |
 
-Gateway 保持角色、工具顺序、内容块、可复用边界和获准原生缓存设置。
-不向稳定 prompt 写入请求 ID/时间戳、不任意合并旧消息、不静默重映射目标。
-路径不能落实必需亲和性约束时 profile 不合格；cache hint 不等于锁定供应商机器或保证可用。
-隐藏下游重试/fallback 必须可控且可见，否则不纳入相应执行和成本保证。
+Core 不输出套用于所有模型的原生缓存参数。获准 `UpstreamProfile` 是可信配置与临时目标绑定，
+声明模型/版本、协议/渲染器、影响前缀的工具/schema/设置、账号/区域/缓存共享边界、
+支持模式/断点/保留语义，以及可取得的用量字段。适配器只能在获准能力内生成配置。
+客户端自报 profile 或缓存能力不是可信授权；不支持的目标要显式标记。
 
-最终正文完整性与前缀缓存资格是两件事：正文摘要绑定已批准请求，变化需要重新准入；
-整个不断增长请求的摘要不是稳定缓存路由键。仅凭 HTTP JSON 格式变化，也不能判定供应商渲染后的 token 前缀是否改变。
-本地可见前缀摘要与边界元数据有助于排查，不能替代供应商命中证据。
+复用约束是附着于现有准备/检查链路的有界临时元信息，不是新的 ContextPlan 或缓存资源。
+公共 PreparedContext 默认形状不变。远端需要 Core 约束时，通过同一 input/check 预检取得；
+适配器已经具有有效约束且最终渲染完成时直接提交最终检查，不要求每轮额外规划 RPC。
 
-Gateway 换实例不会抹掉供应商 KV，但渲染/profile 必须兼容，宿主需保留精确上下文/历史或显式重新准备。
-本地值丢失后重建不同，可能降低复用。Scope 隔离不物理划分供应商缓存，上游账号/隐私配置需单独验证。
-首次展示采用无 context references 的单 Scope 和宿主有权使用的历史边界。
+适配器保留角色、工具顺序、内容块和可复用边界，不向稳定 prompt 插入随机 ID/时间戳，
+不任意合并旧消息或丢弃原生缓存控制。一次调用只有一个表示优化与发送所有者。
+更换模型、API、账号、区域、渲染器或 fallback 目标后重新规划和准入。
+必需的目标/保留/隔离约束不能满足时暂缓；普通缓存未命中不自动重试，也不为达到缓存门槛默认填充无关内容。
+
+缓存优化默认尽力而为，不把实际命中作为发送条件。可选缓存能力不可用时，只有原请求仍符合隐私、目标、
+格式和完整预算才能使用无缓存配置；如因此改变最终载荷，必须重新检查。
+必需的数据保留/隔离约束不能随缓存优化一起关闭。
+
+缓存协议兼容与实际命中分别验收。相同语义或前缀文字不证明具有相同原生边界；
+最终正文摘要绑定已批准请求，但不能证明供应商内部 token 渲染或 KV 复用。
+整个不断增长请求的摘要不是稳定缓存路由键；cache hint 也不是锁定机器或命中保证。
+
+Scope 分区和请求缓存键不等于供应商物理隔离，必须验证目标账号、处理区域和隐私/保留策略。
+TTL 字段是否表达最短计费覆盖、保留提示或删除期限，由获准 profile 明确；不能把缓存 TTL 自动当作隐私删除保证。
+供应商返回的缓存读写是其定义的计量证据，不直接证明延迟下降或每次实际复用计算；性能独立测量。
+输出检查影响后续获准重放，不能改变产生当前响应的请求已经决定的缓存资格。
+
+### 表示优化与复用联合取舍
+
+在质量、授权、新鲜度与目标窗口约束内，比较保持已有准确准备值、使用现有获准表示、
+执行已验收确定性编码，以及显式刷新/缩小 prepare 等受支持选择。
+保留较长但可复用的前缀可能比重新编码更便宜；更短输入也可能因丢失缓存而增加本次成本。
+
+首期采用可解释的保守规则与对照实验，不预测未知剩余任务长度、不自动启动摘要/Judge 或在线自调策略。
+达到窗口限制或安全/新鲜度变化时服从必需约束。
+不能只按压缩比例决定重新表示，也不能用提高命中率代替成功任务完整费用与端到端延迟。
 
 ### 来源与索引兼容
 
@@ -339,10 +417,11 @@ rollover 按 [RFC 1783](1783-handoff-session-rollover.md) 仍归宿主。
 
 | 提议的 POST 路径 | operationId | 行为 |
 | --- | --- | --- |
-| `/v1/inference/input/check` | `check_inference_input` | 复用 Core 推理算法检查完整输入，返回必需缓存渲染要求或最终目标绑定准入。 |
+| `/v1/inference/input/check` | `check_inference_input` | 检查完整输入的隐私、目标与预算；可返回复用约束，最终结果绑定实际载荷和目标。 |
 | `/v1/inference/output/check` | `check_inference_output` | 复用相同边界算法检查完整原始响应，决定释放。 |
 
-这是对内置算法的远端访问，不是独立部署的子系统。
+这是对内置算法的远端访问，也是自有或第三方网关的共同接入点，不是网关代理 API。
+不新增网关配置、路由、缓存管理、ContextPlan 或通用 observe API。
 嵌入式执行直接使用既有 Scope/调用者绑定上下文调用算法，HTTP handlers 将 DTO 翻译到相同行为；
 不要求 `application.gates` 门面或只做转发的运行时。
 检查不代发 provider、不二次召回上下文、不追加 Source、不提交 Artifact。
@@ -358,7 +437,8 @@ provider session ID 或用户关联 ID 不能授予权限。
 
 输入检查值包含完整目标载荷、可信调用身份、相关布局和输出限制。
 结果包含 `allow`、`block` 或 `withhold`、无正文原因、覆盖、当前策略/profile 身份和最终正文/目标绑定。
-可选缓存渲染要求绑定同一语义输入，短期有效。
+可选 `reuse_constraints` 只表达可复用区段、保持不变量、刷新/保留限制和支持覆盖，绑定同一语义输入并短期有效；
+原生缓存配置由最终执行 adapter 决定。布局元数据不能证明资料来源、注入或权限。
 输出请求包含对应输入绑定、完整原始响应、实际目标/完成状态和可用 usage；
 结果将允许的释放绑定到检查过的内容与当前策略。
 
@@ -367,46 +447,66 @@ provider session ID 或用户关联 ID 不能授予权限。
 不提供持久的单次许可或恰好一次执行。Check-only API 不能证明不可信调用者实际发送/接收了所声称的内容，
 托管执行覆盖必须来自真实传输接入。
 
-需要原生缓存渲染时，先返回 withhold，只渲染获准字段，再调用同一 input/check。
-保持语义内容与准备结果，v1 最多重渲染一次，只有最终准入才允许发送。
+需要复用约束预检时，先返回 withhold 与有界约束；adapter 在实际目标能力内渲染，再调用同一 input/check 检查最终载荷。
+没有预检需求时直接检查最终请求。保持语义内容与准备结果，v1 最多重渲染一次，只有最终准入才允许发送。
 之后正文/目标/设置变化都需重新准入；不支持格式/版本、必需覆盖缺失或策略过期不能静默降级为 allow。
 
 实现新 HTTP 路径时修改 `openapi/powercontext.yaml`、生成客户端并运行 `make contract-test`；
 本 RFC 不改运行时或生成 API。保留现有扁平客户端操作名与 scoped 领域语义。
 
-### 一次托管调用
+### 一次受管理的上下文调用
 
 ```mermaid
 sequenceDiagram
     participant H as Host / stage owner
-    participant E as Embedded executor / GatewayRuntime
+    participant E as SDK / external execution adapter
     participant C as Existing PowerContext services
-    participant U as Upstream model
+    participant U as Actual upstream model
     opt Context lifecycle boundary
         H->>C: Existing prepare / Bootstrap / Handoff
         C-->>H: Existing bounded context
     end
-    H->>E: Complete authorized input and target
-    E->>C: input/check or in-process equivalent
-    C->>C: Existing policy + privacy / budget / cache algorithms
-    opt Native cache rendering required
-        C-->>E: withhold + bounded render requirements
-        E->>C: Same input/check with final payload
+    H->>E: Complete authorized input
+    E->>E: Resolve approved actual target and capabilities
+    opt Reuse constraints needed
+        E->>C: Same input/check preflight
+        C-->>E: withhold + bounded reuse constraints
     end
-    C-->>E: Target-bound final admission
-    E->>U: Send admitted bytes
-    U-->>E: Raw response and actual usage
+    E->>E: Native cache adaptation and final rendering
+    E->>C: Final input/check or in-process equivalent
+    C->>C: Current privacy + target + complete budget checks
+    C-->>E: Payload-bound and target-bound admission
+    E->>U: Send admitted request
+    U-->>E: Complete raw response and available usage
     E->>C: output/check or in-process equivalent
-    C->>C: Raw-output privacy / release checks
-    C-->>E: Release decision
+    C->>C: Current raw-output release checks
+    C-->>E: Content-bound release decision
     E-->>H: Checked result or explicit refusal
     H->>H: Acceptance / tool authorization / domain validation
 ```
 
 Core 阶段表示优化在最终 provider 渲染前完成，之后必须检查最终输入。
 编码前也检查原阶段投影，防止 codec 把禁止值隐藏在后续载体检查之外。
-可选优化失败，仅能回退到仍获准、有效且在预算内的输入。
-优化关闭、失败或产生更短候选，都不能形成安全旁路。
+可选优化失败，仅能回退到仍获准、有效且在预算内的输入；优化关闭、失败或候选更短，都不能形成安全旁路。
+
+### 自有与第三方网关的接入方式
+
+**PowerContext Gateway：** 作为外部调用者使用现有 prepare/连续性入口和两个检查操作，
+采用同一 Scope、可信委托、策略、目标 profile、准入绑定和 usage 契约。
+它的内部实现及交付计划由单独设计决定；本 RFC 的完成不依赖网关存在。
+
+**第三方网关最终边界插件：** 在最后一次协议映射之后、真实发送之前调用 input/check，
+在任何原始响应内容/工具参数/错误正文首次交付之前调用 output/check。
+每个真实尝试提供实际目标，目标或载荷变化重新准入，传播取消并报告可取得的用量和缺失覆盖。
+插件必须真正执行这些动作，调用过检查 API 本身不是执行证明。
+
+**第三方网关作为上游透传路径：** 受管理 SDK/provider 适配器可通过获准端点发送，
+但相应 profile 必须验证内容/缓存字段保持、实际目标、隐藏重试/fallback 和响应映射。
+检查之后还有不透明变换时，保护只到已观察边界；必需端到端覆盖不能证明则暂缓或拒绝该 profile，
+不能把未知默认为透明。只有上下文交付能力的接入按其实际范围展示，不冒充完整请求保护。
+
+以上是接入方义务和验收条件，不规定任何网关内部路由、鉴权实现、共享缓存后端或管理协议。
+基于第三方特性的正式兼容声明，必须另行完成真实版本、配置和链路验收。
 
 ## 流式、失败与恢复
 
@@ -451,8 +551,11 @@ Observe 不声称阻止泄露；bounded streaming 需独立验证安全单元契
 不将 review candidates、processing leases、Topic Memory work budgets 或 Source/Artifact blob 改作通用推理存储。
 规则与 profile 扩展所属边界的可信 runtime/inference 配置和策略 manifest，不新增策略数据库或通用工作流注册中心。
 
-宿主历史保持对话事实权威。Gateway 本地准备值复用可选且有界，按实际授权/上下文边界建立键，不能只用查询文本。
-复用仍需当前策略。重启后宿主提供保留上下文或重新准备，已提交 Handoff 通过原读取路径恢复。
+宿主历史保持对话事实权威。准备值复用可选且有界，按 Scope、可信访问分区、准确内容/版本、
+当前策略、目标/渲染 profile 和有效边界建立资格，不能只用查询文本或内容 hash 代替当前授权。
+首期不建立通用派生结果或编译缓存；已有制品复用沿用其领域读取、版本和新鲜度契约，
+不能把 Artifact blob 改作缓存以绕过新增表论证。
+重启后宿主提供保留上下文或重新准备，已提交 Handoff 通过原读取路径恢复。
 Core 不恢复未持久化转录/响应，也不建立分布式选择前沿。
 
 持久调用恢复、全局硬费用预留和分布式单次发送许可需单独的最小状态提案。
@@ -471,6 +574,9 @@ Core 不恢复未持久化转录/响应，也不建立分布式选择前沿。
 基线 `InferenceUsage` 只有请求/输入/输出计数。实现缓存读写、reasoning 用量和实际目标证据时，
 需在既有 inference/usage 边界增加有类型的可选元数据，保留 unknown；现有日聚合不能还原这些字段。
 v1 展示一次任务无需强制持久化这些新证据。
+执行反馈进入符合契约的既有 usage/sink、统计或决策 observation；
+Trigger 的 Signal 是纯状态转换输入，不是现成的通用推理反馈库，不要求逐请求写 Source。
+任务成功与工具副作用由宿主/领域事实确认，模型调用成功不能代替任务完成。
 
 新增运行字段前遵循[现有可观测性指南](../development/observability.md)：稳定 operation/unit/outcome、
 绑定身份、登记字段白名单和 `log_safely`。
@@ -479,19 +585,21 @@ v1 展示一次任务无需强制持久化这些新证据。
 
 ## 交付与验收
 
-### P0：Core 内聚的最小切片
+### P0：无网关依赖的上下文切片
 
 选择一个既有上下文准备路径、一个后台生成阶段、固定受支持文本/工具协议与模型、无 context references 的单 Scope，
 以及明确的 enforcing 规则，把算法接入当前 context/stage/provider 边界。
-交付 strict 原始响应检查，以及一个先 shadow 验证的 opt-in 结构效率策略。
+交付最终输入与 strict 原始响应检查、精确准备值复用，以及一个先 shadow 验证的 opt-in 结构效率策略。
 使用原宿主历史和显式 Handoff，不新增运行时服务、表、Artifact 家族或会话初始化。
+在受支持内置/provider 路径验证原生缓存适配，单独记录缓存计量与实际延迟。
 
-### P1：可选 Gateway 与原生缓存验证
+### P1：远端接入契约与一致性
 
-仅在远端执行需要时暴露两个检查操作，接入可选 Rust GatewayRuntime，
-使用固定版本的真实上游路径和宿主验证同一套 Core 规则。
-内置后台与 Gateway Agent 流量可并存，验证原生缓存字段/边界、最终输入、重试、实际目标、usage 和延迟。
-更多协议/载体、脱敏、有损压缩、路由和响应缓存需独立验收。
+按远端需求暴露两个检查操作及有界复用约束，完成 Scope/可信委托、真实内容、实际目标、
+策略/有效期绑定、unknown 与最终准入/释放的契约验证。
+用受控外部调用适配器验证与进程内路径一致的 Core 决策，并验证只接上下文时的有限能力声明。
+这不是 PowerContext Gateway 组件或第三方网关的交付；测试适配器不能证明某个真实网关已经兼容。
+网关内部功能与品牌/版本接入在独立工作中验收。
 
 ### 隐私与行为验收
 
@@ -502,6 +610,8 @@ v1 展示一次任务无需强制持久化这些新证据。
 - 验证 codec 还原、顺序、重复次数、身份、引用、代码/JSON 标量保真，以及非法/不支持输入；不同日志行不能塌缩为一次出现。
 - 覆盖 Embedding 原语义、rerank 身份映射、不递归 Judge/召回、逐次尝试 provider 检查、不确定发送/用量、进程丢失和约定恢复限制。
 - 验证普通检查不创建 Source/Artifact 正文，已有领域提交保留校验、事务和精确读取。
+- 覆盖 SDK 与外部适配器组合时唯一优化/发送所有者；客户端声称“已优化”不能跳过检查，也不能触发二次 prepare。
+- 验证远端检查与进程内相同策略的决策一致，并拒绝伪造计划/hash、失效约束或不透明目标带来的覆盖升级。
 
 ### Token 效率与完整任务实验
 
@@ -511,14 +621,15 @@ v1 展示一次任务无需强制持久化这些新证据。
 不额外调用模型的 shadow 与付费配对实验分开说明。
 
 测量冷/热条件，以及消息边界、工具/schema、上下文刷新、策略、模型和路由变化。
-在等价前缀和受控预热条件下比较直连/经 Gateway。
+在相同目标、合格原生边界和受控预热条件下验证执行适配器保持复用资格；相同语义本身不构成缓存等价。
+本 RFC 的核心实验不依赖部署网关。未来网关兼容实验另行比较直连与经网关，记录中间变换与覆盖。
 供应商默认可能已经缓存，没有经过验证的开关就不能声称基线完全关闭缓存。
 
 | 目标 | 必需证据 |
 | --- | --- |
 | 隐私拦截 | 按载体/规则的覆盖、已知泄露反例、实际阻断、误阻断、unknown/不可用率。 |
 | 任务质量 | 最终结果/测试正确性、必需约束、证据保真、工具错误、重试/修复工作。 |
-| 输入效率 | 准备频率、原文/候选估算及估算器/版本、实际普通输入/缓存读写。 |
+| 输入效率 | 准备频率、准确准备值复用、原文/候选估算及估算器/版本、供应商定义的普通输入/缓存读写；不同缓存类别分别记录。 |
 | 输出效率 | 可取得的实际输出/reasoning 用量，有效完成/schema/证据和总尝试。 |
 | 完整费用 | 检索/Embedding/rerank/判断/辅助成本、预热/缓存写、重试/失败、估算及缺失用量，不重复计算重叠缓存计数。 |
 | 性能 | 本地扫描/编码/token CPU、请求字节、缓冲/内存/并发、准备/检查延迟、上游首 token、内容释放和最终交付、P95/P99。 |
@@ -567,5 +678,6 @@ DecisionPolicy/Assessment/projection、推理适配和 usage wrappers 提供基�
 # Future possibilities
 
 最小切片验收后，再独立评估更多结构 codec、获准上下文表示、多模态扫描、bounded streaming、
-专用脱敏、经过质量验证的有损压缩、动态路由和响应缓存。
+专用脱敏、经过质量验证的有损压缩，以及确有需求的派生结果/编译/响应缓存。
 每项说明证据、信任、语义和存储成本；持久调用记账或恢复需单独的最小状态论证，不是 v1 的隐藏前提。
+PowerContext Gateway 及第三方网关的路由、治理与共享缓存由独立组件设计，消费本 RFC 的接入契约。
