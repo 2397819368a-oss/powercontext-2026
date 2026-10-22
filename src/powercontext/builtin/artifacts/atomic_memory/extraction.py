@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from powercontext.artifacts import ArtifactRef
-from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent, AtomicMemoryCreation
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.atomic_memory.summary import DESCRIPTION_RULES
 from powercontext.builtin.artifacts.memory.prompts import MemoryExtractionProfile
 from powercontext.builtin.inference import InvalidInferenceOutputError, StructuredGenerator, TokenEstimator
@@ -103,7 +103,6 @@ class AtomicMemoryCandidate(BaseModel):
     kind: Literal["fact", "preference", "decision", "constraint", "working_note"]
     text: str
     description: str = Field(min_length=1, max_length=200)
-    creation: AtomicMemoryCreation | None = None
     evidence_ids: tuple[str, ...] = Field(min_length=1)
 
 
