@@ -303,6 +303,68 @@ describe('PowerContext Pi extension', () => {
     )
   })
 
+  it('emits deadline diagnostics for distinct lifecycle boundaries on the same Scope', async () => {
+    vi.stubEnv('POWERCONTEXT_PI_SCOPE_ID', 'project:private-demo')
+    vi.stubEnv('POWERCONTEXT_PI_DIAGNOSTICS', 'stderr')
+    vi.stubEnv('POWERCONTEXT_PI_FLUSH_MAX_CALLS', '1')
+    vi.stubEnv('POWERCONTEXT_PI_HTTP_BUDGET_MS', '100')
+    vi.stubEnv('POWERCONTEXT_PI_REQUEST_TIMEOUT_MS', '100')
+    const fetch = scopeAwareFetch(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/v1/context/prepare')) {
+        return new Response(JSON.stringify({
+          schema: 'powercontext.prepared-context.v1',
+          status: 'empty',
+          content: null,
+          content_bytes: 0,
+        }))
+      }
+      if (url.endsWith('/v1/sources/content')) return new Response(JSON.stringify({ position: 1 }))
+      if (url.endsWith('/v1/memory/flush')) {
+        return await new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          const abort = () => reject(signal?.reason ?? new Error('aborted'))
+          if (signal?.aborted) abort()
+          else signal?.addEventListener('abort', abort, { once: true })
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }, 'project:private-demo')
+    vi.stubGlobal('fetch', fetch)
+    const lines: string[] = []
+    let observeAgentDeadline: (() => void) | undefined
+    const agentDeadline = new Promise<void>((resolve) => { observeAgentDeadline = resolve })
+    vi.spyOn(console, 'warn').mockImplementation((line) => {
+      lines.push(String(line))
+      const event = JSON.parse(String(line)) as Record<string, unknown>
+      if (event.lifecycle_event === 'agent_end') observeAgentDeadline?.()
+    })
+    const handlers = installExtension()
+    const context = {
+      cwd: '/workspace/repo',
+      sessionManager: {
+        getSessionId: () => 'session-42',
+        getBranch: () => [],
+      },
+    }
+
+    await handlers.get('before_agent_start')?.({
+      prompt: 'private prompt',
+      systemPrompt: 'Base instructions',
+    }, context)
+    handlers.get('agent_end')?.({}, context)
+    await agentDeadline
+    await handlers.get('session_shutdown')?.({}, context)
+
+    const deadlines = lines.map((line) => JSON.parse(line)).filter((event) => (
+      event.event === 'flush_memory' && event.outcome === 'deadline_exceeded'
+    ))
+    expect(deadlines).toHaveLength(2)
+    expect(deadlines.map((event) => event.lifecycle_event)).toEqual(['agent_end', 'session_shutdown'])
+    expect(deadlines[0]?.scope_correlation).toBe(deadlines[1]?.scope_correlation)
+    expect(JSON.stringify(deadlines)).not.toContain('project:private-demo')
+    expect(JSON.stringify(deadlines)).not.toContain('private prompt')
+  })
+
   it('rejects a partial 2xx response from capture-time flush and retries it later', async () => {
     vi.stubEnv('POWERCONTEXT_PI_SCOPE_ID', 'project:demo')
     vi.stubEnv('POWERCONTEXT_PI_FLUSH_ON_CAPTURE', 'true')

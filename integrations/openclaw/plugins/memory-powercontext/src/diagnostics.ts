@@ -91,7 +91,7 @@ export function createDiagnosticEmitter(
         : {}),
     }
     if (outcome && !['ready', 'ok', 'empty', 'skipped'].includes(outcome)) {
-      const key = [event.event, outcome, event.host, event.scope_correlation]
+      const key = [event.event, outcome, event.host, event.lifecycle_event, event.scope_correlation]
         .filter((value): value is string => typeof value === 'string')
         .join('\0')
       const timestamp = now()

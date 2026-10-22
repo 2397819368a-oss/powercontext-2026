@@ -90,15 +90,28 @@ describe('host-visible diagnostic classification', () => {
 })
 
 describe('diagnostic cooldown', () => {
-  it('suppresses only the same event and Scope correlation', () => {
+  it('suppresses only the same event, lifecycle boundary, and Scope correlation', () => {
     const lines: string[] = []
     const emit = createDiagnosticEmitter((line) => lines.push(line), () => 1)
 
     emit({ event: 'capture_source', outcome: 'invalid_response', host: 'openclaw' })
-    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'openclaw', scope_correlation: 'a' })
-    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'openclaw', scope_correlation: 'b' })
-    emit({ event: 'pre_compaction_checkpoint', outcome: 'invalid_response', host: 'openclaw', scope_correlation: 'a' })
+    emit({
+      event: 'session_end_flush', outcome: 'deadline_exceeded', host: 'openclaw', lifecycle_event: 'session_end',
+      scope_correlation: 'a',
+    })
+    emit({
+      event: 'session_end_flush', outcome: 'deadline_exceeded', host: 'openclaw', lifecycle_event: 'gateway_stop',
+      scope_correlation: 'a',
+    })
+    emit({
+      event: 'session_end_flush', outcome: 'deadline_exceeded', host: 'openclaw', lifecycle_event: 'gateway_stop',
+      scope_correlation: 'b',
+    })
+    emit({
+      event: 'session_end_flush', outcome: 'deadline_exceeded', host: 'openclaw', lifecycle_event: 'gateway_stop',
+      scope_correlation: 'a',
+    })
 
-    expect(lines).toHaveLength(3)
+    expect(lines).toHaveLength(4)
   })
 })
