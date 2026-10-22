@@ -41,7 +41,7 @@ capabilities in that baseline.
 | Gateway authority | Protocols, trusted conversations, injection positions, immutable replay, actual targets, final rendering, sends, buffering, and release. |
 | Host authority | User history, response acceptance, client tools and side effects, task completion, and Handoff timing. |
 | Model-service authority | Native KV storage, reuse, eviction, and provider-defined usage. |
-| API additions | Model-protocol ingress and two conversation-metadata operations; Core checks reuse the two operations from #2086. |
+| API additions | Model-protocol ingress and two conversation-metadata operations; Core checks reuse one #2086 operation with two phases. |
 | Storage additions | Two dedicated optional gateway tables; no transcript store, response-recovery store, or complete attempt ledger. |
 | Default deployment | Embedded in Server and disabled by default; standalone deployment is a later delivery using the same contracts. |
 | Safety default | Withhold when required checks are unavailable; strict mode releases no model content before approval. |
@@ -383,9 +383,9 @@ dependencies**: exact resources/versions, owning Scopes, content digests, eligib
 and output-content binding. Existing origins/lineages can contribute facts but cannot simply be renamed authorization
 proof.
 
-The initial embedded gateway obtains this internal metadata in the same authorized application call.
-This is an optional internal extension of existing preparation, not a new prepare algorithm or public access to private
-`_prepare_build`, and does not change the public four-field PreparedContext.
+The initial embedded gateway obtains #2086's complete reuse metadata in the same authorized application call.
+Reuse its preparation path and constraint semantics, without another algorithm or private `_prepare_build` access.
+Public prepare retains its strict four-field default; explicit `include_reuse=true` returns the versioned envelope.
 Families/code/references without complete dependencies cannot enter that enhancement profile. Missing dependencies do
 not mean no validation is needed.
 
@@ -403,19 +403,25 @@ new-user-message boundaries, and explicit refresh behavior.
 
 ### 6.2 Verifiable binding for standalone deployment
 
-Remote enhancement is a later delivery. Ordinary prepare content cannot establish its provenance.
-Propose negotiated optional response header `X-PowerContext-Reuse-Binding` on the **existing prepare operation**:
-return it only when requested and Core has complete dependencies. The JSON body remains the original four fields.
+Remote enhancement is a later delivery that directly consumes #2086's shared contract, without another preparation or
+binding format. Existing `prepare_context(include_reuse=true)` returns the versioned `context + reuse` envelope;
+unrequested calls retain the strict default four-field result. Discover schemas, families/carriers and bounds through
+`get_capabilities` first. Reject unsupported enhancement explicitly; ordinary prepare content is not provenance proof.
 
-Use a versioned, authenticated and encrypted short-lived envelope containing deployment/subject/Scope, exact content
-digest, complete dependencies, policy/preparation profile, and expiry, without content. Bound its total length and
-dependency count. Reject tampering, expiry, wrong audience/subject/Scope, and unknown key versions.
-This is neither bearer permission nor injection proof. Every #2086 `input/check` authenticates again and validates current
-dependencies; final admission binds only the actual request and target.
+`reuse.constraints` feeds the local native adapter. `reuse.binding` seals exact content, complete private dependencies,
+actor/delegation, Scope, policy and expiry. Use #2086's bounded authenticated encrypted format, without another response
+header or permanent receipt table. Verify rotation, tampering, expiry, wrong audience/subject/Scope, unknown key versions
+and revocation latency.
 
-This extension adds no third Core operation or permanent receipt table. Verify rotation, expiry, size, and revocation
-latency. Unnegotiated clients retain their contract. A remote gateway without this capability offers `check_only` instead
-of unsafe frozen replay. Third parties may use the same binding without deploying this gateway's state database.
+Before each send, call `check_context(phase=before_send)`. `prepared_contexts` lists every historical block's binding
+and versioned location in the actual payload. Core authenticates again and validates exact content and current
+dependencies. Final admission binds only this actual payload and target; a preparation binding is neither bearer
+permission nor injection proof. Response checking uses the same operation with `before_release` and the corresponding
+`request_binding`.
+
+Without the capability, offer explicit `check_only` only; an enhanced conversation cannot silently discard bindings or
+continue unsafe frozen replay. Third parties may use the same prepare/check contract without this gateway's state
+database.
 
 ## 7. Native caching and complete budgets
 
@@ -431,7 +437,7 @@ Request 3: same historical placement    | user-2 + context-B
 This is a logical illustration. Target roles, content blocks, token boundaries, and deployment rules determine actual
 native qualification.
 
-Native adapters consume #2086 `reuse_constraints` to choose supported automatic/explicit modes, eligible breakpoints,
+Native adapters consume #2086 `reuse.constraints` to choose supported automatic/explicit modes, eligible breakpoints,
 TTL, and routing hints within approved profiles. Core does not emit universal `cache_control`, and Gateway does not
 decide independently that invalid resources remain usable.
 Cache settings precede final rendering; checks then cover the exact body, relevant headers, target, and output limits.
@@ -478,24 +484,19 @@ sequenceDiagram
     participant U as Actual upstream
     H->>G: Complete request + Scope + conversation
     G->>G: Authenticate / authorize / lock / classify
-    G->>C: Validate current reuse dependencies
+    G->>G: Load exact replay blocks and preparation bindings
     opt New supported user message
-        G->>C: Existing prepare with internal reuse metadata
-        C-->>G: PreparedContext + complete bounded dependencies
+        G->>C: Existing prepare with shared reuse metadata
+        C-->>G: Context + reuse constraints and complete bounded dependencies
         G->>S: Put immutable injection or reuse marker before send
     end
     G->>G: Exact replay + actual target + native rendering
-    opt Reuse constraints not yet available
-        G->>C: input/check preflight
-        C-->>G: withhold + bounded constraints
-        G->>G: At most one native re-render
-    end
-    G->>C: Final input/check or same in-process algorithm
+    G->>C: check_context before_send or same in-process algorithm
     C-->>G: Current payload-bound and target-bound admission
     G->>S: Persist sending marker
     G->>U: One admitted attempt
     U-->>G: Complete raw response + available usage
-    G->>C: output/check before any model content release
+    G->>C: check_context before_release before any model content release
     C-->>G: Current content-bound release decision
     G->>S: Persist release authorization and reply anchor
     G-->>H: Checked result in original protocol
@@ -583,12 +584,12 @@ domain fields.
 | Category | Interface/operation | Status and ownership |
 | --- | --- | --- |
 | Context | `prepare_context`, with Bootstrap/Work/Handoff under host workflows | Existing Core APIs; no duplicate preparation algorithm. |
-| Input/output | `POST /v1/inference/input/check` / `check_inference_input`; `POST /v1/inference/output/check` / `check_inference_output` | Proposed in #2086; consumed here without replacement checks. |
+| Sending/release checks | `POST /v1/context/check` / `check_context`; `phase=before_send / before_release` | One proposed #2086 operation at two checkpoints; no replacement checks here. |
 | Model ingress | `/gateway/v1/chat/completions`, `/gateway/v1/responses`, `/gateway/v1/models` | Initially proposed here; protocol-native success responses. |
 | Conversation status | `GET /v1/scopes/{scope_id}/gateway/conversations/{conversation_id}` / `get_gateway_conversation` | Proposed here; owner-visible metadata only. |
 | Delete derived copies | `DELETE /v1/scopes/{scope_id}/gateway/conversations/{conversation_id}` / `delete_gateway_conversation` | Proposed here; close epoch, prevent further use, and delete gateway replay blocks. |
 | Capability discovery | Existing `get_capabilities` | Extend declarations for protocol, carrier, strict mode, enhancement, replay, remote binding, and versions. |
-| Remote preparation binding | Optional `X-PowerContext-Reuse-Binding` response header on existing prepare | Later negotiated extension; unchanged default body and no additional operation. |
+| Preparation reuse metadata | Existing `prepare_context(include_reuse=true)` returns `context + reuse` | Shared #2086 contract; default four fields unchanged, explicit opt-in uses a new schema and no new operation. |
 
 The first valid enhanced request creates a conversation; no start/plan/prepare/finalize gateway CRUD family is needed.
 GET returns no context/response content, credentials, or matched secrets. Missing resources retain non-disclosure behavior
@@ -726,7 +727,7 @@ binding. Check-only users can leave replay disabled without creating gateway tab
 
 ### P1: remote access and more protocols
 
-Validate the optional binding header on existing prepare and the two #2086 remote checks, then deliver standalone and
+Validate the explicit opt-in prepare envelope and both phases of the single #2086 remote check operation, then deliver standalone and
 third-party conformance examples.
 Add Messages, its native signatures, and additional validated carriers/families, publishing real client/deployment
 versions for each. P0 acceptance does not establish these paths.
@@ -742,6 +743,7 @@ dynamic model scheduling.
 | Dimension | Reproducible acceptance |
 | --- | --- |
 | Coordination between RFCs | Identical embedded/HTTP policy samples, including unknown/unavailable, authorization, actual targets, content binding, and expiry. |
+| Check contract | Reject wrong-phase DTOs, missing/expired/cross-request bindings and mislocated historical blocks; HTTP 200 block/withhold never sends/releases, and checks do not repeat prepare. |
 | Privacy | Seed prohibited values in host history, context, tool structures, escaping/duplicate keys, and raw errors; prove controlled upstreams/hosts do not receive blocked content. |
 | Reuse and access | Scope denial, retired/deleted Artifacts, head/freshness changes, tampered/expired bindings, and another user/Scope ID cannot preserve invalid replay. |
 | History integrity | Initial/new messages, tool rounds, exact whole-value duplicates versus partial overlap, regeneration, client edits/compaction, identical questions in different conversations, and host/gateway integration together. |
@@ -749,7 +751,7 @@ dynamic model scheduling.
 | State and restart | Block conflicts/disk full prevent sends; real process crashes before/after send and release leave Unknown without automatic resend. |
 | Concurrency/cancellation | One in-flight call per conversation; PDP/policy failure, disconnect, SSE backpressure, limits, and cleanup do not leak. |
 | Deployment/migration | Disabled means no state file; enabled restart reads exact blocks; unknown schemas/keys fail; deletion prevents later local use. |
-| Domain reuse | Four-field prepare unchanged, no duplicate injection, no automatic Source/Memory/Handoff, and no successful Source-window consumption after privacy failure. |
+| Domain reuse | Strict default four-field/opt-in envelope separation, no duplicate injection, no automatic Source/Memory/Handoff, and no successful Source-window consumption after privacy failure. |
 
 Validate actual protocol support with supported clients and real providers. Mock upstreams establish local bytes and
 failure behavior, not real cache hits, signature compatibility, or host acceptance.

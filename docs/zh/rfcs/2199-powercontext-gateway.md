@@ -37,7 +37,7 @@ PowerContext Gateway 是可选的模型调用入口。它把现有 PowerContext 
 | Gateway 的权威 | 协议、可信会话、注入位置、不可变重放、实际目标、最终渲染、发送、缓冲和释放。 |
 | 宿主的权威 | 用户历史、是否采用回答、客户端工具与副作用、工作完成、Handoff 时机。 |
 | 模型服务的权威 | 原生 KV 的保存、复用和淘汰，以及供应商定义的用量。 |
-| 接口增量 | 网关协议入口和两个会话元数据操作；Core 检查复用 #2086 的两个操作。 |
+| 接口增量 | 网关协议入口和两个会话元数据操作；Core 检查复用 #2086 的一个操作、两个阶段。 |
 | 持久化增量 | 网关独立、按需启用的两张表；没有转录库、响应恢复库和全量 attempt 账本。 |
 | 默认部署 | Server 内嵌，默认关闭；独立部署是使用同一契约的后续交付。 |
 | 安全默认 | 必需检查不可用则暂缓；strict 响应批准前不释放模型内容。 |
@@ -351,9 +351,9 @@ Core 需要在实际选中并完成 render/fit 的路径上产生**完整、有�
 确切资源/版本、所属 Scope、内容摘要、适用资格/新鲜度规则、最大保留时间和输出内容绑定。
 已有 origins/lineages 可以提供部分输入，不能直接改名为授权证明。
 
-首期内嵌网关在同一次授权 application 调用中取得这份内部元信息。
-这是对现有准备路径的可选内部扩展，不另建 prepare 算法、不暴露私有 `_prepare_build` 给网关，
-不改变公开 PreparedContext 的四字段结果。
+首期内嵌网关在同一次授权 application 调用中取得 #2086 定义的完整复用元信息。
+复用同一准备路径及约束语义，不另建 prepare 算法、不暴露私有 `_prepare_build` 给网关。
+公开 prepare 默认仍返回严格四字段；显式 `include_reuse=true` 才返回版本化 envelope。
 未实现完整依赖的 family/代码/reference 不能进入该增强 profile；缺失依赖不能解释成“无需校验”。
 
 每次发送前，由 Core 的原领域读取/授权能力验证这些有界依赖：
@@ -367,19 +367,22 @@ Core 需要在实际选中并完成 render/fit 的路径上产生**完整、有�
 
 ### 6.2 独立部署的可验证绑定
 
-远端增强是后续交付，不能仅从普通 prepare 正文推导来源。
-提议在**现有 prepare 操作**上协商可选响应头 `X-PowerContext-Reuse-Binding`：
-仅在调用者请求该能力且 Core 已建立完整依赖时返回，JSON body 仍为原四字段。
+远端增强是后续交付，直接消费 #2086 的共同契约，不定义第二种准备或绑定格式。
+通过现有 `prepare_context(include_reuse=true)` 取得版本化 `context + reuse` envelope；
+未请求时保留严格四字段默认结果。先从 `get_capabilities` 确认 schema、family/carrier 与上限，
+不支持时明确拒绝增强，不把普通 prepare 正文当作来源证明。
 
-绑定使用有版本、可认证且加密的短期 envelope，包含部署/主体/Scope、准确正文摘要、
-完整依赖、策略/准备 profile 和期限，不包含正文；设置严格长度/数量上限。
-拒绝篡改、过期、错误 audience/subject/Scope 和未知 key version。
-它不是 bearer 权限，也不是已注入证明。每次调用 #2086 的 `input/check` 仍重新认证和验证当前依赖；
-最终结果只绑定此次真实载荷和目标。
+`reuse.constraints` 供本地 native adapter 规划；`reuse.binding` 封装准确内容、完整私有依赖、
+主体/委托、Scope、策略和期限。使用 #2086 的有界、可认证加密格式，不创建额外响应头或永久 receipt 表。
+验证轮换、篡改、过期、错误 audience/subject/Scope、未知 key version 和吊销延迟。
 
-此扩展不增加第三个 Core 操作或永久 receipt 表；绑定轮换、有效期、长度与吊销延迟必须验收。
-未协商该能力的客户端保持原契约；远端 Gateway 在能力缺失时仅使用 `check_only`，
-不以不安全的冻结重放代替。第三方可选使用相同绑定，无需部署本网关状态库。
+每次发送前调用 `check_context(phase=before_send)`：
+`prepared_contexts` 列出全部历史块的绑定与版本化实际载荷位置，Core 重新认证、验证准确内容和当前依赖。
+最终准入仅绑定此次真实载荷与实际目标；准备绑定不是 bearer 权限或已注入证明。
+响应检查使用同一操作的 `before_release` 阶段，并关联此次 `request_binding`。
+
+能力缺失时只能提供明确的 `check_only`，不能在已进入增强会话后静默丢弃绑定或不安全地继续冻结重放。
+第三方可消费同一 prepare/check 契约，无需部署本网关状态库。
 
 ## 7. 模型原生缓存与完整预算
 
@@ -394,7 +397,7 @@ Request 3: same historical placement    | user-2 + context-B
 
 这是逻辑示意，实际缓存资格遵守目标协议的角色、内容块、token 边界和部署规则。
 
-Native adapter 消费 #2086 的 `reuse_constraints`，在获准 profile 内选择自动/显式缓存能力、
+Native adapter 消费 #2086 的 `reuse.constraints`，在获准 profile 内选择自动/显式缓存能力、
 合格原生断点、TTL 与路由提示。Core 不生成通用 `cache_control`，网关不自行决定哪些失效资料还能保留。
 缓存设置在最终渲染前完成，随后检查准确正文、相关请求头、目标和输出限制。
 
@@ -438,24 +441,19 @@ sequenceDiagram
     participant U as Actual upstream
     H->>G: Complete request + Scope + conversation
     G->>G: Authenticate / authorize / lock / classify
-    G->>C: Validate current reuse dependencies
+    G->>G: Load exact replay blocks and preparation bindings
     opt New supported user message
-        G->>C: Existing prepare with internal reuse metadata
-        C-->>G: PreparedContext + complete bounded dependencies
+        G->>C: Existing prepare with shared reuse metadata
+        C-->>G: Context + reuse constraints and complete bounded dependencies
         G->>S: Put immutable injection or reuse marker before send
     end
     G->>G: Exact replay + actual target + native rendering
-    opt Reuse constraints not yet available
-        G->>C: input/check preflight
-        C-->>G: withhold + bounded constraints
-        G->>G: At most one native re-render
-    end
-    G->>C: Final input/check or same in-process algorithm
+    G->>C: check_context before_send or same in-process algorithm
     C-->>G: Current payload-bound and target-bound admission
     G->>S: Persist sending marker
     G->>U: One admitted attempt
     U-->>G: Complete raw response + available usage
-    G->>C: output/check before any model content release
+    G->>C: check_context before_release before any model content release
     C-->>G: Current content-bound release decision
     G->>S: Persist release authorization and reply anchor
     G-->>H: Checked result in original protocol
@@ -533,12 +531,12 @@ Core API 的请求体继续使用 `scope_id` 和现有扁平 operationId；网�
 | 类别 | 接口/操作 | 状态与归属 |
 | --- | --- | --- |
 | 上下文 | `prepare_context`；按宿主流程使用 Bootstrap/Work/Handoff | 已有 Core API，准备算法不复制。 |
-| 输入/输出 | `POST /v1/inference/input/check` / `check_inference_input`；`POST /v1/inference/output/check` / `check_inference_output` | #2086 的提议；本网关消费，不新增替代检查 API。 |
+| 发送/交付检查 | `POST /v1/context/check` / `check_context`；`phase=before_send / before_release` | #2086 提议的同一操作、两个时机；本网关不新增替代检查。 |
 | 协议入口 | `/gateway/v1/chat/completions`、`/gateway/v1/responses`、`/gateway/v1/models` | 本 RFC 首期提议；使用对应协议的成功响应。 |
 | 会话状态 | `GET /v1/scopes/{scope_id}/gateway/conversations/{conversation_id}` / `get_gateway_conversation` | 本 RFC 提议；仅返回 owner 可见的元数据。 |
 | 删除派生副本 | `DELETE /v1/scopes/{scope_id}/gateway/conversations/{conversation_id}` / `delete_gateway_conversation` | 本 RFC 提议；关闭 epoch、阻止后续使用并删除网关重放块。 |
 | 能力发现 | 现有 `get_capabilities` | 实现时扩展声明：协议、carrier、strict、增强、重放、远端绑定及版本。 |
-| 远端准备绑定 | 现有 prepare 的可选 `X-PowerContext-Reuse-Binding` 响应头 | 后续协商扩展；不改默认 body、不增加 operation。 |
+| 准备复用元信息 | 现有 `prepare_context(include_reuse=true)` 返回 `context + reuse` | #2086 共同契约；默认四字段不变，显式 opt-in 使用新 schema，不增加 operation。 |
 
 会话创建随首个合法增强请求发生，无需 start/plan/prepare/finalize 一组网关 CRUD。
 GET 不返回上下文/响应正文、凭据或命中秘密；已不存在会话仍按隐私约束处理，不泄露他人资源存在性。
@@ -661,7 +659,7 @@ P0 内嵌无需 HTTP 检查往返、独立网关部署或远端准备绑定。
 
 ### P1：远端与更多协议
 
-验证已有 prepare 的可选绑定响应头及 #2086 两个远端检查，交付独立部署/第三方 conformance 样例。
+验证已有 prepare 的显式 opt-in envelope 及 #2086 一个远端检查操作的两个阶段，交付独立部署/第三方 conformance 样例。
 补齐 Messages、相应原生签名和更多受支持 carrier/family；每项单独公布真实客户端和部署版本。
 不因 P0 已通过就默认这些路径受保护。
 
@@ -675,6 +673,7 @@ P0 内嵌无需 HTTP 检查往返、独立网关部署或远端准备绑定。
 | 维度 | 可复现验收 |
 | --- | --- |
 | 两份 RFC 一致 | 进程内和 HTTP 使用相同策略样例；未知/不可用、授权、真实目标、内容绑定和有效期一致。 |
+| 检查契约 | phase 与 DTO 不混用；缺失/过期/跨请求绑定、历史块错误位置、HTTP 200 的 block/withhold 均不发送/释放；检查不重做 prepare。 |
 | 隐私 | 在宿主历史、上下文、工具结构、转义/重复键、原始错误植入禁止值；受控上游/宿主分别证明未收到阻断内容。 |
 | 复用与权限 | 当前 Scope 拒绝、Artifact retired/删除、head/freshness 变化、绑定篡改/过期、跨用户/Scope ID 不能继续重放。 |
 | 历史一致性 | 首条、新消息、工具轮、准确整块重复与部分重合、重新生成、客户端编辑/压缩、不同会话同一问题、host/gateway 同时接入。 |
@@ -682,7 +681,7 @@ P0 内嵌无需 HTTP 检查往返、独立网关部署或远端准备绑定。
 | 状态和恢复 | 块冲突/磁盘满阻止发送；真实进程崩溃覆盖发送前、发送后、释放前后；Unknown 不自动重发。 |
 | 并发与取消 | 同会话只准一个在途，PDP/策略失败不旁路，客户端中断、SSE 背压、超限和清理不泄露。 |
 | 部署与迁移 | 默认关闭不创建状态库；开启后重启准确读回；未知 schema/key 拒绝；删除阻止后续本地使用。 |
-| 领域复用 | prepare 四字段不变，不重复注入，不自动建 Source/Memory/Handoff，不把隐私失败消费成成功窗口。 |
+| 领域复用 | prepare 默认四字段/opt-in envelope 严格区分，不重复注入，不自动建 Source/Memory/Handoff，不把隐私失败消费成成功窗口。 |
 
 实际协议支持需用受支持客户端和真实 provider 逐项验收。
 Mock 上游适合证明本地字节/错误处理，不能证明真实缓存命中、签名兼容或真实宿主可用。
