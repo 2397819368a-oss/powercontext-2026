@@ -30,8 +30,9 @@ class DreamSchemaNotReadyError(RuntimeError):
     def __init__(self, reason: str, detail: str) -> None:
         self.reason = reason
         super().__init__(
-            f"{reason}: {detail}. Use powercontext server db-migrate with a supported full-database bundle; "
-            "ordinary startup does not migrate Dream storage."
+            f"{reason}: {detail}. Startup never migrates Dream storage. The versioned bundle accepts only empty "
+            "targets and registered historical layouts, so it cannot upgrade a complete Server database yet; see "
+            "docs/operate/database-migrations.md for the current acceptance boundary."
         )
 
 

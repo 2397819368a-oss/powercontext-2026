@@ -70,6 +70,37 @@ tags; collection tags retain their collection meaning. Exact entry bindings keep
 subject, role, expiry, revocation, grant provenance and idempotency fields while their resource is retargeted.
 Legacy Memory grants without an entry selector are unsupported and block conversion.
 
+With enforced access, every ownerless legacy entry requires an explicit operator attestation passed through
+`--owner-decisions`. The migration never guesses from the collection Owner, a grant, or the maintenance caller.
+Each decision identifies exactly one `(scope_id, memory_id, entry_id)` and the user or service that should own
+the resulting Atomic Memory:
+
+```json
+{
+  "format": "powercontext.atomic-memory-owner-decisions.v1",
+  "decisions": [
+    {
+      "scope_id": "team-a",
+      "memory_id": "legacy-memory",
+      "entry_id": "entry-1",
+      "action": "establish",
+      "owner": {"type": "user", "id": "alice"},
+      "idempotency_key": "recover-owner:team-a:legacy-memory:entry-1"
+    }
+  ]
+}
+```
+
+```shell
+powercontext server atomic-memory-migrate --action plan --env-file .env --owner-decisions owners.json
+powercontext server atomic-memory-migrate --action apply --env-file .env --maintenance-confirmed --owner-decisions owners.json
+powercontext server atomic-memory-migrate --action verify --env-file .env --owner-decisions owners.json
+```
+
+Unknown entries, duplicate decisions, entries that already have a formal legacy Owner, and conflicting mapped
+Owners are rejected. Reusing the same file after interruption is idempotent: an already established Owner must
+match both its principal and idempotency key. Keep this decision file with the maintenance audit record.
+
 Grant creation idempotency receipts include the resource identity. Migration validates the original request
 digest before converting it to the new identity. Replaying the same request and key still returns the same
 binding; changing its subject, role, expiry, reason or resource still conflicts. Revoke and replace receipt

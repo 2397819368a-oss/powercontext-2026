@@ -4234,11 +4234,15 @@ class FlushMemoryResponse(BaseModel):
         StrictBool, Field(description="More Source journal work remains after the committed window.")
     ] = False
     held_count: Annotated[
-        StrictInt, Field(description="Compatibility field; Atomic Memory processing always returns zero.", ge=0)
+        StrictInt,
+        Field(
+            description="Indicator that the write gate held this window: 0 for no HOLD, 1 for HOLD, regardless of how many Sources the window contains. A held window is consumed: current_cursor advances past those Sources and the Runtime does not retry them, so a caller that needs the content re-captures it.",
+            ge=0,
+        ),
     ] = 0
     hold_codes: Annotated[
         list[StrictStr],
-        Field(description="Compatibility field; Atomic Memory processing always returns an empty array."),
+        Field(description="Gate rejection codes reported for this window; empty unless held_count is 1."),
     ] = []
 
 
