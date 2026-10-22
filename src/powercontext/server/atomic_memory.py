@@ -42,7 +42,10 @@ def _tag_filter(request):
         if request.tag_match is not None:
             raise InvalidBaseAccessRequestError("tag_match", "requires tags")
         return None
-    return TagFilter(tags=tuple(request.tags), match="all" if request.tag_match is None else request.tag_match.value)
+    return TagFilter(
+        tags=tuple(tag.root for tag in request.tags),
+        match="all" if request.tag_match is None else request.tag_match.value,
+    )
 
 
 def _scoped(application, scope_id):
