@@ -10,7 +10,7 @@ description: Integrate privacy interception and token efficiency into existing c
   [RFC 0046](0046_observability_foundations.md), [RFC 0048](0048_handoff_artifact.md),
   [RFC 1435](1435_explainable_prepared_context_receipts.md), [RFC 1770](1770-decision-policy-governance.md),
   [RFC 1783](1783-handoff-session-rollover.md),
-  [PowerContext Gateway](0000-powercontext-gateway.md)
+  [PowerContext Gateway](2199-powercontext-gateway.md)
 
 # Summary
 
@@ -55,7 +55,7 @@ privacy interception, complete-request checks, native cache adapters or measured
 
 ## Coordination with PowerContext Gateway
 
-The [PowerContext Gateway RFC](0000-powercontext-gateway.md) defines the first-party execution integration of this
+The [PowerContext Gateway RFC](2199-powercontext-gateway.md) defines the first-party execution integration of this
 contract. Both designs use one preparation, reuse, final-inspection, and release path, without separate privacy or token
 algorithms.
 

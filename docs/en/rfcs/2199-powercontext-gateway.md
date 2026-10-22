@@ -5,7 +5,7 @@ description: Reuse Core context organization and privacy checks through an optio
 
 - Proposal Name: `powercontext_gateway`
 - Start Date: 2026-10-22
-- RFC PR: Pending; replace the filename prefix after a PR number is assigned.
+- RFC PR: [oceanbase/powercontext#2199](https://github.com/oceanbase/powercontext/pull/2199)
 - Related RFCs: [RFC 2086](2086-core-inference-gates-and-optional-gateway.md),
   [RFC 0016](0016_pydantic_ai_inference_integration.md), [RFC 0046](0046_observability_foundations.md),
   [RFC 1345](1345_scope_organization_and_agent_integration.md), [RFC 1396](1396_handoff_access_control.md),

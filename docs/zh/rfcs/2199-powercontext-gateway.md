@@ -5,7 +5,7 @@ description: 复用 Core 的上下文组织和隐私检查，以可选网关完�
 
 - Proposal Name: `powercontext_gateway`
 - Start Date: 2026-10-22
-- RFC PR: 待创建；文件前缀在获得 PR 编号后替换。
+- RFC PR: [oceanbase/powercontext#2199](https://github.com/oceanbase/powercontext/pull/2199)
 - Related RFCs: [RFC 2086](2086-core-inference-gates-and-optional-gateway.md)、
   [RFC 0016](0016_pydantic_ai_inference_integration.md)、[RFC 0046](0046_observability_foundations.md)、
   [RFC 1345](1345_scope_organization_and_agent_integration.md)、[RFC 1396](1396_handoff_access_control.md)、

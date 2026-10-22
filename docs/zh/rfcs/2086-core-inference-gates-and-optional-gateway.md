@@ -10,7 +10,7 @@ description: 在现有上下文组织、策略治理和推理适配中实现隐�
   [RFC 0046](0046_observability_foundations.md)、[RFC 0048](0048_handoff_artifact.md)、
   [RFC 1435](1435_explainable_prepared_context_receipts.md)、[RFC 1770](1770-decision-policy-governance.md)、
   [RFC 1783](1783-handoff-session-rollover.md)、
-  [PowerContext Gateway](0000-powercontext-gateway.md)
+  [PowerContext Gateway](2199-powercontext-gateway.md)
 
 # Summary
 
@@ -50,7 +50,7 @@ Core 负责上下文选择、获准表示、稳定复用边界、刷新条件及
 
 ## 与 PowerContext Gateway 的协作
 
-[PowerContext Gateway RFC](0000-powercontext-gateway.md) 定义本契约的自有执行接入方，
+[PowerContext Gateway RFC](2199-powercontext-gateway.md) 定义本契约的自有执行接入方，
 两份设计沿用同一条准备、复用、最终检查与释放链路，不分别实现隐私或 Token 算法。
 
 | 共同约定 | 本 RFC / Core | Gateway RFC |
