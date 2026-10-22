@@ -4,6 +4,8 @@ This directory records bounded live-model observations for #2158 and #2084 R6.
 [The collected-input observation](COLLECTED.md) includes real browser DOM and process stdout collection,
 a persistent poisoning counterexample, and a downstream answer with an explicit unverified-source caveat.
 Its service failures, control-retention misses and reader conditions are reported separately.
+[The declaration follow-up](DECLARATIONS.md) reuses unmerged PR #2004 to check the historical poisoned revision,
+forged claims and real OceanBase conformance. It makes zero model calls and does not mitigate the poisoning.
 
 The six-fixture observation below follows synthetic Source text through
 extraction, reconciliation, publication, exact immutable revision reads, context preparation, and an actual
