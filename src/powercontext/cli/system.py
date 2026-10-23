@@ -696,31 +696,46 @@ def _resolve_codex_native_authorization(
     )
 
 
-def _run_codex_mcp_list() -> list[dict[str, Any]]:
-    """Read Codex's resolved native MCP configuration without exposing header values."""
-
+def _codex_command(*arguments: str) -> list[str]:
+    """Resolve Codex and reject inputs that Windows batch parsing can reinterpret."""
     executable = which("codex")
     if executable is None:
         raise SetupError("Codex CLI is not installed or is not on PATH.")  # noqa: TRY003
-    command = [executable, "mcp", "list", "--json"]
+    command = [executable, *arguments]
+    # shell=False does not prevent cmd.exe from interpreting a batch launcher's inputs.
+    if sys.platform == "win32" and Path(executable).suffix.casefold() in {".cmd", ".bat"}:
+        if any(character in '&|<>()^%!"\x7f' or ord(character) < 32 for value in command for character in value):
+            raise SetupError(  # noqa: TRY003
+                "Codex CLI Windows batch launchers cannot safely pass shell metacharacters or ASCII control characters "
+                "in their path or arguments. Use a native Codex executable, or a batch-launcher path and arguments "
+                "without these characters."
+            )
+    return command
+
+
+def _run_codex_mcp_list() -> list[dict[str, Any]]:
+    """Read Codex's resolved native MCP configuration without exposing header values."""
+
+    command = _codex_command("mcp", "list", "--json")
     try:
         completed = subprocess.run(  # noqa: S603 - arguments are fixed and do not contain credentials.
             command,
             check=False,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise SetupError(f"Cannot run {' '.join(command[:-1])}: {error}") from error  # noqa: TRY003
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        detail = (
+            completed.stderr.decode("utf-8", errors="replace").strip()
+            or completed.stdout.decode("utf-8", errors="replace").strip()
+            or f"exit code {completed.returncode}"
+        )
         raise SetupError(f"`{' '.join(command[:-1])}` failed: {detail}")  # noqa: TRY003
     try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as error:
+        payload = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SetupError(f"`{' '.join(command[:-1])}` returned invalid JSON") from error  # noqa: TRY003
     if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
         raise SetupError(f"`{' '.join(command[:-1])}` returned an unexpected result")  # noqa: TRY003
@@ -730,15 +745,12 @@ def _run_codex_mcp_list() -> list[dict[str, Any]]:
 def _probe_codex_mcp_status(*, authorization: str | None = None) -> dict[str, Any]:  # noqa: C901
     """Initialize Codex app-server and return its PowerContext MCP status."""
 
-    executable = which("codex")
-    if executable is None:
-        raise SetupError("Codex CLI is not installed or is not on PATH.")  # noqa: TRY003
+    command = _codex_command("app-server", "--listen", "stdio://")
     environment = os.environ.copy()
     if authorization is None:
         environment.pop("POWERCONTEXT_CODEX_AUTHORIZATION", None)
     else:
         environment["POWERCONTEXT_CODEX_AUTHORIZATION"] = authorization
-    command = [executable, "app-server", "--listen", "stdio://"]
     try:
         process = subprocess.Popen(  # noqa: S603 - arguments are fixed and contain no credentials.
             command,
@@ -1121,28 +1133,26 @@ def _is_powercontext_statusline(value: object) -> bool:
 
 
 def _run_codex_json(*arguments: str) -> dict[str, Any]:
-    executable = which("codex")
-    if executable is None:
-        raise SetupError("Codex CLI is not installed or is not on PATH.")  # noqa: TRY003
-    command = [executable, *arguments, "--json"]
+    command = _codex_command(*arguments, "--json")
     try:
         completed = subprocess.run(  # noqa: S603 - arguments are passed directly to the fixed Codex executable.
             command,
             check=False,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=120,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise SetupError(f"Cannot run {' '.join(command[:-1])}: {error}") from error  # noqa: TRY003
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        detail = (
+            completed.stderr.decode("utf-8", errors="replace").strip()
+            or completed.stdout.decode("utf-8", errors="replace").strip()
+            or f"exit code {completed.returncode}"
+        )
         raise SetupError(f"`{' '.join(command[:-1])}` failed: {detail}")  # noqa: TRY003
     try:
-        result = json.loads(completed.stdout)
-    except json.JSONDecodeError as error:
+        result = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SetupError(f"`{' '.join(command[:-1])}` returned invalid JSON") from error  # noqa: TRY003
     if not isinstance(result, dict):
         raise SetupError(f"`{' '.join(command[:-1])}` returned an unexpected result")  # noqa: TRY003

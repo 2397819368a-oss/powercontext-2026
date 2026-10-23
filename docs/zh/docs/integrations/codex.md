@@ -28,6 +28,13 @@ powercontext doctor codex
 未提供新地址时，setup 复用保存的地址。文件与进程中声明的地址冲突时，仍需显式选择：使用 `--server-url`，
 并在重新执行前统一或清除运行时地址覆盖。`--source` 指定插件代码来源，不指定 Server 地址。
 
+在 Windows 上，安装与诊断会使用 PATH 中解析出的 Codex 可执行入口，包括 npm 的 `.cmd` 启动脚本。
+对于 `.cmd` / `.bat` 入口，PowerContext 会在启动该条命令前拒绝可执行路径或命令参数中的 shell 元字符
+（`& | < > ( ) ^ % ! "`）及 ASCII 控制字符，支持空格和 Unicode。这可避免批处理解释静默改写来源或 ref；
+请使用原生可执行文件，或不含这些字符的启动脚本路径及参数。该限制不作用于原生可执行文件或其他平台。
+不支持的 source/ref 参数会在注册 marketplace 前被拒绝；如果后续命令因返回的 marketplace 名称而被拒绝，
+注册步骤可能已经完成，安装不会因此自动回滚。
+
 ### 首次会话 Hook 信任
 
 配置完成后开启新的 Codex 会话。发送第一条消息前，通过 `/hooks` 检查 PowerContext Hook，并在收到提示时授予信任。

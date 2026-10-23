@@ -459,7 +459,13 @@ jobs:
           tests/test_system_cli.py::test_codex_mcp_list_runner_launches_the_resolved_cmd_shim
           tests/test_system_cli.py::test_codex_diagnostics_run_through_the_resolved_cmd_shim
           tests/test_system_cli.py::test_codex_runners_report_non_utf8_cmd_errors
+          tests/test_system_cli.py::test_codex_runners_preserve_json_output
           tests/test_system_cli.py::test_codex_runners_report_a_missing_executable
+          tests/test_system_cli.py::test_codex_batch_install_rejects_unsafe_input_before_launch
+          tests/test_system_cli.py::test_codex_batch_install_preserves_supported_input
+          tests/test_system_cli.py::test_codex_batch_install_rejects_unsafe_returned_marketplace
+          tests/test_system_cli.py::test_codex_batch_runners_reject_unsafe_executable_path
+          tests/test_system_cli.py::test_codex_native_executable_preserves_arguments
 
       - name: Verify managed guidance and exact rollback bytes on Windows
         run: >-

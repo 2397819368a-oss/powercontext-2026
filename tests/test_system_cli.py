@@ -30,6 +30,7 @@ from typer.testing import CliRunner
 import powercontext.cli.authorization as authorization_cli
 import powercontext.cli.system as system_cli
 from powercontext.cli.app import create_cli
+from powercontext.cli.installation import PluginSource
 from powercontext.cli.installation import setup as install_plugin
 from powercontext.cli.system import Diagnostic, DiagnosticStatus, SetupError, doctor_app, setup_app
 from powercontext.paths import default_scheduler_path
@@ -885,11 +886,14 @@ CODEX_CMD_SHIM = (
 
 @pytest.fixture
 def codex_cmd_shim(tmp_path: Path, monkeypatch) -> Path:
-    bin_dir = tmp_path / "bin with spaces"
+    bin_dir = tmp_path / "bin with spaces 中文"
     bin_dir.mkdir()
     shim = bin_dir / "codex.cmd"
     shim.write_text(CODEX_CMD_SHIM, encoding="ascii")
     monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.setenv("PC_TEST_PYTHON", sys.executable)
+    monkeypatch.setenv("PC_TEST_BIN", str(bin_dir))
     return shim
 
 
@@ -924,10 +928,13 @@ def test_codex_diagnostics_run_through_the_resolved_cmd_shim(codex_cmd_shim: Pat
 def test_codex_runners_report_non_utf8_cmd_errors(codex_cmd_shim: Path, runner: str) -> None:
     emitter = codex_cmd_shim.parent / "failure.py"
     emitter.write_text(
-        "import sys\nsys.stderr.buffer.write(b'codex failure: \\xd6\\xd0\\xce\\xc4\\n')\nsys.exit(7)\n",
+        "import sys\nsys.stderr.buffer.write(b'cmd startup diagnostic\\ncodex failure: "
+        "\\xd6\\xd0\\xce\\xc4\\n')\nsys.exit(7)\n",
         encoding="ascii",
     )
-    codex_cmd_shim.write_text(f'@echo off\n"{sys.executable}" "{emitter}"\nexit /b 7\n', encoding="ascii")
+    codex_cmd_shim.write_text(
+        '@echo off\n"%PC_TEST_PYTHON%" "%PC_TEST_BIN%\\failure.py"\nexit /b 7\n', encoding="ascii"
+    )
     probe = (
         "import sys\n"
         "from powercontext.cli import system\n"
@@ -950,8 +957,37 @@ def test_codex_runners_report_non_utf8_cmd_errors(codex_cmd_shim: Path, runner: 
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "failed: codex failure:" in completed.stdout
+    assert "failed:" in completed.stdout
+    assert "cmd startup diagnostic" in completed.stdout
+    assert "codex failure:" in completed.stdout
     assert completed.stderr == ""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd shim output decoding is Windows-specific")
+@pytest.mark.parametrize("runner", ["json", "mcp"])
+@pytest.mark.parametrize("valid_utf8", [False, True])
+def test_codex_runners_preserve_json_output(codex_cmd_shim: Path, runner: str, valid_utf8: bool) -> None:
+    # A literal replacement character is valid data; an invalid byte must not become one.
+    name = "中文�".encode() if valid_utf8 else b"\xff"
+    output = b'{"name":"' + name + b'"}'
+    if runner == "mcp":
+        output = b"[" + output + b"]"
+    emitter = codex_cmd_shim.parent / "output.py"
+    emitter.write_text(
+        f"import sys\nsys.stdout.buffer.write({output!r})\nsys.stderr.buffer.write(b'\\xff')\n",
+        encoding="ascii",
+    )
+    codex_cmd_shim.write_text('@echo off\n"%PC_TEST_PYTHON%" "%PC_TEST_BIN%\\output.py"\n', encoding="ascii")
+
+    def read():
+        return system_cli._run_codex_json("plugin", "list") if runner == "json" else _run_codex_mcp_list()
+
+    if valid_utf8:
+        result = read()
+        assert (result if runner == "json" else result[0])["name"] == "中文�"
+    else:
+        with pytest.raises(SetupError, match="invalid JSON"):
+            read()
 
 
 def test_codex_runners_report_a_missing_executable(tmp_path: Path, monkeypatch) -> None:
@@ -961,6 +997,142 @@ def test_codex_runners_report_a_missing_executable(tmp_path: Path, monkeypatch) 
         system_cli._run_codex_json("plugin", "list")
     with pytest.raises(SetupError, match="Codex CLI is not installed or is not on PATH"):
         _run_codex_mcp_list()
+
+
+@pytest.fixture
+def recording_codex_cmd(codex_cmd_shim: Path, monkeypatch) -> tuple[Path, Path]:
+    received = codex_cmd_shim.parent / "received.jsonl"
+    emitter = codex_cmd_shim.parent / "record.py"
+    emitter.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        f"with Path({str(received)!r}).open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "print(json.dumps({'marketplaceName': os.environ.get('CODEX_TEST_MARKETPLACE', 'powercontext'), "
+        "'installed': [], 'name': 'powercontext', 'version': '0.1.0'}))\n",
+        encoding="utf-8",
+    )
+    codex_cmd_shim.write_text('@echo off\n"%PC_TEST_PYTHON%" "%PC_TEST_BIN%\\record.py" %*\n', encoding="ascii")
+    monkeypatch.setenv("CODEX_TEST_VALUE", "expanded")
+    monkeypatch.delenv("CODEX_TEST_MARKETPLACE", raising=False)
+    return codex_cmd_shim, received
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows batch argument handling")
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source", "source^directory"),
+        ("source", "source&directory"),
+        ("source", "source %CODEX_TEST_VALUE% directory"),
+        *[
+            ("ref", value)
+            for value in (
+                "a&b",
+                "a^b",
+                "a%b",
+                "a!b",
+                "a|b",
+                "a<b",
+                "a>b",
+                "a(b)",
+                'a"b',
+                "a\nb",
+                "a\rb",
+                "a\tb",
+                "a\0b",
+                "a\x7fb",
+            )
+        ],
+    ],
+)
+def test_codex_batch_install_rejects_unsafe_input_before_launch(
+    recording_codex_cmd: tuple[Path, Path], tmp_path: Path, field: str, value: str
+) -> None:
+    _, received = recording_codex_cmd
+    source = "oceanbase/powercontext"
+    ref = "master"
+    if field == "source":
+        directory = tmp_path / value
+        directory.mkdir()
+        source = str(directory)
+    else:
+        ref = value
+
+    with pytest.raises(SetupError, match="Windows batch"):
+        system_cli.CodexInstaller().install(PluginSource(source, ref))
+
+    assert not received.exists(), "unsupported input must be rejected before marketplace registration"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows batch argument handling")
+@pytest.mark.parametrize("local", [True, False])
+def test_codex_batch_install_preserves_supported_input(
+    recording_codex_cmd: tuple[Path, Path], tmp_path: Path, local: bool
+) -> None:
+    _, received = recording_codex_cmd
+    directory = tmp_path / "local marketplace 中文"
+    directory.mkdir()
+
+    source = (
+        PluginSource(str(directory), "ignored^local%ref")
+        if local
+        else PluginSource("oceanbase/powercontext", "feature/中文")
+    )
+    report = system_cli.CodexInstaller().install(source)
+    calls = [json.loads(line) for line in received.read_text(encoding="utf-8").splitlines()]
+
+    assert report["plugin"] == "powercontext"
+    expected = [str(directory.resolve())] if local else [source.location, "--ref", source.ref]
+    assert calls[0] == ["plugin", "marketplace", "add", *expected, "--json"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows batch argument handling")
+def test_codex_batch_install_rejects_unsafe_returned_marketplace(
+    recording_codex_cmd: tuple[Path, Path], monkeypatch
+) -> None:
+    _, received = recording_codex_cmd
+    monkeypatch.setenv("CODEX_TEST_MARKETPLACE", "marketplace^name")
+
+    with pytest.raises(SetupError, match="Windows batch"):
+        system_cli.CodexInstaller().install(PluginSource("oceanbase/powercontext"))
+
+    calls = [json.loads(line) for line in received.read_text(encoding="utf-8").splitlines()]
+    assert all(call[:2] != ["plugin", "add"] for call in calls)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows batch executable paths")
+@pytest.mark.parametrize("runner", ["json", "mcp", "app_server"])
+@pytest.mark.parametrize("suffix", [".cmd", ".bat"])
+def test_codex_batch_runners_reject_unsafe_executable_path(
+    tmp_path: Path, monkeypatch, runner: str, suffix: str
+) -> None:
+    directory = tmp_path / "bin&directory"
+    directory.mkdir()
+    marker = tmp_path / "launched.txt"
+    shim = directory / ("codex" + suffix)
+    shim.write_text(f'@echo off\necho launched>"{marker}"\n', encoding="utf-8")
+    monkeypatch.setenv("PATH", str(directory))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+    with pytest.raises(SetupError, match="Windows batch"):
+        if runner == "json":
+            system_cli._run_codex_json("plugin", "list")
+        elif runner == "mcp":
+            _run_codex_mcp_list()
+        else:
+            _probe_codex_mcp_status()
+
+    assert not marker.exists()
+
+
+def test_codex_native_executable_preserves_arguments(monkeypatch) -> None:
+    monkeypatch.setattr(system_cli, "which", lambda _name: sys.executable)
+    value = 'source^&%!()<>|"\nvalue'
+
+    result = system_cli._run_codex_json("-c", "import json,sys; print(json.dumps({'received': sys.argv[1:]}))", value)
+
+    assert result["received"] == [value, "--json"]
 
 
 def test_setup_codex_uses_an_absolute_local_marketplace_without_a_ref(

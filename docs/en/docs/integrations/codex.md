@@ -29,6 +29,14 @@ client settings and the previously installed MCP URL. Without a new declaration,
 Conflicting file and process declarations still require an explicit choice; use `--server-url` and align or unset
 runtime URL overrides before rerunning setup. `--source` selects plugin code, not the Server endpoint.
 
+On Windows, setup and diagnostics resolve the Codex executable on PATH, including npm `.cmd` launchers.
+For `.cmd` / `.bat` launchers, PowerContext rejects shell metacharacters (`& | < > ( ) ^ % ! "`) and ASCII control characters
+in the executable path or command arguments before starting that command. Spaces and Unicode are supported.
+This avoids silently changing a source or ref through batch interpretation; use a native executable or a launcher path
+and arguments without these characters. The restriction does not apply to native executables or other platforms.
+Unsupported source/ref arguments are rejected before marketplace registration. If a later command is rejected because
+of a returned marketplace name, registration may already have completed; this does not roll back the installation.
+
 ### First-session Hook trust
 
 Open a new Codex session after setup. Before sending the first message, use `/hooks` to inspect PowerContext's hooks
