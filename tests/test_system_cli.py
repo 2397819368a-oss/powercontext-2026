@@ -1101,10 +1101,9 @@ def test_codex_runners_prefer_path_over_the_current_directory(tmp_path: Path, mo
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
 
-    result = system_cli._run_codex_json("plugin", "list") if runner == "json" else _run_codex_mcp_list()
-    payload = result if runner == "json" else result[0]
+    result = system_cli._run_codex_json("plugin", "list") if runner == "json" else _run_codex_mcp_list()[0]
 
-    assert payload["marker"] == "PATH_EXECUTABLE_SHIM"
+    assert result["marker"] == "PATH_EXECUTABLE_SHIM"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="explicit PATH entries keep Windows-specific semantics")
