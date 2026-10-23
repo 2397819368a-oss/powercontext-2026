@@ -336,7 +336,8 @@ jobs:
             oceanbase --output "$MIGRATION_REPORTS/clean-migration"
 
       - name: Test long-query retrieval and admission without skips
-        timeout-minutes: 10
+        # Eight isolated cases include full Server setup and retain 180s deadlines.
+        timeout-minutes: 30
         run: |
           uv run --locked python scripts/run_atomic_memory_clean_migration.py \
             oceanbase --output "$MIGRATION_REPORTS/long-query" --tests \
