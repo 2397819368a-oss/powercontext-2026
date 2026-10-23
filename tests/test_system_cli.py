@@ -1065,6 +1065,71 @@ def test_codex_batch_install_rejects_unsafe_input_before_launch(
     assert not received.exists(), "unsupported input must be rejected before marketplace registration"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PATHEXT batch aliases")
+@pytest.mark.parametrize("extension", [".CMD", ".BAT"])
+def test_codex_batch_alias_with_trailing_space_still_rejects_unsafe_arguments(
+    recording_codex_cmd: tuple[Path, Path], monkeypatch, extension: str
+) -> None:
+    shim, received = recording_codex_cmd
+    if extension == ".BAT":
+        shim.with_suffix(".bat").write_bytes(shim.read_bytes())
+    monkeypatch.setenv("PATHEXT", f".COM;.EXE;{extension} ")
+    resolved = system_cli.which("codex")
+    assert resolved is not None and resolved.endswith(" ")
+
+    with pytest.raises(SetupError, match="Windows batch"):
+        system_cli.CodexInstaller().install(PluginSource("oceanbase/powercontext", "x^y"))
+
+    assert not received.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the implicit current-directory preference is Windows-specific")
+@pytest.mark.parametrize("runner", ["json", "mcp"])
+def test_codex_runners_prefer_path_over_the_current_directory(tmp_path: Path, monkeypatch, runner: str) -> None:
+    current = tmp_path / "cwd-shim"
+    current.mkdir()
+    payload = '{"marker": "CURRENT_DIRECTORY_SHIM"}'
+    path_payload = '{"marker": "PATH_EXECUTABLE_SHIM"}'
+    if runner == "mcp":
+        payload = "[" + payload + "]"
+        path_payload = "[" + path_payload + "]"
+    (current / "codex.cmd").write_text(f"@echo off\r\necho {payload}\r\nexit /b 0\r\n", encoding="ascii")
+    bin_dir = tmp_path / "path-bin"
+    bin_dir.mkdir()
+    (bin_dir / "codex.cmd").write_text(f"@echo off\r\necho {path_payload}\r\nexit /b 0\r\n", encoding="ascii")
+    monkeypatch.chdir(current)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+    result = system_cli._run_codex_json("plugin", "list") if runner == "json" else _run_codex_mcp_list()
+    payload = result if runner == "json" else result[0]
+
+    assert payload["marker"] == "PATH_EXECUTABLE_SHIM"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="explicit PATH entries keep Windows-specific semantics")
+def test_codex_runners_honor_an_explicit_dot_path_entry(tmp_path: Path, monkeypatch) -> None:
+    current = tmp_path / "cwd-shim"
+    current.mkdir()
+    (current / "codex.cmd").write_text(
+        '@echo off\r\necho {"marker": "CURRENT_DIRECTORY_SHIM"}\r\nexit /b 0\r\n', encoding="ascii"
+    )
+    bin_dir = tmp_path / "path-bin"
+    bin_dir.mkdir()
+    (bin_dir / "codex.cmd").write_text(
+        '@echo off\r\necho {"marker": "PATH_EXECUTABLE_SHIM"}\r\nexit /b 0\r\n', encoding="ascii"
+    )
+    monkeypatch.chdir(current)
+    monkeypatch.setenv("PATH", f".;{bin_dir}")
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+    result = system_cli._run_codex_json("plugin", "list")
+
+    # An explicit "." entry is a user decision and keeps its position in PATH order;
+    # only the implicit current-directory preference is removed.
+    assert result["marker"] == "CURRENT_DIRECTORY_SHIM"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows batch argument handling")
 @pytest.mark.parametrize("local", [True, False])
 def test_codex_batch_install_preserves_supported_input(
@@ -1127,7 +1192,7 @@ def test_codex_batch_runners_reject_unsafe_executable_path(
 
 
 def test_codex_native_executable_preserves_arguments(monkeypatch) -> None:
-    monkeypatch.setattr(system_cli, "which", lambda _name: sys.executable)
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: sys.executable)
     value = 'source^&%!()<>|"\nvalue'
 
     result = system_cli._run_codex_json("-c", "import json,sys; print(json.dumps({'received': sys.argv[1:]}))", value)
@@ -1981,7 +2046,7 @@ def _mock_optional_personal_service(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_doctor_codex_reports_missing_cli_and_skipped_plugin(tmp_path, monkeypatch, server_checks) -> None:
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
-    monkeypatch.setattr(system_cli, "which", lambda _name: None)
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: None)
 
     result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "codex", "--json"])
 
@@ -1992,7 +2057,7 @@ def test_doctor_codex_reports_missing_cli_and_skipped_plugin(tmp_path, monkeypat
 
 
 def test_doctor_codex_requires_an_enabled_powercontext_plugin(monkeypatch, server_checks) -> None:
-    monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(system_cli, "_run_codex_json", lambda *_args: {"installed": []})
 
     result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "codex"])

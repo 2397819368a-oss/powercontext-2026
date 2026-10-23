@@ -462,6 +462,9 @@ jobs:
           tests/test_system_cli.py::test_codex_runners_preserve_json_output
           tests/test_system_cli.py::test_codex_runners_report_a_missing_executable
           tests/test_system_cli.py::test_codex_batch_install_rejects_unsafe_input_before_launch
+          tests/test_system_cli.py::test_codex_batch_alias_with_trailing_space_still_rejects_unsafe_arguments
+          tests/test_system_cli.py::test_codex_runners_prefer_path_over_the_current_directory
+          tests/test_system_cli.py::test_codex_runners_honor_an_explicit_dot_path_entry
           tests/test_system_cli.py::test_codex_batch_install_preserves_supported_input
           tests/test_system_cli.py::test_codex_batch_install_rejects_unsafe_returned_marketplace
           tests/test_system_cli.py::test_codex_batch_runners_reject_unsafe_executable_path

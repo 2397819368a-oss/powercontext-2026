@@ -696,14 +696,47 @@ def _resolve_codex_native_authorization(
     )
 
 
+def _codex_path_executable() -> str | None:
+    """Resolve Codex from PATH directories without the implicit current-directory preference.
+
+    ``shutil.which`` inserts the current directory first on Windows (unconditionally
+    before Python 3.12, and unless ``NoDefaultCurrentDirectoryInExePath`` is set from
+    3.12 on), which lets a ``codex.cmd`` in the working directory shadow the PATH
+    executable. Discovery per #2184 is about PATH, so enumerate PATH entries directly
+    while keeping which()'s PATHEXT matching semantics across Python 3.11-3.14.
+    Explicit PATH entries - including ``.`` and empty entries - keep their usual meaning.
+    """
+    name = "codex"
+    extensions = [
+        extension.rstrip(".")
+        for extension in (os.getenv("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+        if extension
+    ]
+    candidates = [name + extension for extension in extensions]
+    if name.upper().endswith(tuple(extension.upper() for extension in extensions)):
+        candidates.insert(0, name)
+    seen: set[str] = set()
+    for directory in (os.environ.get("PATH") or "").split(os.pathsep):
+        key = os.path.normcase(directory)
+        if key in seen:
+            continue
+        seen.add(key)
+        for candidate in candidates:
+            resolved = os.path.join(directory, candidate)
+            if os.path.isfile(resolved):
+                return resolved
+    return None
+
+
 def _codex_command(*arguments: str) -> list[str]:
     """Resolve Codex and reject inputs that Windows batch parsing can reinterpret."""
-    executable = which("codex")
+    executable = _codex_path_executable()
     if executable is None:
         raise SetupError("Codex CLI is not installed or is not on PATH.")  # noqa: TRY003
     command = [executable, *arguments]
     # shell=False does not prevent cmd.exe from interpreting a batch launcher's inputs.
-    if sys.platform == "win32" and Path(executable).suffix.casefold() in {".cmd", ".bat"}:
+    # Windows also launches PATHEXT aliases ending in spaces or dots as batch files.
+    if sys.platform == "win32" and Path(executable.rstrip(" .")).suffix.casefold() in {".cmd", ".bat"}:
         if any(character in '&|<>()^%!"\x7f' or ord(character) < 32 for value in command for character in value):
             raise SetupError(  # noqa: TRY003
                 "Codex CLI Windows batch launchers cannot safely pass shell metacharacters or ASCII control characters "
@@ -1214,7 +1247,7 @@ __all__ = ["Diagnostic", "DiagnosticStatus", "SetupError", "doctor_app", "run_di
 
 class CodexInstaller:
     def install(self, source):
-        if which("codex") is None:
+        if _codex_path_executable() is None:
             raise SetupError("Codex CLI is not installed or is not on PATH.")  # noqa: TRY003
         marketplace_source, local = _normalize_marketplace_source(source.location)
         arguments = ["plugin", "marketplace", "add", marketplace_source]
@@ -1262,7 +1295,7 @@ class CodexInstaller:
     def verify(self) -> dict[str, Diagnostic]:
         """Collect plugin and native MCP diagnostics for the optional Codex integration."""
 
-        executable = which("codex")
+        executable = _codex_path_executable()
         if executable is None:
             return {
                 "codex": Diagnostic(

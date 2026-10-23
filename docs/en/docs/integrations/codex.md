@@ -30,6 +30,8 @@ Conflicting file and process declarations still require an explicit choice; use 
 runtime URL overrides before rerunning setup. `--source` selects plugin code, not the Server endpoint.
 
 On Windows, setup and diagnostics resolve the Codex executable on PATH, including npm `.cmd` launchers.
+A launcher found in the working directory is not preferred over PATH: discovery enumerates PATH directories
+directly, while an explicit `.` entry in PATH keeps its usual position and meaning.
 For `.cmd` / `.bat` launchers, PowerContext rejects shell metacharacters (`& | < > ( ) ^ % ! "`) and ASCII control characters
 in the executable path or command arguments before starting that command. Spaces and Unicode are supported.
 This avoids silently changing a source or ref through batch interpretation; use a native executable or a launcher path
