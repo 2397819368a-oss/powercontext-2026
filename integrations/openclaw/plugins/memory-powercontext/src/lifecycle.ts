@@ -128,6 +128,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
   };
   const sessionScopes = new Map<string, Set<string>>();
   const pendingPositions = new Map<string, number>();
+  const confirmedCursors = new Map<string, number>();
   const reportDeadline = (
     event: string,
     lifecycleEvent: string,
@@ -322,6 +323,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     targetPosition: number,
     budget: FlushCallBudget,
     signal?: AbortSignal,
+    onAcknowledged?: () => void,
   ): Promise<CheckpointResult> => {
     let acknowledged = false;
     let observedCursor: number | undefined;
@@ -336,8 +338,10 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         }
         const progress = flushProgress(response);
         observedCursor = Math.max(observedCursor ?? 0, progress.currentCursor);
+        confirmedCursors.set(scopeId, Math.max(confirmedCursors.get(scopeId) ?? 0, progress.currentCursor));
         acknowledged ||= progress.currentCursor >= targetPosition;
         if (acknowledged) {
+          onAcknowledged?.();
           const pending = pendingPositions.get(scopeId);
           if (pending !== undefined && observedCursor >= pending) {
             pendingPositions.delete(scopeId);
@@ -495,21 +499,25 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       return;
     }
     const signal = createClosingSignal();
+    let targetAcknowledged = (confirmedCursors.get(scopeId) ?? -1) >= targetPosition;
     await enqueueFlush(async () => {
       const budget = { remaining: deps.getConfig().flushMaxCalls };
       const currentTarget = pendingPositions.get(scopeId);
       if (currentTarget === undefined) {
+        targetAcknowledged = (confirmedCursors.get(scopeId) ?? -1) >= targetPosition;
         return;
       }
       try {
         if (await canExtractMemory(signal)) {
-          const result = await flush(scopeId, Math.max(targetPosition, currentTarget), budget, signal);
+          const result = await flush(scopeId, targetPosition, budget, signal, () => {
+            targetAcknowledged = true;
+          });
           if (!result.acknowledged && !signal.aborted) {
             reportFailure("pre_compaction_checkpoint", result.error, {
               host: "openclaw",
               lifecycle_event: "before_compaction",
               scope_correlation: scopeCorrelation(scopeId),
-              target_position: Math.max(targetPosition, currentTarget),
+              target_position: targetPosition,
               ...(result.observedCursor === undefined ? {} : { observed_cursor: result.observedCursor }),
             });
           }
@@ -522,7 +530,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
             host: "openclaw",
             lifecycle_event: "before_compaction",
             scope_correlation: scopeCorrelation(scopeId),
-            target_position: Math.max(targetPosition, currentTarget),
+            target_position: targetPosition,
           });
         }
       } catch (error) {
@@ -531,17 +539,16 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
             host: "openclaw",
             lifecycle_event: "before_compaction",
             scope_correlation: scopeCorrelation(scopeId),
-            target_position: Math.max(targetPosition, currentTarget),
+            target_position: targetPosition,
           });
         }
       }
     }, "normal", signal, () => {
-      const currentTarget = pendingPositions.get(scopeId);
-      if (currentTarget !== undefined) {
+      if (!targetAcknowledged && (confirmedCursors.get(scopeId) ?? -1) < targetPosition) {
         reportDeadline(
           "pre_compaction_checkpoint",
           "before_compaction",
-          [[scopeId, Math.max(targetPosition, currentTarget)]],
+          [[scopeId, targetPosition]],
         );
       }
     });
@@ -556,10 +563,30 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     const observedScopes = sessionScopes.get(event.sessionId);
     sessionScopes.delete(event.sessionId);
     const scopes = observedScopes?.size ? [...observedScopes] : [];
+    const targets = new Map(
+      scopes.flatMap((scopeId) => {
+        const target = pendingPositions.get(scopeId);
+        return target === undefined ? [] : [[scopeId, target] as const];
+      }),
+    );
+    const acknowledgedTargets = new Set<string>();
+    for (const [scopeId, targetPosition] of targets) {
+      if ((confirmedCursors.get(scopeId) ?? -1) >= targetPosition) {
+        acknowledgedTargets.add(scopeId);
+      }
+    }
     const signal = createClosingSignal();
     await enqueueFlush(async () => {
       const budget = { remaining: deps.getConfig().flushMaxCalls };
-      const pendingScopes = scopes.filter((scopeId) => pendingPositions.has(scopeId));
+      const pendingScopes = [...targets.keys()].filter((scopeId) => pendingPositions.has(scopeId));
+      for (const [scopeId, targetPosition] of targets) {
+        if (
+          !pendingPositions.has(scopeId)
+          || (confirmedCursors.get(scopeId) ?? -1) >= targetPosition
+        ) {
+          acknowledgedTargets.add(scopeId);
+        }
+      }
       if (!pendingScopes.length) {
         return;
       }
@@ -571,11 +598,14 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           if (budget.remaining === 0) {
             break;
           }
-          const targetPosition = pendingPositions.get(scopeId);
-          if (targetPosition === undefined) {
+          const targetPosition = targets.get(scopeId)!;
+          if ((confirmedCursors.get(scopeId) ?? -1) >= targetPosition) {
+            acknowledgedTargets.add(scopeId);
             continue;
           }
-          const result = await flush(scopeId, targetPosition, budget, signal);
+          const result = await flush(scopeId, targetPosition, budget, signal, () => {
+            acknowledgedTargets.add(scopeId);
+          });
           if (!result.acknowledged && !signal.aborted) {
             reportFailure("session_end_flush", result.error, {
               host: "openclaw",
@@ -598,15 +628,22 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       reportDeadline(
         "session_end_flush",
         "session_end",
-        scopes.flatMap((scopeId) => {
-          const targetPosition = pendingPositions.get(scopeId);
-          return targetPosition === undefined ? [] : [[scopeId, targetPosition] as const];
-        }),
+        [...targets].filter(([scopeId, targetPosition]) => (
+          !acknowledgedTargets.has(scopeId)
+          && (confirmedCursors.get(scopeId) ?? -1) < targetPosition
+        )),
       );
     });
   });
 
   api.on("gateway_stop", async () => {
+    const targets = new Map(pendingPositions);
+    const acknowledgedTargets = new Set<string>();
+    for (const [scopeId, targetPosition] of targets) {
+      if ((confirmedCursors.get(scopeId) ?? -1) >= targetPosition) {
+        acknowledgedTargets.add(scopeId);
+      }
+    }
     const signal = createClosingSignal();
     await enqueueFlush(async () => {
       const budget = { remaining: deps.getConfig().flushMaxCalls };
@@ -617,21 +654,24 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         if (!(await canExtractMemory(signal))) {
           return;
         }
-        for (const [scopeId, targetPosition] of [...pendingPositions]) {
-          if (budget.remaining === 0) {
-            break;
-          }
-          const currentTarget = pendingPositions.get(scopeId);
-          if (currentTarget === undefined) {
+        for (const [scopeId, targetPosition] of targets) {
+          if (budget.remaining === 0) break;
+          if (
+            !pendingPositions.has(scopeId)
+            || (confirmedCursors.get(scopeId) ?? -1) >= targetPosition
+          ) {
+            acknowledgedTargets.add(scopeId);
             continue;
           }
-          const result = await flush(scopeId, Math.max(targetPosition, currentTarget), budget, signal);
+          const result = await flush(scopeId, targetPosition, budget, signal, () => {
+            acknowledgedTargets.add(scopeId);
+          });
           if (!result.acknowledged && !signal.aborted) {
             reportFailure("shutdown_flush", result.error, {
               host: "openclaw",
               lifecycle_event: "gateway_stop",
               scope_correlation: scopeCorrelation(scopeId),
-              target_position: Math.max(targetPosition, currentTarget),
+              target_position: targetPosition,
               ...(result.observedCursor === undefined ? {} : { observed_cursor: result.observedCursor }),
             });
           }
@@ -645,7 +685,14 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         }
       }
     }, "closing", signal, () => {
-      reportDeadline("shutdown_flush", "gateway_stop", pendingPositions);
+      reportDeadline(
+        "shutdown_flush",
+        "gateway_stop",
+        [...targets].filter(([scopeId, targetPosition]) => (
+          !acknowledgedTargets.has(scopeId)
+          && (confirmedCursors.get(scopeId) ?? -1) < targetPosition
+        )),
+      );
     });
   });
 }

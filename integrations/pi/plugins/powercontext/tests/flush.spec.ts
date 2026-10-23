@@ -246,6 +246,89 @@ describe('pending Source flusher', () => {
     expect(client.request).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps boundary acknowledgement separate from a concurrent later capture', async () => {
+    const diagnostic = vi.fn()
+    const boundaries: AbortController[] = []
+    let calls = 0
+    const client = {
+      request: vi.fn(async (_operation: string, _payload: unknown, signal?: AbortSignal) => {
+        calls += 1
+        if (calls === 1) {
+          return { kind: 'json' as const, value: progress(1, true), status: 200, requestId: undefined }
+        }
+        if (calls === 2) {
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+          })
+          throw new Error('unreachable')
+        }
+        return { kind: 'json' as const, value: progress(3), status: 200, requestId: undefined }
+      }),
+    } as unknown as PowerContextClient
+    const flusher = createPendingSourceFlusher(
+      client,
+      resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '2' }),
+      diagnostic,
+      () => {
+        const controller = new AbortController()
+        boundaries.push(controller)
+        return controller.signal
+      },
+    )
+    flusher.record('scope-a', 1)
+
+    const firstBoundary = flusher.flush('session_before_compact')
+    await vi.waitFor(() => expect(client.request).toHaveBeenCalledTimes(2))
+    flusher.record('scope-a', 3)
+    boundaries[0].abort(new DOMException('deadline exceeded', 'TimeoutError'))
+
+    await expect(firstBoundary).resolves.toEqual({ acknowledged: true, pendingScopes: 1 })
+    expect(diagnostic).not.toHaveBeenCalled()
+    await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
+    expect(client.request).toHaveBeenCalledTimes(3)
+  })
+
+  it('reports the boundary target rather than a concurrent later capture on deadline', async () => {
+    const diagnostic = vi.fn()
+    const boundaries: AbortController[] = []
+    let calls = 0
+    const client = {
+      request: vi.fn(async (_operation: string, _payload: unknown, signal?: AbortSignal) => {
+        calls += 1
+        if (calls === 1) {
+          return { kind: 'json' as const, value: progress(0, true), status: 200, requestId: undefined }
+        }
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+        throw new Error('unreachable')
+      }),
+    } as unknown as PowerContextClient
+    const flusher = createPendingSourceFlusher(
+      client,
+      resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '2' }),
+      diagnostic,
+      () => {
+        const controller = new AbortController()
+        boundaries.push(controller)
+        return controller.signal
+      },
+    )
+    flusher.record('scope-a', 1)
+
+    const firstBoundary = flusher.flush('session_before_compact')
+    await vi.waitFor(() => expect(client.request).toHaveBeenCalledTimes(2))
+    flusher.record('scope-a', 3)
+    boundaries[0].abort(new DOMException('deadline exceeded', 'TimeoutError'))
+
+    await expect(firstBoundary).resolves.toEqual({ acknowledged: false, pendingScopes: 1 })
+    expect(diagnostic).toHaveBeenCalledWith(
+      'pre_compaction_checkpoint',
+      expect.any(DOMException),
+      expect.objectContaining({ target_position: 1, lifecycle_event: 'session_before_compact' }),
+    )
+  })
+
   it('serializes concurrent lifecycle boundaries', async () => {
     let release: (() => void) | undefined
     const blocked = new Promise<void>((resolve) => { release = resolve })
@@ -346,7 +429,10 @@ describe('pending Source flusher', () => {
 
   it('flushes only accepted positions at both Pi closing boundaries', async () => {
     const vector = conformanceCase('closing_boundaries')
-    const client = clientWith(progress(vector.input.target_position), progress(vector.input.target_position))
+    const client = clientWith(
+      progress(vector.input.target_position),
+      progress(vector.input.target_position + 1),
+    )
     const flusher = createPendingSourceFlusher(client, resolveConfig())
 
     await flusher.flush(vector.input.events_by_host.pi[0])
@@ -354,7 +440,7 @@ describe('pending Source flusher', () => {
 
     flusher.record('scope-a', vector.input.target_position)
     await flusher.flush(vector.input.events_by_host.pi[0])
-    flusher.record('scope-a', vector.input.target_position)
+    flusher.record('scope-a', vector.input.target_position + 1)
     await flusher.flush(vector.input.events_by_host.pi[1])
 
     expect(client.request).toHaveBeenCalledTimes(vector.expected.captured_flush_calls)

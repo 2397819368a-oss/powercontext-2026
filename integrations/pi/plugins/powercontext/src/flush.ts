@@ -105,10 +105,17 @@ export function createPendingSourceFlusher(
   ),
 ): PendingSourceFlusher {
   const pending = new Map<string, number>()
+  const confirmedCursors = new Map<string, number>()
   let queue = Promise.resolve<PendingFlushResult>({ acknowledged: true, pendingScopes: 0 })
 
-  function reportDeadline(lifecycleEvent: string, reason: unknown): void {
-    for (const [scopeId, position] of pending) {
+  function reportDeadline(
+    lifecycleEvent: string,
+    reason: unknown,
+    targets: ReadonlyMap<string, number>,
+    acknowledgedTargets: ReadonlySet<string>,
+  ): void {
+    for (const [scopeId, position] of targets) {
+      if (acknowledgedTargets.has(scopeId) || (confirmedCursors.get(scopeId) ?? -1) >= position) continue
       try {
         onFailure?.(
           lifecycleEvent === 'session_before_compact' ? 'pre_compaction_checkpoint' : 'flush_memory',
@@ -130,14 +137,22 @@ export function createPendingSourceFlusher(
 
   async function flushAll(
     lifecycleEvent: string,
+    targets: ReadonlyMap<string, number>,
+    acknowledgedTargets: Set<string>,
     signal: AbortSignal | undefined,
     deadlineExpired: () => boolean,
   ): Promise<PendingFlushResult> {
-    if (pending.size === 0) return { acknowledged: true, pendingScopes: 0 }
-    if (signal?.aborted) return { acknowledged: false, pendingScopes: pending.size }
+    if (targets.size === 0) return { acknowledged: true, pendingScopes: pending.size }
+    if (signal?.aborted) {
+      return { acknowledged: acknowledgedTargets.size === targets.size, pendingScopes: pending.size }
+    }
     let acknowledged = true
     let remainingCalls = config.flushMaxCalls
-    for (const [scopeId, position] of [...pending]) {
+    for (const [scopeId, position] of targets) {
+      if (!pending.has(scopeId) || (confirmedCursors.get(scopeId) ?? -1) >= position) {
+        acknowledgedTargets.add(scopeId)
+        continue
+      }
       if (remainingCalls === 0) {
         acknowledged = false
         break
@@ -152,8 +167,10 @@ export function createPendingSourceFlusher(
           if (deadlineExpired()) break
           const progress = flushProgress(result.kind === 'json' ? result.value : undefined)
           observedCursor = Math.max(observedCursor ?? 0, progress.currentCursor)
+          confirmedCursors.set(scopeId, Math.max(confirmedCursors.get(scopeId) ?? 0, progress.currentCursor))
           scopeAcknowledged ||= progress.currentCursor >= position
           if (scopeAcknowledged) {
+            acknowledgedTargets.add(scopeId)
             const current = pending.get(scopeId)
             if (current !== undefined && observedCursor >= current) {
               pending.delete(scopeId)
@@ -185,7 +202,10 @@ export function createPendingSourceFlusher(
         // Diagnostics are best effort and must not affect the host boundary.
       }
     }
-    return { acknowledged, pendingScopes: pending.size }
+    return {
+      acknowledged: acknowledged && acknowledgedTargets.size === targets.size,
+      pendingScopes: pending.size,
+    }
   }
 
   return {
@@ -194,17 +214,30 @@ export function createPendingSourceFlusher(
       pending.set(scopeId, Math.max(current ?? 0, position))
     },
     flush(lifecycleEvent, signal) {
+      const targets = new Map(pending)
+      const acknowledgedTargets = new Set<string>()
+      for (const [scopeId, position] of targets) {
+        if ((confirmedCursors.get(scopeId) ?? -1) >= position) {
+          acknowledgedTargets.add(scopeId)
+        }
+      }
       const boundarySignal = createBoundarySignal()
       const combined = signal ? combineSignals([boundarySignal, signal]) : boundarySignal
       let deadlineExpired = boundarySignal.aborted
-      const task = queue.then(() => flushAll(lifecycleEvent, combined, () => deadlineExpired))
+      const task = queue.then(() => flushAll(
+        lifecycleEvent,
+        targets,
+        acknowledgedTargets,
+        combined,
+        () => deadlineExpired,
+      ))
       queue = task.catch(() => ({ acknowledged: false, pendingScopes: pending.size }))
       return settleWithinBoundary(task, boundarySignal, () => ({
-        acknowledged: pending.size === 0,
+        acknowledged: acknowledgedTargets.size === targets.size,
         pendingScopes: pending.size,
       }), () => {
         deadlineExpired = true
-        reportDeadline(lifecycleEvent, boundarySignal.reason)
+        reportDeadline(lifecycleEvent, boundarySignal.reason, targets, acknowledgedTargets)
       })
     },
   }

@@ -685,6 +685,104 @@ describe("PowerContext lifecycle", () => {
     expect(harness.warnings).toEqual([]);
   });
 
+  it("keeps a compaction acknowledgement separate from a concurrent later capture", async () => {
+    const harness = createLifecycleHarness();
+    harness.config.flushMaxCalls = 2;
+    const boundaries: AbortController[] = [];
+    harness.setClosingSignalFactory(() => {
+      const controller = new AbortController();
+      boundaries.push(controller);
+      return controller.signal;
+    });
+    let calls = 0;
+    harness.setFlushHandler(async (_scopeId, signal) => {
+      calls += 1;
+      if (calls === 1) return flushProgress(1, true);
+      if (calls === 2) {
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        throw new Error("unreachable");
+      }
+      return flushProgress(2);
+    });
+    const context = {
+      agentId: "main",
+      sessionId: "session-ack-then-capture",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+
+    const beforeCompaction = harness.hooks.get("before_compaction")!(
+      { messages: [{ role: "user", content: "first source" }] },
+      context,
+    ) as Promise<void>;
+    await vi.waitFor(() => expect(harness.flushScopes).toHaveLength(2));
+    await harness.hooks.get("agent_end")!(
+      { success: true, runId: "later-run", messages: [{ role: "user", content: "later source" }] },
+      context,
+    );
+    boundaries[0].abort(new DOMException("deadline exceeded", "TimeoutError"));
+    await beforeCompaction;
+
+    expect(harness.warnings).toEqual([]);
+    expect(harness.flushScopes).toHaveLength(2);
+    await harness.hooks.get("gateway_stop")!({}, {});
+    expect(harness.flushScopes).toHaveLength(3);
+    expect(harness.warnings).toEqual([]);
+  });
+
+  it("reports the compaction target rather than a concurrent later capture on deadline", async () => {
+    const harness = createLifecycleHarness();
+    const boundaries: AbortController[] = [];
+    harness.setClosingSignalFactory(() => {
+      const controller = new AbortController();
+      boundaries.push(controller);
+      return controller.signal;
+    });
+    let calls = 0;
+    harness.setFlushHandler(async (_scopeId, signal) => {
+      calls += 1;
+      if (calls === 1) return flushProgress(0, true);
+      if (calls === 2) {
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        throw new Error("unreachable");
+      }
+      return flushProgress(2);
+    });
+    const context = {
+      agentId: "main",
+      sessionId: "session-target-then-capture",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+
+    const beforeCompaction = harness.hooks.get("before_compaction")!(
+      { messages: [{ role: "user", content: "first source" }] },
+      context,
+    ) as Promise<void>;
+    await vi.waitFor(() => expect(harness.flushScopes).toHaveLength(2));
+    await harness.hooks.get("agent_end")!(
+      { success: true, runId: "later-run", messages: [{ role: "user", content: "later source" }] },
+      context,
+    );
+    boundaries[0].abort(new DOMException("deadline exceeded", "TimeoutError"));
+    await beforeCompaction;
+
+    const diagnostics = harness.warnings.map((line) => JSON.parse(line));
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      event: "pre_compaction_checkpoint",
+      outcome: "deadline_exceeded",
+      lifecycle_event: "before_compaction",
+      target_position: 1,
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain("first source");
+    expect(JSON.stringify(diagnostics)).not.toContain("later source");
+    await harness.hooks.get("gateway_stop")!({}, {});
+    expect(harness.flushScopes).toHaveLength(3);
+  });
+
   it("serializes overlapping closing boundaries without flushing a cleared position", async () => {
     const harness = createLifecycleHarness();
     const context = {
