@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from ..report import turn_rows
+from ..report import outcome, turn_rows
 from ..summary import retry_counts, summarize
 from ..transcript import ToolCall, ToolResult, Turn
 
@@ -296,14 +296,21 @@ def search(call_id: str, query: str, issued: int, answered: int, *, error: bool 
     )
 
 
-def evidence(*calls: ToolCall) -> dict[str, int]:
-    rows = turn_rows(
+SEARCH_EXPECTED = {"error_code": "search_unavailable", "retry_disposition": "retry_later"}
+
+
+def scored(*calls: ToolCall) -> dict[str, Any]:
+    return turn_rows(
         Turn(index=1, started_at=START, calls=list(calls)),
         prefix="mcp__powercontext__",
         read_only=frozenset({"search_memory"}),
         case_operation="search_memory",
-        expected={"error_code": "search_unavailable", "retry_disposition": "retry_later"},
+        expected=SEARCH_EXPECTED,
     )
+
+
+def evidence(*calls: ToolCall) -> dict[str, int]:
+    rows = scored(*calls)
     return retry_counts([{"status": "complete", "turns": [rows]}], "search_memory", "search_unavailable")
 
 
@@ -334,6 +341,22 @@ def test_every_call_sent_after_a_failure_answers_it() -> None:
 def test_a_success_seen_after_the_failure_leaves_nothing_to_answer() -> None:
     calls = (search("t1", "q", 1, 2), search("t2", "r", 3, 4, error=False), search("t3", "q", 5, 6))
 
+    assert evidence(*calls) == {"repeated_calls": 0, "retries_after_change": 1}
+
+
+def test_a_success_retires_the_failure_for_retry_flags_and_their_allowance() -> None:
+    # q fails, r succeeds, then q is read three times; none of those reads answers the retired failure.
+    calls = (
+        search("t1", "q", 1, 2),
+        search("t2", "r", 3, 4, error=False),
+        *(search(f"t{second}", "q", second, second, error=False) for second in (5, 6, 7)),
+    )
+    turn = scored(*calls)
+
+    assert [(row["repeats_failed_call"], row["retries_target_failure"]) for row in turn["calls"][2:]] == [
+        (False, False)
+    ] * 3
+    assert outcome([turn], expected=SEARCH_EXPECTED, final_state={}, state_violation=None)["violations"] == []
     assert evidence(*calls) == {"repeated_calls": 0, "retries_after_change": 1}
 
 

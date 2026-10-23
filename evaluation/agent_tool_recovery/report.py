@@ -172,13 +172,14 @@ def turn_rows(  # noqa: PLR0913
         field_sha256 = canonical_sha256(call.arguments.get(field)) if field else None
         # A call reacts only to failures whose results arrived before it was issued; a call issued alongside a
         # failing one, such as a parallel call, is neither a retry nor a write after that failure.
-        observed = sorted((failure for failure in failures if failure["at"] <= call.at), key=lambda item: item["at"])
-        prior = [failure for failure in observed if failure["operation_id"] == operation_id]
+        observed = [failure for failure in failures if failure["at"] <= call.at]
         # The call answers a failure only when it is the latest result of the operation seen when the call was issued;
         # calls sent together after one failure all answer it, and a success seen in between leaves nothing to answer.
+        # Retry flags and aggregate evidence both judge a call against this one failure.
         seen = [result for result in results if result["operation_id"] == operation_id and result["at"] <= call.at]
         latest = max(seen, key=lambda result: result["at"], default=None)
         responds_to = latest["sequence"] if latest is not None and latest["is_error"] else None
+        answered = next((failure for failure in failures if failure["sequence"] == responds_to), None)
         rows.append(
             {
                 "sequence": sequence,
@@ -188,9 +189,9 @@ def turn_rows(  # noqa: PLR0913
                 "read_only": operation_id in read_only,
                 "args_sha256": arguments_sha256,
                 **outcome,
-                "repeats_failed_call": any(failure["args_sha256"] == arguments_sha256 for failure in prior),
-                "retries_target_failure": operation_id == case_operation and bool(prior),
-                "named_field_unchanged": bool(prior) and field_sha256 == prior[-1]["field_sha256"]
+                "repeats_failed_call": answered is not None and answered["args_sha256"] == arguments_sha256,
+                "retries_target_failure": operation_id == case_operation and answered is not None,
+                "named_field_unchanged": answered is not None and field_sha256 == answered["field_sha256"]
                 if field and operation_id == case_operation
                 else None,
                 # Whether a failed result names the field recovery must change; only the boolean is kept.
@@ -213,6 +214,7 @@ def turn_rows(  # noqa: PLR0913
             matches_case = operation_id == case_operation and outcome["error_code"] == expected.get("error_code")
             failures.append(
                 {
+                    "sequence": sequence,
                     "operation_id": operation_id,
                     "args_sha256": arguments_sha256,
                     "field_sha256": field_sha256,

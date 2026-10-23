@@ -69,7 +69,9 @@ with the k-th gateway event and the k-th tools/call the Server received for that
 bound to its own bridge request. A call the gateway answered or the MCP layer rejected reached no Server request.
 
 A call reacts only to failures whose results arrived before it was issued, so calls issued together are neither
-retries of each other nor writes after each other's failure. Per turn the report counts:
+retries of each other nor writes after each other's failure. A call is a retry only of the failure it answers: the
+latest result of its operation when it was issued, so a success in between retires the earlier failure and its retry
+allowance. Per turn the report counts:
 
 - identical calls repeated after a failure, and retries that left the named field unchanged (or, for idempotent
   replay, changed it);
