@@ -696,6 +696,21 @@ def _resolve_codex_native_authorization(
     )
 
 
+def _codex_search_path() -> str:
+    """Return the PATH value to search, mirroring which()'s unset-PATH fallback roots."""
+    path = os.environ.get("PATH")
+    if path is not None:
+        return path
+    confstr = getattr(os, "confstr", None)
+    if confstr is None:
+        return os.defpath
+    try:
+        return confstr("CS_PATH")
+    except ValueError:
+        # CS_PATH is not a known confstr variable on this platform.
+        return os.defpath
+
+
 def _codex_path_executable() -> str | None:
     """Resolve Codex from PATH directories without the implicit current-directory preference.
 
@@ -706,6 +721,8 @@ def _codex_path_executable() -> str | None:
     while keeping which()'s matching semantics across Python 3.11-3.14: PATHEXT
     candidates on Windows, the bare name with an executable-bit check on POSIX.
     Explicit PATH entries - including ``.`` and empty entries - keep their usual meaning.
+    An unset PATH falls back to which()'s search roots (``os.confstr("CS_PATH")``, then
+    ``os.defpath``), and an empty PATH value means no search at all, like which().
     """
     name = "codex"
     if sys.platform == "win32":
@@ -719,8 +736,13 @@ def _codex_path_executable() -> str | None:
             candidates.insert(0, name)
     else:
         candidates = [name]
+    path = _codex_search_path()
+    # Parity with which() (bpo-35755): an empty PATH value means no search at all,
+    # while empty entries inside a non-empty PATH keep their usual cwd meaning.
+    if not path:
+        return None
     seen: set[str] = set()
-    for directory in (os.environ.get("PATH") or "").split(os.pathsep):
+    for directory in path.split(os.pathsep):
         key = os.path.normcase(directory)
         if key in seen:
             continue

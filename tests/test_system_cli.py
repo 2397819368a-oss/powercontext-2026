@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tomllib
 from email.message import Message
@@ -1161,22 +1162,79 @@ def test_codex_path_executable_prefers_earlier_pathext_entries(tmp_path: Path, m
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable discovery has no PATHEXT")
 def test_codex_path_executable_finds_a_posix_executable(tmp_path: Path, monkeypatch) -> None:
-    executable = tmp_path / "codex"
+    # The autouse CODEX_HOME fixture reserves tmp_path/"codex" as a directory.
+    directory = tmp_path / "discovery"
+    directory.mkdir()
+    executable = directory / "codex"
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
     executable.chmod(0o755)
-    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PATH", str(directory))
 
     assert system_cli._codex_path_executable() == str(executable)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX discovery requires the executable bit")
 def test_codex_path_executable_skips_files_without_the_executable_bit(tmp_path: Path, monkeypatch) -> None:
-    plain = tmp_path / "codex"
+    directory = tmp_path / "discovery"
+    directory.mkdir()
+    plain = directory / "codex"
     plain.write_text("not executable\n", encoding="ascii")
     plain.chmod(0o644)
-    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PATH", str(directory))
 
     assert system_cli._codex_path_executable() is None
+
+
+def _write_platform_codex_launcher(directory: Path) -> Path:
+    """Create the launcher name Codex discovery looks for on this platform."""
+    if sys.platform == "win32":
+        launcher = directory / "codex.CMD"
+        launcher.write_text("@echo off\r\nexit /b 0\r\n", encoding="ascii")
+        return launcher
+    launcher = directory / "codex"
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
+    launcher.chmod(0o755)
+    return launcher
+
+
+def test_codex_path_executable_treats_an_empty_path_value_as_no_search(tmp_path: Path, monkeypatch) -> None:
+    # Parity with which() (bpo-35755): an empty PATH value must not fall back to the working directory.
+    # The autouse CODEX_HOME fixture reserves tmp_path/"codex" as a directory, so use a subdirectory.
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    _write_platform_codex_launcher(cwd)
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", "")
+
+    assert system_cli._codex_path_executable() is None
+
+
+def test_codex_path_executable_resolves_empty_path_entries_in_the_working_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Empty entries inside a non-empty PATH keep their usual cwd meaning, like which().
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    launcher = _write_platform_codex_launcher(cwd)
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(cwd / "absent-a"), "", str(cwd / "absent-b")]))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+    resolved = system_cli._codex_path_executable()
+
+    assert resolved is not None and not Path(resolved).is_absolute()
+    assert cwd / Path(resolved).name == launcher
+
+
+def test_codex_path_executable_falls_back_to_confstr_when_path_is_unset(tmp_path: Path, monkeypatch) -> None:
+    directory = tmp_path / "discovery"
+    directory.mkdir()
+    launcher = _write_platform_codex_launcher(directory)
+    monkeypatch.delenv("PATH", raising=False)
+    monkeypatch.setattr(os, "confstr", lambda name: str(directory), raising=False)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+    assert system_cli._codex_path_executable() == str(launcher)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows batch argument handling")
