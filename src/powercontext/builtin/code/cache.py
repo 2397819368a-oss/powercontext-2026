@@ -239,11 +239,13 @@ class GenerationCache:
         """
         records = self.publications()
         retained = self._retained_identifiers()
-        abandoned = [
-            attempt
-            for attempt, record in records.items()
-            if attempt not in retained and not (self.directory / self._recorded_directory(record)).exists()
-        ]
+        abandoned: list[str] = []
+        for attempt, record in records.items():
+            if attempt in retained:
+                continue
+            recorded = self._recorded_directory(record)
+            if recorded is None or not (self.directory / recorded).exists():
+                abandoned.append(attempt)
         for attempt in abandoned:
             self.store.remove_generation(attempt, self.directory.name, deadline)
             records.pop(attempt)
@@ -252,21 +254,30 @@ class GenerationCache:
         return len(abandoned)
 
     def _retained_identifiers(self) -> set[str]:
-        """Identifiers the pointer still reaches, read from the generations themselves.
+        """Identifiers whose rows a live generation still owns, read from the generations.
 
         A row is addressed by its identifier, not by the directory that carries it,
-        so the manifest inside each reachable generation is the only place that can
-        say which rows a live generation owns. A record whose directory has gone can
-        still point at one of them — that is the crash this guard exists for.
+        so the manifest inside each generation directory is the only place that can
+        say which rows a live generation owns. Two sources qualify:
+
+        - the generations the pointer still reaches — that is the crash a record
+          whose directory has gone can still point at;
+        - every generation directory that still exists, whether or not the pointer
+          names it any more. A reader lease can keep an older generation alive
+          long after it left current/previous, and deleting rows by identifier
+          while that directory exists turns the reader's successful query into an
+          empty one. Only :meth:`collect` may remove a directory, and it does so
+          under the reader lock, so a directory here is proof the rows are live.
         """
+
         try:
             pointer = self.pointer()
         except CodeError:
-            return set()
+            pointer = None
         retained: set[str] = set()
-        for reference in (pointer or {}).values():
-            if not isinstance(reference, dict):
-                continue
+        references = [reference for reference in (pointer or {}).values() if isinstance(reference, dict)]
+        references.extend({"directory": path.name} for path in self.directory.glob("generation-*") if path.is_dir())
+        for reference in references:
             directory = reference.get("directory")
             if not isinstance(directory, str):
                 continue
@@ -281,28 +292,65 @@ class GenerationCache:
         return retained
 
     @staticmethod
-    def _recorded_directory(record: dict[str, Any]) -> str:
-        return str(record.get("directory", ""))
+    def _recorded_directory(record: dict[str, Any]) -> str | None:
+        """The cache-relative name a record gives its directory, if it names one.
 
-    def _write_publications(self, records: dict[str, dict[str, Any]], deadline: float) -> None:
+        A record is written by this class, so a name that is not one of its two
+        shapes is corruption, not an older format. Returning ``None`` instead of
+        coercing to ``""`` matters: the cache root exists, so an empty name made
+        every existence check succeed and the attempt unreclaimable. An unnamed
+        record is treated exactly like a vanished directory — reclaimable, with
+        the identifier as the only handle left.
+        """
+
+        name = record.get("directory")
+        if not isinstance(name, str):
+            return None
+        for prefix, width in (("staging-", 40), ("generation-", 43)):
+            if name.startswith(prefix) and len(name) == width:
+                break
+        else:
+            return None
+        if any(character not in "0123456789abcdef" for character in name[len(prefix) :]):
+            return None
+        return name
+
+    def _write_publications(
+        self, records: dict[str, dict[str, Any]], deadline: float, *, protected: frozenset[str] = frozenset()
+    ) -> None:
         excess = len(records) - self.PUBLICATION_WINDOW
         if excess > 0:
             # A record is the only handle to rows that outlive their directory, so the
-            # window recalls those commits instead of forgetting them. A record whose
-            # directory still exists is a generation a reader may hold; it is never
-            # dropped, and the excess is allowed to stand.
+            # window recalls those commits instead of forgetting them. Three records are
+            # never dropped: one whose directory still exists (a generation a reader may
+            # hold), one whose identifier a live generation still owns, and one this
+            # publisher has just named but not renamed into place yet — its directory is
+            # missing by design between the record write and the rename, and reclaiming
+            # it deletes the rows this very publication committed. The excess is allowed
+            # to stand.
+            live = self._retained_identifiers()
+
+            def reclaimable(attempt: str, record: dict[str, Any]) -> bool:
+                if attempt in protected or attempt in live:
+                    return False
+                recorded = self._recorded_directory(record)
+                return recorded is None or not (self.directory / recorded).exists()
+
             stale = sorted(
-                (
-                    (attempt, record)
-                    for attempt, record in records.items()
-                    if not (self.directory / self._recorded_directory(record)).exists()
-                ),
-                key=lambda item: item[1].get("started_at", 0),
+                ((attempt, record) for attempt, record in records.items() if reclaimable(attempt, record)),
+                key=lambda item: self._started_at(item[1]),
             )
             for attempt, _ in stale[:excess]:
                 self.store.remove_generation(attempt, self.directory.name, deadline)
                 records.pop(attempt)
         self.replace_json("publication.json", {"attempts": records})
+
+    @staticmethod
+    def _started_at(record: dict[str, Any]) -> float:
+        # The record is read back from JSON, so the timestamp can be anything; sorting
+        # must not raise on it. Unreadable stamps sort first — the oldest possible.
+        value = record.get("started_at")
+        return float(value) if isinstance(value, (int, float)) else 0.0
 
     def publish(
         self,
@@ -349,7 +397,9 @@ class GenerationCache:
                     "state": "published",
                     "started_at": records.get(attempt, {}).get("started_at", time.time()),
                 }
-                self._write_publications(records, deadline)
+                # Protected: until os.replace below lands, the record's directory is
+                # missing by design, and the window must not read that as stale.
+                self._write_publications(records, deadline, protected=frozenset({attempt}))
             os.replace(staging, directory)
             reference = {"directory": directory.name, "manifest_sha256": digest_bytes(manifest_content)}
             self.replace_json(

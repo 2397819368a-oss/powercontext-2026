@@ -419,12 +419,26 @@ class SeekDBGraphStore:
             connection.commit()
 
     def remove_generation(self, generation_id: str, binding: str, deadline: float) -> None:
-        """Delete a commit whose directory is gone; the identifier is the only handle left."""
+        """Delete a commit whose directory is gone; the identifier is the only handle left.
+
+        The identifier arrives from a local publication record, so it is validated
+        like :meth:`create` validates one before committing, and the node and edge
+        deletes are scoped to the binding through ``pc_code_generations``. A
+        corrupted or tampered record must not be able to delete another binding's
+        rows by quoting an identifier that binding also happens to use.
+        """
+
+        if len(generation_id) != 32 or any(character not in "0123456789abcdef" for character in generation_id):
+            raise CodeError("index_integrity_failed")
         with self.connection(deadline) as connection, connection.cursor() as cursor:
             try:
                 for table in ("pc_code_edges", "pc_code_nodes"):
                     check_deadline(deadline)
-                    cursor.execute(f"DELETE FROM {table} WHERE generation_id = %s", (generation_id,))  # noqa: S608 - constant tables.
+                    cursor.execute(
+                        f"DELETE FROM {table} WHERE generation_id IN "  # noqa: S608 - constant tables.
+                        "(SELECT id FROM pc_code_generations WHERE id = %s AND binding = %s)",
+                        (generation_id, binding),
+                    )
                 cursor.execute(
                     "DELETE FROM pc_code_generations WHERE id = %s AND binding = %s", (generation_id, binding)
                 )
