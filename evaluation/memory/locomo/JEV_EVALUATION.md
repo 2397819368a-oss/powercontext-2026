@@ -50,45 +50,73 @@ uv run python -m pytest \
 
 ## Quality and cost decision
 
-Recommendation: **revise pending live comparative evidence**.
+Recommendation: **revise**. The measured service path has explicit failures and
+higher successful-observation latency; complete account billing remains unavailable.
 
-On 2026-10-16, the user-configured hosted endpoint
-`https://jevmodel.org/v1/systemone` accepted the System One request and resolved
-`jev-latest` to `jev-1.13.0`. Subsequent adapter probes pinned `jev-1.13.0`,
-used the normal 30-second deadline and four-request concurrency bound, and sent
-public fixture session text. The initial eight-case probe completed four cases
-and exposed four provider failures. Diagnostic calls returned HTTP 402
-`insufficient_credits` for the Chinese complementary-evidence and version-condition
-cases. The service message stated that input-token credits were insufficient.
-Successful calls supplied token receipts; failed or cancelled requests have
-unknown billing. These errors establish that those requests were rejected, not
-that the account had no remaining balance.
+The [hosted execution records on PR #2005](https://github.com/oceanbase/powercontext/pull/2005)
+retain the reviewed, non-secret endpoint, pinned version, input and adapter hashes,
+per-case selections, latency, token receipts, and diagnostic failures. They include
+successful serial and concurrent adapter requests and earlier HTTP 402 responses
+whose cause remains undetermined. A provider rejection alone does not establish
+that an account has no balance.
 
-On 2026-10-17 (Asia/Shanghai), nine requests through the same configured key and
-pinned adapter all returned HTTP 200 with valid token receipts. Three
-single-candidate requests covered both previously failing Chinese cases and an
-English control. The complementary-evidence case then ran with the same three
-candidates first serially and then concurrently; both selected original ranks
-`[2, 1]`. The final response's `x-tokens-remaining` header reported `84421`.
-The nine requests consumed 3702 input tokens and 189 output tokens. This verifies
-usable quota at that time. The earlier 402 responses did not recur, and their
-cause remains undetermined; neither account exhaustion nor a concurrency defect
-has been established.
+These are adapter connectivity and protocol checks over public examples. They do
+not exercise ingestion, Runtime search, answer generation, or judging. Failed or
+cancelled requests have unknown billing. Keep one-off raw records with the PR or CI
+artifacts; the reusable bilingual and adversarial inputs remain in
+`dataset/rerank_smoke_cases.json`.
 
-The non-secret [hosted adapter evidence](evidence/jev_live_smoke_2026-10-16.json)
-records the endpoint, pinned version, dataset and executed-adapter hashes,
-per-case selections, latency, token receipts, and diagnostic failures. This is an
-adapter connectivity and protocol check over public examples. It does not
-exercise ingestion, Runtime search, answer generation, or judging.
+On 2026-10-17 (Asia/Shanghai), an additional 12 predeclared bilingual/adversarial
+questions ran through native Source capture, extraction/reconciliation, SQLite
+hybrid search, reranking, answering, and judging. They used one frozen ingestion
+of 12 sessions and the existing local DashScope Qwen/embedding configuration;
+the Jev arm used the user-provided `jevmodel.org` endpoint with `jev-1.13.0`.
+These measurements describe that service path, without independently verifying
+upstream execution or establishing direct TypeSafe API performance.
 
-No live three-arm run of this Noul adapter is recorded here.
-Relevant-evidence recall, ranking quality, downstream task success, real p50/p95
-pipeline latency, billed pipeline input, retries, and total pipeline cost are
-therefore unmeasured.
-There is no basis for changing the default provider or claiming a quality, latency,
-or cost improvement.
+| Arm | Completed | Judge correct / attempted | Search + rerank + answer p50 | p95 |
+| --- | ---: | ---: | ---: | ---: |
+| none | 12/12 | 12/12 | 1.20 s | 1.50 s |
+| llm | 12/12 | 12/12 | 1.98 s | 2.38 s |
+| jev | 7/12 | 7/12 | 8.57 s | 13.24 s |
 
-The runnable comparison in [README.md](README.md#jev-memory-comparison) fixes the
+Five Jev questions failed with actual HTTP 402 `insufficient_credits` responses.
+The same arm recorded 16 successful HTTP requests. This does not establish a zero
+account balance. Failed questions remain zero in the quality denominator; their
+answers were not replaced with diagnostic retries. Latency quantiles cover
+successful observations and exclude the evaluation judge. Seven jointly successful
+questions have identical ordered candidate digests. Candidate equality is not
+claimed for failed questions without a successful trace.
+
+The run fixed candidate limit 10, answer limit 3, complete serialized answer budget
+4096 UTF-8 bytes, temperature 0, concurrency 1, one operation attempt, and quality
+regression tolerance 0. The separately versioned `strict-abstention` judge accepts
+an explicit abstention for gold `Unknown`; all arms correctly abstained on both
+unanswerable questions. The same configured Qwen model answers and judges, so these
+are model grades, not independent human judgments.
+
+On the same seven successful questions, rerank + answer token receipts total
+7579 for LLM and 10463 for Jev, approximately 38% more for Jev. The Qwen answer
+phase alone used 4194 versus 4676 tokens. Cross-provider token sums are not monetary
+costs. Failed/cancelled requests and actual account prices leave USD costs unknown.
+Two LLM observations used validated-empty-selection coarse fallback; Jev used
+no fallback. Provider failures still propagate under RFC 0080.
+
+These are small, agent-authored fixtures frozen before answering, not an external
+independent benchmark. Candidate counts range from 1 to 9, with both baselines at
+the score ceiling. Session-level provenance recall/MRR does not establish
+sentence-level entailment. There is no basis for changing the default provider
+or claiming a quality, latency, or cost improvement.
+
+The separate preselected 12-question public LoCoMo pilot has no answer evaluation.
+Native ingestion reached 7/19 sessions. Two attempts timed out under the existing
+30-second model deadline; a further attempt was deliberately stopped after the
+completed hosted comparison exposed repeated provider rejections. Partial ingestion
+is retained as a checkpoint, not acceptance evidence. Input-dependent identity
+validation now gives the model bounded correction feedback before publication;
+the published-identity invariant and request/time limits are preserved.
+
+The runnable comparison in [README.md](README.md#reranker-comparison) fixes the
 inputs and delivery budget and rejects candidate/model/budget drift. The quality
 regression tolerance is `0.0`, recorded before evaluation. A report with missing
 cost receipts cannot recommend adoption. Comparison manifests pin both resolved
@@ -97,9 +125,12 @@ required-receipts billing policy. Older runs without that policy cannot establis
 complete cost. The bilingual/adversarial smoke cases
 are separate from any future calibration and held-out evaluation.
 
-Complete a live three-arm Jev comparison with authorized downstream services,
-retain reviewed non-secret manifests
-and comparison results, and evaluate a dedicated reranker baseline if available
-before closing the issue's empirical acceptance criteria. Include the shared
+Retain reviewed non-secret manifests and comparison results, complete the public
+LoCoMo pilot once the service path is usable, and evaluate a dedicated reranker
+baseline if available before closing the issue's empirical acceptance criteria.
+The new input hash is
+`be736cdb4c9691dfd7e482144d216ecc448fa3fa433990254c57eb4b0586b762`.
+One-off local records remain outside tracked source pending user review. Include the shared
 ingestion cost when reporting total pipeline cost; the comparator reports the
-search-to-answer evaluation portion.
+search-to-answer evaluation portion. Comparison schema v3 separates product
+cost/latency from judging so an inexpensive or fast judge cannot justify adoption.

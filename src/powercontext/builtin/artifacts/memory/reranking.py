@@ -48,7 +48,6 @@ class MemoryRerankMode(StrEnum):
 
     NONE = "none"
     LLM = "llm"
-    JEV = "jev"
 
 
 class _StrictModel(BaseModel):

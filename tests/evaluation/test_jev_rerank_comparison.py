@@ -67,7 +67,7 @@ def _runs(tmp_path):
                     for stage in ("rerank", "answer", "judge")
                 },
                 "transient_retries": {"search": 0, "answer": 0, "judge": 0},
-                "latency_ms": {"rerank": 10, "total": 40},
+                "latency_ms": {"search": 10, "rerank": 10, "answer": 10, "judge": 10, "total": 40},
             })
             + "\n"
         )
@@ -77,6 +77,8 @@ def _runs(tmp_path):
 def _compare(runs):
     return compare_rerank_runs(
         runs,
+        baseline="llm",
+        candidate="jev",
         input_prices={"none": 0, "llm": 0.2, "jev": 0.04},
         output_prices=dict.fromkeys(runs, 0),
         generation_input_price=1,
@@ -88,6 +90,133 @@ def _change_observation(path, mutate):
     value = json.loads(path.read_text())
     mutate(value)
     path.write_text(json.dumps(value) + "\n")
+
+
+def test_comparison_accepts_existing_baselines_without_a_jev_run(tmp_path):
+    runs = {name: path for name, path in _runs(tmp_path).items() if name != "jev"}
+    result = compare_rerank_runs(
+        runs,
+        baseline="none",
+        candidate="llm",
+        input_prices={"none": 0, "llm": 0.2},
+        output_prices=dict.fromkeys(runs, 0),
+        generation_input_price=1,
+        generation_output_price=1,
+    )
+    assert result["comparison_complete"] is True
+    assert result["quality_gate_passed"] is True
+    assert set(result["results"]) == {"none", "llm"}
+    assert result["baseline"] == "none"
+    assert result["candidate"] == "llm"
+
+
+def test_cli_compares_named_rerankers_and_per_run_costs(tmp_path, capsys):
+    from evaluation.memory.locomo.cli import main
+
+    paths = _runs(tmp_path)
+    candidate_manifest = paths["jev"] / "run.json"
+    manifest = json.loads(candidate_manifest.read_text())
+    manifest.update(rerank_mode="llm", comparison_reranker={"model": "smaller-model"})
+    candidate_manifest.write_text(json.dumps(manifest))
+    for path in (paths["llm"], paths["jev"]):
+        _change_observation(path / "observations.jsonl", lambda value: value.update(embedding_calls=1))
+    output = tmp_path / "comparison.json"
+    assert (
+        main([
+            "compare-rerank",
+            "--run",
+            "large-model",
+            str(paths["llm"]),
+            "0.2",
+            "0",
+            "--run",
+            "small-model",
+            str(paths["jev"]),
+            "0.04",
+            "0",
+            "--baseline",
+            "large-model",
+            "--candidate",
+            "small-model",
+            "--generation-input-price",
+            "1",
+            "--generation-output-price",
+            "1",
+            "--retrieval-cost-usd",
+            "large-model",
+            "0.001",
+            "--retrieval-cost-usd",
+            "small-model",
+            "0.001",
+            "--output",
+            str(output),
+        ])
+        == 0
+    )
+    result = json.loads(output.read_text())
+    assert json.loads(capsys.readouterr().out) == result
+    assert result["recommendation"] == "adopt"
+    assert result["rerankers"]["small-model"]["model"] == "smaller-model"
+    assert result["rerankers"]["small-model"]["mode"] == "llm"
+    assert result["results"]["small-model"]["rerank_cost_usd"] == pytest.approx(0.000004)
+    assert result["results"]["small-model"]["pipeline_cost_usd"] == pytest.approx(0.001204)
+    assert result["results"]["small-model"]["answer_pipeline_cost_usd"] == pytest.approx(0.001104)
+
+
+def test_candidate_must_pass_every_compared_quality_reference(tmp_path):
+    runs = _runs(tmp_path)
+    for name in ("llm", "jev"):
+        _change_observation(runs[name] / "observations.jsonl", lambda value: value["metrics"].update(llm_judge=0))
+    result = _compare(runs)
+    assert result["quality_gate_passed"] is False
+    assert result["recommendation"] == "stop"
+
+
+def test_adoption_compares_answer_pipeline_latency_without_judge(tmp_path):
+    runs = _runs(tmp_path)
+    _change_observation(
+        runs["jev"] / "observations.jsonl",
+        lambda value: value["latency_ms"].update(judge=1000, total=1030),
+    )
+    result = _compare(runs)
+    assert result["recommendation"] == "adopt"
+    assert result["results"]["jev"]["answer_pipeline_latency_ms_p95"] == 30
+    assert result["results"]["jev"]["total_latency_ms_p95"] == 1030
+
+    _change_observation(
+        runs["jev"] / "observations.jsonl",
+        lambda value: value["latency_ms"].update(answer=100, judge=0, total=120),
+    )
+    _change_observation(
+        runs["llm"] / "observations.jsonl",
+        lambda value: value["latency_ms"].update(judge=1000, total=1030),
+    )
+    assert _compare(runs)["recommendation"] == "revise"
+
+
+def test_missing_answer_phase_latency_cannot_recommend_adoption(tmp_path):
+    runs = _runs(tmp_path)
+    _change_observation(
+        runs["jev"] / "observations.jsonl",
+        lambda value: value["latency_ms"].pop("answer"),
+    )
+    result = _compare(runs)
+    assert result["results"]["jev"]["answer_pipeline_latency_ms_p95"] is None
+    assert result["recommendation"] == "revise"
+
+
+def test_lower_judge_bill_cannot_hide_more_expensive_answer_pipeline(tmp_path):
+    runs = _runs(tmp_path)
+
+    def change_usage(value):
+        value["usage"]["answer"]["input_tokens"] = 150
+        value["usage"]["judge"]["input_tokens"] = 0
+
+    _change_observation(runs["jev"] / "observations.jsonl", change_usage)
+    result = _compare(runs)
+    assert result["results"]["jev"]["pipeline_cost_usd"] < result["results"]["llm"]["pipeline_cost_usd"]
+    assert result["results"]["jev"]["answer_pipeline_cost_usd"] > result["results"]["llm"]["answer_pipeline_cost_usd"]
+    assert result["recommendation"] == "revise"
 
 
 def test_comparison_requires_the_same_exact_candidate_pool(tmp_path):
@@ -109,7 +238,7 @@ def test_resuming_comparison_rejects_environment_endpoint_drift(
 ):
     monkeypatch.setenv(key_variable, "test-key")
     monkeypatch.setenv(endpoint_variable, "https://provider-a.example/v1")
-    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json")
+    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/rerank_smoke_cases.json")
     settings = ServerSettings(inference=InferenceConfig(generation_model=model))
     prepare = partial(
         prepare_run,
@@ -137,7 +266,7 @@ def test_comparison_can_resume_with_the_same_resolved_provider_default(tmp_path,
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json")
+    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/rerank_smoke_cases.json")
     generation_model = "openai:test-chat"
     settings = ServerSettings(inference=InferenceConfig(generation_model=generation_model))
 
@@ -168,7 +297,7 @@ def test_resuming_comparison_rejects_independent_reranker_endpoint_drift(tmp_pat
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://provider-a.example")
-    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json")
+    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/rerank_smoke_cases.json")
     settings = ServerSettings(
         inference=InferenceConfig(generation_model="openai:test-chat", rerank_model="anthropic:test-rerank")
     )
@@ -197,7 +326,7 @@ def test_comparison_rejects_different_environment_downstream_endpoints(tmp_path,
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("JEV_API_KEY", "test-key")
     monkeypatch.setenv("JEV_MODEL", "jev-1.13.0")
-    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json")
+    dataset = load_locomo(Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/rerank_smoke_cases.json")
     settings = ServerSettings(inference=InferenceConfig(generation_model="openai:test-chat"))
     runs = _runs(tmp_path)
     for mode, directory in runs.items():
@@ -214,7 +343,7 @@ def test_comparison_rejects_different_environment_downstream_endpoints(tmp_path,
                 output_directory=directory,
                 top_k=3,
                 answer_max_bytes=2048,
-                rerank_mode=MemoryRerankMode(mode),
+                rerank_mode=mode,
                 categories=(1,),
                 conversation_limit=1,
                 question_limit=1,
@@ -288,6 +417,8 @@ def test_total_cost_requires_retrieval_receipts_when_embeddings_are_used(tmp_pat
     assert _compare(runs)["results"]["jev"]["pipeline_cost_usd"] is None
     result = compare_rerank_runs(
         runs,
+        baseline="llm",
+        candidate="jev",
         input_prices={"none": 0, "llm": 0.2, "jev": 0.04},
         output_prices=dict.fromkeys(runs, 0),
         generation_input_price=1,
@@ -312,7 +443,7 @@ def test_legacy_runs_without_observable_provider_billing_cannot_recommend_adopti
 
 
 def test_utf8_budget_records_only_evidence_delivered_to_the_answer_model():
-    dataset = Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json"
+    dataset = Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/rerank_smoke_cases.json"
     conversation = load_locomo(dataset).conversations[1]
     memories = tuple(
         RetrievedMemory(
@@ -372,7 +503,7 @@ def test_comparison_billing_through_persisted_candidates(  # noqa: C901
 
     from evaluation.memory.locomo import runner
     from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
-    from powercontext.builtin.artifacts.memory import EmbeddingProfile, MemoryRerankMode
+    from powercontext.builtin.artifacts.memory import EmbeddingProfile
     from powercontext.builtin.inference import EmbeddingResult
     from powercontext.builtin.persistence.sqlite import SQLiteConfig
     from powercontext.builtin.runtime import BuiltinConfig, InferenceConfig, RuntimeConfig, open_builtin_runtime
@@ -498,7 +629,7 @@ def test_comparison_billing_through_persisted_candidates(  # noqa: C901
     )
     monkeypatch.setenv("JEV_MODEL", "jev-1.13.0")
     monkeypatch.setenv("JEV_API_KEY", "test-key")
-    path = Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/jev_rerank_cases.json"
+    path = Path(__file__).parents[2] / "evaluation/memory/locomo/dataset/rerank_smoke_cases.json"
     dataset = load_locomo(path)
     settings = ServerSettings(
         database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'evaluation.db'}"),
@@ -545,7 +676,7 @@ def test_comparison_billing_through_persisted_candidates(  # noqa: C901
             top_k=3,
             answer_k=1,
             answer_max_bytes=2048,
-            rerank_mode=MemoryRerankMode(mode),
+            rerank_mode=mode,
             categories=(1,),
             conversation_limit=1,
             question_limit=1,
@@ -559,7 +690,7 @@ def test_comparison_billing_through_persisted_candidates(  # noqa: C901
             top_k=3,
             answer_k=1,
             answer_max_bytes=2048,
-            rerank_mode=MemoryRerankMode(mode),
+            rerank_mode=mode,
             conversation_limit=1,
             question_limit=1,
             operation_retries=1,

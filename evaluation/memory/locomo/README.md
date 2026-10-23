@@ -47,6 +47,9 @@ timestamped dialogue Source
 - Judge policy: `strict` rejects unsupported additions that change an answer and remains the default. The opt-in
   `--judge-profile topical` uses a more generous topical and time-equivalence policy;
   scores from the two profiles must not be compared as though they used the same label definition.
+  For fixtures that explicitly include unanswerable questions, use `--judge-profile strict-abstention`:
+  it accepts an explicit abstention when the gold answer is `Unknown`, and rejects abstentions when the gold
+  supplies a fact. This has its own versioned policy; use new run identities and keep earlier results unchanged.
 
 ## Configuration
 
@@ -224,7 +227,15 @@ unless `recall_gate_allow_with_rerank` is explicitly enabled. The adapter does n
 log candidate text. Benchmark observations intentionally contain the inspected and
 delivered evidence and belong in the ignored local results directory.
 
-Compare three runs against **one ingestion** and the same registered Scope mappings.
+## Reranker comparison
+
+Compare two or more named runs against **one ingestion** and the same registered Scope mappings.
+Run names are labels independent of the recorded reranker mode or provider. Select
+the candidate and the baseline explicitly. The candidate must preserve quality
+against every other supplied run; the selected baseline sets the cost and latency
+comparison. This supports an existing `none`/`llm` pair, two different LLM rerankers,
+or additional dedicated rerankers without requiring a Jev run.
+
 Pin the candidate count, answer count, UTF-8 budget, downstream model, question set,
 and question policies before evaluation. `--answer-max-bytes` fits the complete
 serialized answer payload, including metadata and any expanded Source text, by
@@ -262,28 +273,36 @@ establish complete costs or recommend adoption.
 
 ```bash
 uv run python -m evaluation.memory.locomo compare-rerank \
-  --none evaluation/memory/locomo/results/jev-comparison/none \
-  --llm evaluation/memory/locomo/results/jev-comparison/llm \
-  --jev evaluation/memory/locomo/results/jev-comparison/jev \
-  --llm-input-price "$LLM_INPUT_PRICE" --llm-output-price "$LLM_OUTPUT_PRICE" \
-  --jev-input-price "$JEV_INPUT_PRICE" --jev-output-price "$JEV_OUTPUT_PRICE" \
+  --run none evaluation/memory/locomo/results/jev-comparison/none 0 0 \
+  --run llm evaluation/memory/locomo/results/jev-comparison/llm "$LLM_INPUT_PRICE" "$LLM_OUTPUT_PRICE" \
+  --run jev evaluation/memory/locomo/results/jev-comparison/jev "$JEV_INPUT_PRICE" "$JEV_OUTPUT_PRICE" \
+  --baseline llm --candidate jev \
   --generation-input-price "$GENERATION_INPUT_PRICE" \
   --generation-output-price "$GENERATION_OUTPUT_PRICE" \
   --output evaluation/memory/locomo/results/jev-comparison/comparison.json
 ```
 
-Supply actual USD-per-million-token rates. If retrieval used embeddings, provide
-the measured total retrieval costs for the three arms with
-`--retrieval-cost-usd NONE LLM JEV`. Without those receipts, or when retries/errors
+Each `--run` takes a name, result directory, input price, and output price. Supply
+actual USD-per-million-token rates, including zero for a run with no reranking.
+For a `none`/`llm` comparison, supply only those two runs and select
+`--baseline none --candidate llm`.
+If retrieval used embeddings, repeat `--retrieval-cost-usd NAME COST` for every run
+with its measured total retrieval cost in USD. Without those receipts, or when retries/errors
 leave billing unknown, total evaluation cost stays `null`. Shared ingestion cost
 is excluded and must be reported separately when reporting the complete ingest-to-answer
 pipeline. The report includes evidence recall/MRR, downstream correctness, delivered
 bytes, request/token counts, fallbacks/retries, and p50/p95 latency. Adoption requires
-complete cost evidence, no Jev fallbacks, no accuracy regression against either
-baseline, a lower evaluation cost than LLM reranking, and no p95 latency regression.
+complete cost evidence, no candidate fallbacks, no accuracy regression against any
+other supplied run, a lower answer-pipeline cost than the selected baseline, and no p95
+latency regression against it. Comparison schema v3 uses search + rerank + answer
+(including answer fallback) for the adoption latency gate. The separate `total_latency_ms_*`
+fields include the evaluation judge. Missing product-phase timings prevent adoption.
+The adoption cost gate uses `answer_pipeline_cost_usd`, which includes measured retrieval,
+rerank, answer, and fallback costs. `pipeline_cost_usd` retains the complete evaluation cost,
+including judging; a cheaper judge must not hide a more expensive answer pipeline.
 The comparator does not establish held-out independence or statistical significance.
 
-`dataset/jev_rerank_cases.json` is a small runnable LoCoMo-format smoke dataset with
+`dataset/rerank_smoke_cases.json` is a small runnable LoCoMo-format smoke dataset with
 English/Chinese queries, lexical distractors, complementary evidence, negation,
 date/version conditions, no-match questions, and an adversarial passage. Pass it
 with `--dataset` to exercise the pipeline. It is public smoke input, not an independent
@@ -292,5 +311,6 @@ freeze it before running a held-out comparison. A dedicated reranker baseline is
 not supplied by this experiment; report its absence or evaluate one separately using
 the same candidate pools.
 
-See [Jev evaluation evidence](JEV_EVALUATION.md) for execution coverage and the
-adoption recommendation.
+See [Jev evaluation evidence](JEV_EVALUATION.md) for Jev execution coverage and the
+adoption recommendation. Keep one-off execution records in the ignored results
+directory and attach reviewed, non-secret evidence to the PR or CI artifacts.

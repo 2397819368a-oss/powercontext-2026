@@ -77,8 +77,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--answer-max-bytes", type=_positive_int, help="UTF-8 bound for the answer input")
     run.add_argument(
         "--rerank-mode",
-        type=MemoryRerankMode,
-        choices=tuple(MemoryRerankMode),
+        choices=(*MemoryRerankMode, "jev"),
         default=MemoryRerankMode.NONE,
         help="Memory search policy; jev uses dedicated JEV_API_KEY and a pinned JEV_MODEL",
     )
@@ -154,22 +153,25 @@ def _parser() -> argparse.ArgumentParser:
         help="do not retry failed judge observations already present in the JSONL checkpoint",
     )
     rejudge.set_defaults(handler=_rejudge)
-    compare = commands.add_parser("compare-rerank", help="compare matched none, llm, and jev runs")
-    compare.add_argument("--none", type=Path, required=True)
-    compare.add_argument("--llm", type=Path, required=True)
-    compare.add_argument("--jev", type=Path, required=True)
-    compare.add_argument("--llm-input-price", type=float, required=True, help="USD per million input tokens")
-    compare.add_argument("--llm-output-price", type=float, required=True, help="USD per million output tokens")
-    compare.add_argument("--jev-input-price", type=float, required=True, help="USD per million input tokens")
-    compare.add_argument("--jev-output-price", type=float, required=True, help="USD per million output tokens")
+    compare = commands.add_parser("compare-rerank", help="compare matched, named reranker runs")
+    compare.add_argument(
+        "--run",
+        action="append",
+        nargs=4,
+        metavar=("NAME", "DIRECTORY", "INPUT_PRICE", "OUTPUT_PRICE"),
+        required=True,
+        help="repeat for each run; rerank prices are USD per million tokens",
+    )
+    compare.add_argument("--baseline", required=True, help="run name used for cost and latency comparison")
+    compare.add_argument("--candidate", required=True, help="run name evaluated against all other runs' quality")
     compare.add_argument("--generation-input-price", type=float, required=True, help="answer and judge input price")
     compare.add_argument("--generation-output-price", type=float, required=True, help="answer and judge output price")
     compare.add_argument(
         "--retrieval-cost-usd",
-        type=float,
-        nargs=3,
-        metavar=("NONE", "LLM", "JEV"),
-        help="measured retrieval costs for each run; required for total cost when embeddings are used",
+        action="append",
+        nargs=2,
+        metavar=("NAME", "COST"),
+        help="repeat measured retrieval cost in USD for every run when embeddings are used",
     )
     compare.add_argument("--output", type=Path, required=True)
     compare.set_defaults(handler=_compare_rerank)
@@ -177,17 +179,31 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _compare_rerank(arguments: argparse.Namespace) -> int:
+    runs: dict[str, Path] = {}
+    input_prices: dict[str, float] = {}
+    output_prices: dict[str, float] = {}
+    for name, directory, input_price, output_price in arguments.run:
+        if name in runs:
+            raise ValueError(f"duplicate run name: {name}")  # noqa: TRY003
+        runs[name] = Path(directory)
+        input_prices[name] = float(input_price)
+        output_prices[name] = float(output_price)
+    retrieval_costs: dict[str, float] | None = None
+    if arguments.retrieval_cost_usd is not None:
+        retrieval_costs = {}
+        for name, cost in arguments.retrieval_cost_usd:
+            if name in retrieval_costs:
+                raise ValueError(f"duplicate retrieval cost for run: {name}")  # noqa: TRY003
+            retrieval_costs[name] = float(cost)
     result = compare_rerank_runs(
-        {"none": arguments.none, "llm": arguments.llm, "jev": arguments.jev},
-        input_prices={"none": 0, "llm": arguments.llm_input_price, "jev": arguments.jev_input_price},
-        output_prices={"none": 0, "llm": arguments.llm_output_price, "jev": arguments.jev_output_price},
+        runs,
+        baseline=arguments.baseline,
+        candidate=arguments.candidate,
+        input_prices=input_prices,
+        output_prices=output_prices,
         generation_input_price=arguments.generation_input_price,
         generation_output_price=arguments.generation_output_price,
-        retrieval_costs_usd=(
-            dict(zip(("none", "llm", "jev"), arguments.retrieval_cost_usd, strict=True))
-            if arguments.retrieval_cost_usd is not None
-            else None
-        ),
+        retrieval_costs_usd=retrieval_costs,
     )
     arguments.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))

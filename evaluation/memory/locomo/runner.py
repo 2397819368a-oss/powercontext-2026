@@ -93,6 +93,7 @@ from .prompts import (
 )
 
 Progress = Callable[[str], None]
+RerankMode = MemoryRerankMode | Literal["jev"]
 ResultT = TypeVar("ResultT")
 BENCHMARK_TEMPERATURE = 0.0
 
@@ -244,7 +245,7 @@ async def prepare_run(
     top_k: int,
     answer_k: int | None = None,
     answer_max_bytes: int | None = None,
-    rerank_mode: MemoryRerankMode = MemoryRerankMode.NONE,
+    rerank_mode: RerankMode = MemoryRerankMode.NONE,
     answer_source_content: bool = False,
     answer_inference_aware: bool = False,
     answer_unknown_fallback_inference: bool = False,
@@ -277,7 +278,7 @@ async def prepare_run(
         conversation_limit=conversation_limit,
         question_limit=question_limit,
     )
-    jev_config = _jev_config() if rerank_mode is MemoryRerankMode.JEV else None
+    jev_config = _jev_config() if rerank_mode == "jev" else None
     downstream_base_url = None
     reranker_base_url = None
     if answer_max_bytes is not None:
@@ -291,7 +292,7 @@ async def prepare_run(
                 resources=resources,
             )
             downstream_base_url = downstream_model.base_url
-            if rerank_mode is MemoryRerankMode.LLM:
+            if rerank_mode == MemoryRerankMode.LLM:
                 if settings.inference.rerank_model is None:
                     reranker_base_url = downstream_base_url
                 else:
@@ -317,11 +318,11 @@ async def prepare_run(
         "candidate_k": top_k,
         "answer_k": selected_answer_k,
         **({"answer_max_bytes": answer_max_bytes} if answer_max_bytes is not None else {}),
-        "rerank_mode": rerank_mode.value,
+        "rerank_mode": str(rerank_mode),
         **({"quality_regression_tolerance": 0.0} if answer_max_bytes is not None else {}),
         "rerank_instructions": (
             MEMORY_RERANK_INSTRUCTIONS_VERSION
-            if rerank_mode is MemoryRerankMode.LLM
+            if rerank_mode == MemoryRerankMode.LLM
             else f"{JEV_MEMORY_RERANK_POLICY}:{jev_config.model}"
             if jev_config is not None
             else None
@@ -352,7 +353,7 @@ async def prepare_run(
                         jev_config.model
                         if jev_config is not None
                         else settings.inference.rerank_model or settings.inference.generation_model
-                        if rerank_mode is MemoryRerankMode.LLM
+                        if rerank_mode == MemoryRerankMode.LLM
                         else None
                     ),
                     "endpoint_sha256": hashlib.sha256(
@@ -537,7 +538,7 @@ async def evaluate_dataset(  # noqa: C901
     top_k: int = 30,
     answer_k: int | None = None,
     answer_max_bytes: int | None = None,
-    rerank_mode: MemoryRerankMode = MemoryRerankMode.NONE,
+    rerank_mode: RerankMode = MemoryRerankMode.NONE,
     answer_source_content: bool = False,
     answer_inference_aware: bool = False,
     answer_unknown_fallback_inference: bool = False,
@@ -612,10 +613,10 @@ async def evaluate_dataset(  # noqa: C901
         semaphore = asyncio.Semaphore(concurrency)
         async with AsyncExitStack() as resources:
             reranker: MemoryReranker | None = None
-            if rerank_mode is MemoryRerankMode.JEV:
+            if rerank_mode == "jev":
                 jev_client = await resources.enter_async_context(httpx.AsyncClient())
                 reranker = JevMemoryReranker(_jev_config(), jev_client)
-            elif rerank_mode is MemoryRerankMode.LLM and answer_max_bytes is not None:
+            elif rerank_mode == MemoryRerankMode.LLM and answer_max_bytes is not None:
                 inference = settings.inference
                 inherits_generation = inference.rerank_model is None
                 reranker_model = await _open_comparison_model(
@@ -735,7 +736,7 @@ async def evaluate_dataset(  # noqa: C901
         "candidate_k": top_k,
         "answer_k": selected_answer_k,
         **({"answer_max_bytes": answer_max_bytes} if answer_max_bytes is not None else {}),
-        "rerank_mode": rerank_mode.value,
+        "rerank_mode": str(rerank_mode),
         "answer_source_content": answer_source_content,
         **({"answer_inference_aware": True} if answer_inference_aware else {}),
         **({"answer_unknown_fallback_inference": True} if answer_unknown_fallback_inference else {}),
@@ -1130,7 +1131,7 @@ async def _evaluate_question(
     top_k: int,
     answer_k: int,
     answer_max_bytes: int | None = None,
-    rerank_mode: MemoryRerankMode,
+    rerank_mode: RerankMode,
     answer_source_content: bool,
     operation_retries: int,
 ) -> dict[str, Any]:
@@ -1141,7 +1142,7 @@ async def _evaluate_question(
         result, search_retries = await _retry_transient(
             lambda: runtime.atomic_memory.for_scope(scope).search(
                 question.question,
-                limit=answer_k if rerank_mode is not MemoryRerankMode.NONE else top_k,
+                limit=answer_k if rerank_mode != MemoryRerankMode.NONE else top_k,
                 mode="hybrid",
             ),
             attempts=operation_retries,
@@ -1328,14 +1329,14 @@ async def _evaluate_question(
 
 
 def _rerank_metadata(
-    mode: MemoryRerankMode,
+    mode: RerankMode,
     trace: AtomicMemoryRerankTrace | None,
     candidate_count: int,
     answer_count: int,
 ) -> dict[str, Any]:
     if trace is None:
         return {
-            "mode": mode.value,
+            "mode": str(mode),
             "policy_id": None,
             "candidate_count": candidate_count,
             "answer_count": answer_count,
@@ -1344,7 +1345,7 @@ def _rerank_metadata(
             "used_fallback": False,
         }
     return {
-        "mode": mode.value,
+        "mode": str(mode),
         "policy_id": trace.policy_id,
         "candidate_count": candidate_count,
         "answer_count": answer_count,
@@ -1534,10 +1535,10 @@ def _bounded_answer_input(
 def _runtime_config(
     settings: ServerSettings,
     *,
-    rerank_mode: MemoryRerankMode = MemoryRerankMode.NONE,
+    rerank_mode: RerankMode = MemoryRerankMode.NONE,
     rerank_candidate_limit: int = 30,
 ) -> BuiltinConfig:
-    rerank_enabled = rerank_mode is MemoryRerankMode.LLM
+    rerank_enabled = rerank_mode == MemoryRerankMode.LLM
     return BuiltinConfig(
         runtime=settings.runtime.model_copy(
             update={

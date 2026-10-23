@@ -155,7 +155,9 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
                 )
             self._agent = Agent(
                 model if self._limits.allow_continuations else _CompleteResponseModel(model),
+                deps_type=input_type,
                 output_type=PromptedOutput(output_type),
+                validation_context=lambda context: context.deps,
                 instructions=instructions,
                 model_settings=bounded_settings,
                 retries=self._limits.max_requests - 1,
@@ -186,6 +188,7 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
                 result = await asyncio.wait_for(
                     self._agent.run(
                         prompt,
+                        deps=value,
                         usage_limits=UsageLimits(
                             request_limit=self._limits.max_requests,
                             output_tokens_limit=self._limits.output_tokens_limit,

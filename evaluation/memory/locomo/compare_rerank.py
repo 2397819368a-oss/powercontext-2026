@@ -55,18 +55,26 @@ _SHARED = (
 def compare_rerank_runs(  # noqa: C901
     runs: Mapping[str, Path],
     *,
+    baseline: str,
+    candidate: str,
     input_prices: Mapping[str, float],
     output_prices: Mapping[str, float],
     generation_input_price: float,
     generation_output_price: float,
     retrieval_costs_usd: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Reject changed inputs, then report each run on the same question denominator."""
+    """Compare named runs, using one baseline for candidate cost and latency.
 
-    if set(runs) != {"none", "llm", "jev"}:
-        raise ValueError("comparison requires none, llm, and jev runs")  # noqa: TRY003
-    if set(input_prices) != {"none", "llm", "jev"} or set(output_prices) != set(input_prices):
-        raise ValueError("provide all three rerank prices, including zero for none")  # noqa: TRY003
+    The candidate must preserve quality against every other supplied run.
+    Run names are caller labels, independent of the recorded reranker mode.
+    """
+
+    if baseline == candidate or baseline not in runs or candidate not in runs:
+        raise ValueError("select distinct baseline and candidate names from the supplied runs")  # noqa: TRY003
+    if any(not name.strip() for name in runs):
+        raise ValueError("run names must not be blank")  # noqa: TRY003
+    if set(input_prices) != set(runs) or set(output_prices) != set(runs):
+        raise ValueError("provide input and output rerank prices for every named run")  # noqa: TRY003
     if any(
         not math.isfinite(price) or price < 0
         for price in (*input_prices.values(), *output_prices.values(), generation_input_price, generation_output_price)
@@ -76,10 +84,10 @@ def compare_rerank_runs(  # noqa: C901
         set(retrieval_costs_usd) != set(runs)
         or any(not math.isfinite(cost) or cost < 0 for cost in retrieval_costs_usd.values())
     ):
-        raise ValueError("provide finite nonnegative retrieval costs for all three runs")  # noqa: TRY003
+        raise ValueError("provide finite nonnegative retrieval costs for every named run")  # noqa: TRY003
     manifests = {mode: _read_json(directory / "run.json") for mode, directory in runs.items()}
     observations = {mode: _read_observations(directory / "observations.jsonl") for mode, directory in runs.items()}
-    base = manifests["none"]
+    base = manifests[baseline]
     tolerance = base.get("quality_regression_tolerance")
     if (
         isinstance(tolerance, bool)
@@ -88,22 +96,20 @@ def compare_rerank_runs(  # noqa: C901
         or not 0 <= tolerance <= 1
     ):
         raise ValueError("runs must pin quality_regression_tolerance before evaluation")  # noqa: TRY003
-    if not observations["none"]:
+    if not observations[baseline]:
         raise ValueError("comparison requires observations")  # noqa: TRY003
     for mode, manifest in manifests.items():
         if not isinstance(manifest.get("answer_max_bytes"), int) or manifest["answer_max_bytes"] < 1:
             raise ValueError("comparison requires an explicit shared answer_max_bytes")  # noqa: TRY003
-        if manifest.get("rerank_mode") != mode:
-            raise ValueError(f"{mode} run has a different rerank mode")  # noqa: TRY003
         for field in _SHARED:
             if manifest.get(field) != base.get(field):
                 raise ValueError(f"{mode} run changed {field}")  # noqa: TRY003
-        if set(observations[mode]) != set(observations["none"]):
+        if set(observations[mode]) != set(observations[baseline]):
             raise ValueError(f"{mode} run has a different question set")  # noqa: TRY003
         if len(observations[mode]) != manifest.get("selected_question_count"):
             raise ValueError(f"{mode} run has missing selected observations")  # noqa: TRY003
-    for question_id in observations["none"]:
-        compared = [observations[mode][question_id] for mode in ("none", "llm", "jev")]
+    for question_id in observations[baseline]:
+        compared = [values[question_id] for values in observations.values()]
         if any(value.get("question") != compared[0].get("question") for value in compared):
             raise ValueError(f"question changed for {question_id}")  # noqa: TRY003
         if all(value.get("status") == "ok" for value in compared) and (
@@ -114,11 +120,15 @@ def compare_rerank_runs(  # noqa: C901
     scored: dict[str, Any] = {}
     for mode, values in observations.items():
         completed = tuple(value for value in values.values() if value.get("status") == "ok")
+        answer_latencies = [latency for value in completed if (latency := _answer_pipeline_latency(value)) is not None]
+        latency_complete = bool(completed) and len(answer_latencies) == len(completed)
         denominator = len(values)
         input_tokens = _tokens(completed, ("rerank",), "input_tokens")
         output_tokens = _tokens(completed, ("rerank",), "output_tokens")
         generation_input = _tokens(completed, ("answer", "answer_fallback", "judge"), "input_tokens")
         generation_output = _tokens(completed, ("answer", "answer_fallback", "judge"), "output_tokens")
+        answer_input = _tokens(completed, ("answer", "answer_fallback"), "input_tokens")
+        answer_output = _tokens(completed, ("answer", "answer_fallback"), "output_tokens")
         retries = sum(sum(value["transient_retries"].values()) for value in completed) + sum(
             value["_checkpoint_attempts"] - 1 for value in values.values()
         )
@@ -144,6 +154,16 @@ def compare_rerank_runs(  # noqa: C901
             if priced_request_cost is not None and (embedding_calls == 0 or retrieval_costs_usd is not None)
             else None
         )
+        answer_pipeline_cost = (
+            rerank_cost
+            + (answer_input * generation_input_price + answer_output * generation_output_price) / 1_000_000
+            + (retrieval_costs_usd[mode] if retrieval_costs_usd is not None else 0)
+            if rerank_cost is not None
+            and answer_input is not None
+            and answer_output is not None
+            and (embedding_calls == 0 or retrieval_costs_usd is not None)
+            else None
+        )
         scored[mode] = {
             "question_count": denominator,
             "error_count": denominator - len(completed),
@@ -158,6 +178,7 @@ def compare_rerank_runs(  # noqa: C901
             "generation_input_tokens": generation_input,
             "generation_output_tokens": generation_output,
             "pipeline_cost_usd": pipeline_cost,
+            "answer_pipeline_cost_usd": answer_pipeline_cost,
             "priced_request_cost_usd": priced_request_cost,
             "retrieval_embedding_calls": embedding_calls,
             "cost_complete": pipeline_cost is not None,
@@ -168,36 +189,48 @@ def compare_rerank_runs(  # noqa: C901
             "rerank_latency_ms_p95": percentile([float(value["latency_ms"]["rerank"]) for value in completed], 0.95),
             "total_latency_ms_p50": percentile([float(value["latency_ms"]["total"]) for value in completed], 0.5),
             "total_latency_ms_p95": percentile([float(value["latency_ms"]["total"]) for value in completed], 0.95),
+            "answer_pipeline_latency_ms_p50": (percentile(answer_latencies, 0.5) if latency_complete else None),
+            "answer_pipeline_latency_ms_p95": (percentile(answer_latencies, 0.95) if latency_complete else None),
         }
     complete = all(result["error_count"] == 0 for result in scored.values())
     quality_passed = complete and all(
-        scored["jev"]["downstream_success"] + tolerance >= scored[baseline]["downstream_success"]
-        for baseline in ("none", "llm")
+        scored[candidate]["downstream_success"] + tolerance >= result["downstream_success"]
+        for name, result in scored.items()
+        if name != candidate
     )
     adopt = (
         quality_passed
         and all(result["cost_complete"] for result in scored.values())
-        and scored["jev"]["fallback_count"] == 0
-        and scored["jev"]["pipeline_cost_usd"] < scored["llm"]["pipeline_cost_usd"]
-        and scored["jev"]["total_latency_ms_p95"] <= scored["llm"]["total_latency_ms_p95"]
+        and scored[candidate]["fallback_count"] == 0
+        and scored[candidate]["answer_pipeline_cost_usd"] < scored[baseline]["answer_pipeline_cost_usd"]
+        and scored[candidate]["answer_pipeline_latency_ms_p95"] is not None
+        and scored[baseline]["answer_pipeline_latency_ms_p95"] is not None
+        and scored[candidate]["answer_pipeline_latency_ms_p95"] <= scored[baseline]["answer_pipeline_latency_ms_p95"]
     )
     return {
-        "schema": "powercontext.benchmark.locomo.rerank-comparison.v1",
+        "schema": "powercontext.benchmark.locomo.rerank-comparison.v3",
         "dataset_sha256": base["dataset_sha256"],
         "run_id": base["run_id"],
+        "baseline": baseline,
+        "candidate": candidate,
         "rerankers": {
-            mode: {"policy": manifest.get("rerank_instructions"), **manifest.get("comparison_reranker", {})}
+            mode: {
+                "mode": manifest.get("rerank_mode"),
+                "policy": manifest.get("rerank_instructions"),
+                **manifest.get("comparison_reranker", {}),
+            }
             for mode, manifest in manifests.items()
         },
         "quality_regression_tolerance": tolerance,
         "comparison_complete": complete,
         "quality_gate_passed": quality_passed,
         "recommendation": "adopt" if adopt else "revise" if quality_passed or not complete else "stop",
-        "dedicated_reranker_baseline": "not supplied",
         "cost_coverage": (
             "rerank, answer and judge receipts; shared ingestion excluded; "
             "optional measured retrieval costs; total unknown when required receipts are unavailable"
         ),
+        "adoption_latency": "search, rerank and answer, including answer fallback; excludes evaluation judge",
+        "adoption_cost": "retrieval, rerank and answer, including answer fallback; excludes evaluation judge",
         "retrieval_costs_usd": None if retrieval_costs_usd is None else dict(retrieval_costs_usd),
         "prices_usd_per_million_tokens": {
             mode: {"input": input_prices[mode], "output": output_prices[mode]} for mode in runs
@@ -208,6 +241,16 @@ def compare_rerank_runs(  # noqa: C901
         },
         "results": scored,
     }
+
+
+def _answer_pipeline_latency(value: Mapping[str, Any]) -> float | None:
+    stages = ("search", "rerank", "answer")
+    if "answer_fallback" in value.get("usage", {}):
+        stages = (*stages, "answer_fallback")
+    latencies = [value["latency_ms"].get(stage) for stage in stages]
+    if any(type(latency) not in (int, float) or not math.isfinite(latency) or latency < 0 for latency in latencies):
+        return None
+    return sum(latencies)
 
 
 def _tokens(records: tuple[dict[str, Any], ...], stages: tuple[str, ...], field: str) -> int | None:
