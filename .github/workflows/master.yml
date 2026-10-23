@@ -466,6 +466,8 @@ jobs:
           tests/test_system_cli.py::test_codex_runners_prefer_path_over_the_current_directory
           tests/test_system_cli.py::test_codex_runners_honor_an_explicit_dot_path_entry
           tests/test_system_cli.py::test_codex_path_executable_prefers_earlier_pathext_entries
+          tests/test_system_cli.py::test_codex_path_executable_treats_an_empty_path_value_as_no_search
+          tests/test_system_cli.py::test_codex_path_executable_resolves_empty_path_entries_in_the_working_directory
           tests/test_system_cli.py::test_codex_batch_install_preserves_supported_input
           tests/test_system_cli.py::test_codex_batch_install_rejects_unsafe_returned_marketplace
           tests/test_system_cli.py::test_codex_batch_runners_reject_unsafe_executable_path
