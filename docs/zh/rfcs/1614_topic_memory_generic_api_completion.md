@@ -6,6 +6,7 @@ title: Topic Memory 通用 Artifact 接口补全
 
 - Proposal Name: `topic_memory_generic_api_completion`
 - Start Date: 2026-09-15
+- RFC PR: [#1614](https://github.com/oceanbase/powercontext/pull/1614)
 - Status: Proposed
 - 代码核对基线：`9ff03eedffe6e73a54bb3adf40d42badd7cacdf7`
 - 关联实现：[Topic Memory 标准读取接口 #1550](https://github.com/oceanbase/powercontext/pull/1550)

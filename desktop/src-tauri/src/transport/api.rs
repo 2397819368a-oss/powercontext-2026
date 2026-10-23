@@ -250,7 +250,10 @@ impl ServerApi {
             .await?;
         if result.principal.id.is_empty()
             || result.principal.id.chars().count() > 255
-            || !matches!(result.principal.r#type.as_str(), "user" | "service")
+            || !matches!(
+                result.principal.r#type,
+                crate::transport::wire::Type::User | crate::transport::wire::Type::Service
+            )
         {
             return Err(SafeError::InvalidResponse.into());
         }
@@ -285,6 +288,7 @@ impl ServerApi {
             || result
                 .next_cursor
                 .as_ref()
+                .and_then(|c| c.as_ref())
                 .is_some_and(|c| c.is_empty() || c.len() > 4096)
         {
             return Err(SafeError::InvalidResponse.into());
@@ -314,14 +318,17 @@ impl ServerApi {
     ) -> Result<MemorySaveResponse, ApiFailure> {
         validate_scope(scope)?;
         validate_text(text)?;
+        let request = RememberMemoryRequest {
+            scope_id: scope.to_owned(),
+            kind: "note".to_owned(),
+            text: text.to_owned(),
+            reason: None,
+            expected_revision: None,
+        };
+        let body = serde_json::to_value(request)
+            .map_err(|_| ApiFailure::before(SafeError::InvalidInput))?;
         let result: MemoryMutationResponse = self
-            .execute(
-                "remember_memory",
-                None,
-                &[],
-                Some(serde_json::json!({"scope_id":scope,"kind":"note","text":text})),
-                false,
-            )
+            .execute("remember_memory", None, &[], Some(body), false)
             .await?;
         if result
             .records
@@ -343,14 +350,17 @@ impl ServerApi {
     ) -> Result<MemorySearchResponse, ApiFailure> {
         validate_scope(scope)?;
         validate_text(query)?;
+        let request = SearchMemoryRequest {
+            tag_filter: None,
+            scope_id: scope.to_owned(),
+            query: query.to_owned(),
+            limit: Some(10),
+            mode: Some(MemorySearchMode::Fts),
+        };
+        let body = serde_json::to_value(request)
+            .map_err(|_| ApiFailure::before(SafeError::InvalidInput))?;
         let result: SearchMemoryResponse = self
-            .execute(
-                "search_memory",
-                None,
-                &[],
-                Some(serde_json::json!({"scope_id":scope,"query":query,"mode":"fts","limit":10})),
-                false,
-            )
+            .execute("search_memory", None, &[], Some(body), false)
             .await?;
         if result.mode != AtomicMemorySearchMode::Text
             || result.hits.len() > 10
@@ -358,10 +368,13 @@ impl ServerApi {
                 !valid_atomic_record(&hit.memory)
                     || hit.memory.state != AtomicMemoryState::Active
                     || !hit.score.is_finite()
-                    || hit
-                        .matched_by
-                        .iter()
-                        .any(|channel| !matches!(channel.as_str(), "text" | "vector"))
+                    || hit.matched_by.iter().any(|channel| {
+                        !matches!(
+                            channel,
+                            crate::transport::wire::MatchedBy::Text
+                                | crate::transport::wire::MatchedBy::Vector
+                        )
+                    })
             })
         {
             return Err(SafeError::InvalidResponse.into());
@@ -373,7 +386,14 @@ impl ServerApi {
                 artifact: hit.memory.artifact,
                 text: hit.memory.text,
                 score: hit.score,
-                matched_by: hit.matched_by,
+                matched_by: hit
+                    .matched_by
+                    .into_iter()
+                    .map(|channel| match channel {
+                        crate::transport::wire::MatchedBy::Text => "text".to_owned(),
+                        crate::transport::wire::MatchedBy::Vector => "vector".to_owned(),
+                    })
+                    .collect(),
             })
             .collect();
         Ok(MemorySearchResponse { hits })

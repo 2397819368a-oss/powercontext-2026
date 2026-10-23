@@ -50,6 +50,10 @@ For a source installation of the same version:
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@powercontext-v1.4.0"
 ```
 
+For a machine that only connects to a remote Server, the `cli` extra includes `setup`, `doctor`, and remote content
+commands. Add `server` to run a local Server or use the `service` commands. If a command provider has a missing
+dependency, the CLI reports the provider and missing module so the installation can be repaired.
+
 The Git command does not leave a repository checkout for you to manage. Git uses its normal credential configuration,
 including credential helpers and SSH settings. For an SSH-based install, replace the HTTPS URL with the Git URL
 approved for your environment. `--force` also refreshes an existing tool from the current commit behind the selected
