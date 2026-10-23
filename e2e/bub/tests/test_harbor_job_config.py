@@ -845,6 +845,16 @@ def _kimi_installation(home: Path) -> dict[str, object]:
     for path in sorted((home / "plugins").rglob("*")):
         if path.is_file():
             text = path.read_text(encoding="utf-8")
+            if (
+                path.relative_to(home).as_posix()
+                == "plugins/managed/powercontext/skills/powercontext-project-context/SKILL.md"
+            ):
+                # Each installation must point at its own installed script before paths are normalized for comparison.
+                script = home / "plugins/managed/powercontext/scripts/scope.mjs"
+                encoded_script = json.dumps(str(script), ensure_ascii=False)
+                assert script.is_file()
+                assert encoded_script in text
+                assert "__POWERCONTEXT_SCOPE_SCRIPT_JSON__" not in text
             if path.suffix == ".json":
                 files[path.relative_to(home).as_posix()] = json.loads(text)
             else:
@@ -865,16 +875,18 @@ def test_kimi_code_on_arm_installs_the_plugin_as_setup_does(monkeypatch, tmp_pat
     # Kimi Code installs plugins only from its interactive interface, so the ON arm writes what `powercontext setup
     # kimi-code` writes, from the files the container mounts. The harness itself depends on PowerContext's client only.
     from powercontext.cli import kimi_code as kimi_setup
+    from powercontext.cli.installation import setup as install_plugin
 
     plugin = _mounted_kimi_plugin(monkeypatch, tmp_path)
     plugin_url = f"http://127.0.0.1:{harbor_kimi_code.RELAY_PORT}"
     harness = _install_kimi_plugin(tmp_path, plugin_url, token=token)
 
     monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "setup-home"))
+    monkeypatch.setenv("POWERCONTEXT_CLIENT_CONFIG_FILE", str(tmp_path / "clients.json"))
     if token is not None:
         monkeypatch.setenv(harbor_kimi_code.KIMI_TOKEN, token)
     monkeypatch.setattr(kimi_setup, "kimi_executable", lambda: _NODE)
-    kimi_setup.install_kimi_plugin(source=plugin, server_url=plugin_url, scope_id="scope-1")
+    install_plugin("kimi-code", source=str(plugin), server_url=plugin_url, scope_id="scope-1")
 
     assert _kimi_installation(harness) == _kimi_installation(tmp_path / "setup-home")
 

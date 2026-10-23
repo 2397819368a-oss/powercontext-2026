@@ -91,8 +91,13 @@ Submit to `POST /v1/atomic-memory/search`:
 `mode` accepts `text`, `vector` or `hybrid` and defaults to `text`. Vector and hybrid modes require an available,
 matching Embedding profile. Search returns active memories only. Each `hits[].memory` contains the content, exact
 Artifact reference and state version; the hit also has `score` and `matched_by`. Preserve `memory.artifact` for citations.
-Ordinary vector search applies eligibility first, computes exact L2, then ranks and limits results. This path does not
-use ANN and does not establish production backend performance or acceptance.
+Ordinary vector search on seekdb and OceanBase uses native approximate nearest-neighbor retrieval, with Scope, kind
+and tag eligibility inside the candidate query before its limit. ANN can omit exact nearest neighbors; tune and measure
+recall and latency for the deployment's embedding model and filter selectivity. SQLite uses Scope-partitioned
+sqlite-vec native exact KNN for bounded search. Normal startup audits vector deployment readiness; ordinary Top-K
+selects usable vectors and validates selected results rather than auditing the whole eligible collection. Complete
+threshold enumeration used by generation and exact recovery probes still reject incomplete eligible vectors.
+Enumeration remains exact on every backend.
 
 For complete Artifact results and advanced retrieval controls, use
 `POST /v1/scopes/S/artifacts/atomic-memory/search`. This unified route requires `scope.read`, defaults to text,
@@ -215,7 +220,7 @@ no collection revision, entry_version_id or MemoryCitation.
 | `entries/list` | Returns the Scope's `entries: AtomicMemoryRecord[]` and `next_cursor`; `include_inactive=true` includes all four states |
 | `search` | Runs `fts` as `text` mode and keeps `auto/vector/hybrid` and tag_filter; each hit's `memory` is an AtomicMemoryRecord |
 | `remember` with omitted or null `expected_revision` | Creates independent memories; returns `changed` and `records: AtomicMemoryRecord[]` |
-| `flush` | Runs Atomic Source processing, keeping the existing consumption progress, status and counts; `memory` is null, held_count is 0 and hold_codes is empty |
+| `flush` | Runs Atomic Source processing; `memory` is null. A write-gate HOLD prevents Memory writes but consumes the Source window and advances its cursor. `held_count` is 0 or 1; `hold_codes` reports the rejection codes. A held window is not automatically retried. |
 
 The following legacy operations are rejected before execution and never read legacy storage:
 

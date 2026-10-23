@@ -51,7 +51,7 @@ test('Hook observations preserve latest-attempt order, unknown writes and conten
     for await (const chunk of req) raw += chunk
     const body = raw ? JSON.parse(raw) : {}
     res.setHeader('Content-Type', 'application/json')
-    if (req.url === '/health/ready') res.end('{}')
+    if (req.url === '/health/ready') res.end('{"status":"ready","checks":{}}')
     else if (req.url === '/v1/capabilities') { res.statusCode = protectedStatus; res.end('{}') }
     else if (req.url === '/v1/scope-bindings/resolve') res.end('{"scope_id":"scope-runtime"}')
     else if (req.url === '/v1/context/prepare') {

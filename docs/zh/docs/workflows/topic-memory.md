@@ -85,6 +85,44 @@ Content-Type: application/json
 响应只包含 `status`。Source capture、主题生成和索引更新由部署配置的 worker 异步完成；没有配置生成模型或后台
 处理能力时，flush 不会凭空产生主题。向量或混合检索是否可用也是部署选项，不由调用方在请求中指定。
 
+## 查询并恢复阻塞的处理
+
+处理额度耗尽后，同一 Scope 后续的 Source 会保留待处理。Supervisor 停止为该 frontier 启动 Worker，仅定期检查
+metadata，其他 Scope 可继续处理。普通 flush 和重启不会增加额度。
+
+具有 `scope.read` 权限时，可以查询当前 Cursor、Source head、target 和阻塞记录：
+
+```bash
+powercontext --json topic-memory status --scope-id "$SCOPE_ID"
+```
+
+状态为 `idle`、`pending` 或 `blocked`。阻塞记录包含准确的 `block_id`、已尝试范围、保留的 target、尝试/请求/token
+计数、终止原因 `error_code`、最后错误类别 `last_error_code` 和 UTC 时间 `blocked_at`。仍在执行的第三次尝试可能
+成功，因此显示为 pending。旧预算的 `blocked_at` 表示首次观察到阻塞的时间，无法追溯的最后错误类别为 null。
+`source_through` 表示准确选择终点，未知时为 null；`budget_source_through` 独立保留累计额度覆盖，导入的历史阻塞
+已经没有原预算时也可能为 null。`legacy_source_through` 保留旧 attempts 表中无法证明含义的范围原值，新阻塞中为
+null。成功和被取代尝试不形成保留历史；阻塞快照和已接受回执永久可查询，不自动过期。
+
+已有数据库须先执行显式的 [Topic 恢复迁移](../operate/database-migrations.md#topic-memory-恢复-bundle)。普通启动在业务
+写入前检查格式，不执行迁移。
+
+修复失败原因后，将返回的阻塞 ID 填入 `BLOCK_ID`。Scope 管理员可显式申请一次新的有限额度，并请求后台处理：
+
+```bash
+powercontext --json topic-memory retry --scope-id "$SCOPE_ID" --block-id "$BLOCK_ID"
+powercontext --json topic-memory block --scope-id "$SCOPE_ID" --block-id "$BLOCK_ID"
+```
+
+retry 需要 `scope.admin` 权限，查询还需要该角色未包含的 `scope.read` 权限。`accepted` 表示请求已提交，不保证生成成功。
+重复提交同一个 ID 只返回原接受结果，即使后台处理已关闭也如此，
+不会重置后续尝试；尚未重试且已不再对应当前 frontier 的记录返回 HTTP 409。Cursor、target 和 Source 均保留，
+恢复后仍可读取原阻塞记录和重试时间。普通 flush、重启的额度语义不变；每次明确接受的 retry 使用相同的三次尝试
+和 provider 上限。
+
+Python Client SDK 对应方法为 `get_topic_memory_processing_status`、`get_topic_memory_processing_block` 和
+`retry_topic_memory_processing`。HTTP 路径分别为 `POST /v1/topic-memory/processing/status`、
+`POST /v1/topic-memory/processing/blocks/get` 和 `POST /v1/topic-memory/processing/retry`。这些管理操作不作为 MCP 工具提供。
+
 ## 搜索当前主题
 
 搜索需要 `scope.read` 权限，输入 `scope_id`、非空 `query`，可选 `limit`（范围 1–20，默认 10）：
@@ -102,6 +140,17 @@ Content-Type: application/json
 
 需要完整 Artifact 结果、显式文本/向量/混合模式、准入、评分阈值或通道原分时，使用[检索 Artifact](search-artifacts.md)。
 Topic 的融合参数见[融合算法与参数](search-fusion.md)。专用入口保留原来的摘要响应和 `0`–`100` 评分。
+
+显式向量或混合检索在空 Scope 中也使用配置的 query embedding provider；模型错误及回退行为由请求模式决定。
+SQLite 对标题/摘要和详情两个向量通道计算精确最近主题。先检查有界的精确邻居前缀；
+取得足够的合格不同 Topic 或已穷尽时即返回，否则用一次完整精确查询替换前缀。
+最坏延迟会随资格范围内的 chunk 数增长。距离完全相等时，
+边界 Topic 的入选和等距最佳 chunk 的选择不保证遵循全局身份或 ordinal 顺序；这可能改变融合候选和得分，
+最终融合得分并列时的排序规则仍然适用。
+seekdb/OceanBase 的标题/摘要使用近似检索；详情按各 Topic 当前 chunk 的最小距离排序，
+再截取候选和读取正文。该路径扫描资格范围内的 chunk，不保证固定时延；标题通道仍是 ANN，
+需要测量实际部署的融合召回率与尾时延。启动保留已有 detail HNSW，新库不创建 detail 图。
+详情查询不使用该图；旧库中的已有图仍产生数据库维护成本。
 
 ## 读取精确详情
 

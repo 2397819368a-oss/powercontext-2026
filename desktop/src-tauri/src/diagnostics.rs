@@ -28,10 +28,23 @@ pub enum DiagnosticKind {
     Integrations,
 }
 impl DiagnosticKind {
-    pub fn arguments(self) -> [&'static str; 3] {
+    pub fn arguments(self) -> &'static [&'static str] {
         match self {
-            Self::Service => ["service", "status", "--json"],
-            Self::Integrations => ["doctor", "integrations", "--json"],
+            Self::Service => &["service", "status", "--json"],
+            Self::Integrations => &[
+                "doctor",
+                "codex",
+                "claude-code",
+                "dsh",
+                "openclaw",
+                "opencode",
+                "pi",
+                "hermes",
+                "workbuddy",
+                "kimi-code",
+                "zcode",
+                "--json",
+            ],
         }
     }
 }
@@ -46,7 +59,7 @@ pub struct DiagnosticItem {
 #[serde(rename_all = "camelCase")]
 pub struct HostDiagnostic {
     pub host: String,
-    pub presence: String,
+    pub status: String,
     pub checks: Vec<DiagnosticItem>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
@@ -116,10 +129,8 @@ pub fn project(
             }
         }
         DiagnosticKind::Integrations => {
-            let status = selected(&value["status"], &["ok", "failed"])?;
-            if value["ok"].as_bool() != Some(status == "ok") {
-                return Err(SafeError::InvalidResponse);
-            }
+            let ok = value["ok"].as_bool().ok_or(SafeError::InvalidResponse)?;
+            let status = if ok { "ok" } else { "failed" }.to_owned();
             report.items.push(DiagnosticItem {
                 field: "integrations".into(),
                 status,
@@ -127,7 +138,7 @@ pub fn project(
             let hosts = value["hosts"]
                 .as_object()
                 .ok_or(SafeError::InvalidResponse)?;
-            if hosts.len() > 8 {
+            if hosts.len() > 10 {
                 return Err(SafeError::InvalidResponse);
             }
             for (name, host) in hosts {
@@ -140,6 +151,8 @@ pub fn project(
                     "pi",
                     "hermes",
                     "workbuddy",
+                    "kimi-code",
+                    "zcode",
                 ]
                 .contains(&name.as_str())
                 {
@@ -147,14 +160,21 @@ pub fn project(
                 }
                 let mut row = HostDiagnostic {
                     host: name.clone(),
-                    presence: selected(&host["presence"], &["present", "missing"])?,
+                    status: selected(&host["status"], &["ok", "degraded", "failed"])?,
                     checks: vec![],
                 };
-                let fields = host.as_object().ok_or(SafeError::InvalidResponse)?;
-                for (field, check) in fields {
-                    if field == "presence" {
+                if host["ok"].as_bool() != Some(row.status == "ok") {
+                    return Err(SafeError::InvalidResponse);
+                }
+                let fields = match host.get("checks") {
+                    Some(checks) => checks.as_object().ok_or(SafeError::InvalidResponse)?,
+                    None if row.status == "failed" => {
+                        report.hosts.push(row);
                         continue;
                     }
+                    None => return Err(SafeError::InvalidResponse),
+                };
+                for (field, check) in fields {
                     if ![
                         "codex",
                         "claude_code",
@@ -170,6 +190,34 @@ pub fn project(
                         "settings",
                         "mcp",
                         "transport",
+                        "authorization",
+                        "mcp_configuration",
+                        "mcp_tools",
+                        "mcp_full_profile",
+                        "kimi_code",
+                        "node",
+                        "hook",
+                        "configuration",
+                        "probe",
+                        "credentials",
+                        "scope",
+                        "server",
+                        "runtime",
+                        "verification",
+                        "mcp_session",
+                        "protected_api",
+                        "scope_probe",
+                        "prepare_probe",
+                        "zcode",
+                        "provider",
+                        "command_enabled",
+                        "command_plugin",
+                        "service_support",
+                        "service_registration",
+                        "service_definition",
+                        "service_manager",
+                        "server_liveness",
+                        "server_readiness",
                     ]
                     .contains(&field.as_str())
                     {
@@ -315,7 +363,7 @@ fn execute(
     };
     let result = crate::diagnostic_process::run(
         &config.executable,
-        &kind.arguments(),
+        kind.arguments(),
         Duration::from_secs(timeout),
         cancelled.clone(),
     )?;

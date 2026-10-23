@@ -47,7 +47,7 @@ powercontext doctor codex
 `powercontext doctor codex --json` 通过 `mcp_tools` 报告基础 MCP 连接，通过 `mcp_full_profile` 报告完整工具覆盖。
 完整覆盖要求 Codex 集成 manifest 的 `server-mcp` 中声明的全部能力工具，包括 Memory 维护、Scope 管理和
 Handoff 操作。缺失工具会按名称列出，并使结果降级；工具发现不代表模型就绪、Hook 已执行或具有写入权限。
-具备基础 Memory 支持时，`setup codex` 和 `setup select --host codex` 均可成功，`doctor` 单独报告 full 覆盖不完整。
+Setup 会分别报告安装完成和诊断结果；基础 Memory 支持仍可使用时，`doctor` 可能单独报告 full 覆盖不完整。
 鉴权或基础连接失败仍会使安装失败。
 
 ## 理解自动恢复、Memory 和 Handoff

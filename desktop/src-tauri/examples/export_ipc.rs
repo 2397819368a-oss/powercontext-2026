@@ -84,6 +84,10 @@ fn main() {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
+    assert!(
+        !output.contains("?:  |"),
+        "IPC generation produced an empty TypeScript field type",
+    );
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/generated/ipc.ts");
     if std::env::args().any(|arg| arg == "--check") {
         assert_eq!(
