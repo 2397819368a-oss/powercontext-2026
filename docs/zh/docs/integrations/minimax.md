@@ -35,7 +35,7 @@ powercontext setup minimax --source /path/to/powercontext \
 
 插件安装到 `<数据根目录>/plugins/powercontext`，包含隐藏文件、Skill 引用、图标和许可证。目录优先级为 `--minimax-data-dir`、非空 `MINIMAX_DATA_DIR`、非空 `MAVIS_DATA_DIR`、已保存的安装目标。均未提供时，安装器通过所选 CLI 的 `plugin marketplace list --json` 查询本地目录，遵循宿主的 profile/build 选择。缺少 CLI 时默认使用 `~/.minimax`；此时若设置了 `MAVIS_PROFILE`，必须显式提供数据根目录。旧版或自定义 build 的 marketplace 输出无法识别时，也需要 `--minimax-data-dir`。
 
-启动程序依次来自 `--minimax-command`、相同数据根目录保存的启动程序、PATH 中的 `mcode`。显式或已保存的启动程序无效时，在安装前失败。原生验证子进程通过 `MINIMAX_DATA_DIR` 使用所选目录；启动 MiniMax 时也要使用同一目录。setup 保存目标，供后续 `doctor minimax` 和 `config agent minimax` 使用；目录环境变量仍优先于保存的目标。
+启动程序依次来自 `--minimax-command`、相同数据根目录保存的启动程序、PATH 中的 `mcode`。显式或已保存的启动程序无效时，在安装前失败。启动 MiniMax 时应使用所选数据目录。原生发现检查在该安装的临时快照中执行，并带入本地插件的启用状态。setup 保存目标，供后续 `doctor minimax` 和 `config agent minimax` 使用；目录环境变量仍优先于保存的目标。
 
 交互式 `powercontext setup` 包含 MiniMax，多宿主安装复用相同行为：
 
@@ -53,15 +53,15 @@ powercontext setup minimax --source /path/to/powercontext \
   --server-url https://memory.example
 ```
 
-通过进程环境或 setup 的 `--env-file` 提供 `POWERCONTEXT_MINIMAX_AUTHORIZATION`，也可使用共享的 `POWERCONTEXT_CLIENT_API_TOKEN`。安装器仅将字面量 Bearer header 写入 `<数据根目录>/mcp.json`，不会把凭据写入分发插件或安装记录。输入凭据时避免泄露到 shell 历史。在 Linux/macOS 上，私有文件仅向所有者开放；Windows 上应配置适当的 ACL。
+通过进程环境或 setup 的 `--env-file` 提供 `POWERCONTEXT_MINIMAX_AUTHORIZATION`，也可使用共享的 `POWERCONTEXT_CLIENT_API_TOKEN`。安装器在 `<数据根目录>/mcp.json` 中保存字面量 Bearer header，并把已启用私有连接的设置同步到安装后的 `plugins/powercontext/powercontext.mcp.json`。源码分发包和安装记录不包含凭据。输入凭据时避免泄露到 shell 历史。在 Linux/macOS 上，新建或更新的这两个连接文件仅向所有者开放；未改变的禁用私有配置保留已有权限。Windows 上应使用适当的 ACL 保护这两个安装后的连接文件。
 
-setup 只合并 PowerContext server 条目，保留其他 MCP server、未知字段、自定义 header 和已有禁用偏好。已有凭据会被保留。把带认证条目迁移到另一 endpoint 时，必须显式提供替换凭据，避免自动转发旧凭据。私有配置无法解析时，在插件安装前失败。
+setup 只合并 PowerContext server 条目，保留其他 MCP server、未知字段、自定义 header 和已有禁用偏好。已有凭据会被保留。私有条目缺失或禁用时，升级也会保留插件当前的连接设置。私有条目已禁用时，只有通过 `--server-url` 或受支持的 setup URL 环境变量、环境文件显式指定端点，才会修改其 URL。条目无变化时，整个私有配置文件逐字节保留。只提供新凭据时，在原 URL 上轮换该条目的凭据，不自动启用它。setup/config 结果通过 `private_mcp_state` 标明私有条目状态；禁用条目需要用户启用后才生效，doctor 继续检查实际生效的插件内连接。把带认证条目迁移到另一 endpoint 时，必须显式提供替换凭据，避免自动转发旧凭据。私有配置无法解析时，在插件安装前失败。
 
-MiniMax 优先使用已启用的私有 `powercontext` 条目，再使用插件内连接。配置应使用字面量 URL 和 header；受支持的私有配置不展开 `${TOKEN}` 占位符。setup 的远程 HTTP 同意只控制 PowerContext 自身的配置和诊断请求，不会绕过 MiniMax 的原生 HTTP/TLS 限制，建议使用 HTTPS。doctor 从原生配置读取 endpoint 和 header，不把全局 PowerContext token 当成宿主已有凭据。
+MiniMax 独立暴露私有连接和插件内连接，工具名可能分别包含 `powercontext` 和 `powercontext_2`。私有条目启用时，setup/config 同步两套连接的 URL 和 header，让工具统一访问所选 Server。私有条目禁用且未显式指定端点时，保留插件内连接；仅轮换禁用条目的凭据不会把该凭据复制到活动插件连接。显式指定端点时，也会配置活动插件连接。doctor 对不一致的已启用连接报告失败，需要重新执行 setup 或 `config agent minimax` 进行同步。配置应使用字面量 URL 和 header；受支持的私有配置不展开 `${TOKEN}` 占位符。setup 的远程 HTTP 同意只控制 PowerContext 自身的配置和诊断请求，不会绕过 MiniMax 的原生 HTTP/TLS 限制，建议使用 HTTPS。doctor 从原生配置读取 endpoint 和 header，不把全局 PowerContext token 当成宿主已有凭据。
 
 ## 重复安装、升级与恢复
 
-使用目标 source/ref 重复执行 setup。安装器在 PowerContext 数据根目录保存受管理文件的摘要，并按 MiniMax 数据目录区分安装目标。升级更新这些文件、删除未被修改的旧版受管理文件，并保留用户新增文件和其他插件。受管理文件被修改，或新版文件与用户内容冲突时，在替换前报告冲突。
+使用目标 source/ref 重复执行 setup。安装器在 PowerContext 数据根目录保存受管理文件的摘要，并按 MiniMax 数据目录区分安装目标。升级更新这些文件、删除未被修改的旧版受管理文件，并保留用户新增文件和其他插件。受管理文件被修改，或新版路径与用户文件、目录、作为父路径的文件冲突时，在替换前报告冲突。发布前检查暂存包；用户自建文件不会被加入受管清单。
 
 与待安装包完全一致的手工安装可被接管，额外用户文件会保留。内容不同的未管理安装会被拒绝。请先备份到 MiniMax 的 `plugins` 目录之外，保留私有连接配置，并处理自定义修改后重试。不要在另一个直接子目录中保留重复的 PowerContext 插件。
 
@@ -70,10 +70,10 @@ MiniMax 优先使用已启用的私有 `powercontext` 条目，再使用插件�
 ## 理解验证结果
 
 - `package`：原生 manifest 及其本地引用资源完整。
-- `native`：MiniMax 报告本地 `powercontext` 插件已安装、启用、版本匹配，并具有至少所需的 Skill/MCP 数量。数量不证明具体资源名称或 MCP 会话已经建立。命令成功但列表遗漏插件时，该检查仍失败。
+- `native`：MiniMax 加载本地 `powercontext` 插件及其启用状态的临时快照，检查版本匹配，并具有至少所需的 Skill/MCP 数量。数量不证明具体资源名称或 MCP 会话已经建立。命令成功但列表遗漏插件时，该检查仍失败。
 - `server_liveness` / `server_readiness`：所选 Server 可访问并报告就绪状态。
 - `server_access`：CLI 使用生效的原生 header 访问 Server info，不代表 MiniMax 已连接或调用工具。
 
-缺少 CLI 时，复制的文件会报告为已安装，原生验证为降级，整体退出码非零。桌面安装需要安装受支持 CLI，或通过 `--minimax-command` 提供现有可执行启动程序；仅复制文件不等于桌面端验收。doctor 不安装包、不改写配置、不启用插件；原生 CLI 可能维护自身运行记录。
+缺少 CLI 时，复制的文件会报告为已安装，原生验证为降级，整体退出码非零。桌面安装需要安装受支持 CLI，或通过 `--minimax-command` 提供现有可执行启动程序；仅复制文件不等于桌面端验收。doctor 不安装包、不改写配置、不启用插件，也不初始化真实数据目录。原生 CLI 只在私有临时快照内维护运行记录，完成后删除快照。验证需要临时空间保存插件及用于读取启用状态的原生数据库/WAL 副本；不会把无关会话和 provider 状态导入诊断运行时。不支持的原生状态格式会明确报错。首次 setup 之前，使用原生启动程序进行诊断时应提供 `--minimax-data-dir` 或目录环境变量；doctor 不会通过启动真实家目录中的宿主来探测目标。
 
 在 `/plugins` 中按 `Ctrl+R` 刷新 Local 列表，或使用同一数据目录重启 MiniMax。升级保留用户禁用状态。需要启用时，为所选启动程序设置目标 `MINIMAX_DATA_DIR`，执行 `plugin enable powercontext@local --json`，然后重新运行 doctor。修改已经使用过的连接后，应重启 MiniMax。宿主中的实际 MCP 工具结果需要与 CLI 检查分开验证。

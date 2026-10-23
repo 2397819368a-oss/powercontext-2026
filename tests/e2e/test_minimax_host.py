@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import threading
@@ -45,18 +46,26 @@ ROOT = Path(__file__).parents[2]
 
 
 @pytest.fixture
-def host(tmp_path, monkeypatch):
+def host(tmp_path, monkeypatch, request):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "pc"))
     monkeypatch.setenv("POWERCONTEXT_CLIENT_CONFIG_FILE", str(tmp_path / "clients.json"))
-    monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "acceptance-only-token")
+    authenticated = getattr(request, "param", True)
+    if authenticated:
+        monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "acceptance-only-token")
+    else:
+        monkeypatch.delenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", raising=False)
     for name in ("MINIMAX_DATA_DIR", "MAVIS_DATA_DIR", "MAVIS_PROFILE"):
         monkeypatch.delenv(name, raising=False)
     app = create_server_app(
         settings=ServerSettings(
             database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'server.db'}"),
-            auth=BearerAuthConfig(enabled=True, token=SecretStr("acceptance-only-token")),
+            auth=BearerAuthConfig(
+                enabled=authenticated, token=SecretStr("acceptance-only-token") if authenticated else None
+            ),
         ),
         scheduler_path=tmp_path / "scheduler",
     )
@@ -109,10 +118,10 @@ def test_native_discovery_repeat_install_and_readonly_doctor(host, monkeypatch, 
         assert row["checks"]["server_access"]["status"] == "ok"
     private = data / "mcp.json"
     assert "acceptance-only-token" in private.read_text()
-    before = private.read_bytes()
+    before = {path: path.read_bytes() for path in data.rglob("*") if path.is_file()}
     result = invoke("doctor", "minimax", "--json")
     assert result.exit_code == 0, result.output
-    assert private.read_bytes() == before
+    assert {path: path.read_bytes() for path in data.rglob("*") if path.is_file()} == before
     assert "acceptance-only-token" not in result.output
     environment = dict(os.environ, MINIMAX_DATA_DIR=str(data))
     disabled = subprocess.run(
@@ -124,9 +133,11 @@ def test_native_discovery_repeat_install_and_readonly_doctor(host, monkeypatch, 
         check=False,
     )
     assert disabled.returncode == 0, disabled.stderr
+    before = {path: path.read_bytes() for path in data.rglob("*") if path.is_file()}
     result = invoke("doctor", "minimax", "--json")
     assert result.exit_code == 1
     assert "disabled" in json.loads(result.output)["hosts"]["minimax"]["checks"]["native"]["detail"]
+    assert {path: path.read_bytes() for path in data.rglob("*") if path.is_file()} == before
     # Repeated setup must respect native disablement, rather than silently enabling it.
     result = invoke(*arguments)
     assert result.exit_code == 1
@@ -154,7 +165,11 @@ def test_native_loader_omission_and_private_authorization_failure(host):
     config = json.loads(private.read_text())
     config["mcpServers"]["powercontext"]["headers"]["Authorization"] = "Bearer wrong-acceptance-token"
     private.write_text(json.dumps(config))
-    (data / "plugins/powercontext/.minimax-plugin/plugin.json").write_text('{"schemaVersion":1,"name":"invalid"}')
+    manifest_path = data / "plugins/powercontext/.minimax-plugin/plugin.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    # Local resource checks pass, but the native V1 loader rejects an unknown field.
+    manifest["unsupportedField"] = True
+    manifest_path.write_text(json.dumps(manifest))
     result = invoke("doctor", "minimax", "--json")
     assert result.exit_code == 1
     checks = json.loads(result.output)["hosts"]["minimax"]["checks"]
@@ -163,6 +178,53 @@ def test_native_loader_omission_and_private_authorization_failure(host):
     assert checks["server_access"]["status"] == "failed"
     assert "401" in checks["server_access"]["detail"]
     assert "wrong-acceptance-token" not in result.output
+
+
+@pytest.mark.parametrize("host", [False], indirect=True, ids=["anonymous-server"])
+@pytest.mark.parametrize("authorization", [False, True], ids=["without-authorization", "with-authorization"])
+def test_native_setup_preserves_disabled_private_override_and_probes_bundle(host, authorization):
+    root, endpoint = host
+    source = root / "bundle"
+    shutil.copytree(ROOT / "integrations/minimax/plugins/powercontext", source)
+    bundled_path = source / "powercontext.mcp.json"
+    bundled = json.loads(bundled_path.read_bytes())
+    bundled["mcpServers"]["powercontext"]["url"] = endpoint + "/mcp"
+    bundled_path.write_text(json.dumps(bundled))
+    data = root / "disabled-private"
+    data.mkdir()
+    private = data / "mcp.json"
+    entry = {"type": "streamable-http", "url": "https://inactive.example/mcp", "enabled": False}
+    if authorization:
+        entry["headers"] = {"Authorization": "Bearer inactive-private-token"}
+    original = (
+        json.dumps({"note": "保留格式和禁用连接", "mcpServers": {"powercontext": entry}}, ensure_ascii=False, indent=4)
+        + "\n"
+    ).encode()
+    private.write_bytes(original)
+    for _ in range(2):
+        result = invoke(
+            "setup",
+            "minimax",
+            "--source",
+            str(source),
+            "--minimax-command",
+            COMMAND,
+            "--minimax-data-dir",
+            str(data),
+            "--json",
+        )
+        assert result.exit_code == 0, result.output
+        row = json.loads(result.output)["hosts"]["minimax"]
+        assert row["checks"]["native"]["status"] == "ok"
+        assert row["checks"]["server_access"]["status"] == "ok"
+        assert endpoint in row["checks"]["server_liveness"]["detail"]
+        assert row["result"]["private_mcp_state"] == "disabled"
+        assert private.read_bytes() == original
+        assert "inactive-private-token" not in result.output
+    result = invoke("doctor", "minimax", "--json")
+    assert result.exit_code == 0, result.output
+    assert private.read_bytes() == original
+    assert endpoint in json.loads(result.output)["hosts"]["minimax"]["checks"]["server_liveness"]["detail"]
 
 
 def _objects(value):
@@ -182,9 +244,11 @@ def _objects(value):
 
 
 class ModelGateway(ThreadingHTTPServer):
-    def __init__(self):
+    def __init__(self, *, plugin_connection=False):
         super().__init__(("127.0.0.1", 0), ModelHandler)
         self.requests: list[dict[str, Any]] = []
+        self.plugin_connection = plugin_connection
+        self.invoked_tools: list[str] = []
 
 
 class ModelHandler(BaseHTTPRequestHandler):
@@ -203,22 +267,34 @@ class ModelHandler(BaseHTTPRequestHandler):
         arguments = {}
         if not tool_results and "tool_search" in names:
             selected = "tool_search"
-            arguments = {"query": "list_scopes", "top_k": 1}
+            arguments = {"query": "list_scopes", "top_k": 20}
         elif tool_results and len(tool_results) == 1 and "mcp_invoke" in names:
             match = next(
                 (
                     item["name"]
                     for item in _objects(tool_results[0]["content"])
-                    if isinstance(item.get("name"), str) and "list_scopes" in item["name"]
+                    if isinstance(item.get("name"), str)
+                    and "list_scopes" in item["name"]
+                    and (not self.server.plugin_connection or "powercontext_2" in item["name"])
                 ),
                 None,
             )
             if match:
                 selected = "mcp_invoke"
                 arguments = {"tool_name": match, "arguments": {"limit": 10}}
+                self.server.invoked_tools.append(match)
         elif not tool_results:
-            selected = next((name for name in names if "list_scopes" in name), None)
+            selected = next(
+                (
+                    name
+                    for name in names
+                    if "list_scopes" in name and (not self.server.plugin_connection or "powercontext_2" in name)
+                ),
+                None,
+            )
             arguments = {"limit": 10}
+            if selected:
+                self.server.invoked_tools.append(selected)
         delta: dict[str, Any] = {"content": "MINIMAX_MCP_ACCEPTANCE_OK"}
         finish = "stop"
         if selected:
@@ -277,7 +353,8 @@ class ModelHandler(BaseHTTPRequestHandler):
             )
 
 
-def test_real_host_invokes_powercontext_mcp_with_controlled_inference(host):
+@pytest.mark.parametrize("plugin_connection", [False, True], ids=["private-mcp", "plugin-mcp"])
+def test_real_host_invokes_powercontext_mcp_with_controlled_inference(host, plugin_connection):
     root, endpoint = host
     data = root / "mcp-tool"
     result = invoke(
@@ -303,7 +380,7 @@ def test_real_host_invokes_powercontext_mcp_with_controlled_inference(host):
             json={"title": marker, "summary": "Isolated native MCP acceptance", "idempotency_key": "minimax-scope"},
         )
         assert response.status_code == 201, response.text
-    gateway = ModelGateway()
+    gateway = ModelGateway(plugin_connection=plugin_connection)
     thread = threading.Thread(target=gateway.serve_forever, daemon=True)
     thread.start()
     environment = dict(os.environ, MINIMAX_DATA_DIR=str(data), MCODE_PROVIDER_API_KEY="synthetic-model-token")
@@ -361,7 +438,18 @@ def test_real_host_invokes_powercontext_mcp_with_controlled_inference(host):
         ]
         assert any(marker in json.dumps(message, ensure_ascii=False) for message in observed), executed.stdout
         assert any("powercontext-project-context" in json.dumps(request) for request in gateway.requests)
+        assert gateway.invoked_tools
+        if plugin_connection:
+            assert any("powercontext_2" in name for name in gateway.invoked_tools)
     finally:
         gateway.shutdown()
         gateway.server_close()
         thread.join(timeout=5)
+
+
+def test_real_doctor_does_not_initialize_an_uninstalled_native_target(host):
+    root, _ = host
+    data = root / "uninstalled native profile"
+    result = invoke("doctor", "minimax", "--minimax-data-dir", str(data), "--minimax-command", COMMAND, "--json")
+    assert result.exit_code == 1
+    assert not data.exists()

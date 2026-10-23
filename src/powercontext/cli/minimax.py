@@ -23,9 +23,11 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tempfile
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -57,14 +59,17 @@ def _object(path: Path) -> dict[str, Any]:
     return value
 
 
-def _run(command: str, arguments: list[str], data_dir: Path | None = None) -> object:
+def _run(command: str, arguments: list[str], data_dir: Path | None = None, *, home: Path | None = None) -> object:
     environment = dict(os.environ)
     if data_dir is not None:
         environment["MINIMAX_DATA_DIR"] = str(data_dir)
+    if home is not None:
+        environment.update(HOME=str(home), USERPROFILE=str(home))
     try:
         result = subprocess.run(  # noqa: S603 - the user selects the native launcher, without a shell.
             [command, "plugin", *arguments, "--json"],
             env=environment,
+            cwd=home,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -91,7 +96,7 @@ def _command(explicit: Path | None, saved: dict[str, Any], data_dir: Path | None
     return shutil.which("mcode")
 
 
-def _data_dir(explicit: Path | None, saved: dict[str, Any], command: str | None) -> Path:
+def _data_dir(explicit: Path | None, saved: dict[str, Any], command: str | None, *, read_only: bool) -> Path:
     override = (
         explicit or os.environ.get("MINIMAX_DATA_DIR", "").strip() or os.environ.get("MAVIS_DATA_DIR", "").strip()
     )
@@ -100,6 +105,8 @@ def _data_dir(explicit: Path | None, saved: dict[str, Any], command: str | None)
     if saved.get("minimax_data_dir"):
         return Path(saved["minimax_data_dir"]).expanduser().resolve()
     if command:
+        if read_only:
+            raise SetupError("Specify --minimax-data-dir for read-only doctor before the first setup")
         marketplaces = _run(command, ["marketplace", "list"])
         if isinstance(marketplaces, list):
             local = [entry for entry in marketplaces if isinstance(entry, dict) and entry.get("name") == "local"]
@@ -227,7 +234,9 @@ def _verify_discovery(result: object, package: Path) -> None:
 
 
 class MiniMaxInstaller:
-    def __init__(self, *, minimax_data_dir: Path | None = None, minimax_command: Path | None = None) -> None:
+    def __init__(
+        self, *, minimax_data_dir: Path | None = None, minimax_command: Path | None = None, read_only: bool = False
+    ) -> None:
         saved = load_client_settings("minimax")
         override = (
             minimax_data_dir
@@ -242,13 +251,13 @@ class MiniMaxInstaller:
             else None
         )
         self.command = _command(minimax_command, saved, selected)
-        self.data_dir = _data_dir(minimax_data_dir, saved, self.command)
+        self.data_dir = _data_dir(minimax_data_dir, saved, self.command, read_only=read_only)
         self.plugin = self.data_dir / "plugins/powercontext"
         identity = hashlib.sha256(str(self.data_dir).encode()).hexdigest()
         self.record = powercontext_data_dir() / "installations/minimax" / f"{identity}.json"
 
     def native_entry(self) -> dict[str, Any] | None:
-        """Resolve the native user override before the bundled plugin connection."""
+        """Read the private connection, or the bundle when the private entry is disabled."""
         entry = _mcp_entry(_object(self.data_dir / "mcp.json"))
         if entry is not None and entry.get("enabled", True):
             return entry
@@ -258,12 +267,16 @@ class MiniMaxInstaller:
         entry = self.native_entry()
         return _endpoint(entry) if entry is not None else None
 
-    def install(self, source) -> dict[str, Any]:  # noqa: C901 - reconcile one managed package before publication.
+    def install(self, source, *, connection=None) -> dict[str, Any]:  # noqa: C901
         self.native_entry()  # Malformed private configuration must fail before publication.
         if self.plugin.is_symlink() or self.plugin.parent.is_symlink():
             raise SetupError("MiniMax plugin installation must not replace a symbolic link")
         with source.package("minimax") as package:
             incoming = require_minimax_package(package)
+            bundled = _object(package / _MCP)
+            if connection is not None:
+                _, _, selected_bundle, _ = self._connection_entries(connection, bundled)
+                bundled["mcpServers"]["powercontext"] = selected_bundle
             previous = _object(self.record)
             if previous and (previous.get("version") != 1 or previous.get("data_dir") != str(self.data_dir)):
                 raise SetupError("Unsupported MiniMax installation record; restore it before setup")
@@ -281,7 +294,13 @@ class MiniMaxInstaller:
                     )
                 owned = incoming
             for name in owned.keys() | incoming.keys():
+                if (self.plugin / name).is_dir():
+                    raise SetupError(f"MiniMax installation conflict: {name} is a directory")
+                if any(parent.is_file() for parent in (self.plugin / name).parents if parent != self.plugin):
+                    raise SetupError(f"MiniMax installation conflict: a parent of {name} is a file")
                 digest = current.get(name)
+                if digest is None and (self.plugin / name).is_file():
+                    raise SetupError(f"MiniMax installation conflict: {name} aliases an existing file")
                 if digest is not None and digest != owned.get(name) and digest != incoming.get(name):
                     raise SetupError(f"MiniMax installation conflict: {name}; preserve your changes before setup")
             record = {
@@ -301,41 +320,173 @@ class MiniMaxInstaller:
                 for name in owned.keys() - incoming.keys():
                     (staged / name).unlink(missing_ok=True)
                 shutil.copytree(package, staged, dirs_exist_ok=True)
+                if connection is not None:
+                    content = _json_bytes(bundled)
+                    (staged / _MCP).write_bytes(content)
+                    incoming[_MCP] = hashlib.sha256(content).hexdigest()
+                    if os.name != "nt":
+                        (staged / _MCP).chmod(0o600)
+                # Check the final projection rather than accepting copytree's directory semantics.
+                published = require_minimax_package(staged)
+                if any(published.get(name) != digest for name, digest in incoming.items()):
+                    raise SetupError("MiniMax staged package differs from its source; check filesystem path collisions")
+                record["files"] = incoming
                 publish(replacements=[(staged, self.plugin)], writes={self.record: _json_bytes(record)})
         return {"plugin_path": str(self.plugin), "data_dir": str(self.data_dir), "files": "installed"}
+
+    def _bundle_with_saved_connection(self, bundled):
+        """Apply installed connection choices to a fresh distribution's MCP declaration."""
+        bundle_entry = _mcp_entry(bundled)
+        installed_bundle = _mcp_entry(_object(self.plugin / _MCP))
+        if bundle_entry is not None and installed_bundle is not None:
+            bundle_entry = dict(bundle_entry)
+            bundle_entry.pop("headers", None)
+            bundle_entry.update({key: installed_bundle[key] for key in ("url", "headers") if key in installed_bundle})
+        return bundle_entry
+
+    def _connection_entries(self, connection, bundled):
+        config = _object(self.data_dir / "mcp.json")
+        existing = _mcp_entry(config)
+        bundle_entry = self._bundle_with_saved_connection(bundled)
+        preserve_disabled_endpoint = (
+            existing is not None and existing.get("enabled") is False and not connection.endpoint_explicit
+        )
+        endpoint = _endpoint(existing) if preserve_disabled_endpoint else connection.server_url
+        target_url = existing["url"] if preserve_disabled_endpoint else endpoint + "/mcp"
+        entry: dict[str, Any] = dict(existing or bundle_entry or {"type": "streamable-http"})
+        headers = dict(entry.get("headers", {}))
+        authorization = setup_authorization_value("minimax")
+        state = "preserved" if any(key.lower() == "authorization" for key in headers) else "not_configured"
+        credential_source = existing or bundle_entry
+        if authorization and authorization.strip():
+            headers = {key: value for key, value in headers.items() if key.lower() != "authorization"}
+            headers["Authorization"] = normalize_authorization(authorization)
+            state = "configured"
+        elif credential_source is not None and _endpoint(credential_source) != endpoint and state == "preserved":
+            raise SetupError(
+                "MiniMax endpoint changed; provide a new authorization explicitly before moving credentials"
+            )
+        entry.update(type="streamable-http", url=target_url)
+        if headers:
+            entry["headers"] = headers
+        if bundle_entry is not None and not preserve_disabled_endpoint:
+            bundle_entry = dict(bundle_entry)
+            if entry.get("enabled") is not False:
+                bundle_entry.update(url=target_url)
+                if headers:
+                    bundle_entry["headers"] = headers
+                else:
+                    bundle_entry.pop("headers", None)
+            else:
+                bundle_headers = dict(bundle_entry.get("headers", {}))
+                if authorization and authorization.strip():
+                    bundle_headers = {k: v for k, v in bundle_headers.items() if k.lower() != "authorization"}
+                    bundle_headers["Authorization"] = normalize_authorization(authorization)
+                elif _endpoint(bundle_entry) != endpoint and any(
+                    key.lower() == "authorization" for key in bundle_headers
+                ):
+                    raise SetupError("MiniMax endpoint changed; provide a new authorization explicitly")
+                bundle_entry.update(url=endpoint + "/mcp")
+                if bundle_headers:
+                    bundle_entry["headers"] = bundle_headers
+        return config, entry, bundle_entry, state
 
     def configure(self, connection) -> dict[str, str]:
         from powercontext.cli.transport import setup_transport_updates
 
         path = self.data_dir / "mcp.json"
-        config = _object(path)
+        bundled = _object(self.plugin / _MCP)
+        config, entry, bundle_entry, state = self._connection_entries(connection, bundled)
         existing = _mcp_entry(config)
-        endpoint = connection.server_url + "/mcp"
-        entry: dict[str, Any] = dict(existing or {"type": "streamable-http"})
-        headers = dict(entry.get("headers", {}))
-        authorization = setup_authorization_value("minimax")
-        state = "preserved" if any(key.lower() == "authorization" for key in headers) else "not_configured"
-        if authorization and authorization.strip():
-            headers = {key: value for key, value in headers.items() if key.lower() != "authorization"}
-            headers["Authorization"] = normalize_authorization(authorization)
-            state = "configured"
-        elif existing and _endpoint(existing) != connection.server_url and state == "preserved":
-            raise SetupError(
-                "MiniMax endpoint changed; provide a new authorization explicitly before moving credentials"
-            )
-        entry.update(type="streamable-http", url=endpoint)
-        if headers:
-            entry["headers"] = headers
-        config.setdefault("mcpServers", {})["powercontext"] = entry
         updates = setup_transport_updates(connection)
         for key, content in list(updates.items()):
             saved = json.loads(content)
             saved["hosts"]["minimax"].update(minimax_data_dir=str(self.data_dir), minimax_command=self.command)
             updates[key] = _json_bytes(saved)
-        updates[path] = _json_bytes(config)
-        mode = stat.S_IMODE(path.stat().st_mode) & 0o600 if path.exists() else 0o600
-        publish(writes=updates, action=lambda: path.chmod(mode) if os.name != "nt" else None)
-        return {"authorization_state": state}
+        modes = {}
+        # Leave unchanged disabled overrides untouched; active entries retain the
+        # existing owner-only permission handling during setup.
+        if existing != entry or entry.get("enabled") is not False:
+            config.setdefault("mcpServers", {})["powercontext"] = entry
+            updates[path] = _json_bytes(config)
+            if os.name != "nt":
+                modes[path] = stat.S_IMODE(path.stat().st_mode) & 0o600 if path.exists() else 0o600
+        if bundle_entry is not None and bundle_entry != _mcp_entry(bundled):
+            bundled["mcpServers"]["powercontext"] = bundle_entry
+            content = _json_bytes(bundled)
+            updates[self.plugin / _MCP] = content
+            previous = _object(self.record)
+            if previous:
+                owned = previous.get("files", {})
+                current = hashlib.sha256((self.plugin / _MCP).read_bytes()).hexdigest()
+                if (
+                    previous.get("version") != 1
+                    or previous.get("data_dir") != str(self.data_dir)
+                    or not isinstance(owned, dict)
+                    or owned.get(_MCP) != current
+                ):
+                    raise SetupError(
+                        "MiniMax installation conflict: preserve the modified MCP package before configuration"
+                    )
+                previous["files"][_MCP] = hashlib.sha256(content).hexdigest()
+                updates[self.record] = _json_bytes(previous)
+            if os.name != "nt":
+                modes[self.plugin / _MCP] = 0o600
+
+        def secure_files():
+            for target, mode in modes.items():
+                target.chmod(mode)
+
+        publish(writes=updates, action=secure_files)
+        return {
+            "authorization_state": state,
+            "private_mcp_state": "disabled" if entry.get("enabled") is False else "enabled",
+        }
+
+    def _native_snapshot(self):
+        """Run the native loader against a disposable copy of its local plugin state."""
+        assert self.command is not None  # noqa: S101 - verify handles an unavailable launcher.
+        with tempfile.TemporaryDirectory(prefix="powercontext-minimax-doctor-") as temporary:
+            home = Path(temporary)
+            data = home / "data"
+            plugin = data / "plugins/powercontext"
+            shutil.copytree(self.plugin, plugin)
+            database = self.data_dir / "v2/sqlite/runtime-state.sqlite"
+            if database.is_file():
+                snapshot = home / "native-state.sqlite"
+                # Copy WAL too: opening the real database, even read-only, can create/update SHM.
+                for suffix in ("", "-wal"):
+                    source = Path(str(database) + suffix)
+                    if source.is_file():
+                        shutil.copyfile(source, Path(str(snapshot) + suffix))
+                with closing(sqlite3.connect(snapshot)) as database_copy:
+                    table = database_copy.execute(
+                        "SELECT name FROM sqlite_master WHERE name = 'local_runtime_plugin_local_disabled'"
+                    ).fetchone()
+                    if table is None:
+                        raise SetupError("Unsupported MiniMax native state; use a qualified CLI build")
+                    disabled = database_copy.execute(
+                        "SELECT 1 FROM local_runtime_plugin_local_disabled WHERE canonical_root = ?",
+                        (str(self.plugin.resolve()),),
+                    ).fetchone()
+                if disabled:
+                    # Reproduce only enablement through the native API, never real sessions/providers.
+                    _run(self.command, ["disable", "powercontext@local"], data, home=home)
+            return _run(self.command, ["list", "--marketplace", "local"], data, home=home)
+
+    def _verify_connections(self):
+        private = _mcp_entry(_object(self.data_dir / "mcp.json"))
+        bundle = _mcp_entry(_object(self.plugin / _MCP), required=True)
+        if (
+            private is not None
+            and private.get("enabled", True)
+            and (
+                bundle is None
+                or _endpoint(private) != _endpoint(bundle)
+                or private.get("headers", {}) != bundle.get("headers", {})
+            )
+        ):
+            raise SetupError("MiniMax private and plugin MCP connections differ; rerun setup or config agent minimax")
 
     def verify(self):
         from powercontext.cli.system import Diagnostic, DiagnosticStatus
@@ -345,6 +496,8 @@ class MiniMaxInstaller:
             require_minimax_package(self.plugin)
         except (OSError, ValueError, SetupError) as error:
             checks["package"] = Diagnostic(DiagnosticStatus.FAILED, str(error))
+            checks["native"] = Diagnostic(DiagnosticStatus.SKIPPED, "Native check skipped: package is invalid")
+            return checks
         else:
             checks["package"] = Diagnostic(
                 DiagnosticStatus.OK, "Native manifest and all packaged resources are present"
@@ -356,14 +509,16 @@ class MiniMaxInstaller:
             )
             return checks
         try:
-            result = _run(self.command, ["list", "--marketplace", "local"], self.data_dir)
+            result = self._native_snapshot()
             _verify_discovery(result, self.plugin)
+            self._verify_connections()
             checks["native"] = Diagnostic(
                 DiagnosticStatus.OK,
-                "Native local plugin is installed and enabled; host reports the required Skill/MCP counts "
+                "Native loader verified a read-only snapshot of the local plugin and enablement state; "
+                "host reports the required Skill/MCP counts "
                 "(not a connection test). Keep Server running; refresh /plugins or restart MiniMax using the selected data directory.",
             )
-        except (OSError, ValueError, SetupError) as error:
+        except (OSError, ValueError, SetupError, sqlite3.Error) as error:
             checks["native"] = Diagnostic(DiagnosticStatus.FAILED, str(error))
         return checks
 

@@ -116,7 +116,10 @@ def doctor_checks(host: str, **options) -> dict[str, Any]:
             from powercontext.cli.dsh_runtime import resolve_dsh_target
 
             options["dsh_target"] = resolve_dsh_target(options.get("profile"), options.get("dsh_command"))
-        installer = installers()[host](**native_options(host, **options))
+        target_options = native_options(host, **options)
+        if host == "minimax":
+            target_options["read_only"] = True
+        installer = installers()[host](**target_options)
         fields = {"kimi-code": ("runtime", "cwd", "session_id", "mcp"), "zcode": ("runtime_data_dir", "prepare")}
         checks = installer.verify(**{key: options[key] for key in fields.get(host, ()) if options.get(key) is not None})
     except Exception as error:  # Each target must produce a result even when native configuration is malformed.
@@ -164,7 +167,15 @@ def report_agents(selected: Sequence[str], action: Callable[[str], dict[str, Any
     else:
         for name, row in rows.items():
             typer.echo(f"{name}: {row['status']}" + (" (setup complete)" if row.get("setup") == "complete" else ""))
-            for key in ("plugin_path", "package_path", "cache_dir", "profile", "profile_dir", "authorization_state"):
+            for key in (
+                "plugin_path",
+                "package_path",
+                "cache_dir",
+                "profile",
+                "profile_dir",
+                "authorization_state",
+                "private_mcp_state",
+            ):
                 if key in row.get("result", {}):
                     typer.echo(f"  {key}: {row['result'][key]}")
             if "error" in row:

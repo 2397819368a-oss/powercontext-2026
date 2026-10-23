@@ -38,6 +38,8 @@ PACKAGE = ROOT / "integrations/minimax/plugins/powercontext"
 def native(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(minimax.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "pc"))
     for name in ("MINIMAX_DATA_DIR", "MAVIS_DATA_DIR", "MAVIS_PROFILE", "POWERCONTEXT_MINIMAX_AUTHORIZATION"):
         monkeypatch.delenv(name, raising=False)
@@ -99,12 +101,10 @@ def test_complete_package_and_saved_target_are_reused_by_readonly_doctor(native)
     for source in PACKAGE.rglob("*"):
         if source.is_file():
             assert (plugin / source.relative_to(PACKAGE)).read_bytes() == source.read_bytes()
-    assert native[3].call_args.kwargs["env"]["MINIMAX_DATA_DIR"] == str(plugin.parent.parent)
     before = {path: path.read_bytes() for path in native[0].rglob("*") if path.is_file()}
     result = invoke("doctor", "minimax", "--json")
     assert result.exit_code == 0, result.output
     assert {path: path.read_bytes() for path in native[0].rglob("*") if path.is_file()} == before
-    assert native[3].call_args.kwargs["env"]["MINIMAX_DATA_DIR"] == str(plugin.parent.parent)
 
 
 @pytest.mark.parametrize("primary,fallback", [("minimax", "mavis"), (" ", "mavis"), ("", "")])
@@ -119,6 +119,16 @@ def test_directory_environment_precedence(native, monkeypatch, primary, fallback
     target = root / (primary if primary.strip() else fallback or ".minimax")
     assert (target / "plugins/powercontext/.minimax-plugin/plugin.json").is_file(), result.output
     assert result.exit_code == (0 if primary.strip() or fallback else 1)
+
+
+def test_default_directory_uses_path_home_instead_of_environment_home(native, monkeypatch):
+    root, *_ = native
+    monkeypatch.setenv("HOME", str(root / "different-home"))
+    monkeypatch.setenv("USERPROFILE", str(root / "different-profile"))
+    result = invoke("setup", "minimax", "--source", str(ROOT), "--json")
+    assert (root / ".minimax/plugins/powercontext/.minimax-plugin/plugin.json").is_file(), result.output
+    assert not (root / "different-home").exists()
+    assert not (root / "different-profile").exists()
 
 
 def test_explicit_directory_overrides_environment(native, monkeypatch):
@@ -324,7 +334,7 @@ def test_malformed_private_json_fails_without_install_or_secret_output(native):
     assert path.read_text() == '{"private-token":'
 
 
-def test_setup_credentials_are_stored_only_in_private_mcp(native, monkeypatch):
+def test_setup_credentials_are_private_and_shared_by_both_native_connections(native, monkeypatch):
     monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "secret-value")
     result = setup(native)
     assert result.exit_code == 0, result.output
@@ -337,7 +347,13 @@ def test_setup_credentials_are_stored_only_in_private_mcp(native, monkeypatch):
     for path in (native[0] / "pc").rglob("*"):
         if path.is_file():
             assert b"secret-value" not in path.read_bytes()
-    assert b"secret-value" not in (installed(native) / "powercontext.mcp.json").read_bytes()
+    bundle = installed(native) / "powercontext.mcp.json"
+    assert json.loads(bundle.read_bytes())["mcpServers"]["powercontext"]["headers"] == {
+        "Authorization": "Bearer secret-value"
+    }
+    assert b"secret-value" not in (PACKAGE / "powercontext.mcp.json").read_bytes()
+    if os.name != "nt":
+        assert bundle.stat().st_mode & 0o077 == 0
 
 
 def test_interactive_selection_contains_minimax(native, monkeypatch):
@@ -409,6 +425,159 @@ def test_new_package_file_cannot_overwrite_user_file(native):
     assert result.exit_code == 1
     assert "conflict" in result.output
     assert (installed(native) / "custom.txt").read_text() == "user"
+
+
+@pytest.mark.parametrize("collision", ["directory", "empty-directory", "parent-file"])
+def test_package_path_type_conflicts_leave_user_content_and_installation_unchanged(native, collision):
+    assert setup(native).exit_code == 0
+    plugin = installed(native)
+    source = native[0] / "collision-package"
+    shutil.copytree(PACKAGE, source)
+    if collision == "parent-file":
+        (plugin / "notes").write_text("user content")
+        (source / "notes").mkdir()
+        (source / "notes/item").write_text("package content")
+    else:
+        (plugin / "notes").mkdir()
+        if collision == "directory":
+            (plugin / "notes/notes").write_text("user content")
+        (source / "notes").write_text("package content")
+    before = {p: p.read_bytes() for p in native[0].rglob("*") if p.is_file()}
+    result = setup(native, source=source)
+    assert result.exit_code == 1, result.output
+    assert "conflict" in result.output
+    assert {p: p.read_bytes() for p in native[0].rglob("*") if p.is_file()} == before
+
+
+def test_rendered_package_does_not_take_ownership_of_user_files(native, monkeypatch):
+    monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "private-secret")
+    assert setup(native, "--server-url", "https://chosen.example").exit_code == 0
+    user_file = installed(native) / "user.txt"
+    user_file.write_text("first user content")
+    assert setup(native).exit_code == 0
+    user_file.write_text("changed user content")
+    assert setup(native).exit_code == 0
+    assert user_file.read_text() == "changed user content"
+    bundle = json.loads((installed(native) / "powercontext.mcp.json").read_bytes())
+    private = json.loads((installed(native).parent.parent / "mcp.json").read_bytes())
+    assert bundle["mcpServers"]["powercontext"]["url"] == "https://chosen.example/mcp"
+    assert bundle["mcpServers"]["powercontext"]["headers"] == private["mcpServers"]["powercontext"]["headers"]
+
+
+def test_case_insensitive_destination_preserves_differently_cased_user_file(native):
+    assert setup(native).exit_code == 0
+    user_file = installed(native) / "UserNotes"
+    user_file.write_text("user content")
+    if not (installed(native) / "usernotes").exists():
+        pytest.skip("Requires a case-insensitive filesystem")
+    source = native[0] / "case-collision-package"
+    shutil.copytree(PACKAGE, source)
+    (source / "usernotes").write_text("package content")
+    result = setup(native, source=source)
+    assert result.exit_code == 1
+    assert "conflict" in result.output
+    assert user_file.read_text() == "user content"
+
+
+@pytest.mark.parametrize("private_state", ["disabled", "absent"])
+def test_upgrade_preserves_active_plugin_connection_when_private_entry_is_inactive(native, monkeypatch, private_state):
+    monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "active-plugin-secret")
+    assert setup(native, "--server-url", "https://chosen.example").exit_code == 0
+    monkeypatch.delenv("POWERCONTEXT_MINIMAX_AUTHORIZATION")
+    private = installed(native).parent.parent / "mcp.json"
+    bundle = installed(native) / "powercontext.mcp.json"
+    original_bundle = bundle.read_bytes()
+    original_private = None
+    if private_state == "disabled":
+        config = json.loads(private.read_bytes())
+        config["mcpServers"]["powercontext"].update(
+            enabled=False, url="https://dormant.example/mcp", headers={"Authorization": "Bearer dormant-secret"}
+        )
+        original_private = json.dumps(config, indent=4).encode()
+        private.write_bytes(original_private)
+    else:
+        private.unlink()
+    for _ in range(2):
+        result = setup(native)
+        assert result.exit_code == 0, result.output
+        assert bundle.read_bytes() == original_bundle
+        if private_state == "disabled":
+            assert private.read_bytes() == original_private
+        else:
+            assert json.loads(private.read_bytes())["mcpServers"]["powercontext"]["headers"] == {
+                "Authorization": "Bearer active-plugin-secret"
+            }
+
+
+def test_doctor_does_not_initialize_a_missing_target(native):
+    root, command, *_ = native
+    target = root / "uninstalled"
+    result = invoke("doctor", "minimax", "--minimax-data-dir", str(target), "--minimax-command", str(command), "--json")
+    assert result.exit_code == 1
+    assert not target.exists()
+
+
+def test_doctor_requires_a_target_instead_of_initializing_native_home(native):
+    root, command, *_ = native
+    result = invoke("doctor", "minimax", "--minimax-command", str(command), "--json")
+    assert result.exit_code == 1
+    assert "--minimax-data-dir" in result.output
+    assert not (root / ".minimax").exists()
+
+
+def test_native_diagnostic_initialization_is_confined_to_a_disposable_snapshot(native):
+    assert setup(native).exit_code == 0
+    root, _, payload, run = native
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    temporary_roots = []
+
+    def initializing_cli(args, *, env, **kwargs):
+        data = Path(env["MINIMAX_DATA_DIR"])
+        home = Path(env["HOME"])
+        assert (data / "plugins/powercontext/.minimax-plugin/plugin.json").is_file()
+        (data / "config.yaml").write_text("native initialization")
+        (home / "native-home-state").write_text("native initialization")
+        temporary_roots.append(home)
+        return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+
+    run.side_effect = initializing_cli
+    result = invoke("doctor", "minimax", "--json")
+    assert result.exit_code == 0, result.output
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+    assert temporary_roots and all(not path.exists() for path in temporary_roots)
+
+
+def test_doctor_reports_divergent_native_connections_without_rewriting_them(native):
+    assert setup(native).exit_code == 0
+    path = installed(native).parent.parent / "mcp.json"
+    config = json.loads(path.read_bytes())
+    config["mcpServers"]["powercontext"]["url"] = "https://other.example/mcp"
+    path.write_text(json.dumps(config))
+    before = path.read_bytes()
+    result = invoke("doctor", "minimax", "--json")
+    assert result.exit_code == 1
+    assert "connections differ" in result.output
+    assert path.read_bytes() == before
+    assert invoke("config", "agent", "minimax", "--json").exit_code == 0
+    assert invoke("doctor", "minimax", "--json").exit_code == 0
+
+
+def test_config_agent_rolls_back_both_connections_and_inventory_on_failure(native, monkeypatch):
+    assert setup(native).exit_code == 0
+    before = {p: p.read_bytes() for p in native[0].rglob("*") if p.is_file()}
+    write = installation.write_bytes
+
+    def fail_inventory(target, content):
+        if "installations" in target.parts:
+            raise OSError("record write failure")  # noqa: TRY003 - simulated disk failure.
+        write(target, content)
+
+    monkeypatch.setattr(installation, "write_bytes", fail_inventory)
+    monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "replacement-secret")
+    result = invoke("config", "agent", "minimax", "--server-url", "https://chosen.example", "--json")
+    assert result.exit_code == 1
+    assert {p: p.read_bytes() for p in native[0].rglob("*") if p.is_file()} == before
+    assert "replacement-secret" not in result.output
 
 
 def test_configuration_write_failure_preserves_private_and_shared_settings(native, monkeypatch):
@@ -488,3 +657,140 @@ def test_invalid_resource_reference_cannot_escape_package(native):
     assert result.exit_code == 1
     assert "inside its package" in result.output
     assert not installed(native).exists()
+
+
+@pytest.fixture(params=[False, True], ids=["without-authorization", "with-authorization"])
+def disabled_private(native, request, monkeypatch):
+    path = native[0] / "宿主 profile/mcp.json"
+    path.parent.mkdir()
+    monkeypatch.setenv("MINIMAX_DATA_DIR", str(path.parent))
+    entry = {
+        "type": "streamable-http",
+        "url": "https://memory.example/mcp",
+        "enabled": False,
+        "custom": "保留设置",
+        "headers": {"X-User": "keep"},
+    }
+    if request.param:
+        entry["headers"]["Authorization"] = "Bearer disabled-private-token"
+    config = {"custom": "保持原格式", "mcpServers": {"other": {"command": "other-server"}, "powercontext": entry}}
+    path.write_bytes((json.dumps(config, ensure_ascii=False, indent=4) + "\n").encode())
+    return path
+
+
+@pytest.mark.parametrize("operation", ["setup", "config"])
+def test_disabled_private_entry_survives_repeated_configuration_byte_for_byte(native, disabled_private, operation):
+    original = disabled_private.read_bytes()
+    for _ in range(2):
+        result = setup(native) if operation == "setup" else invoke("config", "agent", "minimax", "--json")
+        assert result.exit_code == 0, result.output
+        assert disabled_private.read_bytes() == original
+        assert "endpoint changed" not in result.output
+        assert "disabled-private-token" not in result.output
+
+
+def test_disabled_private_entry_accepts_credential_rotation_without_moving_endpoint(
+    native, disabled_private, monkeypatch
+):
+    original = json.loads(disabled_private.read_bytes())
+    monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "rotated-private-token")
+    result = setup(native)
+    assert result.exit_code == 0, result.output
+    expected = original
+    expected["mcpServers"]["powercontext"]["headers"]["Authorization"] = "Bearer rotated-private-token"
+    assert json.loads(disabled_private.read_bytes()) == expected
+    assert "rotated-private-token" not in result.output
+
+
+def test_explicit_same_endpoint_keeps_disabled_private_configuration(native, disabled_private):
+    original = disabled_private.read_bytes()
+    result = setup(native, "--server-url", "https://memory.example")
+    assert result.exit_code == 0, result.output
+    assert disabled_private.read_bytes() == original
+
+
+def test_explicit_changed_endpoint_protects_disabled_private_credentials(native, disabled_private):
+    original = disabled_private.read_bytes()
+    previous = json.loads(original)["mcpServers"]["powercontext"]
+    result = setup(native, "--server-url", "https://different.example")
+    if "Authorization" in previous["headers"]:
+        assert result.exit_code == 1
+        assert "provide a new authorization" in result.output
+        assert disabled_private.read_bytes() == original
+    else:
+        assert result.exit_code == 0, result.output
+        updated = json.loads(disabled_private.read_bytes())["mcpServers"]["powercontext"]
+        assert updated == {**previous, "url": "https://different.example/mcp"}
+
+
+@pytest.mark.parametrize("operation", ["setup", "config"])
+def test_explicit_endpoint_and_credential_update_does_not_enable_private_entry(
+    native, disabled_private, monkeypatch, operation
+):
+    original = json.loads(disabled_private.read_bytes())
+    monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "replacement-private-token")
+    if operation == "setup":
+        result = setup(native, "--server-url", "https://different.example")
+    else:
+        result = invoke("config", "agent", "minimax", "--server-url", "https://different.example", "--json")
+    assert result.exit_code == 0, result.output
+    expected = original
+    expected["mcpServers"]["powercontext"]["url"] = "https://different.example/mcp"
+    expected["mcpServers"]["powercontext"]["headers"]["Authorization"] = "Bearer replacement-private-token"
+    assert json.loads(disabled_private.read_bytes()) == expected
+    assert json.loads(result.output)["hosts"]["minimax"]["result"]["private_mcp_state"] == "disabled"
+    assert "replacement-private-token" not in result.output
+
+
+@pytest.mark.parametrize(
+    "source,name",
+    [
+        ("process", "POWERCONTEXT_MINIMAX_SERVER_URL"),
+        ("process", "POWERCONTEXT_CLIENT_SERVER_URL"),
+        ("file", "POWERCONTEXT_MINIMAX_BASE_URL"),
+        ("file", "POWERCONTEXT_MINIMAX_ENDPOINT"),
+    ],
+)
+def test_declared_environment_endpoint_updates_disabled_private_entry(
+    native, disabled_private, monkeypatch, source, name
+):
+    original = json.loads(disabled_private.read_bytes())
+    monkeypatch.setenv("POWERCONTEXT_MINIMAX_AUTHORIZATION", "replacement-private-token")
+    if source == "process":
+        monkeypatch.setenv(name, "https://declared.example")
+    else:
+        (native[0] / ".env").write_text(f"{name}=https://declared.example\n")
+    result = setup(native)
+    assert result.exit_code == 0, result.output
+    updated = json.loads(disabled_private.read_bytes())["mcpServers"]["powercontext"]
+    assert updated["url"] == "https://declared.example/mcp"
+    assert updated["enabled"] is False
+    assert updated["custom"] == original["mcpServers"]["powercontext"]["custom"]
+
+
+def test_doctor_resolves_bundled_connection_when_private_entry_is_disabled(native, disabled_private, monkeypatch):
+    from powercontext.cli.native_transport import resolve_host_transport
+
+    original = disabled_private.read_bytes()
+    result = setup(native)
+    assert result.exit_code == 0, result.output
+    endpoint, _ = resolve_host_transport("minimax")
+    assert endpoint == "http://127.0.0.1:8000"
+    result = invoke("doctor", "minimax", "--json")
+    assert result.exit_code == 0, result.output
+    assert disabled_private.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("POWERCONTEXT_SERVER_PUBLIC_URL", "https://public.example"),
+        ("POWERCONTEXT_SERVER_HTTP_PORT", "18000"),
+    ],
+)
+def test_server_fallback_does_not_retarget_disabled_private_entry(native, disabled_private, monkeypatch, name, value):
+    original = disabled_private.read_bytes()
+    monkeypatch.setenv(name, value)
+    result = setup(native)
+    assert result.exit_code == 0, result.output
+    assert disabled_private.read_bytes() == original

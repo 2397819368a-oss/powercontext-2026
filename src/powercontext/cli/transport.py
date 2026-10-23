@@ -50,6 +50,12 @@ class SetupTransport:
     host: str
     server_url: str
     allow_insecure_http: bool
+    endpoint_explicit: bool = False
+
+
+def _setup_endpoint_environment_names(host: str) -> tuple[str, ...]:
+    prefix = "POWERCONTEXT_" + ("CLAUDE" if host == "claude-code" else host.upper().replace("-", "_")) + "_"
+    return (prefix + "BASE_URL", prefix + "SERVER_URL", prefix + "ENDPOINT", "POWERCONTEXT_CLIENT_SERVER_URL")
 
 
 def is_remote_http(server_url: str) -> bool:
@@ -73,6 +79,11 @@ def prepare_setup_transport(
     from powercontext.cli.system import SetupError
 
     try:
+        endpoint_explicit = server_url is not None or any(
+            values.get(name)
+            for values in (setup_environment(), os.environ)
+            for name in _setup_endpoint_environment_names(host)
+        )
         native = {}
         if host == "dsh":
             from powercontext.cli.dsh_transport import read_dsh_settings
@@ -142,7 +153,7 @@ def prepare_setup_transport(
             validate_dsh_setup_transport(native, endpoint, allowed)
         except ValueError as error:
             raise SetupError(str(error)) from error
-    return SetupTransport(host, endpoint, allowed)
+    return SetupTransport(host, endpoint, allowed, endpoint_explicit=endpoint_explicit)
 
 
 def _setup_consent(host: str, endpoint: str, requested: bool | None, native: dict[str, Any]) -> bool | None:
@@ -179,8 +190,7 @@ def setup_environment() -> dict[str, str]:
 def _explicit_setup_endpoint(host: str, server_url: str) -> str:
     """Honor a chosen URL only when inherited runtime overrides cannot undo it."""
     endpoint = normalize_client_url(server_url).removesuffix("/mcp").rstrip("/")
-    prefix = "POWERCONTEXT_" + ("CLAUDE" if host == "claude-code" else host.upper().replace("-", "_")) + "_"
-    keys = (prefix + "BASE_URL", prefix + "SERVER_URL", prefix + "ENDPOINT", "POWERCONTEXT_CLIENT_SERVER_URL")
+    keys = _setup_endpoint_environment_names(host)
     if host == "claude-code":
         keys += ("CLAUDE_PLUGIN_OPTION_SERVER_URL",)
     for key in keys:
@@ -219,8 +229,7 @@ def resolve_setup_endpoint(
     """
     if server_url is not None:
         return _explicit_setup_endpoint(host, server_url)
-    prefix = "POWERCONTEXT_" + ("CLAUDE" if host == "claude-code" else host.upper().replace("-", "_")) + "_"
-    keys = (prefix + "BASE_URL", prefix + "SERVER_URL", prefix + "ENDPOINT", "POWERCONTEXT_CLIENT_SERVER_URL")
+    keys = _setup_endpoint_environment_names(host)
     loaded = setup_environment()
     candidates = [
         (name, normalize_client_url(values[name]).removesuffix("/mcp").rstrip("/"))

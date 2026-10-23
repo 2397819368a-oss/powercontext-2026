@@ -170,7 +170,12 @@ def setup(
         )
         if installer is None:
             installer = installers()[host](**options)
-        report = installer.install(PluginSource(source, ref))
+        source_package = PluginSource(source, ref)
+        report = (
+            installer.install(source_package, connection=connection)
+            if host == "minimax"
+            else installer.install(source_package)
+        )
         try:
             report.update(installer.configure(connection))
         except Exception as error:
