@@ -39,6 +39,11 @@ class DreamSchemaNotReadyError(RuntimeError):
 async def assert_dream_schema_ready(engine: AsyncEngine) -> None:
     """Check before create_all, domain initializers, or workers; never execute DDL."""
     async with engine.connect() as connection:
+        if connection.dialect.name == "sqlite":
+            # SQLite's legacy transaction mode does not begin a transaction for
+            # SELECTs. Pin one read snapshot before checking authority against
+            # projections, while still allowing concurrent WAL writers.
+            await connection.exec_driver_sql("BEGIN")
         await connection.run_sync(check_dream_schema)
 
 

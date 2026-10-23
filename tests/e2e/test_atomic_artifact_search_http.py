@@ -99,16 +99,17 @@ def test_supported_long_query_preserves_all_terms_in_both_http_searches(
             metrics=MetricsConfig(enabled=False),
             mcp=McpConfig(enabled=False),
         )
+        embedding = _Embedding()
         await asyncio.to_thread(
             prepare_server_database,
             settings,
             evidence_dir=migration_backend.directory / "migration-evidence",
-            embedding_profile=_Embedding.profile,
+            embedding_profile=embedding.profile,
         )
         app = create_server_app(
             settings=settings,
             scheduler_path=migration_backend.directory / "scheduler.db",
-            embedding_model=_Embedding(),
+            embedding_model=embedding,
         )
         async with (
             app.router.lifespan_context(app),
