@@ -730,7 +730,8 @@ def test_commit_lock_rolls_back_usage_and_restores_connection(tmp_path: Path, mo
         path = tmp_path / "commit-locked.db"
         config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}", journal_mode="DELETE")
         async with _database(config) as database:
-            recorder = _ModelUsageRecorder(database, StatisticsRepository())
+            # Recovery requires settlement beyond the default one-second write budget.
+            recorder = _ModelUsageRecorder(database, StatisticsRepository(), flush_timeout_seconds=2.0)
             reader = sqlite3.connect(path)
             try:
                 reader.execute("BEGIN")
