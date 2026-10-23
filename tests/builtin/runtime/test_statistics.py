@@ -202,35 +202,52 @@ def test_scoped_statistics_reports_current_inventory_and_recall_reduction() -> N
 
 def test_recall_estimates_each_source_as_complete_text() -> None:
     async def scenario() -> None:
-        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            candidate_pipeline=AtomicMemoryGenerationPipeline(
+                extractor=_ContentCandidatePipeline(),
+                reconciler=_IndependentMemoryReconciler(),
+                estimator=character_token_estimator(),
+            ),
+        ) as runtime:
             scope_id = await _create_scope(runtime, "statistics-recall")
             sources = runtime.sources.for_scope(scope_id)
             first = await sources.capture(CaptureSource(source_id="short-a", content="a", metadata={}))
-            second = await sources.capture(CaptureSource(source_id="short-b", content="b", metadata={}))
-            candidate = await runtime.experience.for_scope(scope_id).propose(
+            await sources.capture(CaptureSource(source_id="short-b", content="b", metadata={}))
+            assert runtime.atomic_memory is not None
+            memory = runtime.atomic_memory.for_scope(scope_id)
+            await memory.flush()
+            originals = await memory.list()
+            merged = await memory.merge(
+                tuple(item.as_read() for item in originals.items),
+                AtomicMemoryContent(kind="fact", text="Estimate each complete Source through ancestry."),
+            )
+            descendant = await runtime.experience.for_scope(scope_id).propose(
                 ProposeExperienceRequest(
                     proposal=ExperienceContent(
-                        situation="A short Source recall baseline was needed.",
-                        action="Estimate each complete Source separately.",
-                        outcome="Per-Source rounding remains visible in statistics.",
-                        lesson="Do not join independent Source text before estimation.",
+                        situation="An ancestry baseline was needed.",
+                        action="Estimate each complete Source through ancestry.",
+                        outcome="Shared ancestry contributes each Source once.",
+                        lesson="Preserve complete Source text and deduplicate shared ancestry.",
                     ),
-                    sources=(first.source_ref, second.source_ref),
+                    sources=(first.source_ref,),
+                    artifacts=(merged.primary.ref,),
                 )
             )
             await runtime.review.for_scope(scope_id).approve(
                 ApproveCandidateRequest(
-                    candidate_id=candidate.candidate_id,
-                    expected_version=candidate.version,
+                    candidate_id=descendant.candidate_id,
+                    expected_version=descendant.version,
                 )
             )
-            prepared = await runtime.context.for_scope(scope_id).prepare(
-                PrepareContextRequest(query="estimate each complete Source separately")
-            )
+            prepared = await runtime.context.for_scope(scope_id).prepare(PrepareContextRequest(query="ancestry"))
             result = await runtime.statistics.for_scope(scope_id).overview(period=StatisticsPeriod.TODAY)
 
         estimator = character_token_estimator()
         assert prepared.status == "ready"
+        assert prepared.content is not None and "through ancestry" in prepared.content
+        assert '"kind":"experience"' in prepared.content
+        assert '"family":"atomic-memory"' in prepared.content
         assert result.recall.totals.comparable_preparations == 1
         assert result.recall.totals.baseline_tokens == estimator.estimate("a") + estimator.estimate("b") == 2
 

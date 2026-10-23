@@ -1071,11 +1071,134 @@ probe = "kimi_code_mcp"
 id = "search_memory"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
-id = "remember_memory"
-capabilities = ["memory_write"]
+id = "search_topic_memory"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "get_topic_memory"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "list_memory_entries"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "get_memory_entry"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "get_atomic_memory_state"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "list_atomic_memories"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "search_atomic_memory"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "preview_atomic_memory_restoration"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "get_artifact"
+capabilities = ["memory_read"]
 [[toolsets.tools]]
 id = "get_artifact_revision"
 capabilities = ["memory_read"]
+[[toolsets.tools]]
+id = "remember_memory"
+capabilities = ["memory_write"]
+[[toolsets.tools]]
+id = "replace_artifact"
+capabilities = ["memory_write"]
+[[toolsets.tools]]
+id = "merge_atomic_memories"
+capabilities = ["memory_write"]
+[[toolsets.tools]]
+id = "change_atomic_memory_lifecycle"
+capabilities = ["memory_write"]
+[[toolsets.tools]]
+id = "restore_atomic_memory"
+capabilities = ["memory_write"]
+[[toolsets.tools]]
+id = "capture_content_source"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "capture_working_note"
+capabilities = ["source_capture"]
+[[toolsets.tools]]
+id = "create_work_contract"
+capabilities = ["work_contract"]
+[[toolsets.tools]]
+id = "handoff_current_work"
+capabilities = ["handoff"]
+[[toolsets.tools]]
+id = "activate_handoff"
+capabilities = ["handoff"]
+[[toolsets.tools]]
+id = "finalize_handoff"
+capabilities = ["handoff"]
+[[toolsets.tools]]
+id = "commit_handoff"
+capabilities = ["handoff"]
+[[toolsets.tools]]
+id = "continue_handoff"
+capabilities = ["handoff"]
+[[toolsets.tools]]
+id = "prepare_handoff_hint"
+capabilities = ["handoff"]
+[[toolsets.tools]]
+id = "acknowledge_handoff"
+capabilities = ["acknowledge"]
+[[toolsets.tools]]
+id = "record_task_outcome"
+capabilities = ["task_outcome"]
+[[toolsets.tools]]
+id = "list_candidates"
+capabilities = ["candidate_review"]
+[[toolsets.tools]]
+id = "get_candidate"
+capabilities = ["candidate_review"]
+[[toolsets.tools]]
+id = "approve_candidate"
+non_profile_reason = "Candidate decision authority is outside this capability contract."
+[[toolsets.tools]]
+id = "reject_candidate"
+non_profile_reason = "Candidate decision authority is outside this capability contract."
+[[toolsets.tools]]
+id = "revise_candidate"
+non_profile_reason = "Candidate decision authority is outside this capability contract."
+[[toolsets.tools]]
+id = "get_candidate_history"
+capabilities = ["candidate_review"]
+[[toolsets.tools]]
+id = "generate_experience"
+capabilities = ["experience_read_or_generate"]
+[[toolsets.tools]]
+id = "get_experience"
+capabilities = ["experience_read_or_generate"]
+[[toolsets.tools]]
+id = "propose_experience"
+capabilities = ["experience_read_or_generate"]
+[[toolsets.tools]]
+id = "generate_skill"
+capabilities = ["skill_read_or_generate"]
+[[toolsets.tools]]
+id = "get_skill"
+capabilities = ["skill_read_or_generate"]
+[[toolsets.tools]]
+id = "propose_skill"
+capabilities = ["skill_read_or_generate"]
+[[toolsets.tools]]
+id = "list_managed_skills"
+capabilities = ["skill_read_or_generate"]
+[[toolsets.tools]]
+id = "scan_external_skills"
+capabilities = ["external_skill"]
+[[toolsets.tools]]
+id = "list_external_skills"
+capabilities = ["external_skill"]
+[[toolsets.tools]]
+id = "resolve_external_skill"
+capabilities = ["external_skill"]
+[[toolsets.tools]]
+id = "import_external_skill"
+capabilities = ["external_skill"]
 
 [[toolsets]]
 id = "kimi-code-prompt-hook"
@@ -1101,8 +1224,8 @@ capabilities = ["persistent_scope_binding"]
 id = "kimi-code"
 kind = "agent_host"
 availability = "experimental"
-capabilities = ["memory_read", "memory_write", "source_capture", "context_injection", "persistent_scope_binding"]
-profiles = ["minimal"]
+capabilities = ["memory_read", "memory_write", "source_capture", "context_injection", "persistent_scope_binding", "work_contract", "handoff", "acknowledge", "task_outcome", "experience_read_or_generate", "skill_read_or_generate", "candidate_review", "external_skill"]
+profiles = ["minimal", "recommended", "full"]
 toolsets = ["kimi-code-mcp", "kimi-code-prompt-hook", "kimi-code-scope"]
 [integrations.evidence]
 implementation = ["integrations/kimi-code/plugins/powercontext/kimi.plugin.json", "integrations/kimi-code/plugins/powercontext/hooks/user_prompt_submit.mjs", "integrations/kimi-code/plugins/powercontext/scripts/scope.mjs", "src/powercontext/cli/kimi_code.py"]

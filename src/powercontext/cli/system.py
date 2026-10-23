@@ -199,7 +199,8 @@ def setup_agents(
         bool | None, typer.Option("--boundary-flush/--no-boundary-flush", help="ZCode boundary capture preference.")
     ] = None,
     profile: Annotated[
-        DshProfile | None, typer.Option(help="DSH profile; defaults to the saved profile or web.")
+        str | None,
+        typer.Option(help="DSH profile or Kimi MCP profile: minimal, recommended, full; omission preserves it."),
     ] = None,
     dsh_command: Annotated[Path | None, typer.Option(help="DSH launcher path.")] = None,
     env_file: Annotated[Path | None, typer.Option(help="Setup environment file; defaults to .env.")] = None,
@@ -223,13 +224,14 @@ def setup_agents(
         "scope_id": scope_id,
         "boundary_flush": boundary_flush,
         "workspace_scope": workspace_scope or None,
+        "profile": profile,
     }
-    validate_native_options(selected, **options, profile=profile, dsh_command=dsh_command)
+    validate_native_options(selected, **options, dsh_command=dsh_command)
 
     def complete(host):
         native = native_options(host, **options)
         if host == "dsh":
-            native["dsh_target"] = resolve_dsh_target(profile, dsh_command)
+            native["dsh_target"] = resolve_dsh_target(DshProfile(profile) if profile is not None else None, dsh_command)
             if native["dsh_target"].profile == DshProfile.DESKTOP:
                 typer.echo("Fully quit DSH Desktop before replacing its plugin.", err=True)
         if host == "kimi-code" and not scope_id and not workspace_scope and not json_output and stdin_is_tty():
@@ -263,6 +265,7 @@ def doctor(
     ] = None,
     dsh_command: Annotated[Path | None, typer.Option(help="DSH launcher path.")] = None,
     runtime: Annotated[bool, typer.Option(help="Inspect Kimi Hook history.")] = False,
+    mcp: Annotated[bool, typer.Option(help="Discover Kimi Server MCP tools without executing operations.")] = False,
     cwd: Annotated[Path | None, typer.Option(help="Kimi workspace for Scope resolution and runtime history.")] = None,
     session_id: Annotated[str | None, typer.Option(help="Exact Kimi session.")] = None,
     runtime_data_dir: Annotated[Path | None, typer.Option(help="Actual ZCode plugin data directory.")] = None,
@@ -294,15 +297,17 @@ def doctor(
             raise typer.BadParameter("Cannot read saved agent connections") from error  # noqa: TRY003 - CLI input validation.
     options = {
         "runtime": True if runtime else None,
+        "mcp": True if mcp else None,
         "cwd": cwd,
         "session_id": session_id,
         "runtime_data_dir": runtime_data_dir,
         "prepare": True if prepare else None,
-        "profile": profile,
         "dsh_command": dsh_command,
     }
     selected = select_hosts(agents, json_output=json_output) if agents else ()
     validate_native_options(selected, **options)
+    if profile is not None and "dsh" not in selected:
+        raise typer.BadParameter("Doctor --profile requires selecting dsh")  # noqa: TRY003
     if not selected:
         checks = run_diagnostics(server_url=server_url, allow_insecure_http=allow_insecure_http)
         _write_diagnostics(checks, json_output=json_output)
@@ -311,7 +316,11 @@ def doctor(
         return
     if explicit_server:
         raise typer.BadParameter("Agent diagnostics use their saved connections; change them with config agent")  # noqa: TRY003 - CLI input validation.
-    report_agents(selected, lambda host: diagnostic_result(doctor_checks(host, **options)), json_output=json_output)
+    report_agents(
+        selected,
+        lambda host: diagnostic_result(doctor_checks(host, **options, profile=profile if host == "dsh" else None)),
+        json_output=json_output,
+    )
 
 
 def _codex_endpoint_updates(marketplace: str, plugin_version: str, server_url: str) -> dict[Path, bytes]:

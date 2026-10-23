@@ -207,7 +207,7 @@ outcome = await runtime.artifact_merge.for_scope("S", "atomic-memory").restorati
 | `entries/list` | 返回 Scope 下的 `entries: AtomicMemoryRecord[]` 与 `next_cursor`；`include_inactive=true` 包含四态 |
 | `search` | `fts` 按 `text` 模式执行，`auto/vector/hybrid` 与 tag_filter 保留；每个 hit 的 `memory` 是 AtomicMemoryRecord |
 | `remember` 不传或传 null `expected_revision` | 创建独立记忆；返回 `changed`、`records: AtomicMemoryRecord[]` |
-| `flush` | 运行 Atomic Source 处理，保留原消费进度、status 和计数；`memory` 为 null，held_count 为 0、hold_codes 为空 |
+| `flush` | 运行 Atomic Source 处理，`memory` 为 null。写入闸门返回 HOLD 时不写入 Memory，但仍消费 Source 窗口并推进游标。`held_count` 为 0 或 1，`hold_codes` 返回拒绝码；被拒绝的窗口不会自动重试。 |
 
 以下旧行为在执行前拒绝，不读取旧存储：
 

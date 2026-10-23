@@ -43,6 +43,9 @@ opendal = ["integrations/opendal/**"]
 website = [
   "docs/**", "website/**", "assets/**", "README*.md", "scripts/generate_integration_manifest_docs.py",
 ]
+# Root tests assert exact sentences in published docs, so documentation edits must
+# exercise them without paying for the complete tests matrix.
+docs_tests = ["docs/**", "README*.md"]
 native = ["tests/native/**", "tests/test_service*.py", "tests/test_cursor_secret.py", "tests/test_server.py"]
 harness = [
   "e2e/**", "integrations/bub/**", "scripts/scan_e2e_evidence.sh", "tests/test_e2e_workflow_contract.py",
