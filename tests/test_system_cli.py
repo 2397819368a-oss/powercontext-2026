@@ -110,6 +110,7 @@ def test_setup_codex_installs_or_preserves_native_disablement(
     data_dir = tmp_path / "data"
     monkeypatch.setenv("POWERCONTEXT_HOME", str(data_dir))
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     record = {
         "name": "powercontext",
         "installed": True,
@@ -158,6 +159,7 @@ def test_setup_codex_installs_or_preserves_native_disablement(
 
 def test_codex_diagnostics_verify_native_mcp_tools_without_process_authorization(monkeypatch) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -201,6 +203,7 @@ def test_codex_diagnostics_recognize_full_tools_from_the_server(monkeypatch) -> 
 
     tools = asyncio.run(catalog())
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -245,6 +248,7 @@ def test_doctor_codex_requires_every_declared_capability_tool(monkeypatch, missi
     if missing is not None:
         tools.pop(missing)
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -272,6 +276,7 @@ def test_doctor_codex_requires_every_declared_capability_tool(monkeypatch, missi
 
 def test_codex_diagnostics_fail_when_required_native_tools_are_missing(monkeypatch) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -299,6 +304,7 @@ def test_codex_diagnostics_fail_when_required_native_tools_are_missing(monkeypat
 
 def test_codex_diagnostics_reject_native_mcp_without_authorization_environment(monkeypatch) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -344,6 +350,7 @@ def test_codex_diagnostics_probe_without_url_mismatched_stored_authorization(
 ) -> None:
     """A previous endpoint's token stays private while the new Server verifies access."""
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -427,6 +434,7 @@ def test_codex_app_server_probe_clears_process_authorization(monkeypatch) -> Non
     popen = Mock(return_value=Process())
     monkeypatch.setenv("POWERCONTEXT_CODEX_AUTHORIZATION", "Bearer process-token")
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(system_cli.subprocess, "Popen", popen)
 
     status = _probe_codex_mcp_status()
@@ -467,6 +475,7 @@ def test_codex_app_server_probe_uses_resolved_authorization(monkeypatch) -> None
 
     popen = Mock(return_value=Process())
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(system_cli.subprocess, "Popen", popen)
 
     _probe_codex_mcp_status(authorization="Bearer resolved-token")
@@ -481,6 +490,7 @@ def test_setup_codex_persists_setup_only_token_in_codex_owned_storage(
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.setenv("POWERCONTEXT_CLIENT_API_TOKEN", "setup-token")
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     configure_desktop = Mock(return_value=True)
     monkeypatch.setattr(authorization_cli, "configure_codex_desktop_authorization", configure_desktop)
     monkeypatch.setattr(
@@ -524,6 +534,7 @@ def test_setup_codex_persists_setup_only_token_in_codex_owned_storage(
 
 def test_codex_diagnostics_use_matching_windows_user_authorization(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -566,6 +577,7 @@ def test_codex_diagnostics_prefer_process_authorization_over_stale_stored_creden
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -609,6 +621,7 @@ def test_codex_diagnostics_prefer_process_authorization_over_stale_stored_creden
 
 def test_codex_diagnostics_reject_bare_process_token_without_repairing_it(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -655,6 +668,7 @@ def test_codex_diagnostics_reject_bare_process_token_without_repairing_it(tmp_pa
 
 def test_codex_diagnostics_probe_lowercase_bearer_header_without_rewriting_it(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -701,6 +715,7 @@ def test_codex_diagnostics_do_not_replace_process_authorization_with_windows_use
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -743,6 +758,7 @@ def test_codex_diagnostics_report_matching_desktop_override_separately_from_stal
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -785,6 +801,7 @@ def test_codex_diagnostics_probe_the_native_credential_helper_without_injecting_
     tmp_path: Path, monkeypatch, process_override: bool
 ) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -831,6 +848,7 @@ def test_codex_diagnostics_probe_the_native_credential_helper_without_injecting_
 
 def test_codex_diagnostics_fail_when_setup_credential_is_unavailable_to_host(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
@@ -1238,6 +1256,7 @@ def test_setup_codex_uses_an_absolute_local_marketplace_without_a_ref(
     marketplace.mkdir()
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     run_codex = Mock(
         side_effect=lambda *args: (
             {"marketplaceName": "powercontext-local"}
@@ -2218,6 +2237,7 @@ def test_doctor_dsh_requires_the_installed_plugin(monkeypatch, server_checks) ->
 
 def test_codex_configuration_and_doctor_follow_the_native_installation_not_old_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(system_cli, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(system_cli, "_codex_path_executable", lambda: "/usr/bin/codex")
     monkeypatch.setattr(
         system_cli,
         "_run_codex_json",
