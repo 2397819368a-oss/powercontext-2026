@@ -1129,6 +1129,18 @@ def test_codex_runners_honor_an_explicit_dot_path_entry(tmp_path: Path, monkeypa
     assert result["marker"] == "CURRENT_DIRECTORY_SHIM"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="PATHEXT candidate order is Windows-specific")
+def test_codex_path_executable_prefers_earlier_pathext_entries(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "codex.bat").write_text("@echo off\r\nexit /b 0\r\n", encoding="ascii")
+    (tmp_path / "codex.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="ascii")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+    resolved = system_cli._codex_path_executable()
+
+    assert resolved is not None and resolved.casefold().endswith("codex.bat")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable discovery has no PATHEXT")
 def test_codex_path_executable_finds_a_posix_executable(tmp_path: Path, monkeypatch) -> None:
     executable = tmp_path / "codex"
