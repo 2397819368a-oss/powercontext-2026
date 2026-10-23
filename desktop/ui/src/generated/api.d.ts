@@ -1868,7 +1868,7 @@ export interface paths {
         };
         /**
          * List public Sources in one Scope
-         * @description List a snapshot-bounded page of public Content Sources in ascending journal position.
+         * @description List public Content Sources and registered Source Observations in one Scope in ascending journal position. Subsequent pages retain the Source type selection and journal upper bound recorded in the cursor.
          */
         get: operations["list_sources"];
         put?: never;
