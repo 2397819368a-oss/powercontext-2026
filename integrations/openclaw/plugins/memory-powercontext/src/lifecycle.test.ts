@@ -268,6 +268,41 @@ describe("PowerContext lifecycle", () => {
     expect(harness.warnings).toEqual([]);
   });
 
+  it.each(["session_end", "gateway_stop"])(
+    "shares the flush call budget across all pending Scopes at %s",
+    async (lifecycleEvent) => {
+      const harness = createLifecycleHarness();
+      harness.config.flushMaxCalls = 1;
+      const context = {
+        agentId: "main",
+        sessionId: `session-budget-${lifecycleEvent}`,
+        sessionKey: "agent:main:telegram:direct:user-1",
+      };
+      await harness.hooks.get("agent_end")!(
+        { success: true, messages: [{ role: "user", content: "scope a" }] },
+        { ...context, activeProjectKeys: ["/workspace/project-a"] },
+      );
+      await harness.hooks.get("agent_end")!(
+        { success: true, messages: [{ role: "user", content: "scope b" }] },
+        { ...context, activeProjectKeys: ["/workspace/project-b"] },
+      );
+
+      if (lifecycleEvent === "session_end") {
+        await harness.hooks.get("session_end")!(
+          { sessionId: context.sessionId, messageCount: 2 },
+          context,
+        );
+      } else {
+        await harness.hooks.get("gateway_stop")!({}, {});
+      }
+      expect(harness.flushScopes).toEqual(["scp_project_a"]);
+
+      await harness.hooks.get("gateway_stop")!({}, {});
+      expect(harness.flushScopes).toEqual(["scp_project_a", "scp_project_b"]);
+      expect(harness.warnings).toEqual([]);
+    },
+  );
+
   it("surfaces a bounded, content-free unavailable diagnostic", async () => {
     const harness = createLifecycleHarness();
     harness.setContextPrepareError(
@@ -855,7 +890,7 @@ describe("PowerContext lifecycle", () => {
 
   it("continues flushing pending Scopes when operational logging throws", async () => {
     const harness = createLifecycleHarness();
-    harness.config.flushMaxCalls = 1;
+    harness.config.flushMaxCalls = 2;
     const agentEnd = harness.hooks.get("agent_end")!;
     const context = {
       agentId: "main",

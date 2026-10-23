@@ -161,7 +161,7 @@ changing PowerContext environment variables.
 | `POWERCONTEXT_PI_HTTP_BUDGET_MS` | `6000` | Shared recall/capture HTTP budget in milliseconds |
 | `POWERCONTEXT_PI_MAX_BYTES` | `8000` | Requested and validated PreparedContext byte limit (`512`–`32768`) |
 | `POWERCONTEXT_PI_FLUSH_ON_CAPTURE` | `false` | Wait for captured Source processing during the prompt hook |
-| `POWERCONTEXT_PI_FLUSH_MAX_CALLS` | `4` | Maximum flush attempts for one pending Source |
+| `POWERCONTEXT_PI_FLUSH_MAX_CALLS` | `4` | Maximum flush calls shared by all pending Scopes at one lifecycle boundary |
 | `POWERCONTEXT_PI_DIAGNOSTICS` | `off` | Failure diagnostics sink: `off`, `stderr`, or an absolute file path (`~/` expanded) for JSON lines |
 
 Pi rejects base URLs containing credentials, a query, or a fragment. Recall, capture, and boundary flushing fail open;

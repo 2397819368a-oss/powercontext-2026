@@ -136,11 +136,17 @@ export function createPendingSourceFlusher(
     if (pending.size === 0) return { acknowledged: true, pendingScopes: 0 }
     if (signal?.aborted) return { acknowledged: false, pendingScopes: pending.size }
     let acknowledged = true
+    let remainingCalls = config.flushMaxCalls
     for (const [scopeId, position] of [...pending]) {
+      if (remainingCalls === 0) {
+        acknowledged = false
+        break
+      }
       let observedCursor: number | undefined
       let failure: unknown
       let scopeAcknowledged = false
-      for (let attempt = 0; attempt < config.flushMaxCalls; attempt += 1) {
+      while (remainingCalls > 0) {
+        remainingCalls -= 1
         try {
           const result = await client.request('flush_memory', { scope_id: scopeId }, signal)
           if (deadlineExpired()) break

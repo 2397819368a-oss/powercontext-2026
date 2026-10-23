@@ -147,7 +147,7 @@ describe('pending Source flusher', () => {
     }))
     const flusher = createPendingSourceFlusher(
       { request } as unknown as PowerContextClient,
-      resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '1' }),
+      resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '2' }),
     )
     for (const scope of vector.input.scopes) flusher.record(scope.id, scope.target_position)
 
@@ -156,6 +156,24 @@ describe('pending Source flusher', () => {
       pendingScopes: vector.expected.pending_scopes,
     })
     expect(request.mock.calls.map(([, payload]) => payload?.scope_id)).toEqual(['scope-a', 'scope-b'])
+  })
+
+  it('shares the flush call budget across all pending Scopes in one lifecycle boundary', async () => {
+    const client = clientWith(progress(1), progress(1))
+    const flusher = createPendingSourceFlusher(
+      client,
+      resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '1' }),
+    )
+    flusher.record('scope-a', 1)
+    flusher.record('scope-b', 1)
+
+    await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: false, pendingScopes: 1 })
+    expect(client.request).toHaveBeenCalledTimes(1)
+    expect(client.request).toHaveBeenLastCalledWith('flush_memory', { scope_id: 'scope-a' }, expect.any(AbortSignal))
+
+    await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
+    expect(client.request).toHaveBeenCalledTimes(2)
+    expect(client.request).toHaveBeenLastCalledWith('flush_memory', { scope_id: 'scope-b' }, expect.any(AbortSignal))
   })
 
   it('retains work cancelled before acknowledgement and keeps an acknowledgement after cancellation', async () => {

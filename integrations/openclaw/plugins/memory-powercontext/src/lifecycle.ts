@@ -53,6 +53,10 @@ type CheckpointResult = {
   error?: unknown;
 };
 
+type FlushCallBudget = {
+  remaining: number;
+};
+
 function nonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
@@ -313,12 +317,17 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     return position;
   };
 
-  const flush = async (scopeId: string, targetPosition: number, signal?: AbortSignal): Promise<CheckpointResult> => {
+  const flush = async (
+    scopeId: string,
+    targetPosition: number,
+    budget: FlushCallBudget,
+    signal?: AbortSignal,
+  ): Promise<CheckpointResult> => {
     let acknowledged = false;
     let observedCursor: number | undefined;
     let failure: unknown;
-    const config = deps.getConfig();
-    for (let attempt = 0; attempt < config.flushMaxCalls; attempt += 1) {
+    while (budget.remaining > 0) {
+      budget.remaining -= 1;
       try {
         const response = await deps.client.post<unknown>("/v1/memory/flush", { scope_id: scopeId }, signal);
         if (signal?.aborted) {
@@ -487,13 +496,14 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     }
     const signal = createClosingSignal();
     await enqueueFlush(async () => {
+      const budget = { remaining: deps.getConfig().flushMaxCalls };
       const currentTarget = pendingPositions.get(scopeId);
       if (currentTarget === undefined) {
         return;
       }
       try {
         if (await canExtractMemory(signal)) {
-          const result = await flush(scopeId, Math.max(targetPosition, currentTarget), signal);
+          const result = await flush(scopeId, Math.max(targetPosition, currentTarget), budget, signal);
           if (!result.acknowledged && !signal.aborted) {
             reportFailure("pre_compaction_checkpoint", result.error, {
               host: "openclaw",
@@ -548,6 +558,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     const scopes = observedScopes?.size ? [...observedScopes] : [];
     const signal = createClosingSignal();
     await enqueueFlush(async () => {
+      const budget = { remaining: deps.getConfig().flushMaxCalls };
       const pendingScopes = scopes.filter((scopeId) => pendingPositions.has(scopeId));
       if (!pendingScopes.length) {
         return;
@@ -557,11 +568,14 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           return;
         }
         for (const scopeId of pendingScopes) {
+          if (budget.remaining === 0) {
+            break;
+          }
           const targetPosition = pendingPositions.get(scopeId);
           if (targetPosition === undefined) {
             continue;
           }
-          const result = await flush(scopeId, targetPosition, signal);
+          const result = await flush(scopeId, targetPosition, budget, signal);
           if (!result.acknowledged && !signal.aborted) {
             reportFailure("session_end_flush", result.error, {
               host: "openclaw",
@@ -595,6 +609,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
   api.on("gateway_stop", async () => {
     const signal = createClosingSignal();
     await enqueueFlush(async () => {
+      const budget = { remaining: deps.getConfig().flushMaxCalls };
       if (!pendingPositions.size) {
         return;
       }
@@ -603,11 +618,14 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           return;
         }
         for (const [scopeId, targetPosition] of [...pendingPositions]) {
+          if (budget.remaining === 0) {
+            break;
+          }
           const currentTarget = pendingPositions.get(scopeId);
           if (currentTarget === undefined) {
             continue;
           }
-          const result = await flush(scopeId, Math.max(targetPosition, currentTarget), signal);
+          const result = await flush(scopeId, Math.max(targetPosition, currentTarget), budget, signal);
           if (!result.acknowledged && !signal.aborted) {
             reportFailure("shutdown_flush", result.error, {
               host: "openclaw",

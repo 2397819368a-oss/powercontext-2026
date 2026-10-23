@@ -154,7 +154,7 @@ powercontext doctor pi
 | `POWERCONTEXT_PI_HTTP_BUDGET_MS` | `6000` | 召回/采集共享 HTTP 时间预算，单位毫秒 |
 | `POWERCONTEXT_PI_MAX_BYTES` | `8000` | 请求并校验的 PreparedContext byte 上限（`512`–`32768`） |
 | `POWERCONTEXT_PI_FLUSH_ON_CAPTURE` | `false` | 在 prompt hook 中等待已采集 Source 的处理 |
-| `POWERCONTEXT_PI_FLUSH_MAX_CALLS` | `4` | 一个 pending Source 最多 flush 次数 |
+| `POWERCONTEXT_PI_FLUSH_MAX_CALLS` | `4` | 一个 lifecycle 边界内所有 pending Scope 共享的最大 flush 调用次数 |
 | `POWERCONTEXT_PI_DIAGNOSTICS` | `off` | 失败诊断输出：`off`、`stderr`，或写入 JSON 行的绝对文件路径（支持 `~/`） |
 
 Pi 会拒绝包含凭据、query 或 fragment 的 base URL。召回、采集和边界 flush 都会正常降级；显式 `pc_*` 持久化写入
