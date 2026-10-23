@@ -350,3 +350,41 @@ def test_capacity_reader_recovery_does_not_backfill_after_consent_renewal(image_
     for _ in range(3):
         worker.drain(settings, wait_seconds=0)
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize("protected", ["watching", "pending", "error", "capacity"])
+def test_completed_jobs_release_capacity_without_discarding_unfinished_work(
+    image_capture_module, monkeypatch, tmp_path, protected
+):
+    config, outbox, _, settings, path, payload, _ = _setup(image_capture_module, monkeypatch, tmp_path)
+    monkeypatch.setattr(importlib.import_module("image_outbox"), "MAX_JOBS", 3)
+    _append(path, "turn_context", {"turn_id": "turn-1"})
+    image_capture_module.enqueue_capture(payload, settings, deadline=monotonic() + 6)
+    original = outbox.jobs()[0]
+    job = json.loads(original["payload"])
+    if protected in {"pending", "error"}:
+        outbox.advance(
+            original["id"],
+            original["cursor"],
+            [({"capture_key": "retained", "origin": {"attachment_index": 0}}, b"retained bytes")],
+            reader={},
+            state="done",
+        )
+        if protected == "error":
+            outbox.retry(outbox.pending()[0]["id"], error="image_upload_http_409", permanent=True)
+    elif protected == "capacity":
+        outbox.finish(original["id"], state="error", error="image_outbox_full")
+    for turn in ("finished-1", "finished-2"):
+        identity = outbox.register(job | {"turn_id": turn}, cursor=0)
+        outbox.finish(identity, state="done")
+
+    # A live reader or undelivered attachment must not prevent recycling a
+    # completed turn when the shared queue reaches its job budget.
+    outbox.register(job | {"turn_id": "next-turn"}, cursor=0)
+    status = {item["turn_id"]: item for item in outbox.status(config.workspace_key(tmp_path))}
+    assert set(status) == {"turn-1", "finished-2", "next-turn"}
+    if protected in {"pending", "error"}:
+        outbox.reset_delivery(config.workspace_key(tmp_path))
+        assert [row["bytes"] for row in outbox.pending()] == [b"retained bytes"]
+    else:
+        assert original["id"] in {row["id"] for row in outbox.jobs()}

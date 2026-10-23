@@ -100,7 +100,9 @@ class Outbox:
                     raise ValueError("image_capture_conflict")
                 connection.execute("UPDATE jobs SET state='watching' WHERE id=? AND state='idle'", (identity,))
                 return identity
-            # Retain pending deliveries; prune only old fully delivered jobs.
+            # Make room against the total budget, including live readers and
+            # undelivered jobs. Only completed work is eligible for eviction.
+            count = connection.execute("SELECT count(*) FROM jobs").fetchone()[0]
             connection.execute(
                 """
                 DELETE FROM jobs WHERE id IN (
@@ -108,10 +110,10 @@ class Outbox:
                         (state IN ('done','idle') OR (state='error' AND coalesce(error,'')!='image_outbox_full'))
                     AND NOT EXISTS (
                         SELECT 1 FROM attachments WHERE job_id=jobs.id AND state!='accepted'
-                    ) ORDER BY created DESC LIMIT -1 OFFSET ?
+                    ) ORDER BY created LIMIT ?
                 )
             """,
-                (MAX_JOBS - 1,),
+                (max(0, count - MAX_JOBS + 1),),
             )
             if connection.execute("SELECT count(*) FROM jobs").fetchone()[0] >= MAX_JOBS:
                 raise ValueError("image_outbox_full")

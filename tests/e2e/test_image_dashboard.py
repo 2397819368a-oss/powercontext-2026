@@ -13,8 +13,11 @@
 import asyncio
 import json
 import re
+from io import BytesIO
 
+import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 from pydantic import SecretStr
 
 from powercontext.builtin.images.config import ImageConfig
@@ -35,6 +38,33 @@ from tests.e2e.dream_support import atomic_memory_pipeline
 from tests.e2e.test_image_evidence import MemoryGenerator
 from tests.e2e.test_image_processing import REPARSE, VISIBLE, Backend, _listen, _running, _terminal
 from tests.e2e.test_image_source_product import TASK_GET, _capture, _picture, _request, _scope
+
+
+@pytest.mark.parametrize("mode", ["RGBA", "LA", "P", "RGB"])
+def test_png_thumbnail_composites_all_transparency_modes_on_white(tmp_path, mode):
+    image = Image.new(mode, (24, 16))
+    options = {"transparency": 0} if mode == "P" else {"transparency": (0, 0, 0)} if mode == "RGB" else {}
+    with BytesIO() as buffer:
+        image.save(buffer, format="PNG", **options)
+        original = buffer.getvalue()
+
+    async def scenario():
+        backend = Backend()
+        async with (
+            _listen(backend.app) as endpoint,
+            _running(tmp_path, endpoint + "/v1", dashboard=True) as (_, http),
+        ):
+            scope = await _scope(http)
+            accepted = await _capture(http, _request(scope, "transparent", original))
+            asset_id = accepted["asset"]["asset_id"]
+            response = await http.get("/dashboard/image-thumbnails/" + asset_id, params={"scope": scope})
+            assert response.status_code == 200
+            with Image.open(BytesIO(response.content)) as thumbnail:
+                assert thumbnail.getpixel((12, 8)) == (255, 255, 255)
+            saved = await http.get("/dashboard/image-assets/" + asset_id, params={"scope": scope})
+            assert saved.content == original
+
+    asyncio.run(scenario())
 
 
 def test_image_evidence_page_distinguishes_pending_analysis_and_memory_and_escapes_output(tmp_path):

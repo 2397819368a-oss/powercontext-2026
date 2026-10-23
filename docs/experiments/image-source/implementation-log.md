@@ -5,6 +5,26 @@ description: 按阶段记录目标、实际变更、验证证据、限制和后�
 
 # 图片 Source 实验功能实施过程记录
 
+## 2026-10-23：PR #1956 代码审查与缺陷修复
+
+本轮目标属于集成维护：使用 Open Code Review 审查 `0bc42d0b..bada5053`，核实并修复可复现问题，验证后推送同一 PR。使用独立 worktree `pr1956-review-1023` 和隔离测试数据库、资产及宿主配置；不操作现有桌面服务或私有模型。重点检查队列容量回收、授权、任务恢复和历史证据读取。真实宿主及模型验收边界保持不变。
+
+Open Code Review 的外部模型执行出现请求和代码搜索超时，仅产生 3 个文件的完成标记，未生成完整报告，已停止该次执行。随后按同插件的 delegate 流程读取文件清单、规则和差异，完成全部 74 个可审查文件的检查（跳过 0，覆盖率 100%）。默认过滤的 58 个文件不计入此覆盖率；另外读取实验契约、实施记录及相关测试，并执行下述验证。
+
+确认并修复两项中等严重性问题：
+
+- Outbox 达到任务上限且包含活动读取器或未投递附件时，原清理逻辑按“可删除任务数”应用总容量偏移，导致已有完成任务仍无法腾出位置。现在按全部任务计算需要释放的数量，只删除最旧且可安全回收的任务；活动读取器、未投递附件、永久投递错误附件和容量暂停任务均保留。四种保护场景的回归在修复前全部失败，修复后通过。
+- Dashboard 缩略图仅识别 RGBA 透明度，LA、调色板透明及 RGB 透明色 PNG 会被错误合成为黑底。现在先规范化为 RGBA，再缩放并合成白底；通过 HTTP 读取缩略图和原图验证四种透明表示，并确认原始字节不变。修复前三种非 RGBA 场景失败，修复后全部通过。
+
+验证结果（Windows / Python 3.14，均使用隔离临时目录）：
+
+- `uv sync --locked` 通过；`uv run --no-sync pytest -q tests/codex_plugin/test_image_delivery.py tests/codex_plugin/test_image_desktop_watch.py`：37 passed。
+- `uv run --no-sync pytest -q tests/e2e/test_image_dashboard.py`：9 passed。
+- 扩展执行 Codex 插件、图片 E2E、契约、CLI、Vision、配置向导与诊断用例：455 passed、6 skipped、3 failed。失败均为宿主超时断言，分别是 `test_native_helper_does_not_forward_unusable_credentials[invalid_header]`、`test_scope_response_body_respects_the_per_request_timeout`、`test_stop_process_exits_within_the_host_deadline_against_a_slow_server`。它们随后单独执行均通过；未修改相关实现、阈值或断言，也不将该次扩展执行计作全绿。
+- Ruff 检查和格式检查通过。`uv run --no-sync prek run -a` 的非类型检查通过；默认 Windows `ty check` 因已有 POSIX 专用接口（包括 `fcntl`、`resource`、`os.O_NOFOLLOW`、`os.mkfifo`）报告 32 项诊断。`uv run --no-sync ty check --python-platform linux` 通过。
+
+这些结果覆盖本地 HTTP、SQLite、受控回环模型服务及模拟宿主事件；没有新增真实 Codex Desktop、Linux/macOS 服务管理或私有视觉模型验收结论。
+
 ## 2026-10-20：PR #1956 主干集成
 
 本轮目标是将现有 PR rebase 到 `fe50f8940`，解决冲突、验证图片与主干接入行为，并以精确 lease 更新同一 Draft PR。原实验 worktree 有未提交文档，保留在原处；本轮使用独立 worktree `D:/code/git-project/powermem/pr-1956-rebase` 和分支 `codex/rebase-pr-1956-20261020`，远端起点为 `21df99c841b154975e838fff6618a91c8c191350`。不操作已有服务、私有数据库或模型配置。

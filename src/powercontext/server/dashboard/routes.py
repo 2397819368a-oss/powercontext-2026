@@ -473,10 +473,12 @@ def _thumbnail(data: bytes) -> bytes:
     with Image.open(BytesIO(data)) as image:
         if image.width * image.height > 20_000_000:
             raise ValueError("image_pixel_budget")
-        image = ImageOps.exif_transpose(image)
+        # PNG transparency may be an alpha band or a palette/color-key entry.
+        # Normalize before resizing so every representation keeps its opacity.
+        image = ImageOps.exif_transpose(image).convert("RGBA")
         image.thumbnail((480, 320))
         pixels = Image.new("RGB", image.size, "white")
-        pixels.paste(image, mask=image.getchannel("A") if image.mode == "RGBA" else None)
+        pixels.paste(image, mask=image.getchannel("A"))
         with BytesIO() as buffer:
             pixels.save(buffer, format="JPEG", quality=80)
             return buffer.getvalue()
