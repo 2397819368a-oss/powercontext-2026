@@ -94,6 +94,7 @@ ReviewedProposal: TypeAlias = (
 ReviewedArtifact: TypeAlias = Experience | Skill
 ReviewedDraft: TypeAlias = ExperienceDraft | SkillDraft
 ReviewedCandidate: TypeAlias = Candidate[ReviewedProposal]
+CandidateCommitHook = Callable[[AsyncConnection, Candidate[Any]], Awaitable[None]]
 
 
 class ReviewService:
@@ -160,6 +161,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> Candidate[ExperienceContent]:
         """Persist a human or integration supplied Experience proposal."""
 
@@ -171,6 +173,7 @@ class ReviewService:
             target=target,
             reason=reason,
             candidate_id=candidate_id,
+            on_commit=on_commit,
         )
         return _experience_candidate(candidate)
 
@@ -184,6 +187,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> Candidate[SkillContent]:
         """Persist a human or integration supplied managed Skill proposal."""
 
@@ -203,6 +207,7 @@ class ReviewService:
                 target=target,
                 reason=reason,
                 candidate_id=candidate_id,
+                on_commit=on_commit,
             )
         return _skill_candidate(candidate)
 
@@ -310,6 +315,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> ReviewedCandidate:
         canonical_sources = _unique_sources(sources)
         canonical_artifacts = _unique_artifacts(artifacts)
@@ -324,6 +330,7 @@ class ReviewService:
                 target=target,
                 reason=reason,
                 candidate_id=candidate_id,
+                on_commit=on_commit,
             )
         return _reviewed_candidate(candidate)
 
@@ -339,6 +346,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> ReviewedCandidate:
         sources = await self._validate_evidence(
             connection,
@@ -361,6 +369,8 @@ class ReviewService:
             target=target,
             reason=reason,
         )
+        if on_commit is not None:
+            await on_commit(connection, candidate)
         return _reviewed_candidate(candidate)
 
     async def candidate_page(self, request, *, metadata_only=False, connection=None):
@@ -394,7 +404,7 @@ class ReviewService:
                 )
             ).mappings()
             return tuple(
-                self._candidates._decode_row({
+                self._candidates.decode_candidate({
                     **row,
                     "status": "pending",
                     "result_family": None,

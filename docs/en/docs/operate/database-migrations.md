@@ -15,7 +15,7 @@ The design follows [RFC #1771](https://github.com/oceanbase/powercontext/pull/17
 `powercontext server db-migrate status/plan/apply/verify` use the configured persistent SQLite, embedded seekdb, or
 OceanBase MySQL-mode database. They do not accept arbitrary test-bundle paths. Explicit environment files are authoritative
 for maintenance commands; use the deployment's environment file rather than relying on temporary shell overrides.
-Frozen resources ship in the wheel for Phase A acceptance of four Artifact tables: `pc_artifacts`, `pc_artifact_heads`,
+The default `--bundle artifacts` ships frozen resources for Phase A acceptance of four Artifact tables: `pc_artifacts`, `pc_artifact_heads`,
 `pc_artifact_candidate_versions`, and `pc_artifact_tags`. Only empty targets and registered historical layouts are accepted.
 A complete Server database containing unmanaged objects is rejected.
 
@@ -27,9 +27,64 @@ through an ODP endpoint on OceanBase AI Database 4.6.3, covering coordinator exc
 committed DDL, data preservation, and repeat execution. This does not establish complete Server readiness, automatic
 detection of unfinished remote DDL after a crash, or full Fork restoration acceptance.
 
+MySQL-compatible schema reflection supports arithmetic CHECK expressions with binary `+`, `-`, `*`, `/`, `%`,
+unary signs, and nested grouping, preserving arithmetic, comparison, and boolean precedence. Unsupported CHECK
+operators/functions remain rejected; their errors identify the reflected table, named constraint, and unsupported
+construct instead of misreporting balanced parentheses. Parsing an expression does not register a historical layout
+or bypass migration/data-integrity checks.
+
 The existing `server processing-migrate` remains available. Follow
 [Migrate Artifact processing state](artifact-processing-migration.md); it does not yet forward to the unified entry point.
 See [Deploy the Server](deploy-server.md) for service deployment.
+
+## Topic Memory recovery bundle
+
+Select `--bundle topic-memory-recovery` for the versioned `powercontext.topic-memory-recovery.v1` conversion. It recognizes
+the pre-recovery budget layout and the attempts-table layout from implementation #1966, preserves consumed allowance,
+and retains terminal blocks and accepted receipts. It verifies only its registered Topic objects in an existing Server
+database, including shared processing-lease fencing; other business tables remain untouched. Its output still reports `server_ready=false`.
+
+Stop all APIs, Workers, schedulers and SDK writers first, and suspend automatic restarts. Review and apply one plan:
+
+```bash
+powercontext server db-migrate plan --bundle topic-memory-recovery --env-file deployment.env --backup auto
+powercontext server db-migrate apply --bundle topic-memory-recovery --env-file deployment.env --backup auto --plan-id PLAN_ID --yes --maintenance-confirmed
+powercontext server db-migrate verify --bundle topic-memory-recovery --env-file deployment.env
+```
+
+SQLite uses a whole-database native backup. OceanBase also requires `--evidence-dir` and `--lock-coordination single-host`;
+choose a supported backup policy using the declarations below. Keep the recovery point and evidence directory after an
+interruption and resume with the original options. SQLite rolls back an incomplete conversion. MySQL-compatible DDL
+resumes only a recognized prefix recorded in the external evidence; previous remote-run acknowledgment rules apply.
+
+Current-attempt metadata moves into the budget; only terminal blocks and receipts remain in `pc_topic_memory_work_blocks`.
+Existing IDs, acceptance timestamps/generations and costs are preserved. Old attempts lacked trustworthy range provenance:
+their original number becomes `legacy_source_through`, while exact `source_through` is null. Cumulative
+`budget_source_through` is copied only from the same still-present allowance, otherwise null. No current allowance is
+used to reinterpret an older receipt. The old attempts table is removed only after verification; the recovery point
+retains its successful/superseded rows. Unknown or inconsistent layouts are rejected before writes. Normal startup
+requires the target format; it does not upgrade an existing database. Exact block lookup and accepted-retry replay have
+no automatic expiry.
+
+Empty recovery initialization creates blocks before budgets. SQLite commits both tables atomically. Only a frozen empty
+block-table prefix without other business state can resume initialization. The known Access bootstrap and independent
+Code graph tables may already exist and remain untouched; other business tables or receipts are rejected before writes,
+except for the registered pristine SQLite Atomic maintenance output described below.
+Missing budget storage is never silently recreated beside retained recovery evidence.
+
+On SQLite, `server atomic-memory-migrate --action apply --maintenance-confirmed` can initialize a fresh database before
+normal Server startup. Its registered output contains the exact Atomic current table, FTS5 tables/triggers and Memory
+archive, with no Atomic rows or archived evidence. Normal startup can complete this initialization atomically, and
+`--bundle topic-memory-recovery` also supports `plan/apply/verify` for this state. The offline path backs up the existing
+database before adding Topic tables; it does not treat the maintenance output as an empty database. Missing or altered
+objects, unexpected business tables and retained Atomic evidence are rejected before writes. This continuation is
+specific to the registered SQLite layout and does not register additional OceanBase or seekDB baselines.
+
+The conversion revokes every old processing lease once by advancing its generation, expiring it in UTC, and assigning
+the maintenance-window holder. Repeating an interrupted conversion does not advance that holder again. This follows
+the existing processing-maintenance fence transition and requires all workflows sharing those leases to be stopped.
+Known attempt owners remain in budgets; unknown finish times stay null. Inspection can finalize stopped work even
+when processing remains disabled and no new Supervisor starts. A pre-upgrade Worker cannot regain publication rights.
 
 ## Read-only inspection and one confirmation
 
@@ -305,3 +360,11 @@ conditions allow, but they do not bypass structural verification or replace the 
 Restoration is separate, explicit, and performed with writes stopped. Restore the database, required files, and matching
 program before verification. Application rollback is not database rollback. Manual mode does not claim verified recovery;
 skip cannot promise recovery of original data.
+
+## Legacy Scope search startup recovery
+
+The existing Scope discovery startup migration inspects the actual search-column nullability in MySQL-compatible
+storage. If an earlier startup stopped after adding nullable columns or backfilling them, the next startup fills any
+remaining missing values from the original text and completes `NOT NULL` constraints. Columns already marked
+`NOT NULL` do not receive another `MODIFY COLUMN`. Original Scope titles, summaries, external references, and binding
+identifiers are preserved. This compatibility repair is separate from the four-table unified migration bundle above.

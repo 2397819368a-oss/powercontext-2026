@@ -131,6 +131,17 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemoryCurrentItem,
     TopicMemorySearchResult,
 )
+from powercontext.builtin.artifacts.topic_memory.processing import (
+    TopicMemoryBlockConflictError,
+    TopicMemoryBlockNotFoundError,
+)
+from powercontext.builtin.artifacts.topic_memory.processing import (
+    TopicMemoryProcessingStatus as RuntimeTopicMemoryProcessingStatus,
+)
+from powercontext.builtin.artifacts.topic_memory.processing import (
+    TopicMemoryRetryResult as RuntimeTopicMemoryRetryResult,
+)
+from powercontext.builtin.artifacts.topic_memory.processing import TopicMemoryWorkBlock as RuntimeTopicMemoryWorkBlock
 from powercontext.builtin.catalog_changes.models import CatalogChangeCandidate as RuntimeTagCandidate
 from powercontext.builtin.code.application import CodeApplication
 from powercontext.builtin.code.errors import CodeError
@@ -647,11 +658,17 @@ from powercontext.http._generated.models import (
 from powercontext.http._generated.models import (
     ArtifactTagPage,
     ArtifactTagSet,
+    GetTopicMemoryProcessingBlockRequest,
     QueryArtifactTagsRequest,
     ReplaceArtifactTagsRequest,
+    RetryTopicMemoryProcessingRequest,
+    RetryTopicMemoryProcessingResponse,
     TaggableArtifactFamily,
     TagMatch,
     TagTargetType,
+    TopicMemoryProcessingBlock,
+    TopicMemoryProcessingStatus,
+    TopicMemoryProcessingStatusRequest,
 )
 from powercontext.http._generated.models import (
     ShareUnit as TransportShareUnit,
@@ -716,6 +733,8 @@ from powercontext.http._generated.operations import (
     GET_SOURCE,
     GET_STATS,
     GET_TOPIC_MEMORY,
+    GET_TOPIC_MEMORY_PROCESSING_BLOCK,
+    GET_TOPIC_MEMORY_PROCESSING_STATUS,
     HANDOFF_CURRENT_WORK,
     IMPORT_EXTERNAL_SKILL,
     LIST_ACCESS_AUDIT,
@@ -764,6 +783,7 @@ from powercontext.http._generated.operations import (
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
     RETIRE_MEMORY_ENTRY,
+    RETRY_TOPIC_MEMORY_PROCESSING,
     REVISE_CANDIDATE,
     REVISE_MEMORY_ENTRY,
     REVOKE_ACCESS_BINDING,
@@ -1230,6 +1250,12 @@ class _WorkApplication(Protocol):
 
 
 class _ScopedTopicMemoryApplication(Protocol):
+    async def processing_status(self) -> RuntimeTopicMemoryProcessingStatus: ...
+
+    async def get_block(self, block_id: str) -> RuntimeTopicMemoryWorkBlock: ...
+
+    async def retry(self, block_id: str) -> RuntimeTopicMemoryRetryResult: ...
+
     async def search(
         self,
         request: RuntimeSearchTopicMemoryRequest,
@@ -1485,6 +1511,9 @@ def create_app(
         execution_context=_atomic_execution_context,
     )
     _add_route(app, FLUSH_TOPIC_MEMORY, flush_topic_memory)
+    _add_route(app, GET_TOPIC_MEMORY_PROCESSING_STATUS, get_topic_memory_processing_status)
+    _add_route(app, GET_TOPIC_MEMORY_PROCESSING_BLOCK, get_topic_memory_processing_block)
+    _add_route(app, RETRY_TOPIC_MEMORY_PROCESSING, retry_topic_memory_processing)
     _add_route(app, SEARCH_TOPIC_MEMORY, search_topic_memory)
     _add_route(app, SEARCH_ARTIFACTS, search_artifacts)
     _add_route(app, GET_TOPIC_MEMORY, get_topic_memory)
@@ -2177,6 +2206,27 @@ async def publish_artifact(
     publications: Annotated[ArtifactPublicationApplication, Depends(_require_publication_application)],
     http_request: Request,
 ) -> TransportArtifactPublication:
+    access = _transactional_owner_access(http_request)
+    principal = _require_principal() if access is not None else None
+    context = _access_audit_context(PUBLISH_ARTIFACT.operation_id)
+    owner_committed = False
+
+    async def on_commit(connection, publication):
+        nonlocal owner_committed
+        if access is None:
+            return
+        target = publication.target
+        if target.artifact.family != "topic-memory":
+            await access.with_connection(connection).establish_artifact_owner(
+                ResourceRef.artifact(
+                    target.scope_id, family=target.artifact.family, artifact_id=target.artifact.artifact_id
+                ),
+                principal,
+                idempotency_key=f"artifact-publication-owner:{target.artifact.artifact_id}",
+                context=context,
+            )
+            owner_committed = True
+
     result = await publications.publish(
         DomainArtifactPublicationRequest(
             source=ArtifactAddress(
@@ -2185,9 +2235,10 @@ async def publish_artifact(
             ),
             target_scope_id=request.target_scope_id,
             idempotency_key=request.idempotency_key,
-        )
+        ),
+        **({"on_commit": on_commit} if access is not None else {}),
     )
-    if result.target.artifact.family != "topic-memory":
+    if access is None and result.target.artifact.family != "topic-memory":
         await _establish_created_owner(
             http_request,
             ResourceRef.artifact(
@@ -2198,6 +2249,19 @@ async def publish_artifact(
             idempotency_key=f"artifact-publication-owner:{result.target.artifact.artifact_id}",
             operation=PUBLISH_ARTIFACT.operation_id,
         )
+    elif access is not None and not owner_committed and result.target.artifact.family != "topic-memory":
+        target = result.target
+        if (
+            await access.artifact_owner(
+                ResourceRef.artifact(
+                    target.scope_id,
+                    family=target.artifact.family,
+                    artifact_id=target.artifact.artifact_id,
+                )
+            )
+            is None
+        ):
+            raise AccessUnavailableError("artifact_owner_pending")
     return TransportArtifactPublication.model_validate(result.model_dump(mode="json"))
 
 
@@ -2478,6 +2542,7 @@ async def create_artifact(
             if request.root.family == "atomic-memory"
             else {}
         ),
+        **_artifact_owner_commit(http_request, scope_id, request.root.family),
     )
     await _establish_base_artifact_owners(
         http_request,
@@ -2525,12 +2590,27 @@ def _artifact_handle_binding(handle: StableHandle, target: ArtifactRef) -> Artif
     )
 
 
+def _require_strict_query(
+    http_request: Request,
+    parameter_names: set[str],
+    *,
+    repeatable: set[str] | None = None,
+) -> None:
+    if set(http_request.query_params) - parameter_names:
+        raise InvalidBaseAccessRequestError("query", "contains unknown parameters")
+    singleton_names = parameter_names - (repeatable or set())
+    if any(len(http_request.query_params.getlist(name)) > 1 for name in singleton_names):
+        raise InvalidBaseAccessRequestError("query", "parameters must be provided at most once")
+
+
 def _list_artifacts_query(
+    http_request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
     tag: Annotated[list[str] | None, Query(min_length=1, max_length=16)] = None,
     tag_match: Annotated[TagMatch | None, Query()] = None,
 ) -> ListArtifactsRequest:
+    _require_strict_query(http_request, {"limit", "cursor", "tag", "tag_match"}, repeatable={"tag"})
     if tag is None and tag_match is not None:
         raise InvalidBaseAccessRequestError("tag_match", "requires at least one tag")
     return ListArtifactsRequest.model_validate({"limit": limit, "cursor": cursor, "tag": tag, "tag_match": tag_match})
@@ -2561,6 +2641,30 @@ async def list_artifacts(
         items=[_artifact_collection_item_response(item) for item in result.items],
         next_cursor=result.next_cursor,
     )
+
+
+async def get_topic_memory_processing_status(
+    request: TopicMemoryProcessingStatusRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> TopicMemoryProcessingStatus:
+    result = await application.topic_memory.for_scope(request.scope_id).processing_status()
+    return TopicMemoryProcessingStatus.model_validate(result.model_dump())
+
+
+async def get_topic_memory_processing_block(
+    request: GetTopicMemoryProcessingBlockRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> TopicMemoryProcessingBlock:
+    result = await application.topic_memory.for_scope(request.scope_id).get_block(request.block_id)
+    return TopicMemoryProcessingBlock.model_validate(result.model_dump())
+
+
+async def retry_topic_memory_processing(
+    request: RetryTopicMemoryProcessingRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> RetryTopicMemoryProcessingResponse:
+    result = await application.topic_memory.for_scope(request.scope_id).retry(request.block_id)
+    return RetryTopicMemoryProcessingResponse.model_validate(result.model_dump())
 
 
 async def flush_topic_memory(
@@ -2625,9 +2729,11 @@ async def get_topic_memory(
 
 
 def _list_artifact_revisions_query(
+    http_request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
 ) -> ListArtifactRevisionsRequest:
+    _require_strict_query(http_request, {"limit", "cursor"})
     return ListArtifactRevisionsRequest(limit=limit, cursor=cursor)
 
 
@@ -3283,10 +3389,29 @@ async def commit_handoff(
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
 ) -> CommittedHandoff:
+    access = _transactional_owner_access(http_request)
+    principal = _require_principal() if access is not None else None
+    context = _access_audit_context(COMMIT_HANDOFF.operation_id)
+    committed = False
+
+    async def on_commit(connection, artifact):
+        nonlocal committed
+        if access is None:
+            return
+        if artifact.revision == 1:
+            await access.with_connection(connection).establish_artifact_owner(
+                ResourceRef.artifact(request.scope_id, family="handoff", artifact_id=artifact.artifact_id),
+                principal,
+                idempotency_key=f"handoff-owner:{request.scope_id}:{artifact.artifact_id}",
+                context=context,
+            )
+        committed = True
+
     result = await application.handoff.for_scope(request.scope_id).commit(
-        mapping.runtime_prepared_handoff(request.handoff)
+        mapping.runtime_prepared_handoff(request.handoff),
+        **({"on_commit": on_commit} if access is not None else {}),
     )
-    if result.revision == 1:
+    if access is None and result.revision == 1:
         await _establish_created_owner(
             http_request,
             ResourceRef.artifact(
@@ -3297,6 +3422,10 @@ async def commit_handoff(
             idempotency_key=f"handoff-owner:{request.scope_id}:{result.artifact_id}",
             operation=COMMIT_HANDOFF.operation_id,
         )
+    elif access is not None and not committed:
+        resource = ResourceRef.artifact(request.scope_id, family="handoff", artifact_id=result.artifact_id)
+        if await access.artifact_owner(resource) is None:
+            raise AccessUnavailableError("artifact_owner_pending")
     return mapping.committed_handoff_response(result)
 
 
@@ -3483,11 +3612,13 @@ async def get_dream_run(
 
 
 def _list_dreams_query(
+    http_request: Request,
     status: str | None = None,
     operation: str | None = None,
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ListDreamRunsRequest:
+    _require_strict_query(http_request, {"status", "operation", "cursor", "limit"})
     return ListDreamRunsRequest.model_validate({
         "status": status,
         "operation": operation,
@@ -3514,7 +3645,8 @@ async def propose_experience(
     http_request: Request,
 ) -> Candidate:
     result = await application.experience.for_scope(request.scope_id).propose(
-        mapping.propose_experience_request(request)
+        mapping.propose_experience_request(request),
+        **_candidate_owner_commit(http_request, request.scope_id),
     )
     await _attest_candidate_owner(
         http_request,
@@ -3532,7 +3664,8 @@ async def generate_experience(
     http_request: Request,
 ) -> GeneratedCandidateResponse:
     result = await application.experience.for_scope(request.scope_id).generate(
-        mapping.generate_experience_request(request)
+        mapping.generate_experience_request(request),
+        **_candidate_owner_commit(http_request, request.scope_id),
     )
     if result.candidate is not None:
         await _attest_candidate_owner(
@@ -3561,7 +3694,9 @@ async def propose_skill(
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
 ) -> Candidate:
-    result = await application.skill.for_scope(request.scope_id).propose(mapping.propose_skill_request(request))
+    result = await application.skill.for_scope(request.scope_id).propose(
+        mapping.propose_skill_request(request), **_candidate_owner_commit(http_request, request.scope_id)
+    )
     await _attest_candidate_owner(
         http_request,
         scope_id=request.scope_id,
@@ -3577,7 +3712,9 @@ async def generate_skill(
     application: Annotated[ServerApplication, Depends(_require_application)],
     http_request: Request,
 ) -> GeneratedCandidateResponse:
-    result = await application.skill.for_scope(request.scope_id).generate(mapping.generate_skill_request(request))
+    result = await application.skill.for_scope(request.scope_id).generate(
+        mapping.generate_skill_request(request), **_candidate_owner_commit(http_request, request.scope_id)
+    )
     if result.candidate is not None:
         await _attest_candidate_owner(
             http_request,
@@ -3666,6 +3803,7 @@ async def propose_skill_package(
             archive_bytes,
             request.reason,
             None if request.target is None else mapping.runtime_artifact_reference(request.target),
+            **_candidate_owner_commit(http_request, request.scope_id),
         )
     except ValueError as error:
         raise InvalidRuntimeRequestError("skill-package") from error
@@ -4041,6 +4179,8 @@ async def _establish_base_artifact_owners(
     application: ServerApplication,
     result: RuntimeArtifactCreated,
 ) -> None:
+    if _transactional_owner_access(request) is not None:
+        return
     if result.family in {"topic-memory", "atomic-memory"}:
         return
     if access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode) is None:
@@ -4113,6 +4253,8 @@ async def _attest_candidate_owner(
     family: str,
     target: ArtifactRef | None,
 ) -> None:
+    if _transactional_owner_access(request) is not None:
+        return
     access = access_control_for_mode(
         request.app.state.access_control,
         mode=request.app.state.access_mode,
@@ -4136,6 +4278,61 @@ async def _attest_candidate_owner(
         target=logical_target,
         idempotency_key=f"candidate-owner:{scope_id}:{candidate_id}",
     )
+
+
+def _transactional_owner_access(request: Request) -> AccessControlService | None:
+    access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
+    runtime = request.app.state.application
+    if (
+        access is not None
+        and isinstance(runtime, BuiltinRuntime)
+        and runtime.owner_write_database is not None
+        and access.supports_write_transaction(runtime.owner_write_database.engine)
+    ):
+        return access
+    return None
+
+
+def _artifact_owner_commit(request: Request, scope_id: str, family: str) -> dict[str, Any]:
+    access = _transactional_owner_access(request)
+    if access is None or family in {"atomic-memory", "topic-memory"}:
+        return {}
+    principal = _require_principal()
+    context = _access_audit_context(CREATE_ARTIFACT.operation_id)
+
+    async def on_commit(connection, artifact):
+        resource = ResourceRef.artifact(scope_id, family=family, artifact_id=artifact.artifact_id)
+        await access.with_connection(connection).establish_artifact_owner(
+            resource, principal, idempotency_key=_base_owner_idempotency_key(resource), context=context
+        )
+
+    return {"on_commit": on_commit}
+
+
+def _candidate_owner_commit(request: Request, scope_id: str) -> dict[str, Any]:
+    access = _transactional_owner_access(request)
+    if access is None:
+        return {}
+    principal = _require_principal()
+
+    async def on_commit(connection, candidate):
+        target = candidate.target
+        await access.with_connection(connection).attest_candidate_owner(
+            scope_id=scope_id,
+            candidate_id=candidate.candidate_id,
+            family=candidate.family,
+            proposed_owner=principal,
+            target=None
+            if target is None
+            else ResourceRef.artifact(
+                scope_id,
+                family=target.family,
+                artifact_id=target.artifact_id,
+            ),
+            idempotency_key=f"candidate-owner:{scope_id}:{candidate.candidate_id}",
+        )
+
+    return {"on_commit": on_commit}
 
 
 async def scan_external_skills(
@@ -4172,7 +4369,8 @@ async def import_external_skill(
     http_request: Request,
 ) -> GeneratedCandidateResponse:
     result = await application.external_skills.for_scope(request.scope_id).import_managed(
-        mapping.import_external_skill_request(request)
+        mapping.import_external_skill_request(request),
+        **_candidate_owner_commit(http_request, request.scope_id),
     )
     if result.candidate is not None:
         await _attest_candidate_owner(
@@ -4718,7 +4916,7 @@ async def _authorization_payload(request: Request, operation: Operation[Any, Any
     if operation.request_type is None:
         return path_values
     if operation.request_location == "query":
-        return {**path_values, **request.query_params}
+        return {**request.query_params, **path_values}
     try:
         value = await request.json()
     except (UnicodeDecodeError, ValueError) as error:
@@ -5779,6 +5977,24 @@ def _map_scope_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | 
     return None
 
 
+_CANDIDATE_ERROR_REASONS = {
+    ("artifacts", "must include the exact target"): ("artifact_refs", "target_not_in_artifact_refs"),
+    ("artifacts", "new managed Skill lineage"): ("artifact_refs", "skill_lineage_not_permitted"),
+    ("artifacts", "managed Skill lineage"): ("artifact_refs", "target_not_in_artifact_refs"),
+    ("target", "must identify a"): ("target", "target_family_mismatch"),
+    ("target", "Artifact is not available in this scope"): ("target", "target_unavailable"),
+}
+
+
+def _candidate_error_details(error: InvalidCandidateError) -> dict[str, Any] | None:
+    for (field, prefix), (public_field, reason) in _CANDIDATE_ERROR_REASONS.items():
+        if error.field == field and error.detail.startswith(prefix):
+            return {"field": public_field, "reason": reason}
+    # Internal-only fields (audit, basis, family) and reasons shared by several
+    # public fields (evidence) have no stable name a caller can act on.
+    return None
+
+
 def _map_candidate_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
     if isinstance(error, CandidateNotFoundError):
         return status.HTTP_404_NOT_FOUND, "candidate_not_found", "The requested Candidate was not found.", None
@@ -5804,7 +6020,12 @@ def _map_candidate_error(error: Exception) -> tuple[int, str, str, dict[str, Any
             {"status": error.status},
         )
     if isinstance(error, InvalidCandidateError):
-        return status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_request", "The request is invalid.", None
+        return (
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "invalid_request",
+            "The request is invalid.",
+            _candidate_error_details(error),
+        )
     return None
 
 
@@ -5832,6 +6053,20 @@ def _map_report_error(error: Exception) -> tuple[int, str, str, dict[str, Any] |
 
 
 def _map_domain_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
+    if isinstance(error, TopicMemoryBlockNotFoundError):
+        return (
+            status.HTTP_404_NOT_FOUND,
+            "topic_memory_block_not_found",
+            "The Topic Memory block was not found in this Scope.",
+            None,
+        )
+    if isinstance(error, TopicMemoryBlockConflictError):
+        return (
+            status.HTTP_409_CONFLICT,
+            "topic_memory_block_conflict",
+            "The Topic Memory block no longer owns this frontier.",
+            None,
+        )
     if isinstance(error, AtomicMemoryIndexError):
         return 503, error.code, str(error), None
     if isinstance(error, AtomicMemoryError):
@@ -5924,7 +6159,17 @@ def _invalid_request_details(error: Exception) -> dict[str, Any] | None:
         and error.canonical_code is not None
     ):
         return {"code": error.canonical_code, "message": str(error.detail)}
+    if isinstance(error, InvalidRuntimeRequestError):
+        reason = _WORKING_NOTE_EXPIRY_REASONS.get(error.code)
+        if reason is not None:
+            return {"field": "expires_at", "reason": reason}
     return None
+
+
+_WORKING_NOTE_EXPIRY_REASONS = {
+    "working-note-expiry-timezone": "missing_time_zone",
+    "working-note-expiry-past": "not_in_future",
+}
 
 
 def _map_source_ingestion_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:

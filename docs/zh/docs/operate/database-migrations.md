@@ -14,7 +14,49 @@ description: 了解数据库迁移命令、备份策略、服务启停及当前�
 
 输出中的 `ready` 仅表示当前迁移 bundle 已通过结构和数据验证；`readiness_scope=registered_bundle`、`server_ready=false` 明确区分它与完整 Server、索引、旧任务及集群可用。不要以此替代生产升级或完整业务库初始化。普通业务启动的全面版本门禁和完整历史基线尚未纳管。已通过 OceanBase AI 4.6.3 的 ODP 入口完成隔离四表验收，覆盖固定维护主机互斥、DDL 提交后中断的显式确认恢复、数据保留与重复执行。这不代表完整 Server 升级、崩溃后远端 DDL 自动判定或完整 Fork 恢复已通过验收。
 
+MySQL 兼容后端的结构反射支持 CHECK 表达式中的二元 `+`、`-`、`*`、`/`、`%`、一元正负号及嵌套括号，并保留算术、比较和布尔运算的优先级。未支持的 CHECK 运算符或函数仍被拒绝，错误会标明反射的表名、约束名及未支持的语法，避免将合法分组误报为括号不匹配。表达式解析成功不代表历史结构已登记，也不会绕过迁移或数据完整性检查。
+
 原有 `server processing-migrate` 保留，请按[迁移 Artifact 处理状态](artifact-processing-migration.md)使用。它尚未自动转发到统一入口。服务部署参考[部署 Server](deploy-server.md)。
+
+## Topic Memory 恢复 bundle
+
+选择 `--bundle topic-memory-recovery` 执行版本化的 `powercontext.topic-memory-recovery.v1` 转换。它识别恢复功能之前的
+预算布局和实现 #1966 的 attempts 表布局，保留已消费额度、终止阻塞和已接受回执。它仅验证已有 Server 数据库中
+登记的 Topic 对象和共享处理 lease 的 fencing，不改变其他业务表；输出仍报告 `server_ready=false`。
+默认 `--bundle artifacts` 仍为上面的局部验收范围。
+
+先停止全部 API、Worker、调度和 SDK 写入者，并暂停自动重启。审阅并执行一次计划：
+
+```bash
+powercontext server db-migrate plan --bundle topic-memory-recovery --env-file deployment.env --backup auto
+powercontext server db-migrate apply --bundle topic-memory-recovery --env-file deployment.env --backup auto --plan-id PLAN_ID --yes --maintenance-confirmed
+powercontext server db-migrate verify --bundle topic-memory-recovery --env-file deployment.env
+```
+
+SQLite 使用整个数据库的原生备份。OceanBase 还须提供 `--evidence-dir` 和 `--lock-coordination single-host`，按下文
+选择支持的备份策略并声明。中断后保留原恢复点和证据目录，以相同选项继续。SQLite 回滚未完成的转换；MySQL 兼容
+DDL 仅恢复库外证据登记的准确前缀，仍遵守旧远端执行的显式确认规则。
+
+当前尝试 metadata 移入预算；`pc_topic_memory_work_blocks` 仅保留终止阻塞和回执。原 ID、受理时间/generation 和
+成本保持不变。旧 attempts 没有可靠的范围来源：原数值进入 `legacy_source_through`，准确 `source_through` 为 null；
+`budget_source_through` 仅从同一份仍存在的额度复制，否则为 null。不能用当前额度解释旧回执。验证通过后才删除旧
+attempts 表，成功和被取代行仍保存在恢复点中。未知或不一致布局在写入前拒绝。普通启动要求目标格式，不升级已有库。
+准确阻塞查询和已受理 retry 回放不自动过期。
+
+空恢复存储先创建阻塞表，再创建预算；SQLite 原子提交两张表。只有冻结、空的阻塞表前缀且没有其他业务状态时才可
+继续初始化。允许已知的 Access bootstrap 和独立 Code 图表先存在，且不改变它们；除下述已登记的 SQLite Atomic
+维护初始化产物外，其他业务表或回执在写入前拒绝，不能在保留恢复证据的同时静默重建缺失预算。
+
+SQLite 的 `server atomic-memory-migrate --action apply --maintenance-confirmed` 可以在正常 Server 启动前初始化
+新数据库。登记的产物包含准确的 Atomic current 表、FTS5 表与触发器、Memory archive，且没有 Atomic 行或归档证据。
+正常启动可以原子地补齐初始化，`--bundle topic-memory-recovery` 也支持对该状态执行 `plan/apply/verify`。离线路径
+会先备份已有数据库再添加 Topic 表，不将维护产物视为空库。缺失或改变的对象、额外业务表及已有 Atomic 证据仍在
+写入前拒绝。此续建路径仅适用于登记的 SQLite 布局，不新增 OceanBase 或 seekDB 基线。
+
+转换通过递增 generation、按 UTC 使 lease 过期并设置维护窗口 holder，一次性撤销所有旧 processing lease；中断
+恢复时不重复推进这个 holder。这沿用既有 processing 维护的 fence 转换，要求共享这些 lease 的所有工作流均停写。
+已知尝试 owner 保留在预算，未知结束时间仍为 null。即使处理继续禁用、没有新 Supervisor 启动，查询也能固化已停止
+工作；升级前 Worker 不能重新获得发布权。
 
 ## 只读检查与一次确认
 
@@ -181,3 +223,9 @@ Repository 仅在结构满足后运行。完整业务的全文／向量索引版
 单版本表不提供通用 run ID 续跑。中断后先用只读命令检查真实结构和数据；含混状态返回 `recovery_required`，不盲目 stamp、不用部分状态的备份替换原恢复点。库外摘要在 DDL 前记录执行及备份信息；重试保留原维护窗口和恢复点。在恢复条件允许时可显式重新确认 manual／skip 策略，但不绕过结构验证，也不替代必需的进度证据。
 
 恢复独立、显式执行，并保持停写。恢复数据库、必要文件和匹配程序后重新验证；应用回退不等于数据库回滚。manual 不承诺已验证可恢复，skip 不承诺恢复原数据。
+
+## 旧版 Scope 搜索列的启动恢复
+
+现有 Scope discovery 启动迁移会检查 MySQL 兼容存储中搜索列的实际可空性。如果上次启动在添加可空列或回填后中断，
+下次启动会根据原文补齐剩余缺失值，再完成 `NOT NULL` 约束。已为 `NOT NULL` 的列不会再次执行 `MODIFY COLUMN`。
+Scope 的原始标题、摘要、外部引用和 binding 标识保持不变。此兼容修复独立于上述四表统一迁移 bundle。
