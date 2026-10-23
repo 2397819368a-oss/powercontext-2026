@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Sequence
-from contextlib import nullcontext
+from contextlib import AsyncExitStack, nullcontext
 from copy import copy
 from typing import Any, Generic, Literal, Self, TypeVar, cast
 
@@ -88,9 +88,6 @@ try:
         ModelMessage,
         ModelRequest,
         ModelResponse,
-        ModelResponsePart,
-        PartEndEvent,
-        PartStartEvent,
         UserPromptPart,
     )
     from pydantic_ai.models import Model, ModelRequestParameters
@@ -140,14 +137,21 @@ class StreamingAggregateModel(WrapperModel):
 
     Gateways in front of non-streaming inference endpoints may drop an idle
     HTTP exchange long before the configured generation timeout. Streaming the
-    same request keeps the connection active. The watchdog bounds the gap
-    between model events (text, thinking, or tool-call parts). Provider
+    same request keeps the connection active. The watchdog bounds both opening
+    the stream (sending the request and waiting for its first chunk) and the
+    gap between model events (text, thinking, or tool-call parts). Provider
     heartbeat frames that are not yielded as model events do not reset it.
     The wall-clock budget stays owned by the calling generator.
 
-    The complete-state guard only rejects provider continuations (separately
-    billed follow-up requests). A stream that breaks mid-flight is caught by
-    the transport error the stream itself raises, not by this guard.
+    The aggregate is read from the drained stream, so parts whose deltas
+    interleave keep every update. A provider stream is accepted only when it
+    reports a finish reason: one that ends without its terminal event (for
+    example a gateway that drops the connection before the final chunk) is
+    rejected instead of being returned truncated. Streams without a provider
+    behind them end when their event iterator ends and are accepted without a
+    finish reason. The complete-state guard rejects provider continuations
+    (separately billed follow-up requests) and streams the provider left
+    unfinished.
     """
 
     def __init__(self, wrapped: Model, *, idle_timeout_seconds: float = 60.0) -> None:
@@ -163,32 +167,44 @@ class StreamingAggregateModel(WrapperModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
-        parts: dict[int, ModelResponsePart] = {}
-        async with self.wrapped.request_stream(messages, model_settings, model_request_parameters) as stream:
+        async with AsyncExitStack() as stack:
+            # Entering the stream context sends the provider request and waits for
+            # its first chunk, so the watchdog bounds that phase too, not just the
+            # gaps between later events.
+            stream = await asyncio.wait_for(
+                stack.enter_async_context(
+                    self.wrapped.request_stream(messages, model_settings, model_request_parameters)
+                ),
+                timeout=self._idle_timeout_seconds,
+            )
             events = stream.__aiter__()
             while True:
                 try:
-                    # Watch the gap between chunks instead of the whole exchange.
-                    event = await asyncio.wait_for(anext(events), timeout=self._idle_timeout_seconds)
+                    # Watch the gap between model events instead of the whole exchange.
+                    await asyncio.wait_for(anext(events), timeout=self._idle_timeout_seconds)
                 except StopAsyncIteration:
                     break
-                if isinstance(event, PartStartEvent):
-                    parts.setdefault(event.index, event.part)
-                elif isinstance(event, PartEndEvent):
-                    parts[event.index] = event.part
-            response = ModelResponse(
-                parts=[parts[index] for index in sorted(parts)],
-                usage=stream.usage,
-                model_name=stream.model_name,
-                provider_name=stream.provider_name,
-                provider_url=stream.provider_url,
-                provider_details=stream.provider_details,
-                provider_response_id=stream.provider_response_id,
-                finish_reason=stream.finish_reason,
-                state=stream.state,
-            )
+            # The parts manager kept applying every delta, including to parts whose
+            # updates interleave with other parts, so the drained stream is the
+            # authority for the aggregated response.
+            response = stream.get()
         if response.state != "complete":
-            raise InvalidInferenceOutputError("generate", "provider continuation is not allowed")
+            raise InvalidInferenceOutputError(
+                "generate",
+                "provider continuation is not allowed"
+                if response.state == "suspended"
+                else "provider stream ended before completion",
+            )
+        if (
+            stream.provider_name is not None
+            and response.finish_reason is None
+            and not (response.provider_details or {}).get("finish_reason")
+        ):
+            # A provider stream can end cleanly without its terminal event, for
+            # example when a gateway drops the connection before the final chunk.
+            # The accumulated content is then truncated even though the stream
+            # state defaults to complete, so a missing finish reason is rejected.
+            raise InvalidInferenceOutputError("generate", "provider stream ended without a completion signal")
         if response.usage.input_tokens == 0 and response.usage.output_tokens == 0:
             # Some gateways stream the response without a final usage chunk; usage
             # statistics for this request will be missing. Warn without failing: the

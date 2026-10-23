@@ -39,11 +39,13 @@ from pydantic_ai.embeddings import (
 from pydantic_ai.embeddings.result import EmbedInputType
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
+    FinishReason,
     ModelMessage,
     ModelRequest,
     ModelResponse,
     RetryPromptPart,
     TextPart,
+    ToolCallPart,
     UserPromptPart,
 )
 from pydantic_ai.models import Model, ModelRequestParameters, ModelResponseState, StreamedResponse
@@ -355,17 +357,20 @@ class _ScriptedStream(StreamedResponse):
         self,
         script,
         final_state: ModelResponseState = "complete",
+        finish_reason: FinishReason | None = "stop",
         usage: RequestUsage | None = None,
     ) -> None:
         super().__init__(ModelRequestParameters())
         self._script = script
         self._final_state = final_state
+        self._finish_reason = finish_reason
         self._usage = RequestUsage() if usage is None else usage
 
     async def _get_event_iterator(self):
         async for event in self._script(self):
             yield event
         self.state = self._final_state
+        self.finish_reason = self._finish_reason
 
     @property
     def model_name(self) -> str:
@@ -392,8 +397,9 @@ class _ScriptedModel(Model):
 
     system = "scripted"
 
-    def __init__(self, factory) -> None:
+    def __init__(self, factory, open_delay_seconds: float = 0.0) -> None:
         self._factory = factory
+        self._open_delay_seconds = open_delay_seconds
 
     @property
     def model_name(self) -> str:
@@ -404,6 +410,7 @@ class _ScriptedModel(Model):
 
     @asynccontextmanager
     async def request_stream(self, messages, model_settings, model_request_parameters, run_context=None):
+        await asyncio.sleep(self._open_delay_seconds)
         yield self._factory()
 
 
@@ -504,6 +511,113 @@ def test_streaming_aggregate_model_rejects_incomplete_provider_response() -> Non
                 ModelSettings(),
                 ModelRequestParameters(),
             )
+
+    asyncio.run(scenario())
+
+
+def test_streaming_aggregate_model_keeps_interleaved_part_deltas() -> None:
+    async def interleaved_script(stream: _ScriptedStream) -> AsyncIterator[object]:
+        manager = stream._parts_manager
+        if (
+            event := manager.handle_tool_call_delta(
+                vendor_part_id=0, tool_name="get_weather", args='{"city":', tool_call_id="call_0"
+            )
+        ) is not None:
+            yield event
+        if (
+            event := manager.handle_tool_call_delta(
+                vendor_part_id=1, tool_name="get_time", args='{"tz":', tool_call_id="call_1"
+            )
+        ) is not None:
+            yield event
+        # The first tool call keeps receiving argument deltas after the second one started.
+        if (event := manager.handle_tool_call_delta(vendor_part_id=0, args=' "Beijing"}')) is not None:
+            yield event
+        if (event := manager.handle_tool_call_delta(vendor_part_id=1, args=' "UTC"}')) is not None:
+            yield event
+
+    async def scenario() -> None:
+        stream = _ScriptedStream(interleaved_script)
+        model = StreamingAggregateModel(_ScriptedModel(lambda: stream), idle_timeout_seconds=5)
+
+        response = await model.request(
+            [ModelRequest(parts=[UserPromptPart("weather and time")])],
+            ModelSettings(),
+            ModelRequestParameters(),
+        )
+
+        assert [(part.tool_name, part.args) for part in response.parts if isinstance(part, ToolCallPart)] == [
+            ("get_weather", '{"city": "Beijing"}'),
+            ("get_time", '{"tz": "UTC"}'),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_streaming_aggregate_model_times_out_while_opening_the_stream() -> None:
+    async def scripted_script(stream: _ScriptedStream) -> AsyncIterator[object]:
+        for event in stream._parts_manager.handle_text_delta(vendor_part_id=0, content="late first chunk"):
+            yield event
+
+    async def scenario() -> None:
+        stream = _ScriptedStream(scripted_script)
+        # Opening the stream stalls before any chunk exists; the watchdog must
+        # cover that phase instead of waiting for the overall generation timeout.
+        model = StreamingAggregateModel(
+            _ScriptedModel(lambda: stream, open_delay_seconds=0.3), idle_timeout_seconds=0.05
+        )
+
+        with pytest.raises(TimeoutError):
+            await model.request(
+                [ModelRequest(parts=[UserPromptPart("bounded evidence")])],
+                ModelSettings(),
+                ModelRequestParameters(),
+            )
+
+    asyncio.run(scenario())
+
+
+def test_streaming_aggregate_model_rejects_eof_without_completion_signal() -> None:
+    async def truncated_script(stream: _ScriptedStream) -> AsyncIterator[object]:
+        for event in stream._parts_manager.handle_text_delta(vendor_part_id=0, content="partial answer"):
+            yield event
+
+    async def scenario() -> None:
+        # The stream ends cleanly but never carried a finish reason, like an
+        # OpenAI-compatible gateway dropping the connection before the final chunk.
+        stream = _ScriptedStream(truncated_script, finish_reason=None)
+        model = StreamingAggregateModel(_ScriptedModel(lambda: stream), idle_timeout_seconds=5)
+
+        with pytest.raises(InvalidInferenceOutputError):
+            await model.request(
+                [ModelRequest(parts=[UserPromptPart("bounded evidence")])],
+                ModelSettings(),
+                ModelRequestParameters(),
+            )
+
+    asyncio.run(scenario())
+
+
+def test_streaming_aggregate_model_accepts_unmapped_raw_finish_reason() -> None:
+    async def exotic_script(stream: _ScriptedStream) -> AsyncIterator[object]:
+        stream.provider_details = {"finish_reason": "eos"}
+        for event in stream._parts_manager.handle_text_delta(vendor_part_id=0, content="done"):
+            yield event
+
+    async def scenario() -> None:
+        # The gateway reported a finish reason that pydantic_ai does not map to a
+        # known value; the raw signal still proves the provider finished generating.
+        stream = _ScriptedStream(exotic_script, finish_reason=None)
+        model = StreamingAggregateModel(_ScriptedModel(lambda: stream), idle_timeout_seconds=5)
+
+        response = await model.request(
+            [ModelRequest(parts=[UserPromptPart("bounded evidence")])],
+            ModelSettings(),
+            ModelRequestParameters(),
+        )
+
+        assert response.state == "complete"
+        assert [part.content for part in response.parts if isinstance(part, TextPart)] == ["done"]
 
     asyncio.run(scenario())
 
