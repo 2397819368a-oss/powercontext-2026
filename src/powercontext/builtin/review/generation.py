@@ -22,6 +22,7 @@ from typing import TypeAlias
 from pydantic import BaseModel
 
 from powercontext.artifacts import Artifact, ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemory, AtomicMemoryStateValue
 from powercontext.builtin.artifacts.experience import Experience, ExperienceContent, ExperienceGenerator
 from powercontext.builtin.artifacts.generation import (
     MAX_GENERATION_EVIDENCE_CHARS,
@@ -31,13 +32,15 @@ from powercontext.builtin.artifacts.generation import (
 )
 from powercontext.builtin.artifacts.prompt.service import ScopedPrompts, current_prompt, prompt_operation
 from powercontext.builtin.artifacts.skill import Skill, SkillContent, SkillGenerator
+from powercontext.builtin.evidence.resolver import AuthorizationContext, EvidenceAuthorizer
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
+from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 from powercontext.builtin.persistence.generation_sources import GenerationSourceAccess
 from powercontext.builtin.review.errors import InvalidCandidateError
-from powercontext.builtin.review.models import ArtifactCandidate
-from powercontext.builtin.review.service import ReviewService
+from powercontext.builtin.review.models import Candidate
+from powercontext.builtin.review.service import CandidateCommitHook, ReviewService
 from powercontext.errors import PowerContextError
 from powercontext.sources import Source, SourceRef
 
@@ -58,7 +61,7 @@ class GenerationCapabilityUnavailableError(PowerContextError, RuntimeError):
         super().__init__(f"{family} generation is not configured")
 
 
-GeneratedCandidate: TypeAlias = ArtifactCandidate[ExperienceContent] | ArtifactCandidate[SkillContent]
+GeneratedCandidate: TypeAlias = Candidate[ExperienceContent] | Candidate[SkillContent]
 
 
 class GeneratedCandidateResult(BaseModel):
@@ -94,6 +97,11 @@ class ReviewedGenerationService:
         self._review = review
         self._experience_generator = experience_generator
         self._skill_generator = skill_generator
+        self._authorize: EvidenceAuthorizer | None = None
+
+    def configure_authorization(self, authorize: EvidenceAuthorizer, context: AuthorizationContext) -> None:
+        self._authorize = authorize
+        self._review.configure_authorization(authorize, context)
 
     @prompt_operation("experience.generate")
     async def experience(
@@ -103,6 +111,7 @@ class ReviewedGenerationService:
         artifacts: tuple[ArtifactRef, ...],
         target: ArtifactRef | None,
         reason: str | None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> GeneratedCandidateResult:
         if self._experience_generator is None:
             raise GenerationCapabilityUnavailableError(Experience.family)
@@ -118,6 +127,7 @@ class ReviewedGenerationService:
             artifacts=_with_prompt_lineage(artifacts, "experience.generate"),
             target=target,
             reason=reason,
+            **({"on_commit": on_commit} if on_commit is not None else {}),
         )
         return GeneratedCandidateResult(candidate=candidate)
 
@@ -130,6 +140,7 @@ class ReviewedGenerationService:
         artifacts: tuple[ArtifactRef, ...],
         target: ArtifactRef | None,
         reason: str | None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> GeneratedCandidateResult:
         if self._skill_generator is None:
             raise GenerationCapabilityUnavailableError(Skill.family)
@@ -144,6 +155,7 @@ class ReviewedGenerationService:
             artifacts=_with_prompt_lineage(artifacts, "skill.generate"),
             target=target,
             reason=reason,
+            **({"on_commit": on_commit} if on_commit is not None else {}),
         )
         return GeneratedCandidateResult(candidate=candidate)
 
@@ -153,6 +165,9 @@ class ReviewedGenerationService:
         artifacts: tuple[ArtifactRef, ...],
     ) -> tuple[GenerationEvidence, ...]:
         evidence: list[GenerationEvidence] = []
+        if self._authorize is not None:
+            for ref in (*sources, *artifacts):
+                await self._authorize(ref)
         try:
             async with self._database.transaction() as connection:
                 source_rows = await self._sources.require_for_generation(connection, self._scope_id, sources)
@@ -161,6 +176,10 @@ class ReviewedGenerationService:
                     if ref.family == "prompt":
                         raise InvalidCandidateError("evidence", "Prompt configuration is not factual evidence")
                     artifact = await self._artifacts.get(connection, self._scope_id, ref)
+                    if isinstance(artifact, AtomicMemory):
+                        state = await AtomicMemoryStateRepository().get(connection, self._scope_id, ref.artifact_id)
+                        if state.state is not AtomicMemoryStateValue.ACTIVE:
+                            raise InvalidCandidateError("evidence", "Atomic Memory is not active")
                     evidence.append(_artifact_evidence(ref, artifact))
         except RepositoryNotFoundError as error:
             raise InvalidCandidateError("evidence", "reference is not available in this scope") from error

@@ -24,8 +24,36 @@ powercontext doctor codex
 The command adds the repository as a Codex marketplace, installs the PowerContext plugin, and creates the user data
 directory. It is safe to run again. Pass the same `--ref` used to install the PowerContext tool.
 
-Open a new Codex session after setup. Use `/hooks` to inspect and, when prompted, trust the PowerContext
-`UserPromptSubmit` hook.
+When refreshing setup, client endpoint declarations in the setup `.env` file or process environment supersede saved
+client settings and the previously installed MCP URL. Without a new declaration, setup reuses saved endpoints.
+Conflicting file and process declarations still require an explicit choice; use `--server-url` and align or unset
+runtime URL overrides before rerunning setup. `--source` selects plugin code, not the Server endpoint.
+
+### First-session Hook trust
+
+Open a new Codex session after setup. Before sending the first message, use `/hooks` to inspect PowerContext's hooks
+and, when prompted, grant trust. `SessionStart` resolves the Session Scope and optionally loads startup context;
+`UserPromptSubmit` prepares relevant context and independently captures the user input as a Source. The plugin also
+uses `PreToolUse` for MCP Scope binding. Loading the plugin or discovering MCP tools does not prove that these hooks ran.
+
+If trust was skipped or denied, inspect the PowerContext entries in `/hooks` and follow the host's available controls
+to enable or trust them. Follow any instruction to open a new session; check the hooks again before retrying capture.
+Controls and prompts depend on the Codex build. If the expected hooks are absent, check plugin installation and host
+support using the diagnostics below; do not treat a missing trust prompt as evidence that the hooks are enabled.
+
+With `UserPromptSubmit` disabled, automatic recall and prompt capture do not run. A working MCP connection is a separate
+path and is not evidence of automatic behavior. After enabling the hook, send a distinctive project decision and verify
+that it appears in the bound Scope's Source journal, then run the [memory checks](../get-started/quickstart.md#4-verify-memory-in-your-selected-mode).
+Prompt capture is enabled by default; see [Control prompt capture](#control-prompt-capture) if you intentionally disabled it.
+
+### Installation and connectivity diagnostics
+
+`powercontext doctor codex --json` reports basic MCP connectivity as `mcp_tools` and complete tool coverage as
+`mcp_full_profile`. Full coverage requires every capability-bearing tool in the Codex integration's `server-mcp`
+manifest, including Memory maintenance, Scope management and Handoff operations. Missing tools produce a degraded
+result and are listed by name; discovery does not prove model readiness, Hook execution or write authorization.
+Setup reports installation completion separately from diagnostics. Basic Memory support can remain usable while `doctor` reports
+incomplete full coverage. Authentication and basic connection failures still produce a failed result.
 
 ## Understand automatic recall, Memory, and Handoff
 
@@ -43,15 +71,15 @@ In a Codex session with the plugin installed and the PowerContext Server availab
 handoff this work
 ```
 
-The `powercontext-project-context` Skill treats that imperative as explicit authorization to create one durable Handoff milestone.
-Codex inspects the current conversation and repository, assembles the objective, branch and worktree state, changed
-files, observed checks, blockers, omissions, and next action, then calls `handoff_current_work` followed by
-`commit_handoff` in the current Session Scope. After a successful commit, Codex reports the exact Handoff Revision; the
-user does not need to fill in the Handoff content or confirm the commit again.
+The `powercontext-project-context` Skill inspects the conversation and repository, assembles the objective, current
+state, observed checks, omissions, and next action, then calls `handoff_current_work` in the current Session Scope.
+An ordinary transfer returns the complete temporary Handoff carrier for the receiver; it does not commit a durable
+Revision. `交接` and `交接当前工作` use the same temporary-transfer path.
 
-`交接`, `交接当前工作`, and `commit a handoff` use the same behavior. To inspect the proposed content without writing,
-ask to `preview the handoff without committing`; the Skill renders the proposed fields in chat and calls no write
-tool. Discussing Handoff design or asking how it works does not authorize a write.
+To save a durable milestone, explicitly ask to `commit a durable handoff`. The Skill prepares the boundary and calls
+`commit_handoff`, reporting the exact Revision only after success. Existing authorization does not need a second
+confirmation. To inspect proposed content without writing, ask to `preview the handoff without committing`; the Skill
+renders the proposed fields in chat and calls no write tool. Discussing Handoff design does not authorize a write.
 
 At Session start, Codex resolves Scope in this order: an explicit `POWERCONTEXT_CODEX_SCOPE_ID`, an existing Session
 binding, a host-managed workspace binding, and the Server's default Scope. The selected Scope is fixed to the Session.
@@ -59,8 +87,30 @@ Repository and directory identities are lookup inputs only; they never generate 
 binding for recall and capture, while `PreToolUse` injects it into data-plane tools so Agent input cannot redirect a
 read or write. The host must create or bind a different Scope when the Session changes work boundaries.
 
+To keep later sessions in one Git root on an existing Scope, bind that checkout:
+
+```bash
+uv run --frozen --quiet --project "$PLUGIN_ROOT" python "$PLUGIN_ROOT/scripts/scope_binding.py" \
+  --cwd "$PWD" --bind-scope "SCOPE_ID"
+```
+
+`$PLUGIN_ROOT` is the installed Codex plugin root, the same value the hooks use. In an ordinary terminal, replace it
+with that directory, such as `powercontext/powercontext/<version>` in the plugin cache or
+`integrations/codex/plugins/powercontext` in this repository. The command stores a binding with
+`integration=codex` and `kind=workspace`. Its external id is the SHA-256 of the Git root path. It does not create a
+Scope, and it does not derive a `scope_id` from the path, remote, or branch. Run the script again without
+`--bind-scope` to print the Scope resolved for that directory. `--clear-scope` removes only that workspace binding.
+
+`POWERCONTEXT_CODEX_SCOPE_ID` still takes precedence. A Session that already started keeps the Session binding written
+at startup. A new Session in that Git root uses the workspace binding when no explicit variable and no earlier Session
+binding apply. The MCP `set_scope_binding` tool changes only the current Session and does not replace this command.
+
 The Hook calls `POST /v1/context/prepare` once before Codex analyzes the prompt. It requests an 8000-byte total budget,
-strictly validates `powercontext.prepared-context.v1`, and injects the returned content unchanged. The Runtime labels
+strictly validates `powercontext.prepared-context.v1`, and injects the returned content unchanged. The recall query is
+bounded before the request is built: a prompt of at most 8,192 characters and 8,192 UTF-8 bytes is sent as submitted,
+while a longer prompt recalls from its most recent text, cut to the last 8,192 characters and then to the last 8,192
+bytes. A long prompt therefore narrows the query instead of failing the recall; prompt capture is unaffected and keeps
+its own limit. The Runtime labels
 Memory-derived items as untrusted history, preserves exact citations, and owns final selection and rendering. Explicit
 search remains available through the Client and MCP; it is not a second automatic recall step. Automatically injected
 content and Handoffs are historical information. Codex must still check current code, user requests, and system
@@ -70,6 +120,74 @@ Memory stores durable, reusable decisions, constraints, and state. A Handoff tem
 another task, session, or model. It must be explicitly prepared, inspected, and delivered, rather than substituted with
 a few Memory entries. Read [Memory and Handoff](../workflows/memory-and-handoff.md) for the boundary and
 [Hand off work in Codex](../workflows/handoff-with-codex.md) for the procedure.
+
+## Opt in to Session bootstrap context
+
+Bootstrap context is off by default. To load a small, deterministic package before Codex's first prompt on
+`startup`, `resume`, `clear`, or `compact`, start Codex with:
+
+```bash
+export POWERCONTEXT_CODEX_BOOTSTRAP_CONTEXT=true
+codex
+```
+
+The fixed `powercontext.scope-bootstrap.v1` profile includes at most six active Atomic Memory Artifacts explicitly
+tagged `bootstrap-context`, considering the current Scope before at most eight direct Context References. It never
+scans all Memory, Sources, transcripts, pending Candidates, or generated instructions. Secret-like Memory kinds are
+excluded. Historical text is marked as untrusted and cannot override current user, developer, system, or repository
+instructions.
+
+The default package limit is 4096 UTF-8 bytes. It can be set from 512 through 8192 bytes:
+
+```bash
+export POWERCONTEXT_CODEX_BOOTSTRAP_MAX_BYTES=6144
+```
+
+No Handoff is selected automatically. To add one exact committed Handoff from the current Scope, provide its immutable
+identity before starting Codex:
+
+```bash
+export POWERCONTEXT_CODEX_BOOTSTRAP_HANDOFF='{"artifact_id":"HANDOFF_ID","revision":3}'
+```
+
+Use the Atomic Memory Artifact tag API to add `bootstrap-context` only to reviewed decisions, constraints, objectives,
+verified state, or repository guidance suitable for every new Session. A content-free delivery receipt makes retries
+idempotent; after successful injection, the first ordinary query sends that receipt so the Runtime suppresses only
+fully delivered exact Atomic Memory revisions. Artifacts truncated during bootstrap and newer revisions remain eligible
+for recall.
+Preparation, validation, and receipt failures all fail open and inject nothing.
+Failures before a new lifecycle package is established, including invalid configuration, also clear any stale saved receipt.
+
+## Experience and Skill
+
+Alongside Memory, Source capture, context injection,
+Work Contracts, Handoffs, acknowledgements, Task Outcomes and candidate review, MCP exposes:
+
+| Capability | Tools |
+| --- | --- |
+| Experience | `get_experience`, `generate_experience`, `propose_experience` |
+| Managed Skill | `list_managed_skills`, `get_skill`, `generate_skill`, `propose_skill` |
+| External Skill | `scan_external_skills`, `list_external_skills`, `resolve_external_skill`, `import_external_skill` |
+
+For example, ask Codex to “generate an Experience candidate from these exact Source references” or “list the approved
+Skills in this Scope.” Generation requires the corresponding Server model configuration; caller-authored proposals
+do not. Generated and proposed content enters review as a pending candidate. A `no_op` result means no candidate was
+created. Only an explicit review decision produces an approved Artifact; reading or importing does not install or
+execute a Skill.
+
+External Skill discovery uses configured roots on the **Server host**. Configure `POWERCONTEXT_SERVER_EXTERNAL_SKILLS`
+for custom roots and host identity; see [Agent Skill targets](../workflows/configure-agent-skill-targets.md).
+A remote Server cannot scan the Codex workstation. Under enforced access control, scanning requires `server.admin`,
+listing and resolving require
+`server.observe`, and import requires contribution access to the bound Scope. Select an exact external Skill ID and
+fingerprint from the scan/list result before resolving or importing it. Changed content makes the old fingerprint
+unavailable. `mode: import` captures the exact package into review without generation; `mode: fork` requires a Skill
+generation model. See [Experience and Skill lifecycle](../workflows/experience-and-skill-lifecycle.md).
+
+Upgrade the Server and refresh the plugin together, then open a new Codex session to discover the tools. These MCP
+operations share the existing Session Scope binding and Server authorization checks. The shared MCP surface also
+provides these capabilities to Claude Code and WorkBuddy; `full` describes the capability profile, not automatic
+approval or guaranteed model availability.
 
 ## Choose standard context text
 
@@ -99,8 +217,8 @@ This adds inference latency to each prompt and is not the normal interactive set
 
 ## Connect to an authenticated local Server
 
-Local Server authentication is disabled by default. Enable it when needed; enabling Dashboard also requires
-authenticated access. A fresh local configuration wizard leaves Dashboard off unless you select it.
+Local Server authentication is disabled by default and can be enabled independently of Dashboard.
+A fresh local configuration wizard leaves Dashboard off unless you select it; selecting it does not require a token.
 
 Load one token from your local secret manager, then start the Server with authentication enabled:
 
@@ -137,6 +255,10 @@ authorization without changing it. Do not put the token in `.mcp.json`, the Serv
 On Windows, setup also maintains the current user's authorization environment for Desktop compatibility. Existing
 processes do not receive environment changes. Restart Codex after setup to load the updated plugin configuration.
 Rerunning setup without a token preserves the saved credential; supplying a new token rotates it.
+If the Server endpoint changes without a new token, the old credential remains bound to the previous endpoint and is
+not forwarded. Setup and doctor probe the new endpoint without that credential, so an unauthenticated Server can
+connect normally. For an authenticated Server, supply its token through `POWERCONTEXT_CODEX_AUTHORIZATION` or
+`POWERCONTEXT_CLIENT_API_TOKEN` while rerunning setup; the new token replaces the saved record for the selected URL.
 
 To verify a new session without a process override on Linux or macOS:
 
@@ -212,7 +334,7 @@ Hook binds the Scope and injects it into MCP data operations; a planned title or
 Desktop apps do not inherit changes made inside an already running terminal. On Windows, setup persists the value in
 the current user's environment, but an already running Desktop instance must still be restarted. Run `powercontext
 doctor codex`, then check Hook capture and MCP separately. An MCP connected status does not prove Source capture.
-Complete the [Source, topic evolution, and cross-session recall check](../get-started/quickstart.md#4-verify-topic-memory-with-ordinary-conversation).
+Complete the [Source, topic evolution, and cross-session recall check](../get-started/quickstart.md#4-verify-memory-in-your-selected-mode).
 
 ## Environment variables
 
@@ -221,10 +343,13 @@ Complete the [Source, topic evolution, and cross-session recall check](../get-st
 | `POWERCONTEXT_CODEX_ALLOW_INSECURE_HTTP` | `false` | Explicitly permit non-loopback plaintext HTTP for hooks |
 | `POWERCONTEXT_CODEX_SCOPE_ID` | unset | Explicitly select an existing Scope instead of resolving bindings and the Server default |
 | `POWERCONTEXT_CODEX_AUTHORIZATION` | unset | Complete `Bearer <token>` runtime override; setup saves it for subsequent Hook and native MCP connections |
+| `POWERCONTEXT_CODEX_BOOTSTRAP_CONTEXT` | `false` | Inject the curated bootstrap profile on supported `SessionStart` events |
+| `POWERCONTEXT_CODEX_BOOTSTRAP_MAX_BYTES` | `4096` | Bootstrap package limit; valid values are 512 through 8192 bytes |
+| `POWERCONTEXT_CODEX_BOOTSTRAP_HANDOFF` | unset | JSON identity of one exact committed Handoff, for example `{"artifact_id":"...","revision":3}` |
 | `POWERCONTEXT_CODEX_CAPTURE_PROMPTS` | `true` | Capture user prompts as Source evidence |
 | `POWERCONTEXT_CODEX_FLUSH_ON_CAPTURE` | `false` | Wait for Source processing after capture |
-| `POWERCONTEXT_CODEX_REQUEST_TIMEOUT_SECONDS` | `1` | Per-request hook timeout |
-| `POWERCONTEXT_CODEX_HTTP_BUDGET_SECONDS` | `4` | Shared hook HTTP budget |
+| `POWERCONTEXT_CODEX_REQUEST_TIMEOUT_SECONDS` | `3` | Per-request hook timeout |
+| `POWERCONTEXT_CODEX_HTTP_BUDGET_SECONDS` | `6` | Shared hook HTTP budget |
 | `POWERCONTEXT_CODEX_FLUSH_MAX_CALLS` | `4` | Maximum flush calls per prompt |
 
 Hooks allow loopback HTTP by default; remote HTTP requires explicit consent, and HTTPS certificate validation stays

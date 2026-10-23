@@ -11,12 +11,12 @@ Start with:
 powercontext doctor
 ```
 
-The command checks the package, Server liveness, and Server readiness. It exits with status 1 unless every check is
+The command checks saved agents and their Servers, or the package and Server when no agents are saved. It exits 1 unless every check is
 `ok`; a `degraded` readiness result is usable but is not a complete diagnostic success. Add `--json` for automation;
-the top-level result and every check include `ok` and `status`. Check optional host integrations separately:
+JSON includes the overall `ok` result and individual diagnostic statuses. Select host integrations explicitly:
 
 ```bash
-powercontext doctor integrations
+powercontext doctor codex dsh
 powercontext doctor codex
 powercontext doctor claude-code
 powercontext doctor dsh
@@ -26,9 +26,9 @@ powercontext doctor pi
 powercontext doctor hermes
 ```
 
-`doctor integrations` prints every first-class host. A host whose CLI is not on PATH is `missing` and does not fail
-the command. A present host that is broken still exits 1. Single-host commands such as `doctor codex` stay fail-closed
-when that CLI is missing.
+`doctor` checks saved agent connections by default, falling back to package and Server checks when none are saved.
+Explicit names select the agents to check. A missing required CLI or unhealthy agent makes the command exit 1;
+other selected agents still receive their own results.
 
 ## Installation cannot read the Git URL
 
@@ -60,7 +60,7 @@ command -v hermes
 Add the uv tool bin directory to `PATH` if needed. `powercontext setup codex`, `powercontext setup claude-code`,
 `powercontext setup dsh`, `powercontext setup openclaw`, `powercontext setup opencode`, `powercontext setup pi`, and
 `powercontext setup hermes` report an error rather than attempting installation when the host CLI is unavailable.
-`powercontext setup select` installs only the hosts you choose. A selected host that is missing still fails that row
+`powercontext setup codex dsh` installs only the hosts you choose. A selected host that is missing still fails that row
 and does not block the other selected hosts. An unselected host is skipped even if its CLI is on `PATH`.
 
 ## The plugin is missing or stale
@@ -182,10 +182,8 @@ See [Server authentication and permissions](configuration.md#server) for Princip
 ## Local tracing examples and existing Server configuration
 
 The local Phoenix and Langfuse tracing examples are written for an isolated test instance and default to loopback
-addresses. Whether the Dashboard is enabled depends on the installed version and effective configuration. In newer
-versions, a personal Dashboard requires `ACCESS_MODE=enforced` and a valid `AUTH_TOKEN`; if startup reports
-`DASHBOARD_ENABLED requires ACCESS_MODE=enforced and AUTH_TOKEN`, complete the authentication configuration or disable
-the Dashboard in the isolated local test instance.
+addresses. Dashboard follows the Server access mode: local access with `ACCESS_MODE=disabled` requires no token and
+leaves `AUTH_TOKEN` unset; `ACCESS_MODE=enforced` requires a valid static token.
 
 When an existing Server already uses static Bearer authentication, keep its authentication configuration while adding
 tracing. If you also enable the Dashboard, use the same static Bearer configuration:
@@ -261,15 +259,17 @@ so the previous database remains available for recovery:
    Because `pc_scopes.parent_scope_id` is self-referential, keep ancestor Scope rows before their descendants in the
    exported `pc_scopes` data.
    If the source predates the three Skill lifecycle tables (`pc_skill_packages`, `pc_agent_skill_targets`, and
-   `pc_skill_publications`), the Profile tables, `pc_topic_memory_work_budgets`, or
-   `pc_receipt_migration_review`, remove the absent tables from their respective layers.
+   `pc_skill_publications`), the Profile tables, `pc_topic_memory_work_budgets`, `pc_topic_memory_work_blocks`,
+   `pc_recall_effort_daily`, `pc_receipt_migration_review`, `pc_context_bootstrap_receipts`, or
+   `pc_decision_observations`, remove the absent tables from their respective layers.
    When a work-budget table exists, restore it together with Cursors so failure allowances survive the migration.
+   Restore work-attempt records as well to preserve block identities, diagnostics and accepted retry receipts.
 
    Layer 1 contains parents and tables without foreign keys:
 
    ```bash
    obloader <connection-options> -D <new-database> --csv \
-      --table 'pc_scopes,pc_source_journal_heads,pc_sources,pc_artifacts,pc_source_cursors,pc_artifact_processing_leases,pc_artifact_processing_binding_states,pc_artifact_processing_pending,pc_artifact_processing_auto_wave_targets,pc_artifact_processing_sequences,pc_artifact_processing_intents,pc_topic_memory_processing_targets,pc_artifact_processing_schema,pc_artifact_processing_migration_receipts,pc_topic_memory_work_budgets,pc_topic_memory_retrieval_shape,pc_connector_checkpoints,pc_source_definition_manifests,pc_external_skill_registrations,pc_skill_packages,pc_agent_skill_targets,pc_skill_publications,pc_model_usage_daily,pc_recall_token_daily,pc_receipt_migration_review' \
+      --table 'pc_scopes,pc_source_journal_heads,pc_sources,pc_artifacts,pc_source_cursors,pc_memory_source_windows,pc_artifact_processing_leases,pc_artifact_processing_binding_states,pc_artifact_processing_pending,pc_artifact_processing_auto_wave_targets,pc_artifact_processing_sequences,pc_artifact_processing_intents,pc_topic_memory_processing_targets,pc_artifact_processing_schema,pc_artifact_processing_migration_receipts,pc_topic_memory_work_budgets,pc_topic_memory_work_blocks,pc_topic_memory_retrieval_shape,pc_connector_checkpoints,pc_source_definition_manifests,pc_external_skill_registrations,pc_skill_packages,pc_agent_skill_targets,pc_skill_publications,pc_model_usage_daily,pc_recall_token_daily,pc_recall_effort_daily,pc_receipt_migration_review,pc_decision_observations,pc_lexical_projection_versions' \
      -f <export-directory>
    ```
 
@@ -277,7 +277,7 @@ so the previous database remains available for recovery:
 
    ```bash
    obloader <connection-options> -D <new-database> --csv \
-     --table 'pc_dream_runs,pc_scope_context_references,pc_scope_external_references,pc_scope_creation_requests,pc_scope_settings,pc_scope_bindings,pc_artifact_heads,pc_artifact_lineage_sources,pc_artifact_lineage_artifacts,pc_artifact_publications,pc_artifact_candidate_versions,pc_topic_memory_revision_publications,pc_memory_entry_versions' \
+     --table 'pc_dream_runs,pc_context_bootstrap_receipts,pc_scope_context_references,pc_scope_external_references,pc_scope_creation_requests,pc_scope_settings,pc_scope_bindings,pc_artifact_handles,pc_artifact_heads,pc_artifact_lineage_sources,pc_artifact_lineage_artifacts,pc_artifact_publications,pc_candidate_versions,pc_topic_memory_revision_publications,pc_memory_entry_versions' \
      -f <export-directory>
    ```
 
@@ -285,7 +285,7 @@ so the previous database remains available for recovery:
 
    ```bash
    obloader <connection-options> -D <new-database> --csv \
-      --table 'pc_artifact_candidate_heads,pc_topic_memory_active_topics,pc_topic_memory_active_chunks,pc_memory_entry_heads,pc_artifact_tags,pc_recurrence_match,pc_recurrence_observation' \
+      --table 'pc_candidate_heads,pc_topic_memory_active_topics,pc_topic_memory_active_chunks,pc_memory_entry_heads,pc_artifact_tags,pc_recurrence_match,pc_recurrence_observation' \
      -f <export-directory>
    ```
 
@@ -434,3 +434,37 @@ Restart Pi after installing the package or changing `POWERCONTEXT_PI_*` variable
 warning when the Server is unavailable, redirects, times out, or returns an invalid PreparedContext; Pi continues
 without adding context. Restore the Server, then run `powercontext capabilities` and confirm that Context versions lists
 `powercontext.prepared-context.v1`.
+
+## MySQL driver compatibility and binary Source writes
+
+The built-in dependencies constrain PyMySQL to `>=1.2,<1.2.1` while aiomysql 0.3.2 is in use.
+This applies to both OceanBase and embedded seekdb. PyMySQL 1.2.1 and 1.2.2 break aiomysql imports;
+1.2.3 imports successfully but fails when aiomysql encodes bytes, including stored Source payloads.
+Reinstall or synchronize the complete PowerContext dependency set instead of upgrading PyMySQL independently.
+The `database: ready` probe runs `SELECT 1`; it does not verify binary writes or write permissions.
+
+This is a temporary compatibility restriction, not a general recommendation to downgrade PyMySQL.
+[PyMySQL 1.2.1](https://github.com/PyMySQL/PyMySQL/blob/main/CHANGELOG.md) fixes SQL injection involving
+bytes and surrogate-escaped strings with big5, gbk, sjis, cp932, and gb18030. PowerContext requires
+`charset=utf8mb4` for OceanBase and constructs seekdb connections with `utf8mb4`, so these supported
+profiles do not select the affected legacy character sets. This assessment does not cover custom
+connections, session charset changes, or other applications sharing the environment, and is not a
+claim that the older driver is free of other vulnerabilities. Use an isolated environment and retain
+the required charset. Remove this restriction only after the async driver supports the updated
+binary encoding and Source write/read/replay tests pass against both backends.
+
+## Memory extraction repeatedly times out
+
+A generation timeout leaves the Memory Source cursor unchanged. The Memory processor halves the
+failed journal window for the next attempt, down to one position. The reduced limit is stored per
+Scope and survives Worker replacement and Server restart; it never exceeds `SOURCE_WINDOW_LIMIT`
+or an explicit flush limit. Each invocation makes one extraction attempt, so Supervisor backoff and
+Worker deadlines continue to bound retries. The reduction is retained while consuming the backlog
+visible at the timeout and cleared atomically when that backlog is consumed.
+
+The processor never skips failed Sources or acknowledges a failed invocation. A single Source can
+still time out, and an unavailable provider, embedding failure, or hard Worker termination does not
+trigger this generation-timeout recovery. Other Scopes continue independently. Inspect the
+`memory.window_reduced` log event and the provider error; if one Source still fails, adjust the model
+or generation timeout and retry. Keep the Worker timeout above the model request timeout plus
+startup and commit overhead so the processor can record a reduction before the Worker is stopped.

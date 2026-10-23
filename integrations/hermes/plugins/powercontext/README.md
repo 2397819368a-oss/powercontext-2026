@@ -49,6 +49,14 @@ provider configuration, or set
 assistant turns are captured; system/tool messages are excluded and detected
 secrets are redacted before sending them to PowerContext.
 
+The provider advertises Hermes' pre-compress checkpoint API v2. When Hermes
+supplies its host-normalized evidence list, that list is captured instead of the
+raw transcript, so turns Hermes already replaced with a compression summary are
+not stored as fresh evidence. With `compression.checkpoint_required: true`,
+enable `capture_pre_compress` as well: if PowerContext cannot commit the
+checkpoint, the provider raises and Hermes keeps the uncompressed transcript
+instead of discarding it behind a failed capture.
+
 Evaluation tracing is also opt-in. Set `evaluation_trace: true` or
 `POWERCONTEXT_HERMES_EVALUATION_TRACE=1` to record context injections in
 per-session JSONL files under `$HERMES_HOME/powercontext/evaluation-trace/`.
@@ -56,12 +64,16 @@ Each event includes the current session ID, optional parent session ID, scope,
 turn number, and event ID. The trace contains prompts and recalled context and
 must be treated as sensitive local data.
 
-The provider also supports the complete PowerContext operation surface through
-Hermes tools: Memory listing/revision/change tracking, Work Contract and
+The provider also supports the PowerContext operation surface through
+Hermes tools: Atomic Memory listing/revision/forgetting, Work Contract and
 Handoff flows, Experience/Skill proposal and generation, External Skills
 discovery/import, Artifact Candidate review, context/source operations, and
 statistics. Explicitly mutating tools should only be used with user
 authorization.
+
+Atomic results carry real Artifact references and state versions. MemoryCitation input and collection change history
+are explicitly unsupported. Content updates use the real content ETag; forgetting uses the captured reference and
+state version.
 
 When the provider is active, it also registers the bundled powercontext skill
 guide so Hermes has the workflow and authorization rules for those operations.
@@ -95,8 +107,8 @@ exposes that invocation context.
 /pc changes [SINCE_REVISION]
 /pc stats [today|7d|30d]
 /pc remember KIND TEXT [REASON]
-/pc revise CITATION_JSON KIND TEXT [REASON]
-/pc retire CITATION_JSON [REASON]
+/pc revise REFERENCE_JSON KIND TEXT
+/pc retire REFERENCE_JSON
 /pc flush
 /pc handoff {contract|current|acknowledge|outcome|activate|prepare|finalize|commit|continue} PAYLOAD_JSON
 /pc experience {propose|generate|get} PAYLOAD_JSON
@@ -107,7 +119,7 @@ exposes that invocation context.
 /pc call OPERATION [PAYLOAD_JSON]
 ```
 
-For the required citation format and copy-paste examples for `/pc get`,
+For the required Atomic reference format and copy-paste examples for `/pc get`,
 `/pc revise`, and `/pc retire`, see the [memory entry operation guide](../../README.md#read-revise-or-retire-a-memory-entry).
 
 ## CLI commands

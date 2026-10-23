@@ -15,7 +15,12 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { validateToolArguments, type Tool, type ToolCall } from '@earendil-works/pi-ai'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fauxProvider, fauxAssistantMessage, fauxToolCall, validateToolArguments, type Tool, type ToolCall } from '@earendil-works/pi-ai'
+import { getModel, streamSimple } from '@earendil-works/pi-ai/compat'
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { TSchema } from 'typebox'
 import { Value } from 'typebox/value'
 import powercontextPi from '../extensions/powercontext.ts'
@@ -64,6 +69,11 @@ function registeredTool<Params>(tools: Array<Record<string, unknown>>, name: str
   return tool as unknown as RegisteredTool<Params>
 }
 
+function validatePiArguments(tool: Tool & { prepareArguments?: (args: unknown) => Record<string, unknown> }, call: ToolCall) {
+  const args = tool.prepareArguments ? tool.prepareArguments(call.arguments) : call.arguments
+  return validateToolArguments(tool, { ...call, arguments: args })
+}
+
 describe('Pi native tool surface', () => {
   it('registers the explicit Memory and Handoff tools', () => {
     const tools: Array<{ name: string }> = []
@@ -78,12 +88,13 @@ describe('Pi native tool surface', () => {
       'pc_remember',
       'pc_memory_list',
       'pc_memory_get',
-      'pc_memory_changes',
+      'pc_memory_state',
       'pc_stats',
       'pc_memory_revise',
       'pc_memory_retire',
       'pc_prepare_context',
       'pc_capture_source',
+      'pc_capture_working_note',
       'pc_handoff_activate',
       'pc_work_contract',
       'pc_handoff_current',
@@ -151,7 +162,7 @@ describe('Pi native tool surface', () => {
     })
   })
 
-  it('routes Memory Changes and Stats as read-only current-Scope operations', async () => {
+  it('routes Memory State and Stats as read-only current-Scope operations', async () => {
     const registered: Array<Record<string, unknown>> = []
     const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true })))
     const runtime = createRuntime(fetch)
@@ -160,32 +171,78 @@ describe('Pi native tool surface', () => {
     const context = { cwd: '/workspace/repo', hasUI: false, ui: { confirm } }
     const signal = new AbortController().signal
 
-    await registeredTool<{ since_revision: number }>(registered, 'pc_memory_changes').execute(
-      'call-changes', { since_revision: 7 }, signal, () => undefined, context,
+    await registeredTool<{ artifact_id: string }>(registered, 'pc_memory_state').execute(
+      'call-state', { artifact_id: 'atomic-7' }, signal, () => undefined, context,
     )
     await registeredTool<{ period: string }>(registered, 'pc_stats').execute(
       'call-stats', { period: '7d' }, signal, () => undefined, context,
     )
 
     expect(confirm).not.toHaveBeenCalled()
-    expect(fetch.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([
-      ['http://127.0.0.1:8000/v1/memory/changes', { since_revision: 7, scope_id: 'project:demo' }],
+    expect(fetch.mock.calls.map(([url, init]) => [url, init?.body ? JSON.parse(String(init.body)) : {}])).toEqual([
+      ['http://127.0.0.1:8000/v1/scopes/project%3Ademo/artifacts/atomic-memory/atomic-7/state', {}],
       ['http://127.0.0.1:8000/v1/stats', { period: '7d', selection: { mode: 'exact', scope_ids: ['project:demo'] } }],
     ])
+  })
+
+  it('routes Working Note capture as a scoped, confirmed write', async () => {
+    const registered: Array<Record<string, unknown>> = []
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => (
+      new Response(JSON.stringify({ status: 'accepted', source: { name: 'content', source_id: 'note-1' }, position: 1 }), { status: 202 })
+    ))
+    registerTools(
+      { registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never,
+      createRuntime(fetch),
+    )
+    const confirm = vi.fn(async () => true)
+
+    const result = await registeredTool<{
+      source_id: string
+      content: string
+      session_id: string
+      note_kind: string
+      expires_at?: string
+    }>(registered, 'pc_capture_working_note').execute(
+      'call-note',
+      {
+        source_id: 'note-1',
+        content: 'Parser validation is still in progress.',
+        session_id: 'session-1',
+        note_kind: 'validation',
+        expires_at: '2030-01-02T00:00:00Z',
+      },
+      new AbortController().signal,
+      () => undefined,
+      { cwd: '/workspace/repo', hasUI: true, ui: { confirm } },
+    )
+
+    expect(result.details).toMatchObject({ ok: true })
+    expect(confirm).toHaveBeenCalled()
+    expect(fetch.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([[
+      'http://127.0.0.1:8000/v1/sources/working-notes',
+      {
+        source_id: 'note-1',
+        content: 'Parser validation is still in progress.',
+        session_id: 'session-1',
+        note_kind: 'validation',
+        expires_at: '2030-01-02T00:00:00Z',
+        scope_id: 'project:demo',
+      },
+    ]])
   })
 
   it('keeps the read-only tool schemas within the API contract', () => {
     const registered: Array<Record<string, unknown>> = []
     registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, createRuntime(vi.fn()))
-    const changes = registeredTool<Record<string, unknown>>(registered, 'pc_memory_changes') as unknown as { parameters: TSchema }
+    const state = registeredTool<Record<string, unknown>>(registered, 'pc_memory_state') as unknown as { parameters: TSchema }
     const stats = registeredTool<Record<string, unknown>>(registered, 'pc_stats') as unknown as { parameters: TSchema }
 
-    expect(Value.Check(changes.parameters, {})).toBe(true)
-    expect(Value.Check(changes.parameters, { since_revision: 0 })).toBe(true)
-    expect(Value.Check(changes.parameters, { since_revision: null })).toBe(true)
-    expect(Value.Check(changes.parameters, { since_revision: -1 })).toBe(false)
-    expect(Value.Check(changes.parameters, { since_revision: 1.5 })).toBe(false)
-    expect(Value.Check(changes.parameters, { extra: true })).toBe(false)
+    expect(Value.Check(state.parameters, {})).toBe(false)
+    expect(Value.Check(state.parameters, { artifact_id: 'atomic-7' })).toBe(true)
+    expect(Value.Check(state.parameters, { artifact_id: '' })).toBe(false)
+    expect(Value.Check(state.parameters, { artifact_id: null })).toBe(false)
+    expect(Value.Check(state.parameters, { artifact_id: 'has space' })).toBe(false)
+    expect(Value.Check(state.parameters, { artifact_id: 'atomic-7', extra: true })).toBe(false)
     expect(Value.Check(stats.parameters, {})).toBe(true)
     expect(Value.Check(stats.parameters, { period: 'today' })).toBe(true)
     expect(Value.Check(stats.parameters, { period: '7d' })).toBe(true)
@@ -193,17 +250,115 @@ describe('Pi native tool surface', () => {
     expect(Value.Check(stats.parameters, { period: '30d', extra: true })).toBe(false)
   })
 
-  it('preserves nullable revision cursors through Pi argument validation', () => {
+  it('preserves exact Atomic Memory identity through Pi argument validation', () => {
     const registered: Array<Record<string, unknown>> = []
     registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, createRuntime(vi.fn()))
-    const tool = registeredTool<Record<string, unknown>>(registered, 'pc_memory_changes') as unknown as Tool
-    const call = (since_revision: unknown): ToolCall => ({
-      type: 'toolCall', id: 'call-validation', name: 'pc_memory_changes', arguments: { since_revision },
+    const tool = registeredTool<Record<string, unknown>>(registered, 'pc_memory_state') as unknown as Tool
+    const call = (artifact_id: unknown): ToolCall => ({
+      type: 'toolCall', id: 'call-validation', name: 'pc_memory_state', arguments: { artifact_id },
     })
 
-    expect(validateToolArguments(tool, call(null))).toEqual({ since_revision: null })
-    expect(validateToolArguments(tool, call(0))).toEqual({ since_revision: 0 })
-    expect(() => validateToolArguments(tool, call(1.5))).toThrow('Validation failed')
+    for (const artifact_id of ['atomic-7', 'null', 'undefined', '123', 'true']) {
+      expect(validatePiArguments(tool, call(artifact_id))).toEqual({ artifact_id })
+    }
+    for (const artifact_id of [null, 123, true, 'has space', '']) {
+      expect(() => validatePiArguments(tool, call(artifact_id))).toThrow('Validation failed')
+    }
+  })
+
+  it('rejects coerced Atomic Memory references before exact reads and writes', () => {
+    const registered: Array<Record<string, unknown>> = []
+    registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, createRuntime(vi.fn()))
+    for (const name of ['pc_memory_get', 'pc_memory_revise', 'pc_memory_retire']) {
+      const tool = registeredTool<Record<string, unknown>>(registered, name) as unknown as Tool
+      const fields = name === 'pc_memory_revise' ? { kind: 'decision', text: 'curated fact', if_match: '"content-etag"' }
+        : name === 'pc_memory_retire' ? { state_version: 3 } : {}
+      const call = (artifact_id: unknown, revision: unknown = 1): ToolCall => ({
+        type: 'toolCall', id: 'call-validation', name,
+        arguments: { ...fields, artifact: { family: 'atomic-memory', artifact_id, revision } },
+      })
+      for (const artifact_id of ['atomic-7', 'null', 'undefined', '123', 'true']) {
+        expect(validatePiArguments(tool, call(artifact_id))).toEqual(call(artifact_id).arguments)
+      }
+      for (const artifact_id of [null, 123, true]) {
+        expect(() => validatePiArguments(tool, call(artifact_id))).toThrow('Validation failed')
+      }
+      for (const revision of ['1', true]) {
+        expect(() => validatePiArguments(tool, call('atomic-7', revision))).toThrow('Validation failed')
+      }
+    }
+  })
+
+  it('publishes strict Atomic Memory identity schemas through Pi provider serialization', async () => {
+    const registered: Array<Record<string, unknown>> = []
+    registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, createRuntime(vi.fn()))
+    const tool = registeredTool<Record<string, unknown>>(registered, 'pc_memory_state') as unknown as Tool
+    for (const model of [getModel('openai', 'gpt-4o'), getModel('anthropic', 'claude-sonnet-4-5')]) {
+      let parameters: (TSchema & { type?: string; required?: string[] }) | undefined
+      const stream = streamSimple(model, { messages: [], tools: [tool] }, {
+        apiKey: 'schema-fixture',
+        onPayload: (payload) => {
+          const serialized = JSON.parse(JSON.stringify(payload)) as {
+            tools: Array<{ function?: { parameters: TSchema }; parameters?: TSchema; input_schema?: TSchema }>
+          }
+          parameters = serialized.tools[0]?.function?.parameters ?? serialized.tools[0]?.parameters ?? serialized.tools[0]?.input_schema
+          throw new Error('schema fixture stops before network dispatch')
+        },
+      })
+      expect((await stream.result()).errorMessage).toContain('schema fixture stops before network dispatch')
+      expect(parameters?.type).toBe('object')
+      expect(parameters?.required).toContain('artifact_id')
+      expect(Value.Check(parameters as TSchema, { artifact_id: 'null' })).toBe(true)
+      for (const artifact_id of [null, 123, true]) {
+        expect(Value.Check(parameters as TSchema, { artifact_id })).toBe(false)
+      }
+    }
+  })
+
+  it('blocks invalid raw identities in the real Pi agent loop before HTTP dispatch', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'pc-pi-identity-'))
+    const registered: Array<Record<string, unknown>> = []
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true })))
+    registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, createRuntime(fetch))
+    const tool = registeredTool<Record<string, unknown>>(registered, 'pc_memory_state') as unknown as ToolDefinition
+    const settingsManager = SettingsManager.inMemory()
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: home, agentDir: home, settingsManager,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    })
+    const faux = fauxProvider({ tokensPerSecond: Infinity })
+    let session: Awaited<ReturnType<typeof createAgentSession>>['session'] | undefined
+    try {
+      await resourceLoader.reload()
+      const modelRuntime = await ModelRuntime.create({ authPath: join(home, 'auth.json'), modelsPath: null })
+      modelRuntime.registerNativeProvider(faux.provider)
+      ;({ session } = await createAgentSession({
+        cwd: home, agentDir: home, model: faux.getModel(), noTools: 'builtin', customTools: [tool],
+        sessionManager: SessionManager.inMemory(home), settingsManager, resourceLoader, modelRuntime,
+      }))
+      for (const artifact_id of [null, 123, true, 'null', '123', 'true']) {
+        session.agent.reset()
+        faux.setResponses([
+          fauxAssistantMessage(fauxToolCall('pc_memory_state', { artifact_id }), { stopReason: 'toolUse' }),
+          fauxAssistantMessage('done'),
+        ])
+        await session.agent.prompt('Inspect the Memory state.')
+        const result = session.agent.state.messages.find((message) => message.role === 'toolResult')
+        expect(result?.role, JSON.stringify(session.agent.state.messages)).toBe('toolResult')
+        if (result?.role !== 'toolResult') throw new Error('Pi must report the tool outcome.')
+        expect(result.isError).toBe(typeof artifact_id !== 'string')
+        if (typeof artifact_id !== 'string') {
+          expect(JSON.stringify(result.content)).toContain('Validation failed')
+          expect(fetch).not.toHaveBeenCalled()
+        }
+      }
+      expect(fetch.mock.calls.map(([url]) => url)).toEqual(['null', '123', 'true'].map((artifact_id) =>
+        `http://127.0.0.1:8000/v1/scopes/project%3Ademo/artifacts/atomic-memory/${artifact_id}/state`,
+      ))
+    } finally {
+      session?.dispose()
+      await rm(home, { recursive: true, force: true })
+    }
   })
 
   it('requires confirmation and filters secrets for all structured work writes', async () => {
@@ -339,7 +494,6 @@ describe('Pi native tool surface', () => {
       candidate_id: 'candidate-1',
       expected_version: 1,
       proposal: { situation: 'before', action: 'change', outcome: 'after', lesson: 'keep tests' },
-      memory_citations: null,
       source_refs: [],
       artifact_refs: [],
     })).toBe(true)
@@ -347,6 +501,14 @@ describe('Pi native tool surface', () => {
       candidate_id: 'candidate-1',
       expected_version: 1,
       proposal: { situation: 'before', action: 'change', outcome: 'after', lesson: 'keep tests', extra: 'reject' },
+      source_refs: [],
+      artifact_refs: [],
+    })).toBe(false)
+    expect(Value.Check(revise.parameters, {
+      candidate_id: 'candidate-1',
+      expected_version: 1,
+      proposal: { situation: 'before', action: 'change', outcome: 'after', lesson: 'keep tests' },
+      memory_citations: [],
       source_refs: [],
       artifact_refs: [],
     })).toBe(false)
@@ -392,9 +554,9 @@ describe('Pi native tool surface', () => {
 
     expect(context.ui.confirm).toHaveBeenCalledTimes(3)
     expect(fetch.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([
-      ['http://127.0.0.1:8000/v1/artifact-candidates/approve', { ...common, scope_id: 'project:demo' }],
-      ['http://127.0.0.1:8000/v1/artifact-candidates/reject', { ...common, reason: 'not applicable', scope_id: 'project:demo' }],
-      ['http://127.0.0.1:8000/v1/artifact-candidates/revise', {
+      ['http://127.0.0.1:8000/v1/candidates/approve', { ...common, scope_id: 'project:demo' }],
+      ['http://127.0.0.1:8000/v1/candidates/reject', { ...common, reason: 'not applicable', scope_id: 'project:demo' }],
+      ['http://127.0.0.1:8000/v1/candidates/revise', {
         ...common, proposal, source_refs: [], artifact_refs: [], target: null, reason: 'clarify', scope_id: 'project:demo',
       }],
     ])
@@ -499,6 +661,57 @@ describe('Pi native tool surface', () => {
     ])
   })
 
+  it('accepts and forwards advisory rollover reasons for Handoff preparation', async () => {
+    const registered: Array<Record<string, unknown>> = []
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true })))
+    const runtime = createRuntime(fetch)
+    registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, runtime)
+    const activate = registeredTool<Record<string, unknown>>(registered, 'pc_handoff_activate')
+    const prepare = registeredTool<Record<string, unknown>>(registered, 'pc_handoff_prepare')
+    const boundarySource = { name: 'content', source_id: 'turn-1' }
+    const reasons = ['host_context_budget', 'context_quality']
+    const context = { cwd: '/workspace/repo', hasUI: true, ui: { confirm: vi.fn(async () => true) } }
+    const signal = new AbortController().signal
+
+    expect(Value.Check(activate.parameters!, {
+      boundary_source: boundarySource,
+      objective: 'Continue in a fresh session.',
+      rollover_reasons: reasons,
+    })).toBe(true)
+    expect(Value.Check(prepare.parameters!, {
+      objective: 'Continue in a fresh session.',
+      evidence: [{ kind: 'source', source_ref: boundarySource }],
+      rollover_reasons: reasons,
+    })).toBe(true)
+
+    await activate.execute('call-activate', {
+      boundary_source: boundarySource,
+      objective: 'Continue in a fresh session.',
+      rollover_reasons: reasons,
+    }, signal, () => undefined, context)
+    await prepare.execute('call-prepare', {
+      objective: 'Continue in a fresh session.',
+      evidence: [{ kind: 'source', source_ref: boundarySource }],
+      rollover_reasons: reasons,
+    }, signal, () => undefined, context)
+
+    expect(fetch.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([
+      ['http://127.0.0.1:8000/v1/handoff/activate', {
+        boundary_source: boundarySource,
+        objective: 'Continue in a fresh session.',
+        evidence: [],
+        rollover_reasons: reasons,
+        scope_id: 'project:demo',
+      }],
+      ['http://127.0.0.1:8000/v1/handoff/prepare', {
+        objective: 'Continue in a fresh session.',
+        evidence: [{ kind: 'source', source_ref: boundarySource }],
+        rollover_reasons: reasons,
+        scope_id: 'project:demo',
+      }],
+    ])
+  })
+
   it('accepts the check results the OpenAPI contract marks optional', () => {
     const registered: Array<Record<string, unknown>> = []
     registerTools({ registerTool: (tool: Record<string, unknown>) => registered.push(tool) } as never, createRuntime(vi.fn()))
@@ -573,10 +786,10 @@ describe('Pi native tool surface', () => {
         artifact: { family: 'skill', artifact_id: 'skill-1', revision: 3 },
         scope_id: 'project:demo',
       }],
-      ['http://127.0.0.1:8000/v1/artifact-candidates/list', {
+      ['http://127.0.0.1:8000/v1/candidates/list', {
         status: 'approved', family: 'skill', cursor: 'next-page', limit: 100, scope_id: 'project:demo',
       }],
-      ['http://127.0.0.1:8000/v1/artifact-candidates/get', {
+      ['http://127.0.0.1:8000/v1/candidates/get', {
         candidate_id: 'candidate-1', scope_id: 'project:demo',
       }],
     ])

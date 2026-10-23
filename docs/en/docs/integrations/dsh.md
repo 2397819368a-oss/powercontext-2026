@@ -10,7 +10,7 @@ description: Install the PowerContext DeepSeek Harness plugin and control its lo
 
 ## Install matching Server and plugin versions
 
-Install DeepSeek Harness and make sure its Web profile is available. The real-host acceptance suite pins DSH
+Install DeepSeek Harness Web or Desktop. The real-host acceptance suite pins DSH
 0.1.2-rc.1. Choose one PowerContext installation path and keep the Server and plugin together.
 
 For this guided-setup build:
@@ -36,7 +36,54 @@ commands. A local source must contain the checked-in built `lib/index.js`.
 `setup dsh --source oceanbase/powercontext --ref master` reuses a valid cached checkout without fetching:
 repeating that command does not update a moving branch. A broken checkout is replaced.
 
-`setup dsh` calls `dsh plugin --profile web add`; it does not start the Server. Restart DSH after installation.
+`powercontext setup dsh` asks for `web` or `desktop` in an interactive terminal. Without a terminal, or with
+`--json`, an omitted profile defaults to `web`. Explicit selection never prompts:
+
+```bash
+powercontext setup dsh --profile web
+powercontext setup dsh --profile desktop
+powercontext doctor dsh --profile desktop
+```
+
+Web installs under `$DSH_HOME/profiles/web`; Desktop installs under `$DSH_HOME/profiles/desktop`
+(`DSH_HOME` defaults to `~/.dsh`). Setup calls `dsh plugin --profile <profile> add`, which installs the package
+and enables its bundle in that profile's `package.json`. The bundle supplies its own patch. Setup preserves
+both profiles' user `cordis.patch.yml` files and does not enable the plugin in the other profile.
+
+Desktop requires its **Desktop-installed command**, not npm/pnpm dsh. Open Desktop once to initialize its
+profile, use **Manage dsh Command…** to install the command, open a new terminal, then fully quit Desktop
+before setup. Closing the window may only hide it. Setup searches PATH for the Desktop carrier even when
+an npm shim comes first. If it is not registered on PATH, pass its installed launcher explicitly:
+
+```powershell
+powercontext setup dsh --profile desktop --dsh-command "D:\Apps\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd"
+```
+
+On macOS the launcher is `DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`.
+`--dsh-command` also works with `doctor dsh`. Packaged Windows/macOS Desktop layouts are supported;
+unpackaged development launchers are not. Desktop inspection uses the application's Electron runtime and
+configuration APIs without booting plugins. Registration success does not establish running-host readiness:
+reopen Desktop and run `/pc doctor`. Setup does not start the Server or quit Desktop for you.
+
+Saved `hosts.dsh` connection settings and `$DSH_HOME/powercontext/credentials.json` are shared between Web
+and Desktop. Use the same Server for both; changing the shared URL affects either profile that has no native
+override. Credentials remain bound to their saved Server URL. Install into each profile separately if you use both.
+
+Existing UI and model patches can remain in place. Setup checks the composed PowerContext connection settings;
+see [remote connection configuration](../operate/connect-remote-server.md) for conflicts and dynamic configuration limits.
+The check includes children of `group: true` groups and groups named `@deepseek-ai/cordis-plugin-group` or `cordis:group`;
+multiple PowerContext entries are rejected before installation and during the installed-configuration check.
+Native `@deepseek-ai/cordis-plugin-include` and `cordis:include` trees are checked with the selected host's
+YAML/JSON parser and include patches. Relative paths start at the profile directory; nested includes resolve
+from their containing file's directory. Unrelated UI/model expressions remain unevaluated during setup.
+Enabled include files must already exist. Cycles, unsupported file types or URLs, dynamic paths or patch structure,
+and unverifiable group children fail before connection settings or credentials are saved.
+
+An unset, empty, or whitespace-only `DSH_HOME` selects `~/.dsh`. A nonblank path keeps its leading and trailing
+spaces. These rules apply to configuration inspection, stored credentials, and plugin dependency lookup.
+
+Setup does not start the Server. Restart DSH after installation.
+The model-facing PowerContext surface is registered through DSH's native `@deepseek-ai/dsh-mcp-client`.
 
 ## Start the Server and the host
 
@@ -74,6 +121,12 @@ Run `/pc doctor` inside the affected DSH session. Its report identifies configur
 liveness, readiness, capabilities, declared routes, the current Scope, and a read-only prepare operation independently.
 A Scope failure leaves health results available. The endpoint summary shows only its origin, configuration source
 and whether a path prefix exists; credentials, prefix text, query strings and fragments are not printed.
+
+Doctor reports the active host's native MCP catalog separately, including the exact visible tool names.
+`native_mcp_unconfigured` means no native MCP tools are visible; initialization may still be pending or have failed.
+If other native MCP tools are visible but `mcp__powercontext__*` is absent, Doctor reports
+`native_mcp_powercontext_missing`. These results do not fail otherwise healthy lifecycle HTTP checks, but HTTP
+health alone does not establish that model-facing MCP operations are available.
 
 Each failed check identifies the operation, a stable code, HTTP status/request ID when available, and a recovery
 action. Protocol errors also include `protocol_issue`, identifying the violated JSON, status or PreparedContext field rule.
@@ -173,10 +226,37 @@ See the [runtime test procedure](https://github.com/oceanbase/powercontext/blob/
 
 ## Understand what the plugin does
 
-The plugin has two paths to the same Server:
+The plugin has three deliberately different paths to the same Server:
 
 - before each model step it asks the Runtime to prepare one final, bounded context value, then independently captures the user's prompt as Source evidence;
-- named `pc_*` tools call the public HTTP API to remember, search, revise, retire, and audit Memory.
+- DSH's native MCP client connects to `/mcp/` and exposes the Server tools as `mcp__powercontext__<operation>`;
+- `/pc` commands and automatic lifecycle stages use the bounded HTTP client for host control and diagnostics.
+
+The MCP surface covers the full PowerContext profile: Memory read/write, Source capture, Work Contract, Handoff and
+acknowledgement, task outcome, Experience, managed and external Skill workflows, candidate inspection, Scope
+organization, persistent Scope binding, and artifact publication. It also exposes the Server's additional MCP tools that
+are outside the profile contract. The plugin does not register Pi/Hermes-style direct HTTP operation tools.
+
+Scope-dependent MCP operations, including those with a path `scope_id`, must use the exact host-resolved Scope
+exposed in the current-turn routing metadata. Do not select a different Scope using
+`mcp__powercontext__resolve_scope_binding` with `allow_default: true`. The plugin refuses another Scope instead of
+rewriting MCP arguments; automatic lifecycle hooks and model operations use the same project context.
+
+Optional native MCP initialization waits at most five seconds during plugin startup. Ordinary DSH conversations
+continue if the handshake stalls, and the same client may finish connecting later. Tools are unavailable until
+registration completes; check the current tool catalog before selecting an MCP operation.
+
+Native MCP frames pass through a process-local streaming boundary to the fixed configured endpoint; all redirects
+are rejected, including during initialization and tool calls. The native client still owns discovery and sessions.
+HTTP failures expose controlled status/code information without upstream response bodies or diagnostic headers.
+The plugin rejects likely secret content, including nested Handoff state, Drafts and prepared carriers, with
+`secret_rejected` before write approval or dispatch. Its MCP catalog and mutation approval classification are generated
+from the Server's public `tools/list`, not the HTTP tool table.
+
+`mcp__powercontext__handoff_current_work` captures its own boundary and returns `{boundary, handoff}`. Transfer only
+the complete `handoff` member, then pass that exact value to `mcp__powercontext__continue_handoff` with
+`selection: "prepared"`. No preliminary Source capture is needed. In the separate low-level capture/activate/finalize
+flow, pass activation's top-level `draft` to finalization and transfer the complete native finalization result unchanged.
 
 The plugin resolves one Server-owned Scope in this order: `POWERCONTEXT_DSH_SCOPE_ID`, a durable binding for the
 session workspace, then the Server default. The workspace path is hashed only as an external binding key. A missing
@@ -184,11 +264,12 @@ workspace therefore uses the Server default instead of the Harness process direc
 
 The plugin calls `POST /v1/context/prepare` once before the model analyzes the prompt. Explicit `remember_memory` calls do not require a model.
 
-## Diagnose direct tool and command failures
+## Diagnose MCP and command failures
 
-Named tools and Scope-dependent `/pc` commands return a controlled failure if Scope resolution fails. They stop before
-the requested operation, without creating a binding or retrying with another Scope. Cancellation and the existing
-per-request timeout also apply to Scope resolution.
+Scope-dependent native MCP tools and `/pc` commands return a controlled failure before dispatch if host Scope
+resolution fails or returns no Scope. A failed refresh invalidates the session's cached Scope; MCP calls cannot use
+a previous turn's value to bypass the failure. Ordinary conversation continues without selecting another Scope or
+creating a binding. Cancellation and the existing per-request timeout also apply to lifecycle Scope resolution.
 
 Inside DeepSeek Harness:
 
@@ -208,10 +289,19 @@ Inside DeepSeek Harness:
 | `unavailable` | Connection failure, timeout, cancellation, or HTTP 503. Native diagnostics use `server_unavailable`. |
 | `unscoped` | The resolver completed without a Scope. |
 | `invalid_response` | The client detected an invalid Server response. |
+| `precondition_failed` | The Server rejected a write because a tag or revision precondition no longer matches the current state. Re-read the current reference, then retry with the fresh value. A 412 that carries a published business code reports that code instead. |
+| `precondition_required` | The Server requires the current ETag in `If-Match` for this mutation. Read the resource, then retry with its ETag. |
+| `invalid_cursor` | The Server rejected a pagination cursor that is malformed or does not match this request. Restart the listing from the beginning. This is the 400 half of the cursor pair whose expired half is `cursor_expired`. |
+| `cursor_expired` | The Server rejected a pagination cursor. Restart the listing from the beginning. |
+| `handoff_report_too_large` | The result exceeds the response limit; the Server's only 413 is the Handoff Report size limit. Narrow the selection and retry. |
+| `capacity_exceeded` | The Server reached a capacity limit. Retry after a short delay. |
 
-Existing conflict and validation codes, such as `revision_conflict` and `invalid_request`, retain their meaning. Failure
-results preserve available HTTP status and request ID, but use fixed messages instead of Server-provided text. Unknown
-error codes are omitted from `error_code` and diagnostics; their presence alone does not imply a version mismatch.
+Existing conflict and validation codes, such as `revision_conflict` and `invalid_request`, retain their meaning. A domain
+status keeps its own result code and recovery action: only transport failures and HTTP 5xx use the `unavailable` wording,
+so a recoverable rejection is never reported as an outage. A response body that carries `error.details` preserves that
+object on the tool result. Failure results preserve available HTTP status and request ID, but use fixed messages instead
+of Server-provided text. Unknown error codes are omitted from `error_code` and diagnostics; their presence alone does not
+imply a version mismatch.
 
 ## Diagnose automatic recall and capture
 
@@ -302,11 +392,18 @@ powercontext doctor dsh
 | `POWERCONTEXT_DSH_BASE_URL` | `http://127.0.0.1:8000` | Server base URL used by the plugin |
 | `POWERCONTEXT_DSH_ALLOW_INSECURE_HTTP` | `false` | Explicitly permit non-loopback plaintext HTTP |
 | `POWERCONTEXT_DSH_SCOPE_ID` | unset | Explicit existing Scope before workspace binding and Server default |
-| `POWERCONTEXT_DSH_AUTHORIZATION` | unset | Complete `Bearer <token>` header for plugin HTTP requests |
+| `POWERCONTEXT_DSH_AUTHORIZATION` | unset | Complete `Bearer <token>` header for MCP and lifecycle HTTP requests |
 | `POWERCONTEXT_DSH_CAPTURE_PROMPTS` | `true` | Capture user prompts as Source evidence |
 | `POWERCONTEXT_DSH_FLUSH_ON_CAPTURE` | `false` | Wait for Source processing after capture |
 
 `timeoutMs`, `requestTimeoutMs`, `maxBytes`, and `flushMaxCalls` are plugin patch settings. Server unavailability fails open for recall and capture; restart `dsh web` after changing these variables.
+
+`get_readiness`, including `/pc doctor`, uses `max(requestTimeoutMs, 40000)` milliseconds so cold readiness
+can finish the default 30-second inference probe and subsequent access checks (up to 5 seconds), with
+transport headroom. Doctor reports this as `configuration.readiness_request_timeout_ms`, alongside the
+ordinary `request_timeout_ms` (1000 ms by default). For larger custom Server probe budgets, increase
+`requestTimeoutMs` accordingly. Other requests retain their configured deadline; caller cancellation
+still stops readiness immediately.
 
 Plain HTTP is allowed on loopback by default. For remote HTTP, explicitly set
 `POWERCONTEXT_DSH_ALLOW_INSECURE_HTTP=true`; HTTPS certificate validation stays enabled. The host URL aliases are

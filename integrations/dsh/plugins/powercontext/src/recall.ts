@@ -15,13 +15,13 @@
  */
 
 import type { UserMessage } from '@deepseek-ai/dsh-session'
-import type { PowerContextClient } from './client.ts'
+import { combineSignals, type PowerContextClient } from './client.ts'
 import type { ResolvedConfig } from './config.ts'
 import { captureUserPrompt } from './capture.ts'
 import { logSafely, reportFailure } from './diagnostics.ts'
 import { InvalidResponseError, TransportError } from './errors.ts'
 import { validatePreparedContext } from './prepared-context.ts'
-import { sessionCwd } from './scope.ts'
+import { formatScopeRouting, sessionCwd } from './scope.ts'
 import { cancellationReason, type RuntimeStatus, type StatusAttempt, type SkipReason } from './status.ts'
 
 export interface TextBlock {
@@ -50,33 +50,52 @@ export interface RecallInput {
   config: ResolvedConfig
   resolveScope: (cwd?: string, signal?: AbortSignal) => Promise<string | undefined>
   wrapContent: (text: string) => unknown
+  wrapScope?: (text: string) => unknown
   log: (event: Record<string, unknown>) => void
   status?: RuntimeStatus
 }
 
-function messageText(message: PromptMessage): string {
-  return message.content
+function messageText(message: unknown): string {
+  if (!message || typeof message !== 'object') return ''
+  const content = (message as { content?: unknown }).content
+  if (!Array.isArray(content)) return ''
+  return content
     .filter((block): block is TextBlock & { readonly text: string } => (
-      block.type === 'text' && typeof block.text === 'string'
+      !!block && typeof block === 'object'
+      && (block as TextBlock).type === 'text' && typeof (block as TextBlock).text === 'string'
     ))
     .map((block) => block.text)
     .join('')
     .trim()
 }
 
-function messagesToText(messages: readonly PromptMessage[]): string {
+function messagesToText(messages: readonly unknown[]): string {
   return messages
     .map(messageText)
     .filter(Boolean)
     .join('\n\n')
 }
 
-export function messagesToQuery(messages: readonly PromptMessage[]): string {
-  return messagesToText(messages)
+function isRuntimeContextSnapshot(message: unknown): boolean {
+  if (!message || typeof message !== 'object') return false
+  const source = (message as { source?: unknown }).source
+  if (!source || typeof source !== 'object') return false
+  const value = source as { kind?: unknown; plugin?: unknown; form?: unknown }
+  return value.kind === 'plugin'
+    && value.plugin === '@deepseek-ai/dsh-system-prompt'
+    && value.form === 'snapshot'
 }
 
-export function messagesToUserPrompt(messages: readonly PromptMessage[]): string {
-  return messagesToText(messages.filter((message) => message.source.kind === 'user'))
+export function messagesToQuery(messages: readonly unknown[]): string {
+  return messagesToText(messages.filter((message) => !isRuntimeContextSnapshot(message)))
+}
+
+export function messagesToUserPrompt(messages: readonly unknown[]): string {
+  return messagesToText(messages.filter((message) => {
+    if (!message || typeof message !== 'object') return false
+    const source = (message as { source?: unknown }).source
+    return !!source && typeof source === 'object' && (source as { kind?: unknown }).kind === 'user'
+  }))
 }
 
 export function formatUntrustedContext(content: string): string {
@@ -124,42 +143,57 @@ export async function runRecallPreStep(input: RecallInput): Promise<PreStepDecis
   const skipAll = (reason: SkipReason) => {
     for (const stage of ['scope', 'prepare', 'capture', 'flush', 'injection'] as const) observation?.skip(stage, reason)
   }
-  if (input.messages.length === 0) {
-    skipAll('no_messages')
-    return input.next()
-  }
-  const query = messagesToQuery(input.messages)
-  if (!query) {
-    skipAll('empty_input')
-    return input.next()
-  }
-  if (input.signal?.aborted) {
-    skipAll(cancellationReason(input.signal))
-    return input.next()
-  }
-  const userPrompt = messagesToUserPrompt(input.messages)
-  const content = await recallThenCapture(input, query, userPrompt, observation)
-  if (content) observation?.record('injection', { state: 'running' })
   let downstream: PreStepDecision
   try {
     downstream = await input.next()
   } catch (error) {
+    for (const stage of ['scope', 'prepare', 'capture', 'flush'] as const) observation?.skip(stage, 'downstream_failed')
     observation?.record('injection', { state: 'unavailable', code: 'downstream_failed',
       message: 'The downstream pre-step failed; no PowerContext message was appended.' })
     throw error
   }
-  if (!content || downstream.kind !== 'enter' || input.signal?.aborted) {
-    observation?.skip('injection', input.signal?.aborted ? cancellationReason(input.signal)
-      : !content ? 'no_prepared_content' : 'downstream_rejected')
+  if (downstream.kind !== 'enter') {
+    skipAll('downstream_rejected')
+    return downstream
+  }
+  const signal = combineSignals([
+    ...(input.signal ? [input.signal] : []),
+    AbortSignal.timeout(input.config.timeoutMs),
+  ])
+  const automaticInput = { ...input, signal }
+  if (signal.aborted) {
+    skipAll(cancellationReason(signal))
+    return downstream
+  }
+  const messages = downstream.messages ?? []
+  if (messages.length === 0) {
+    skipAll('no_messages')
+    return downstream
+  }
+  const query = messagesToQuery(messages)
+  if (!query) {
+    skipAll('empty_input')
+    return downstream
+  }
+  const userPrompt = messagesToUserPrompt(messages)
+  const recalled = await recallThenCapture(automaticInput, query, userPrompt, observation)
+  if (recalled.content) observation?.record('injection', { state: 'running' })
+  if ((!recalled.scopeId && !recalled.content) || signal.aborted) {
+    observation?.skip('injection', signal.aborted ? cancellationReason(signal)
+      : 'no_prepared_content')
     return downstream
   }
   try {
-    if (input.signal?.aborted) throw new TransportError('', input.signal.reason)
+    if (signal.aborted) throw new TransportError('', signal.reason)
+    const additions = []
+    if (recalled.scopeId && input.wrapScope) additions.push(input.wrapScope(formatScopeRouting(recalled.scopeId, input.cwd)))
+    if (recalled.content) additions.push(input.wrapContent(formatUntrustedContext(recalled.content)))
     const decision = {
       ...downstream,
-      messages: [...downstream.messages ?? [], input.wrapContent(formatUntrustedContext(content))],
+      messages: [...downstream.messages ?? [], ...additions],
     }
-    observation?.record('injection', { state: 'appended' })
+    if (recalled.content) observation?.record('injection', { state: 'appended' })
+    else observation?.skip('injection', 'no_prepared_content')
     return decision
   } catch (error) {
     observation?.record('injection', { state: 'unavailable', code: 'message_wrap_failed',
@@ -174,7 +208,7 @@ async function recallThenCapture(
   query: string,
   userPrompt: string,
   observation?: StatusAttempt,
-): Promise<string | undefined> {
+): Promise<{ scopeId?: string; content?: string }> {
   let scopeId: string | undefined
   observation?.record('scope', { state: 'running' })
   try {
@@ -185,12 +219,12 @@ async function recallThenCapture(
     observation?.fail('scope', error, false, input.signal)
     for (const stage of ['prepare', 'capture', 'flush'] as const) observation?.skip(stage, 'scope_failed')
     reportFailure(input.log, 'scope_resolve', error)
-    return undefined
+    return {}
   }
   if (!scopeId) {
     for (const stage of ['scope', 'prepare', 'capture', 'flush'] as const) observation?.skip(stage, 'scope_unresolved')
     logSafely(input.log, { event: 'scope_resolve', outcome: 'skipped', reason: 'scope_unresolved' })
-    return undefined
+    return {}
   }
   observation?.scope(scopeId)
   const content = await recallContent(input, query, scopeId, observation)
@@ -215,5 +249,5 @@ async function recallThenCapture(
       reportFailure(input.log, 'capture_content_source', error)
     }
   }
-  return input.signal?.aborted ? undefined : content
+  return input.signal?.aborted ? {} : { scopeId, content: content ?? undefined }
 }

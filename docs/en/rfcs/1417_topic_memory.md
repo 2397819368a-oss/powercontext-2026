@@ -243,7 +243,10 @@ exceptions, cancellation, timeout, nor process death refunds a reservation.
 The Worker uses OpenAI/Anthropic SDK-backed providers with SDK transport retries disabled, including compatible
 endpoints. Binding assembly and Worker bootstrap validate the same policy. Topic model settings admit only bounded
 scalar sampling, output, timeout, and service-tier settings; Embedding admits only `dimensions` and `truncate`.
-`extra_body`, hidden response/conversation history, background generation, native tools, and unsupported providers are
+Generation with `openai-chat:<model>` additionally accepts exactly
+`extra_body={"chat_template_kwargs":{"enable_thinking":false}}`: the value must be a boolean, and neither level may
+contain other keys. This exception cannot override messages, output limits, tools, or retry policy. All other
+`extra_body` forms (including Embedding), hidden response/conversation history, background generation, native tools, and unsupported providers are
 rejected before provider I/O. A suspended response is rejected at the raw model boundary, preventing the inference
 library from folding separately billed continuation segments into one logical request. Ordinary non-Topic inference
 retains its existing provider behavior. An incompatible configuration does not register a Topic Worker and reports
@@ -429,7 +432,12 @@ windows. Changing the Chunk policy requires rebuilding the corresponding retriev
 Each retrieval channel first collapses by Topic. When multiple Detail chunks from one Topic match, only the best
 position is retained for the snippet. The two or four channels enabled for the current deployment are fused by RRF
 rather than by comparing raw full-text scores with raw vector distances. A Topic occupies at most one final result
-position, and `matched_by` records which channels matched it. The per-channel candidate limit applies only after this
+position, and `matched_by` records every admitted channel that matched the selected Topic. A zero-weight channel makes
+no ranking contribution and cannot select a Topic by itself, but its evidence remains in `matched_by` when another
+positive-weight channel selects the same Topic. Hybrid mode applies the deployment's normalized relative FTS/vector
+weights to both Topic and Detail channels of the corresponding kind. FTS-only and vector-only modes remain unweighted.
+The weighted theoretical maximum for the enabled channels is the denominator that keeps the public score normalized
+to `0..100`. The per-channel candidate limit applies only after this
 Topic collapse, so one Topic with many matching chunks cannot hide another Topic. FTS snippets center a bounded window
 on an Analyzer v1 query match; a vector-only detail hit uses a stable window from its matched chunk.
 The first-release search limit and historical candidate configuration are both bounded to 20. Search queries are
@@ -720,21 +728,51 @@ minutes. The Supervisor may continue checking a failed key, but Topic Worker's d
 The attempt counter is committed before Source projection; each provider reservation is committed before I/O. The
 third attempt may finish using the remaining provider budget; a subsequent attempt is refused. An exhausted request
 or token allowance records `window_provider_budget_exceeded`, and an exhausted attempt count is reported as
-`window_attempt_limit`. The selector reads terminal frontiers before materializing Sources or spawning another Worker.
+`window_attempt_limit`. Before dispatch, a Topic-owned metadata probe checks the current Cursor, target/Source head
+and work-budget row, including legacy rows whose attempt count is exhausted but whose failure code is empty.
+The probe does not select or materialize Sources, estimate tokens, or construct models. The Worker selector and
+pre-I/O reservations retain their guards against changes after admission; an already started third attempt may finish.
+
+A durable rejection enters terminal waiting rather than ordinary failure backoff. It does not launch another Worker,
+consume provider allowance, increase the failure counter, acknowledge the invocation, or advance progress. The
+Supervisor checks metadata again after five minutes, on a new explicit flush, or at automatic admission. A changed
+allowance or Cursor can make the key eligible again without restarting. Transient failures keep their existing backoff.
+The first observed rejection or changed diagnostic emits `artifact_processing.blocked` with its stage, error code,
+Family, binding, Scope, attempted Window range and attempt/request/token counters. Unchanged cached rechecks are quiet.
+Deduplication is bounded and local to the Supervisor term; restart or cache eviction may report the condition again.
+Evicted terminal keys remain protected by the domain gate and are revisited through bounded durable-intent discovery;
+terminal cache pressure does not pause other Scope admission.
+Failed metadata rechecks retain the last terminal block, its waiting interval and log deduplication. Exhausting the
+Supervisor's shared admission time allowance yields control without attributing another failure to the Scope.
 
 A terminal frontier retains its Sources, Cursor, Pending, and later same-Scope Sources. It is not a NOOP, success, or
 permission to skip evidence. Other Scope keys remain processable. A retry that succeeds within the remaining allowance
-publishes normally and can process the tail. There is no automatic allowance reset, retry/reset API, or quarantine
-skip operation; terminal input or repeated failures require deliberate operator remediation. Repeated flushes and
-restarts cannot authorize additional model cost.
+publishes normally and can process the tail. There is no automatic allowance reset or quarantine skip operation.
+`POST /v1/topic-memory/processing/status` exposes the current Cursor, Source head, target and block; an active final
+attempt remains pending. `POST /v1/topic-memory/processing/blocks/get` reads an exact retained block. Scope readers may
+inspect these records; `POST /v1/topic-memory/processing/retry` requires `scope.admin` and the observed block ID. It
+atomically retains the old evidence, grants one new bounded allowance and requests processing without advancing the
+Cursor or deleting the target or Sources. Duplicate IDs return the original acceptance, even if another attempt has
+started or progress advanced. A stale unretried ID returns a conflict. Repeated ordinary flushes and restarts cannot
+authorize additional model cost.
+
+`pc_topic_memory_work_attempts` keeps one metadata record per attempt, including its exact owner, attempted range,
+target, usage snapshot and last error category. A terminal observation adds a stable block ID and `blocked_at`; retry
+records its timestamp and accepted request generation without replacing the original diagnostics. Records contain no
+Source/model text. The additive table is created on supported database startup without altering the budget schema.
+Legacy rows receive an observation time and nullable historical error; no original failure timestamp is inferred.
+Without a per-attempt audit record, a legacy range preserves the budget's cumulative coverage rather than inferring
+the final attempt's selected end.
+Lookups use indexed identities and writes touch one frontier. Normal processing adds at most three attempt records
+per window allowance; explicitly accepted retries add another bounded allowance. Records are retained for audit.
 
 `pc_topic_memory_work_budgets` stores the frontier, furthest attempted end, opaque attempt ID, attempt count, reserved
 requests/tokens, and a bounded failure code; it stores no prompts, Source text, or model outputs. Inspect these columns
 together with the Cursor and structured error logs to distinguish terminal work from transient backoff. A new attempt
-supersedes publication authority from an earlier attempt in the same leadership term. The row is removed only in the
-successful atomic publication transaction alongside Cursor CAS and Topic/index writes; rollback restores it. No
-fragment checkpoint or persistent job history is created. The table is additive and is created when an existing
-supported database opens.
+supersedes publication authority from an earlier attempt in the same leadership term. Successful publication removes
+the row atomically alongside Cursor CAS and Topic/index writes; rollback restores it. An explicitly accepted retry
+also removes the exact exhausted allowance atomically with its retained audit record and new request. No fragment
+checkpoint is created. The tables are additive and are created when an existing supported database opens.
 
 Actual errors—including model calls, output validation, retrieval, enabled Embedding, database commit, Worker crash, and
 timeout—use the same backoff strategy but must produce structured logs by `stage` and `error_code`. Cursor/Head CAS
@@ -742,9 +780,10 @@ conflicts and leadership loss are control signals and do not increase the ordina
 Cursor and Head conflicts use a fixed short retry deadline rather than immediate redispatch. The conflicting target
 releases its current page while delayed, so frozen suffix targets continue to make progress without a hot loop.
 
-Logs include at least the binding, Scope, Window range, stage, error code, exception type, failure count, retry delay,
-Supervisor generation, Worker ID, and traceback. They must not contain original Source content, Prompts, complete model
-outputs, or secrets.
+Console and JSON operational logs retain the binding, Family, Scope, Window range, stage, error code and applicable
+budget/retry counters. Actual Worker errors retain the child's stage, exception type and Worker identity. Sanitized
+stack locations are available in internal Worker failure diagnostics; operational formatters do not serialize arbitrary
+extras or traceback payloads. Logs must not contain original Source content, Prompts, complete model outputs, or secrets.
 
 ## HTTP, MCP, and Prepared Context
 

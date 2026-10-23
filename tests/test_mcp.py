@@ -26,8 +26,9 @@ import httpx
 from fastapi import Request
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from jsonschema import Draft202012Validator
 
-from powercontext.builtin.runtime import MemoryEntriesPage
+from powercontext.builtin.runtime.atomic_memory import AtomicMemoryPage
 from powercontext.server.access import HttpAccessLogMiddleware
 from powercontext.server.app import create_app
 from powercontext.server.context import is_internal_bridge
@@ -45,7 +46,8 @@ def test_mcp_guidance_is_visible_without_loading_a_skill() -> None:
     guidance, tools = asyncio.run(inspect())
     assert guidance
     names = {tool.name for tool in tools}
-    assert set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", guidance)) <= names
+    referenced_names = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", guidance))
+    assert referenced_names - {"state_version", "merged_into_id", "expected_revision", "status_code"} <= names
     if directory := os.environ.get("POWERCONTEXT_GUIDANCE_EXPORT"):
         root = Path(__file__).parents[1]
         for host in ("codex", "claude-code", "workbuddy", "agent-plugin", "minimax"):
@@ -80,17 +82,41 @@ def test_mcp_exposes_only_data_plane_and_integration_control_operations() -> Non
     tool_names, resource_count, prompt_count = run_async(inspect_components)
 
     assert set(tool_names) == {
+        "generate_experience",
+        "get_experience",
+        "propose_experience",
+        "generate_skill",
+        "get_skill",
+        "propose_skill",
+        "list_managed_skills",
+        "scan_external_skills",
+        "list_external_skills",
+        "resolve_external_skill",
+        "import_external_skill",
         "activate_handoff",
         "acknowledge_handoff",
-        "approve_artifact_candidate",
+        "approve_candidate",
         "capture_content_source",
+        "capture_working_note",
         "clear_scope_binding",
         "commit_handoff",
         "continue_handoff",
+        "prepare_handoff_hint",
         "create_scope",
         "create_work_contract",
         "finalize_handoff",
-        "get_artifact_candidate",
+        "get_candidate",
+        "get_candidate_history",
+        "get_artifact",
+        "get_artifact_revision",
+        "replace_artifact",
+        "get_atomic_memory_state",
+        "list_atomic_memories",
+        "search_atomic_memory",
+        "merge_atomic_memories",
+        "change_atomic_memory_lifecycle",
+        "preview_atomic_memory_restoration",
+        "restore_atomic_memory",
         "get_memory_entry",
         "get_topic_memory",
         "get_scope",
@@ -98,17 +124,16 @@ def test_mcp_exposes_only_data_plane_and_integration_control_operations() -> Non
         "create_dream_run",
         "get_dream_run",
         "list_dream_runs",
-        "list_artifact_candidates",
+        "list_candidates",
         "list_memory_entries",
         "list_scopes",
         "publish_artifact",
-        "reject_artifact_candidate",
+        "query_code",
+        "reject_candidate",
         "record_task_outcome",
         "resolve_scope_binding",
         "remember_memory",
-        "retire_memory_entry",
-        "revise_artifact_candidate",
-        "revise_memory_entry",
+        "revise_candidate",
         "search_memory",
         "search_topic_memory",
         "set_scope_binding",
@@ -117,7 +142,7 @@ def test_mcp_exposes_only_data_plane_and_integration_control_operations() -> Non
     assert prompt_count == 0
 
 
-def test_mcp_topic_memory_tools_are_read_only_and_flush_is_excluded() -> None:
+def test_mcp_memory_reads_are_read_only_and_flush_is_excluded() -> None:
     async def inspect_annotations() -> dict[str, Any]:
         async with Client(create_mcp_server(create_app())) as client:
             return {tool.name: tool.annotations for tool in await client.list_tools()}
@@ -125,12 +150,50 @@ def test_mcp_topic_memory_tools_are_read_only_and_flush_is_excluded() -> None:
     tools = run_async(inspect_annotations)
 
     assert "flush_topic_memory" not in tools
-    for name in ("search_topic_memory", "get_topic_memory"):
+    assert {"get_memory_capacity", "revise_memory_entry", "retire_memory_entry"}.isdisjoint(tools)
+    for name in (
+        "search_topic_memory",
+        "get_topic_memory",
+        "search_memory",
+        "list_memory_entries",
+        "get_memory_entry",
+        "get_artifact",
+        "get_artifact_revision",
+        "get_atomic_memory_state",
+        "list_atomic_memories",
+        "search_atomic_memory",
+        "preview_atomic_memory_restoration",
+    ):
         annotations = tools[name]
         assert annotations is not None
         assert annotations.readOnlyHint is True
         assert annotations.destructiveHint is False
+        assert annotations.idempotentHint is True
         assert annotations.openWorldHint is False
+
+
+def test_mcp_full_profile_tools_describe_read_and_write_effects() -> None:
+    async def inspect_annotations() -> dict[str, Any]:
+        async with Client(create_mcp_server(create_app())) as client:
+            return {tool.name: tool.annotations for tool in await client.list_tools()}
+
+    annotations = run_async(inspect_annotations)
+    reads = {"get_experience", "get_skill", "list_managed_skills", "list_external_skills", "resolve_external_skill"}
+    writes = {
+        "generate_experience",
+        "propose_experience",
+        "generate_skill",
+        "propose_skill",
+        "scan_external_skills",
+        "import_external_skill",
+    }
+    for name in reads | writes:
+        hints = annotations[name]
+        assert hints is not None
+        assert hints.readOnlyHint is (name in reads)
+        assert hints.idempotentHint is (name in reads)
+        assert hints.destructiveHint is False
+        assert hints.openWorldHint is ("external" in name)
 
 
 def test_mcp_exposes_read_only_handoff_report_tools_only_when_feature_routes_are_enabled() -> None:
@@ -181,11 +244,46 @@ def test_mcp_describes_handoff_tool_side_effects_for_host_approval() -> None:
     assert resolve.openWorldHint is False
 
 
+def test_mcp_accepts_first_handoff_carrier_in_followup_tool_schemas() -> None:
+    async def handoff_schemas() -> dict[str, dict[str, Any]]:
+        async with Client(create_mcp_server(create_app())) as client:
+            return {
+                tool.name: tool.inputSchema
+                for tool in await client.list_tools()
+                if tool.name in {"continue_handoff", "commit_handoff"}
+            }
+
+    schemas = run_async(handoff_schemas)
+    citation = {"kind": "source", "source_ref": {"name": "content", "source_id": "boundary-1"}}
+    prepared = {
+        "generation": None,
+        "schema": "powercontext.prepared-handoff.v1",
+        "scope_id": "scope-1",
+        "base": None,
+        "content": {
+            "generation": None,
+            "schema": "powercontext.handoff.v1",
+            "objective": "Continue the acceptance test.",
+            "state": [{"text": "The boundary was captured.", "citations": [citation]}],
+            "disposition": "continuable",
+            "next_action": {"text": "Check the followup tools.", "citations": [citation]},
+            "omissions": [],
+        },
+    }
+
+    Draft202012Validator(schemas["continue_handoff"]).validate({
+        "scope_id": "scope-1",
+        "selection": "prepared",
+        "prepared": prepared,
+    })
+    Draft202012Validator(schemas["commit_handoff"]).validate({"scope_id": "scope-1", "handoff": prepared})
+
+
 def test_mcp_describes_review_write_side_effects_for_host_approval() -> None:
     review_writes = {
-        "approve_artifact_candidate",
-        "reject_artifact_candidate",
-        "revise_artifact_candidate",
+        "approve_candidate",
+        "reject_candidate",
+        "revise_candidate",
     }
 
     async def inspect_annotations() -> dict[str, Any]:
@@ -203,23 +301,25 @@ def test_mcp_describes_review_write_side_effects_for_host_approval() -> None:
         assert decision.openWorldHint is False
 
 
-def test_mcp_exact_entry_tools_use_nested_citations() -> None:
+def test_mcp_memory_reads_keep_legacy_target_and_exact_artifact_addresses() -> None:
     async def exact_entry_tool_schemas() -> dict[str, dict[str, Any]]:
         server = create_mcp_server(create_app())
         async with Client(server) as client:
             return {
                 tool.name: tool.inputSchema
                 for tool in await client.list_tools()
-                if tool.name in {"get_memory_entry", "revise_memory_entry", "retire_memory_entry"}
+                if tool.name in {"get_memory_entry", "get_artifact_revision"}
             }
 
     schemas = run_async(exact_entry_tool_schemas)
 
-    for schema in schemas.values():
-        properties = schema["properties"]
-        assert "citation" in properties
-        assert "memory_id" not in properties
-        assert set(properties["citation"]["properties"]) == {"memory_ref", "entry_id", "entry_version_id"}
+    assert set(schemas) == {"get_memory_entry", "get_artifact_revision"}
+    properties = schemas["get_memory_entry"]["properties"]
+    assert "memory_id" not in properties
+    # Exact legacy citations are rejected by the Server; the tool keeps them opaque.
+    assert properties["citation"]["type"] == "object" and "properties" not in properties["citation"]
+    assert set(properties["target"]["properties"]) == {"type", "family", "artifact_id", "entry_id"}
+    assert set(schemas["get_artifact_revision"]["required"]) == {"scope_id", "family", "artifact_id", "revision"}
 
 
 def test_mcp_bridge_reuses_logical_request_id_and_is_marked_internal(caplog) -> None:
@@ -228,11 +328,11 @@ def test_mcp_bridge_reuses_logical_request_id_and_is_marked_internal(caplog) -> 
             del scope_id
             return self
 
-        async def list(self, *, include_inactive: bool = False) -> MemoryEntriesPage:
-            del include_inactive
-            return MemoryEntriesPage(memory_ref=None)
+        async def list(self, *, states=("active",), limit=50, cursor=None, tag_filter=None, context=None):
+            assert context is None
+            return AtomicMemoryPage(items=())
 
-    app = create_app(application=SimpleNamespace(memory=MemoryApplication(), sources=object()))
+    app = create_app(application=SimpleNamespace(sources=object(), atomic_memory=MemoryApplication()))
     requests: list[tuple[str, str, bool]] = []
 
     @app.middleware("http")
@@ -285,11 +385,11 @@ def test_mcp_access_log_counts_the_logical_tool_call_without_the_bridge(caplog) 
             del scope_id
             return self
 
-        async def list(self, *, include_inactive: bool = False) -> MemoryEntriesPage:
-            del include_inactive
-            return MemoryEntriesPage(memory_ref=None)
+        async def list(self, *, states=("active",), limit=50, cursor=None, tag_filter=None, context=None):
+            assert context is None
+            return AtomicMemoryPage(items=())
 
-    app = create_app(application=SimpleNamespace(memory=MemoryApplication(), sources=object()))
+    app = create_app(application=SimpleNamespace(sources=object(), atomic_memory=MemoryApplication()))
     app.add_middleware(HttpAccessLogMiddleware, skip_paths=("/mcp",))
     mount_mcp(app, access_log=True)
 

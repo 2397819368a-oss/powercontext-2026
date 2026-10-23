@@ -65,7 +65,7 @@ from powercontext.server.settings import (
 )
 from powercontext.sources import Source
 
-_ACCESS_FAMILIES = "experience:enabled,handoff:enabled,memory:enabled,profile:enabled,prompt:enabled,skill:enabled"
+_ACCESS_FAMILIES = "atomic-memory:enabled,experience:enabled,handoff:enabled,memory:enabled,profile:enabled,prompt:enabled,skill:enabled"
 
 
 class _StartupOnlyAccessControl:
@@ -251,14 +251,14 @@ def test_server_reuses_file_backed_cursor_secret_across_restarts(tmp_path, monke
     first_app = create_server_app(settings=settings)
     with TestClient(first_app) as client:
         scope_id = client.get("/v1/scopes/default").json()["scope_id"]
-        content = {"entries": [{"kind": "working_note", "text": "Verify cursor reuse after restart"}]}
+        content = {"kind": "fact", "text": "Verify cursor reuse after restart"}
         for _ in range(2):
             response = client.post(
                 f"/v1/scopes/{scope_id}/artifacts",
-                json={"family": "memory", "content": content},
+                json={"family": "atomic-memory", "content": content},
             )
             assert response.status_code == 201
-        first_page = client.get(f"/v1/scopes/{scope_id}/artifacts/memory", params={"limit": 1})
+        first_page = client.get(f"/v1/scopes/{scope_id}/artifacts/atomic-memory", params={"limit": 1})
         assert first_page.status_code == 200
         cursor = first_page.json()["next_cursor"]
         assert cursor is not None
@@ -266,12 +266,74 @@ def test_server_reuses_file_backed_cursor_secret_across_restarts(tmp_path, monke
     second_app = create_server_app(settings=settings)
     with TestClient(second_app) as client:
         second_page = client.get(
-            f"/v1/scopes/{scope_id}/artifacts/memory",
+            f"/v1/scopes/{scope_id}/artifacts/atomic-memory",
             params={"limit": 1, "cursor": cursor},
         )
 
     assert second_page.status_code == 200
     assert len(second_page.json()["items"]) == 1
+
+
+def test_server_info_uses_one_durable_identity_across_restarts(tmp_path) -> None:
+    settings = ServerSettings(
+        database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}"),
+        auth=BearerAuthConfig(enabled=False),
+        mcp=McpConfig(enabled=False),
+    )
+
+    with TestClient(create_server_app(settings=settings)) as client:
+        first = client.get("/v1/server-info")
+    with TestClient(create_server_app(settings=settings)) as client:
+        second = client.get("/v1/server-info")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["schema_version"] == {"major": 1, "minor": 0}
+    assert first.json()["api_contract_version"] == {"major": 1, "minor": 4}
+
+
+def test_server_startup_fails_when_identity_initialization_fails(tmp_path, monkeypatch) -> None:
+    async def unavailable_identity(_repository):
+        raise OSError("identity backend unavailable")  # noqa: TRY003
+
+    monkeypatch.setattr("powercontext.server.identity.ServerIdentityRepository.initialize", unavailable_identity)
+    app = create_server_app(
+        settings=ServerSettings(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}"),
+            auth=BearerAuthConfig(enabled=False),
+            mcp=McpConfig(enabled=False),
+        )
+    )
+
+    with pytest.raises(OSError, match="identity backend unavailable"), TestClient(app):
+        pass
+
+
+def test_servers_sharing_memory_scopes_share_identity_for_the_database_lifetime(tmp_path) -> None:
+    settings = ServerSettings(
+        database=SQLiteConfig(url=f"sqlite+aiosqlite:///file:{tmp_path / 'shared'}?mode=memory&cache=shared&uri=true"),
+        auth=BearerAuthConfig(enabled=False),
+        mcp=McpConfig(enabled=False),
+    )
+
+    with TestClient(create_server_app(settings=settings)) as first:
+        original_id = first.get("/v1/server-info").json()["server_id"]
+        created = first.post(
+            "/v1/scopes",
+            json={"title": "Shared Scope", "summary": "Shared deployment data", "idempotency_key": "shared-scope"},
+        )
+        assert created.status_code == 201
+        scope_id = created.json()["scope_id"]
+        with TestClient(create_server_app(settings=settings)) as second:
+            assert second.get(f"/v1/scopes/{scope_id}").json() == created.json()
+            assert second.get("/v1/server-info").json()["server_id"] == original_id
+
+        assert first.get("/v1/server-info").json()["server_id"] == original_id
+        assert first.get(f"/v1/scopes/{scope_id}").status_code == 200
+
+    with TestClient(create_server_app(settings=settings)) as reopened:
+        assert reopened.get(f"/v1/scopes/{scope_id}").status_code == 404
+        assert reopened.get("/v1/server-info").json()["server_id"] != original_id
 
 
 def test_server_settings_use_configured_workspace_for_default_skill_targets(tmp_path, monkeypatch) -> None:
@@ -456,7 +518,8 @@ def test_scheduled_experience_owns_only_candidates_created_by_its_incubation() -
         )
         incubate = AsyncMock(return_value=result)
         runtime = SimpleNamespace(
-            experience=SimpleNamespace(for_scope=lambda _scope_id: SimpleNamespace(incubate=incubate))
+            owner_write_database=None,
+            experience=SimpleNamespace(for_scope=lambda _scope_id: SimpleNamespace(incubate=incubate)),
         )
         access = AsyncMock(spec=AccessControlService)
         settings = ServerSettings(
@@ -582,6 +645,8 @@ def test_server_factory_optionally_requires_bearer_authentication() -> None:
         missing = client.get("/v1/capabilities")
         invalid = client.get("/v1/capabilities", headers={"Authorization": "Bearer wrong"})
         accepted = client.get("/v1/capabilities", headers={"Authorization": "Bearer server-secret"})
+        protected_server_info = client.get("/v1/server-info")
+        accepted_server_info = client.get("/v1/server-info", headers={"Authorization": "Bearer server-secret"})
         protected_metrics = client.get("/metrics")
         accepted_metrics = client.get("/metrics", headers={"Authorization": "Bearer server-secret"})
         liveness = client.get("/health/live")
@@ -599,6 +664,8 @@ def test_server_factory_optionally_requires_bearer_authentication() -> None:
     }
     assert invalid.status_code == 401
     assert accepted.status_code == 200
+    assert protected_server_info.status_code == 401
+    assert accepted_server_info.status_code == 200
     assert protected_metrics.status_code == 401
     assert accepted_metrics.status_code == 200
     assert liveness.status_code == 200

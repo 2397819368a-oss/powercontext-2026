@@ -20,7 +20,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.inference import TokenEstimatorProfile
@@ -51,6 +51,8 @@ class ModelUsagePurpose(StrEnum):
     EXPERIENCE_GENERATION = "experience_generation"
     SKILL_GENERATION = "skill_generation"
     HANDOFF_GENERATION = "handoff_generation"
+    PROFILE_GENERATION = "profile_generation"
+    PROMPT_GENERATION = "prompt_generation"
     TOPIC_MEMORY_GENERATION = "topic_memory_generation"
     TOPIC_MEMORY_RECALL = "topic_memory_recall"
     TOPIC_MEMORY_INDEXING = "topic_memory_indexing"
@@ -108,7 +110,7 @@ class CandidateInventoryStatistics(BaseModel):
 
 
 class MemoryEntryInventoryStatistics(BaseModel):
-    """Current logical Memory entries grouped by state and kind."""
+    """Atomic Memory heads grouped by kind; inactive covers forgotten, merged and retired."""
 
     total: int = Field(ge=0)
     active: int = Field(ge=0)
@@ -179,6 +181,56 @@ class UsageStatistics(BaseModel):
     totals: ModelUsageStatistics
     by_purpose: tuple[ModelUsagePurposeBreakdown, ...]
     daily: tuple[ModelUsageDay, ...]
+
+
+class RecallEffortMeasurement(BaseModel):
+    """One content-free recall observation, ready for additive daily persistence.
+
+    This internal measurement is not part of the statistics overview or any
+    transport response. Its reason vocabulary excludes arbitrary query text.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    policy_id: str = Field(min_length=1, max_length=128)
+    assessment: Literal[
+        "sufficient",
+        "no-content",
+        "budget-floor",
+        "rerank-enabled",
+        "thin-candidates",
+        "thin-families",
+        "weak-top-1",
+        "weak-lexical",
+        "at-max-rounds",
+        "expansion-failed",
+    ]
+    preparations: Literal[1] = 1
+    rounds: int = Field(ge=1, le=3)
+    expanded_preparations: int = Field(ge=0, le=1)
+    admission_expansions: int = Field(ge=0, le=1)
+    policy_floor_expansions: int = Field(ge=0, le=1)
+    candidate_round_samples: int = Field(ge=1, le=3)
+    candidates_assessed: int = Field(ge=0)
+    final_candidate_pool: int = Field(ge=0)
+    added_embeddings: int = Field(ge=0)
+    added_generation_calls: int = Field(ge=0)
+    truncated_items: int = Field(ge=0)
+    dropped_items: int = Field(ge=0)
+    dropped_below_min_bytes: int = Field(ge=0)
+    dropped_no_fitting_truncation: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_accounting(self) -> RecallEffortMeasurement:
+        if self.dropped_items != self.dropped_below_min_bytes + self.dropped_no_fitting_truncation:
+            raise ValueError("recall effort drop subclasses must sum to dropped_items")  # noqa: TRY003
+        if self.rounds != self.candidate_round_samples:
+            raise ValueError("recall effort needs one candidate sample per committed round")  # noqa: TRY003
+        if self.rounds != 1 + self.admission_expansions + self.policy_floor_expansions:
+            raise ValueError("recall effort rounds must match committed expansions")  # noqa: TRY003
+        if self.expanded_preparations != int(self.rounds > 1):
+            raise ValueError("recall effort expanded preparation count must match rounds")  # noqa: TRY003
+        return self
 
 
 class RecallTokenMeasurement(BaseModel):
@@ -300,6 +352,7 @@ __all__ = [
     "ModelUsagePurposeBreakdown",
     "ModelUsageStatistics",
     "ModelUsageValue",
+    "RecallEffortMeasurement",
     "RecallTokenDay",
     "RecallTokenMeasurement",
     "RecallTokenStatistics",

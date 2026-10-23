@@ -34,8 +34,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from typing_extensions import override
 
 from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.dream_schema import assert_dream_schema_ready
 from powercontext.builtin.persistence.errors import PersistenceError
 from powercontext.builtin.persistence.schema import create_tables
+from powercontext.builtin.persistence.topic_memory_recovery_schema import BUDGET, prepare_topic_memory_recovery_schema
 
 _DIALECT_DRIVER = "mysql+aseekdb"
 _DIALECT_REGISTRY_NAME = "mysql.aseekdb"
@@ -89,9 +91,16 @@ class SeekDBConfig(BaseModel):
 class SeekDBProfile:
     """An initialized embedded seekdb profile with explicit runtime ownership."""
 
-    def __init__(self, *, database: AsyncDatabase, tables: tuple[Table, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        database: AsyncDatabase,
+        tables: tuple[Table, ...],
+        connection_options: Mapping[str, object] | None = None,
+    ) -> None:
         self.database = database
         self.tables = tables
+        self.connection_options = dict(connection_options or {})
 
     @classmethod
     @asynccontextmanager
@@ -110,8 +119,13 @@ class SeekDBProfile:
         try:
             engine = _create_engine(config, instance.connection_options())
             database = AsyncDatabase.own(engine)
-            profile = cls(database=database, tables=tables)
+            profile = cls(database=database, tables=tables, connection_options=instance.connection_options())
             try:
+                await assert_dream_schema_ready(engine)
+                if tables:
+                    await prepare_topic_memory_recovery_schema(
+                        engine, initialize=any(table.name == BUDGET for table in tables)
+                    )
                 async with database.transaction() as connection:
                     await create_tables(connection, tables)
                 yield profile

@@ -22,13 +22,18 @@ from dataclasses import dataclass, replace
 from itertools import chain
 from typing import TypeVar
 
-from powercontext.artifacts import ArtifactAddress, ArtifactRef
+from powercontext.artifacts import ArtifactAddress, ArtifactLineage, ArtifactRef
 from powercontext.builtin.artifacts.experience import Experience, ExperienceSearchHit, render_experience
-from powercontext.builtin.artifacts.memory.models import MemoryCitation, MemoryHit
 from powercontext.builtin.artifacts.profile.models import Profile
 from powercontext.builtin.artifacts.topic_memory import TopicMemory, TopicMemorySearchHit
+from powercontext.builtin.runtime.atomic_memory import AtomicMemorySearchHit
 from powercontext.builtin.runtime.errors import PreparedContextInvariantError
 from powercontext.builtin.runtime.models import PrepareContextRequest, PreparedContext
+from powercontext.builtin.runtime.prepared_code import (
+    CodeEvidenceRef,
+    PreparedCodeCandidate,
+    assemble_code,
+)
 from powercontext.builtin.runtime.prepared_text import (
     TRUST_POLICY,
     ContextTextItem,
@@ -41,6 +46,11 @@ _MIN_TRUNCATED_CONTENT_BYTES = 64
 _ELLIPSIS = "…"
 _BEGIN_MARKER = "BEGIN_POWERCONTEXT_PREPARED_CONTEXT_V1"
 _END_MARKER = "END_POWERCONTEXT_PREPARED_CONTEXT_V1"
+# ``str.splitlines()`` ends a line at these characters, but ``json.dumps(ensure_ascii=False)`` emits them raw, so a
+# body could carry one inside its JSON string literal and still end a line for a line-oriented reader. The remaining
+# ``splitlines()`` boundaries (``\n``, ``\v``, ``\f``, ``\r``, ``\x1c``-``\x1e``) are already escaped by
+# ``json.dumps``. RFC 1489 escapes U+2028 and U+2029 the same way for identity fields.
+_LINE_BOUNDARY_ESCAPES = {ord(char): f"\\u{ord(char):04x}" for char in "\u0085\u2028\u2029"}
 _Item = TypeVar("_Item")
 
 
@@ -91,27 +101,24 @@ class PreparedContextOmissions:
 class PreparedContextBuild:
     """Final public context and the exact origins selected to produce it.
 
+    ``lineages`` carries exact, immutable facts for token accounting, never current
+    head or authorization decisions.
+
     ``omissions`` is always filled by the Builder. The RFC 1560 recall trace is deliberately
     **not** a field here: ``ScopedContextApplication._prepare`` returns ``build.context`` and
     discards the rest, so such a field would have no production observer. The trace is
-    delivered through the Runtime's optional ``RecallEffortSink`` instead.
+    delivered to the Runtime's scoped statistics recorder or an explicit
+    ``RecallEffortSink`` instead.
     """
 
     context: PreparedContext
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
+    code_origins: tuple[CodeEvidenceRef, ...] = ()
+    lineages: tuple[tuple[ArtifactAddress, ArtifactLineage], ...] = ()
 
 
-@dataclass(frozen=True)
-class MemoryEntryAddress:
-    """Identify one exact Memory entry version across Scope boundaries."""
-
-    memory: ArtifactAddress
-    entry_id: str
-    entry_version_id: str
-
-
-PreparedContextOrigin = MemoryCitation | ArtifactRef | MemoryEntryAddress | ArtifactAddress
+PreparedContextOrigin = ArtifactRef | ArtifactAddress
 
 
 @dataclass(frozen=True)
@@ -119,8 +126,7 @@ class PreparedMemoryCandidates:
     """Memory candidates read from one Scope."""
 
     scope_id: str
-    memory_ref: ArtifactRef | None = None
-    hits: tuple[MemoryHit, ...] = ()
+    hits: tuple[AtomicMemorySearchHit, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,7 @@ class PreparedContextBuilder:
     topic_memory_entry_limit = 8
     experience_entry_limit = 2
     max_entry_content_bytes = 2000
+    _text_entry_limit: int | None = None
 
     def empty(self) -> PreparedContext:
         return PreparedContext(status="empty", content=None, content_bytes=0)
@@ -159,15 +166,13 @@ class PreparedContextBuilder:
         *,
         request: PrepareContextRequest,
         scope_id: str | None = None,
-        memory_ref: ArtifactRef | None = None,
-        hits: Sequence[MemoryHit] = (),
+        hits: Sequence[AtomicMemorySearchHit] = (),
         topic_memory_hits: Sequence[TopicMemorySearchHit] = (),
         experience_hits: Sequence[ExperienceSearchHit] = (),
     ) -> PreparedContext:
         return self.build_result(
             request=request,
             scope_id=scope_id,
-            memory_ref=memory_ref,
             hits=hits,
             topic_memory_hits=topic_memory_hits,
             experience_hits=experience_hits,
@@ -178,17 +183,14 @@ class PreparedContextBuilder:
         *,
         request: PrepareContextRequest,
         scope_id: str | None = None,
-        memory_ref: ArtifactRef | None = None,
-        hits: Sequence[MemoryHit] = (),
+        hits: Sequence[AtomicMemorySearchHit] = (),
         topic_memory_hits: Sequence[TopicMemorySearchHit] = (),
         experience_hits: Sequence[ExperienceSearchHit] = (),
     ) -> PreparedContextBuild:
         return self.build_scopes_result(
             request=request,
             current_scope_id=scope_id,
-            memory_candidates=(
-                PreparedMemoryCandidates(scope_id=scope_id or "", memory_ref=memory_ref, hits=tuple(hits)),
-            ),
+            memory_candidates=(PreparedMemoryCandidates(scope_id=scope_id or "", hits=tuple(hits)),),
             experience_candidates=(PreparedExperienceCandidates(scope_id=scope_id or "", hits=tuple(experience_hits)),),
             topic_memory_hits=topic_memory_hits,
         )
@@ -202,7 +204,25 @@ class PreparedContextBuilder:
         topic_memory_hits: Sequence[TopicMemorySearchHit] = (),
         experience_candidates: Sequence[PreparedExperienceCandidates] = (),
         profile_candidates: Sequence[PreparedProfileCandidate] = (),
+        code_candidates: Sequence[PreparedCodeCandidate] = (),
     ) -> PreparedContextBuild:
+        if request.include_code:
+
+            def historical(history_request: PrepareContextRequest, entries: int) -> PreparedContextBuild:
+                builder = PreparedContextBuilder()
+                builder.entry_limit = entries
+                builder._text_entry_limit = entries if entries < self.entry_limit else None
+                return builder.build_scopes_result(
+                    request=history_request.model_copy(update={"include_code": False}),
+                    current_scope_id=current_scope_id,
+                    memory_candidates=memory_candidates,
+                    topic_memory_hits=topic_memory_hits,
+                    experience_candidates=experience_candidates,
+                    profile_candidates=profile_candidates,
+                )
+
+            return assemble_code(request, code_candidates, self.entry_limit, historical)
+
         if sum(len(candidates.hits) for candidates in memory_candidates) > self.memory_candidate_limit:
             raise PreparedContextInvariantError("memory-candidate-limit")
         if len(topic_memory_hits) > self.topic_memory_candidate_limit:
@@ -300,7 +320,6 @@ class PreparedContextBuilder:
         memory_entries = _interleave_groups(
             tuple(
                 self._memory_entries(
-                    candidates.memory_ref,
                     candidates.hits,
                     scope_id=None if candidates.scope_id == current_scope_id else candidates.scope_id or None,
                 )
@@ -341,6 +360,12 @@ class PreparedContextBuilder:
         dropped_below_min_bytes = 0
         dropped_no_fitting_truncation = 0
         for section in assembly.sections:
+            # Unfilled earlier sections leave their capacity available to later ones.
+            limit = (
+                section.limit
+                if self._text_entry_limit is None
+                else min(section.limit, self._text_entry_limit - len(included))
+            )
             if section.family == "profile":
                 entries = self._profile_entries(profile_candidates)
             elif section.family == "topic-memory":
@@ -348,10 +373,7 @@ class PreparedContextBuilder:
             else:
                 groups = (
                     tuple(
-                        tuple(
-                            self._memory_entries(group.memory_ref, (hit,), scope_id=group.scope_id)
-                            for hit in group.hits
-                        )
+                        tuple(self._memory_entries((hit,), scope_id=group.scope_id) for hit in group.hits)
                         for group in memory_candidates
                     )
                     if section.family == "memory"
@@ -365,6 +387,8 @@ class PreparedContextBuilder:
             rank = 0
             selected_count = 0
             for entry in entries:
+                if selected_count >= limit:
+                    break
                 item = _text_item(entry)
                 artifact = item.artifact
                 identity = (
@@ -389,8 +413,6 @@ class PreparedContextBuilder:
                 origins.append(entry.origin)
                 selected_count += 1
                 truncated_items += int(fitted.truncated)
-                if selected_count >= section.limit:
-                    break
         omissions = PreparedContextOmissions(
             truncated_items=truncated_items,
             dropped_items=dropped_below_min_bytes + dropped_no_fitting_truncation,
@@ -419,54 +441,36 @@ class PreparedContextBuilder:
 
     def _memory_entries(
         self,
-        memory_ref: ArtifactRef | None,
-        hits: Sequence[MemoryHit],
+        hits: Sequence[AtomicMemorySearchHit],
         *,
         scope_id: str | None = None,
     ) -> tuple[_PreparedContextEntry, ...]:
-        if hits and memory_ref is None:
-            raise PreparedContextInvariantError("memory-ref-missing")
-        memory_entries: list[_PreparedContextEntry] = []
-        seen: set[tuple[str, str]] = set()
-        for hit in hits:
-            if hit.memory_ref != memory_ref:
+        entries: list[_PreparedContextEntry] = []
+        seen: set[tuple[str, str, int]] = set()
+        for candidate in hits:
+            hit = candidate.hit
+            ref = hit.artifact_ref
+            if ref.family != "atomic-memory":
                 raise PreparedContextInvariantError("memory-ref-mismatch")
-
-            citation_key = (hit.entry_id, hit.entry_version_id)
-            if citation_key in seen:
+            identity = (ref.family, ref.artifact_id, ref.revision)
+            if identity in seen or not hit.text.strip():
                 continue
-            seen.add(citation_key)
-            if not hit.entry_id.strip() or not hit.entry_version_id.strip() or not hit.text.strip():
-                continue
-            citation = MemoryCitation(
-                memory_ref=hit.memory_ref,
-                entry_id=hit.entry_id,
-                entry_version_id=hit.entry_version_id,
-            )
-            origin: PreparedContextOrigin = citation
-            rendered_citation = citation.model_dump(mode="json")
+            seen.add(identity)
+            origin: PreparedContextOrigin = ref
+            citation: dict[str, object] = {"artifact_ref": ref.model_dump(mode="json")}
             if scope_id is not None:
-                memory = ArtifactAddress(scope_id=scope_id, artifact=hit.memory_ref)
-                origin = MemoryEntryAddress(
-                    memory=memory,
-                    entry_id=hit.entry_id,
-                    entry_version_id=hit.entry_version_id,
-                )
-                rendered_citation = {
-                    "memory": memory.model_dump(mode="json"),
-                    "entry_id": hit.entry_id,
-                    "entry_version_id": hit.entry_version_id,
-                }
-            memory_entries.append(
+                origin = ArtifactAddress(scope_id=scope_id, artifact=ref)
+                citation = {"artifact": origin.model_dump(mode="json")}
+            entries.append(
                 _PreparedContextEntry(
                     origin=origin,
-                    kind="memory",
-                    citation=rendered_citation,
+                    kind="atomic-memory",
+                    citation=citation,
                     content=hit.text,
                     truncated=False,
                 )
             )
-        return tuple(memory_entries)
+        return tuple(entries)
 
     def _topic_memory_entries(
         self,
@@ -654,25 +658,29 @@ def _interleave_groups(groups: Sequence[Sequence[_Item]]) -> tuple[_Item, ...]:
     return tuple(ordered)
 
 
+def _escape_line_boundaries(encoded: str) -> str:
+    """Keep untrusted text from ending a line of the line-oriented envelope.
+
+    RFC 0028 asks the Builder to prevent Memory newlines and ``BEGIN``/``END`` text from crossing data boundaries,
+    and to deliver ``truncated=false`` content exactly equal to the Memory hit text. Rewriting the body cannot
+    satisfy both, so the escape happens on the encoded envelope instead: every other character stays byte for byte
+    as the Memory holds it, and a parser decodes the line boundaries back to the original code points.
+    """
+
+    return encoded.translate(_LINE_BOUNDARY_ESCAPES)
+
+
 def _render(entries: Sequence[_PreparedContextEntry]) -> str:
     envelope = {
         "trust": "untrusted_history",
         "items": [_render_entry(entry) for entry in entries],
     }
-    encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+    encoded = _escape_line_boundaries(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")))
     return "\n\n".join((TRUST_POLICY, f"{_BEGIN_MARKER}\n{encoded}\n{_END_MARKER}"))
 
 
 def _text_item(entry: _PreparedContextEntry) -> ContextTextItem:
     origin = entry.origin
-    if isinstance(origin, MemoryEntryAddress):
-        return ContextTextItem(
-            artifact=origin.memory,
-            content=entry.content,
-            recall_rank=0,
-            entry_id=origin.entry_id,
-            entry_version_id=origin.entry_version_id,
-        )
     if isinstance(origin, ArtifactAddress):
         return ContextTextItem(artifact=origin, content=entry.content, recall_rank=0)
     raise PreparedContextInvariantError("text-scope-missing")

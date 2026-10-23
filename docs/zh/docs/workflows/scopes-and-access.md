@@ -18,6 +18,15 @@ Scope 选择项目上下文边界。其不透明 ID 用于标识数据，不负�
 父子关系用于组织 Scope，显式上下文引用用于描述复用；两者都不授予访问权限。
 精确、子树和全部 Scope 视图改变的是查看范围，不改变调用者权限。
 
+绑定解析返回 `404 scope_not_found` 表示没有可用绑定，或显式传入的 Scope ID 不存在。
+如果持久绑定或默认指针存在，但指向的 Scope 已丢失，服务返回
+`409 scope_binding_target_missing`，并在 `error.details.scope_id` 中保留原目标 ID。
+解析在该绑定处停止，不回退到后续绑定或默认 Scope。客户端的 `Ensure()` 必须传播此冲突，
+由运营者调查数据丢失、恢复原 Scope 或显式修复绑定；不能自动创建新 Scope 并覆盖绑定。
+普通直接查询缺失 Scope 仍返回 404，因为仅凭 ID 无法判断它是否曾经存在。
+启用权限控制时，Subject Source 写入在返回该冲突前，必须先校验调用者对绑定目标的贡献权限；
+无此权限的调用者收到 403，响应不包含目标 ID。
+
 ## 启用访问控制
 
 共享或远程使用时，按[部署认证](../operate/deploy-server.md)设置 `POWERCONTEXT_SERVER_ACCESS_MODE=enforced`。
@@ -28,10 +37,15 @@ Scope 选择项目上下文边界。其不透明 ID 用于标识数据，不负�
 创建 Scope 需要 `server.admin`；修改 Prompt 需要当前 `scope.admin` 权限。
 能够读取候选材料不代表能够批准候选材料。
 
+需要 Agent 提交新的 Experience 或 Skill Candidate、再由独立审核者决定时，为不同的已认证身份分别分配
+`scope.contributor` 和 `scope.reviewer`，并将审核者凭据保留在 Agent 环境之外。同一 Principal 同时持有两种权限时，
+仍可批准自己的 Candidate。角色分配示例、拒绝后重新提交的流程和已有 Artifact 的权限限制见
+[分离 Agent 提交与审核](review-candidates.md#分离-agent-提交与审核)。
+
 定时处理需要有权限的后台 Principal。标签查询需要 `scope.read`，修改目标标签遵循目标自身的写权限。
 相关流程见[标签](manage-artifact-tags.md)和 [Scope Profile](use-profiles.md)。
 
 ## 团队使用入口
 
-团队通过 API、MCP 或宿主集成使用各自的身份与权限。Dashboard 仅用于静态 token 鉴权的个人和演示部署，
+团队通过 API、MCP 或宿主集成使用各自的身份与权限。Dashboard 仅用于个人和演示部署，可选用静态 token 鉴权，
 不作为 RBAC 团队入口；团队部署保持 `POWERCONTEXT_SERVER_DASHBOARD_ENABLED=false`。

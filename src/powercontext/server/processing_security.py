@@ -27,14 +27,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.builtin.artifacts.memory import Memory
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.runtime.composition import BuiltinConfigurationError
 from powercontext.server.authz import (
     AccessAction,
     AccessAuditContext,
     AccessControlService,
-    MemoryEntrySelector,
     PrincipalRef,
     ResourceRef,
 )
@@ -108,44 +106,6 @@ class WorkerSecurity:
     async def authorize_transaction(self, connection: AsyncConnection, scope_id: str) -> None:
         await self._authorize_scope(self.access.with_connection(connection), scope_id)
 
-    async def authorize_memory(self, scope_id: str, current: Memory | None) -> None:
-        await self._authorize_memory(self.access, scope_id, current)
-
-    async def _authorize_memory(self, access: AccessControlService, scope_id: str, current: Memory | None) -> None:
-        if current is None:
-            return
-        await access.require_all(
-            self.principal,
-            tuple(
-                (AccessAction.ARTIFACT_WRITE, self._memory_resource(scope_id, current, entry.entry_id))
-                for entry in current.content.manifest.entries
-            ),
-            context=self.context,
-        )
-
-    @staticmethod
-    def _memory_resource(scope_id: str, memory: Memory, entry_id: str) -> ResourceRef:
-        return ResourceRef.artifact(
-            scope_id, family="memory", artifact_id=memory.artifact_id, selector=MemoryEntrySelector(entry_id=entry_id)
-        )
-
-    async def memory_commit(
-        self, connection: AsyncConnection, before: Memory | None, after: Memory | None, *, scope_id: str
-    ) -> None:
-        bound = self.access.with_connection(connection)
-        await self._authorize_memory(bound, scope_id, before)
-        if after is None:
-            return
-        old = set() if before is None else {entry.entry_id for entry in before.content.manifest.entries}
-        for entry in after.content.manifest.entries:
-            if entry.entry_id not in old:
-                await bound.establish_artifact_owner(
-                    self._memory_resource(scope_id, after, entry.entry_id),
-                    self.principal,
-                    idempotency_key=f"background-memory-owner:{scope_id}:{after.artifact_id}:{entry.entry_id}",
-                    context=self.context,
-                )
-
     async def experience_commit(self, connection: AsyncConnection, candidates: Sequence[Any], *, scope_id: str) -> None:
         bound = self.access.with_connection(connection)
         for candidate in candidates:
@@ -200,20 +160,14 @@ class WorkerSecurity:
                 idempotency_key=f"candidate-owner:{scope_id}:{candidate.candidate_id}",
             )
 
-    async def topic_commit(self, connection: AsyncConnection, scope_id: str, operations: Sequence[Any]) -> None:
-        bound = self.access.with_connection(connection)
-        await self._authorize_scope(bound, scope_id)
-        for operation in operations:
-            resource = ResourceRef.artifact(scope_id, family="topic-memory", artifact_id=operation.artifact_id)
-            if operation.current is not None:
-                await bound.require(self.principal, AccessAction.ARTIFACT_WRITE, resource, context=self.context)
-            else:
-                await bound.establish_artifact_owner(
-                    resource,
-                    self.principal,
-                    idempotency_key=f"background-topic-owner:{scope_id}:{operation.artifact_id}",
-                    context=self.context,
-                )
+    async def topic_commit(self, connection: AsyncConnection, scope_id: str, _operations: Sequence[Any]) -> None:
+        """Authorize one Scope-owned Topic Memory publication.
+
+        Topic Memory is shared Scope knowledge: it registers no Artifact Family
+        Access Profile and carries no per-topic owner, so its publications are
+        authorized by Scope authority alone. The batch is accepted unchanged.
+        """
+        await self._authorize_scope(self.access.with_connection(connection), scope_id)
 
 
 @asynccontextmanager

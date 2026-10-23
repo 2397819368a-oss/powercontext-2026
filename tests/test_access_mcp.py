@@ -25,7 +25,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from starlette.middleware import Middleware
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
-from powercontext.builtin.runtime import MemoryEntriesPage
+from powercontext.builtin.runtime.atomic_memory import AtomicMemoryAccess, AtomicMemoryPage
 from powercontext.server.app import create_app
 from powercontext.server.authentication import StaticBearerAuthenticationProvider
 from powercontext.server.authz import (
@@ -48,16 +48,22 @@ BOB = PrincipalRef(type="user", id="bob")
 
 
 class _MemoryApplication:
+    def __init__(self, database, scope_id: str = "") -> None:
+        self.database = database
+        self.scope_id = scope_id
+
     def for_scope(self, scope_id: str) -> Self:
-        del scope_id
-        return self
+        return type(self)(self.database, scope_id)
 
     async def logical_artifacts(self):
         return ()
 
-    async def list(self, *, include_inactive: bool = False) -> MemoryEntriesPage:
-        del include_inactive
-        return MemoryEntriesPage(memory_ref=None)
+    async def list(self, *, states=("active",), limit=50, cursor=None, tag_filter=None, context=None):
+        assert context is not None
+        assert context.principal == BOB
+        async with self.database.transaction() as connection:
+            await AtomicMemoryAccess().filters(connection, self.scope_id, context, tags=tag_filter)
+        return AtomicMemoryPage(items=())
 
 
 def test_mcp_internal_bridge_preserves_principal_and_audits_mcp_transport() -> None:
@@ -96,8 +102,9 @@ def test_mcp_internal_bridge_preserves_principal_and_audits_mcp_transport() -> N
                 context=AccessAuditContext(transport="test", operation="seed"),
             )
             authentication = StaticBearerAuthenticationProvider("bob-token", BOB)
+            memory = _MemoryApplication(profile.database)
             app = create_app(
-                application=SimpleNamespace(memory=_MemoryApplication(), records=_MemoryApplication()),
+                application=SimpleNamespace(atomic_memory=memory, records=memory),
                 access_control=service,
                 authentication_provider=authentication,
                 middleware=(
@@ -132,11 +139,20 @@ def test_mcp_internal_bridge_preserves_principal_and_audits_mcp_transport() -> N
             async with app.router.lifespan_context(app), Client(transport) as client:
                 result = await client.call_tool("list_memory_entries", {"scope_id": "scope-a"})
                 assert result.is_error is False
+                for operation in ("scan_external_skills", "list_external_skills"):
+                    denied = await client.call_tool(operation, {"scope_id": "scope-a"}, raise_on_error=False)
+                    assert denied.is_error
+                    assert "403" in denied.content[0].text
 
             audit = await repository.list_audit(resource=ResourceRef.server())
             decision = next(event for event in audit if event.operation == "list_memory_entries")
             assert decision.transport == "mcp"
             assert decision.principal == BOB
             assert decision.allowed is True
+            for operation in ("scan_external_skills", "list_external_skills"):
+                denied_decision = next(event for event in audit if event.operation == operation)
+                assert denied_decision.principal == BOB
+                assert denied_decision.transport == "mcp"
+                assert denied_decision.allowed is False
 
     asyncio.run(scenario())

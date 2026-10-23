@@ -22,7 +22,7 @@ PowerContext Server over HTTP.
 
 ## Install with the PowerContext CLI
 
-WorkBuddy is not listed by `setup select` or `doctor integrations`; use the dedicated setup and diagnostic commands on this page.
+WorkBuddy supports `setup workbuddy`, `config agent workbuddy`, and `doctor workbuddy`, including multi-agent commands.
 
 The CLI installs the hooks, MCP server, and Skill from a local checkout or a
 GitHub source in one step:
@@ -167,12 +167,14 @@ The integration has two paths to the same Server:
 - MCP gives WorkBuddy explicit tools to read and maintain Memory, plus an
   explicit Handoff workflow.
 
-The `powercontext-project-context` Skill binds the two paths together. An imperative such as
-`交接`, `交接当前工作`, or `handoff this work` is treated as explicit
-authorization to create one durable Handoff milestone. The Skill inspects the
-current conversation and repository, calls `handoff_current_work`, then
-immediately commits the returned `handoff` member through `commit_handoff`.
-Preview or design requests remain read-only.
+The `powercontext-project-context` Skill guides explicit work transfers. Ordinary `交接`, `交接当前工作`, or
+`handoff this work` requests inspect the conversation and repository, call `handoff_current_work`, and return the
+complete `handoff` member as a temporary carrier. This records the boundary Source, not a durable Handoff Revision.
+The receiver can continue with `selection: "prepared"` and that exact carrier.
+
+Only an explicit durable request such as `commit a durable handoff` or `保存持久交接里程碑` authorizes passing the
+returned carrier unchanged to `commit_handoff`. A committed milestone requires a successful result with an exact
+Revision. Preview or design requests remain read-only; ordinary transfer does not authorize a commit.
 
 The Hook calls `POST /v1/context/prepare` once per prompt, requests an
 8000-byte total budget, strictly validates `powercontext.prepared-context.v1`,
@@ -223,8 +225,8 @@ changing them.
 | `POWERCONTEXT_WORKBUDDY_SCOPE_ID` | Explicit server-owned Scope ID |
 | `POWERCONTEXT_WORKBUDDY_CAPTURE_PROMPTS` | Capture user prompts as Sources (default `true`) |
 | `POWERCONTEXT_WORKBUDDY_FLUSH_ON_CAPTURE` | Flush until the captured Source is processed (testing only, default `false`) |
-| `POWERCONTEXT_WORKBUDDY_REQUEST_TIMEOUT_SECONDS` | Per-request HTTP timeout (default `1.0`) |
-| `POWERCONTEXT_WORKBUDDY_HTTP_BUDGET_SECONDS` | Shared wall-clock budget for one prompt (default `4.0`) |
+| `POWERCONTEXT_WORKBUDDY_REQUEST_TIMEOUT_SECONDS` | Per-request HTTP timeout (default `3.0`) |
+| `POWERCONTEXT_WORKBUDDY_HTTP_BUDGET_SECONDS` | Shared wall-clock budget for one prompt (default `6.0`) |
 | `POWERCONTEXT_WORKBUDDY_FLUSH_MAX_CALLS` | Maximum flush calls (default `4`) |
 
 The hook validates its PowerContext MCP URL and derives the HTTP API base by

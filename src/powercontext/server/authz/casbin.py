@@ -72,6 +72,11 @@ class CasbinAuthorizationProvider:
         self._deployment_id = deployment_id
         self._clock = clock or (lambda: datetime.now(UTC))
 
+    def with_repository(self, repository: AccessRepository) -> CasbinAuthorizationProvider:
+        """Preserve the fixed policy while binding reads to the caller's transaction."""
+
+        return CasbinAuthorizationProvider(repository, deployment_id=self._deployment_id, clock=self._clock)
+
     async def check(self, request: AccessRequest, /) -> AccessDecision:
         return (await self.check_batch((request,)))[0]
 
@@ -85,6 +90,7 @@ class CasbinAuthorizationProvider:
             self._repository,
             (principal, *requests[0].context.subject_groups),
             now=self._clock(),
+            binding_resources=tuple(request.resource for request in requests),
             artifact_resources=tuple(
                 request.resource for request in requests if request.resource.type is AccessResourceType.ARTIFACT
             ),
@@ -102,10 +108,6 @@ class CasbinAuthorizationProvider:
                 if request.resource.type is AccessResourceType.ARTIFACT
                 else None
             )
-            if request.resource.type is AccessResourceType.ARTIFACT and owner is None:
-                reason = "artifact-owner-pending" if matched is not None else "no-matching-policy"
-                decisions.append(AccessDecision(False, reason, revision))
-                continue
             owner_allow = (
                 owner is not None
                 and owner.owner == principal
@@ -123,7 +125,7 @@ class CasbinAuthorizationProvider:
                     allowed,
                     "casbin-policy" if allowed else "no-matching-policy",
                     revision,
-                    matched_subject=(principal if owner_allow else None if matched is None else matched.subject),
+                    matched_subject=(matched.subject if matched is not None else principal if owner_allow else None),
                     matched_binding_id=None if matched is None else matched.binding_id,
                 )
             )

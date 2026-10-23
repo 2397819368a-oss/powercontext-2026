@@ -23,12 +23,16 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from powercontext.builtin.artifacts.atomic_memory.extraction import (
+    AtomicMemoryCandidate,
+    AtomicMemoryExtractionInput,
+    AtomicMemoryExtractionOutput,
+)
 from powercontext.builtin.artifacts.handoff import HandoffDraft, HandoffGenerationRequest, HandoffStatement
-from powercontext.builtin.artifacts.memory import MemoryCandidateRequest, MemoryEntryInput
+from powercontext.builtin.inference import GenerationResult
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime.config import InferenceConfig, RuntimeConfig
-from powercontext.builtin.sources import ContentSource
-from powercontext.client import ForbiddenResponseError, PowerContextClient, UnavailableResponseError
+from powercontext.client import ForbiddenResponseError, PowerContextClient
 from powercontext.http import (
     AccessAction,
     AccessResourceType,
@@ -52,7 +56,7 @@ from powercontext.http import (
     RevokeAccessBindingRequest,
 )
 from powercontext.server.authentication import StaticBearerAuthenticationProvider
-from powercontext.server.authz import AccessControlService, MemoryEntrySelector, PrincipalRef, ResourceRef
+from powercontext.server.authz import AccessControlService, PrincipalRef, ResourceRef
 from powercontext.server.authz.composition import open_builtin_access_control, open_casbin_access_control
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import (
@@ -62,6 +66,7 @@ from powercontext.server.settings import (
     MetricsConfig,
     ServerSettings,
 )
+from tests.e2e.dream_support import atomic_memory_pipeline, memory_source_text
 
 ADMIN = PrincipalRef(type="service", id="admin")
 RECEIVER = PrincipalRef(type="user", id="bob")
@@ -81,11 +86,15 @@ class _DeterministicHandoffPipeline:
 
 
 class _ContentMemoryPipeline:
-    async def extract(self, request: MemoryCandidateRequest, /) -> tuple[MemoryEntryInput, ...]:
-        return tuple(
-            MemoryEntryInput(kind="fact", text=source.content, sources=(source,))
-            for source in request.sources
-            if isinstance(source, ContentSource)
+    async def generate(self, request: AtomicMemoryExtractionInput, /) -> GenerationResult[AtomicMemoryExtractionOutput]:
+        return GenerationResult(
+            output=AtomicMemoryExtractionOutput(
+                candidates=tuple(
+                    AtomicMemoryCandidate(kind="fact", text=text, evidence_ids=(evidence.evidence_id,))
+                    for evidence in request.evidence
+                    if (text := memory_source_text(evidence)) is not None
+                )
+            )
         )
 
 
@@ -327,45 +336,28 @@ def test_base_source_and_artifact_routes_preserve_access_boundaries(tmp_path: Pa
                 memory = await owner.create_artifact(
                     scope.scope_id,
                     CreateArtifactRequest.model_validate({
-                        "family": "memory",
-                        "content": {"entries": [{"kind": "preference", "text": "Use concise answers."}]},
+                        "family": "atomic-memory",
+                        "content": {"kind": "preference", "text": "Use concise answers."},
                     }),
                 )
-                memory_head = await owner.get_artifact(scope.scope_id, "memory", memory.artifact_id)
+                memory_head = await owner.get_artifact(scope.scope_id, "atomic-memory", memory.artifact_id)
                 assert memory_head is not None
-                first_entry_id = memory_head.content["manifest"]["entries"][0]["entry_id"]
                 revised_memory = await owner.replace_artifact(
                     scope.scope_id,
-                    "memory",
+                    "atomic-memory",
                     memory.artifact_id,
                     ReplaceArtifactRequest.model_validate({
-                        "content": {
-                            "entries": [
-                                {
-                                    "entry_id": first_entry_id,
-                                    "kind": "preference",
-                                    "text": "Use concise Chinese answers.",
-                                },
-                                {"kind": "constraint", "text": "Do not expose credentials."},
-                            ]
-                        }
+                        "content": {"kind": "preference", "text": "Use concise Chinese answers."}
                     }),
                     expected_etag='"revision:1"',
                 )
                 assert revised_memory.revision == 2
-                memory_entry_ids = {entry["entry_id"] for entry in revised_memory.content["manifest"]["entries"]}
-                assert len(memory_entry_ids) == 2
-                for entry_id in memory_entry_ids:
-                    relation = await access_control.artifact_owner(
-                        ResourceRef.artifact(
-                            scope.scope_id,
-                            family="memory",
-                            artifact_id=memory.artifact_id,
-                            selector=MemoryEntrySelector(entry_id=entry_id),
-                        )
-                    )
-                    assert relation is not None
-                    assert relation.owner == RECEIVER
+                assert revised_memory.content["text"] == "Use concise Chinese answers."
+                relation = await access_control.artifact_owner(
+                    ResourceRef.artifact(scope.scope_id, family="atomic-memory", artifact_id=memory.artifact_id)
+                )
+                assert relation is not None
+                assert relation.owner == RECEIVER
 
             async with _client(
                 _app(database, access_control, ADMIN, "admin-token", tmp_path / "base-share-scheduler.db"),
@@ -421,6 +413,88 @@ def test_base_source_and_artifact_routes_preserve_access_boundaries(tmp_path: Pa
     asyncio.run(scenario())
 
 
+def test_query_parameters_cannot_override_path_authorization(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'query-path-authz.db'}")
+        async with open_builtin_access_control(
+            database,
+            bootstrap_administrators=(ADMIN,),
+            deployment_id=DEPLOYMENT_ID,
+        ) as access_control:
+            async with _client(
+                _app(database, access_control, ADMIN, "admin-token", tmp_path / "query-admin.db"),
+                "admin-token",
+            ) as admin:
+                allowed = await admin.create_scope(
+                    CreateScopeRequest(
+                        title="Allowed Scope",
+                        summary="The viewer may read this Scope.",
+                        idempotency_key="query-path-allowed",
+                    )
+                )
+                denied = await admin.create_scope(
+                    CreateScopeRequest(
+                        title="Denied Scope",
+                        summary="The viewer must not read this Scope.",
+                        idempotency_key="query-path-denied",
+                    )
+                )
+                await admin.create_access_binding(
+                    CreateAccessBindingRequest.model_validate({
+                        "subject": {"type": VIEWER.type, "id": VIEWER.id},
+                        "resource": {"type": "scope", "scope_id": allowed.scope_id},
+                        "role": "scope.viewer",
+                        "idempotency_key": "query-path-viewer",
+                    })
+                )
+
+            app = _app(database, access_control, VIEWER, "viewer-token", tmp_path / "query-viewer.db")
+            async with (
+                app.router.lifespan_context(app),
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://testserver",
+                    headers={"Authorization": "Bearer viewer-token"},
+                ) as viewer,
+            ):
+                denied_requests = (
+                    (f"/v1/scopes/{denied.scope_id}/artifacts/experience", {"scope_id": allowed.scope_id}),
+                    (
+                        f"/v1/scopes/{denied.scope_id}/artifacts/experience/missing/revisions",
+                        {"scope_id": allowed.scope_id, "family": "memory", "artifact_id": "allowed"},
+                    ),
+                    (f"/v1/scopes/{denied.scope_id}/dream", {"scope_id": allowed.scope_id}),
+                )
+                for path, params in denied_requests:
+                    denied_response = await viewer.get(path, params=params)
+                    assert denied_response.status_code == 403, path
+
+                strict_requests = (
+                    (f"/v1/scopes/{allowed.scope_id}/artifacts/experience", {"scope_id": allowed.scope_id}),
+                    (
+                        f"/v1/scopes/{allowed.scope_id}/artifacts/experience/missing/revisions",
+                        {"family": "memory", "artifact_id": "allowed"},
+                    ),
+                    (f"/v1/scopes/{allowed.scope_id}/dream", {"scope_id": allowed.scope_id}),
+                )
+                for path, params in strict_requests:
+                    unknown = await viewer.get(path, params=params)
+                    assert unknown.status_code == 422, path
+
+                duplicate = await viewer.get(
+                    f"/v1/scopes/{allowed.scope_id}/artifacts/experience",
+                    params=(("limit", "1"), ("limit", "2")),
+                )
+                assert duplicate.status_code == 422
+                repeated_tags = await viewer.get(
+                    f"/v1/scopes/{allowed.scope_id}/artifacts/experience",
+                    params=(("tag", "alpha"), ("tag", "beta")),
+                )
+                assert repeated_tags.status_code == 200
+
+    asyncio.run(scenario())
+
+
 def _scheduled_content_memory_worker(spec, assignment):
     from powercontext.builtin.runtime.composition import open_builtin_contexts
     from powercontext.builtin.runtime.family_processing import process_family_invocation
@@ -428,7 +502,9 @@ def _scheduled_content_memory_worker(spec, assignment):
 
     async def run():
         async with (
-            open_builtin_contexts(spec.config, candidate_pipeline=_ContentMemoryPipeline()) as contexts,
+            open_builtin_contexts(
+                spec.config, candidate_pipeline=atomic_memory_pipeline(_ContentMemoryPipeline())
+            ) as contexts,
             open_worker_security(spec.worker_security, contexts.database) as security,
         ):
             return await process_family_invocation(contexts, assignment, config=spec.config, security=security)
@@ -475,12 +551,7 @@ def test_scheduled_memory_processing_uses_the_static_service_principal_as_owner(
             )
             entries = None
             for _ in range(1500):
-                try:
-                    entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
-                except UnavailableResponseError as error:
-                    assert error.code == "artifact_owner_pending"
-                    await asyncio.sleep(0.02)
-                    continue
+                entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
                 if entries.entries:
                     break
                 await asyncio.sleep(0.02)
@@ -491,13 +562,14 @@ def test_scheduled_memory_processing_uses_the_static_service_principal_as_owner(
                 ListAccessResourcesRequest(
                     action=AccessAction.ARTIFACT_READ,
                     resource_type=AccessResourceType.ARTIFACT,
-                    family="memory",
+                    family="atomic-memory",
                 )
             )
             assert visible.total == 1
             resource = visible.items[0].model_dump(mode="json")
-            assert resource["identity"]["family"] == "memory"
-            assert resource["selector"]["entry_id"] == entries.entries[0].citation.entry_id
+            assert resource["identity"]["family"] == "atomic-memory"
+            assert resource["identity"]["artifact_id"] == entries.entries[0].artifact.artifact_id
+            assert resource["selector"] is None
 
     asyncio.run(scenario())
 
@@ -701,7 +773,7 @@ def test_server_administrators_discover_managed_resources_without_content_access
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("family", ["memory", "experience", "skill", "handoff", "profile"])
+@pytest.mark.parametrize("family", ["atomic-memory", "experience", "skill", "handoff", "profile"])
 def test_tag_owners_and_exact_viewers_preserve_scope_boundaries(tmp_path: Path, family: str) -> None:
     async def scenario() -> None:
         database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'tags.db'}")
@@ -728,7 +800,7 @@ def test_tag_owners_and_exact_viewers_preserve_scope_boundaries(tmp_path: Path, 
                 source = await owner.create_source(scope.scope_id, CreateSourceRequest(content="Tag access evidence"))
                 content = {
                     "profile": {"content": "# Profile\n\nTest before release."},
-                    "memory": {"entries": [{"kind": "fact", "text": "Private release rule"}]},
+                    "atomic-memory": {"kind": "fact", "text": "Private release rule"},
                     "experience": {
                         "situation": "Release",
                         "action": "Test",
@@ -763,23 +835,12 @@ def test_tag_owners_and_exact_viewers_preserve_scope_boundaries(tmp_path: Path, 
                 artifact = await owner.create_artifact(
                     scope.scope_id, CreateArtifactRequest.model_validate({"family": family, "content": content})
                 )
-                entry_id = None
-                if family == "memory":
-                    head = await owner.get_artifact(scope.scope_id, family, artifact.artifact_id)
-                    assert head is not None
-                    entry_id = head.content["manifest"]["entries"][0]["entry_id"]
 
                 async def read_tags(client):
-                    if entry_id is not None:
-                        return await client.get_memory_entry_tags(scope.scope_id, artifact.artifact_id, entry_id)
                     return await client.get_artifact_tags(scope.scope_id, family, artifact.artifact_id)
 
                 async def write_tags(client, etag):
                     request = ReplaceArtifactTagsRequest.model_validate({"tags": ["release", "客户A"]})
-                    if entry_id is not None:
-                        return await client.replace_memory_entry_tags(
-                            scope.scope_id, artifact.artifact_id, entry_id, request, expected_etag=etag
-                        )
                     return await client.replace_artifact_tags(
                         scope.scope_id, family, artifact.artifact_id, request, expected_etag=etag
                     )
@@ -787,17 +848,6 @@ def test_tag_owners_and_exact_viewers_preserve_scope_boundaries(tmp_path: Path, 
                 empty = await read_tags(owner)
                 assert empty is not None
                 saved = await write_tags(owner, empty.etag)
-                if family == "memory":
-                    container = await owner.get_artifact_tags(scope.scope_id, family, artifact.artifact_id)
-                    assert container is not None
-                    with pytest.raises(ForbiddenResponseError):
-                        await owner.replace_artifact_tags(
-                            scope.scope_id,
-                            family,
-                            artifact.artifact_id,
-                            ReplaceArtifactTagsRequest(tags=[]),
-                            expected_etag=container.etag,
-                        )
                 binding = await owner.create_access_binding(
                     CreateAccessBindingRequest.model_validate({
                         "subject": {"type": VIEWER.type, "id": VIEWER.id},
@@ -805,7 +855,7 @@ def test_tag_owners_and_exact_viewers_preserve_scope_boundaries(tmp_path: Path, 
                             "type": "artifact",
                             "scope_id": scope.scope_id,
                             "identity": {"family": family, "artifact_id": artifact.artifact_id},
-                            "selector": None if entry_id is None else {"type": "memory_entry", "entry_id": entry_id},
+                            "selector": None,
                         },
                         "role": "handoff.viewer" if family == "handoff" else "artifact.viewer",
                         "idempotency_key": "tag-viewer",
@@ -822,9 +872,6 @@ def test_tag_owners_and_exact_viewers_preserve_scope_boundaries(tmp_path: Path, 
                     await viewer.query_artifact_tags(
                         scope.scope_id, QueryArtifactTagsRequest.model_validate({"tags": ["release"]})
                     )
-                if entry_id is not None:
-                    with pytest.raises(ForbiddenResponseError):
-                        await viewer.get_artifact_tags(scope.scope_id, "memory", artifact.artifact_id)
             async with _client(
                 _app(database, access, ADMIN, "admin-token", tmp_path / "admin.db"), "admin-token"
             ) as admin:

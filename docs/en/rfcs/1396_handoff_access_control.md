@@ -1,3 +1,5 @@
+> Implementation note ([#2060](https://github.com/oceanbase/powercontext/pull/2060)): The owner-pending read gates below let unrelated incomplete records block authorized access and amplify Dashboard queries. Establish ownership during creation, approval, and publication; authorize reads using current grants or recorded ownership, without extending Artifact grants to Scope collections.
+
 - Proposal Name: `handoff_access_control`
 - RFC Number: 1396
 - Start Date: 2026-08-30
@@ -327,11 +329,12 @@ scope.admin on the target Scope
 
 This keeps the authorization durable across source revisions while preserving exact publication provenance. After the
 copy succeeds, the Server establishes the publishing Principal as the direct owner of the new target identity before
-returning success. The target does not inherit the source Binding or owner. Repeating the same publication repairs a
-missing target-owner relation idempotently; a conflicting owner fails closed. A grant does not copy content by itself,
-and a publication does not grant access to host paths, tools, networks, or credentials. Family-specific publication
-support remains a Runtime concern; unsupported complete-state copies fail after authorization without weakening the
-Access model.
+returning success. The target does not inherit the source Binding or owner. With a shared relational transaction,
+publication and ownership commit together; replay preserves the existing owner and returns `artifact_owner_pending`
+if a historical target has none. External relationship writers retain idempotent owner establishment on retry, and a
+conflicting owner fails closed. A grant does not copy content by itself, and a publication does not grant access to host
+paths, tools, networks, or credentials. Family-specific publication support remains a Runtime concern; unsupported
+complete-state copies fail after authorization without weakening the Access model.
 
 ## B takes over the Workstream
 
@@ -626,9 +629,21 @@ the new target identity.
 The first version assumes that a deployment enables enforced mode before it persists its first Artifact. It does not
 backfill or infer owners for a catalog populated while access control was disabled, and it exposes no general owner
 repair workflow. Switching such a catalog to enforced mode without a separate operator migration leaves those
-Artifacts unavailable by design. If domain persistence succeeds but owner establishment fails, the request still
-fails closed; only a business flow that explicitly supports idempotent replay may repair the relation on retry. A
-general transactional outbox and operator recovery procedure are future work outside this RFC.
+Artifacts unavailable by design.
+
+When the canonical relational repository owns relationships and audit in the business database, Artifact creation, first Handoff
+commit, cross-Scope publication, and Experience/Skill Candidate creation commit their owner relation or proposed-owner
+attestation in the business transaction. This includes generated, uploaded, imported, and scheduled Candidates.
+An ownership failure rolls back the associated write; scheduled incubation also retains its Source cursor for retry.
+Atomic Memory, Profile generation, Dream, and supervised worker writes retain their domain-owned transaction hooks.
+
+External relationship writers and separate audit stores cannot join that transaction. If domain persistence succeeds
+but owner establishment fails in those compositions, the request still fails closed; only a business flow that
+explicitly supports idempotent replay may repair the relation on retry. Local existing ownerless records are not attributed
+to the current caller or reconstructed from content. They remain unavailable until an operator migration can establish
+the original identity from trusted persisted evidence. Local publication replay and Handoff no-op replay report
+`artifact_owner_pending` for those records without creating an owner. A general transactional outbox and operator
+recovery procedure are future work outside this RFC.
 
 ### Built-in relational persistence
 

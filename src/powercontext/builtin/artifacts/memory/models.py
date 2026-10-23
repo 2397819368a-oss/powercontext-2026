@@ -17,18 +17,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Literal, TypeAlias
+from typing import Literal, TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from powercontext.artifacts import Artifact, ArtifactRef
-from powercontext.artifacts import MemoryCitation as MemoryCitation
 from powercontext.builtin.artifacts.search import AdmissionCounts
 from powercontext.builtin.inference.models import InferenceUsage
 from powercontext.sources import Source, SourceRef
 
 MemoryEntryState: TypeAlias = Literal["active", "inactive"]
-MemoryChangeOp: TypeAlias = Literal["add", "revise", "deactivate", "reactivate"]
+MemoryChangeOp: TypeAlias = Literal["add", "revise", "deactivate", "reactivate", "compact"]
+MemoryCapacityDimension: TypeAlias = Literal["active_entries", "manifest_entries", "manifest_bytes"]
 MemorySearchMode: TypeAlias = Literal["fts", "vector", "hybrid", "auto"]
 MemoryUsedSearchMode: TypeAlias = Literal["fts", "vector", "hybrid"]
 MemoryMatchedBy: TypeAlias = Literal["fts", "vector"]
@@ -48,7 +48,7 @@ class EmbeddingProfile(BaseModel):
 class MemoryQueryEmbedding:
     """One already-computed query vector together with the profile it was computed under.
 
-    Carried back out of :meth:`MemoryService.search` so a later recall round can reuse the
+    Carried back out of a Memory search so a later recall round can reuse the
     round-0 vector instead of paying for a second embedding call. The profile is part of the
     value because a vector is only meaningful against the profile that produced it: reusing a
     vector across profiles would silently compare incompatible spaces, so a mismatch is
@@ -69,22 +69,6 @@ class MemoryCapabilities(BaseModel):
     embedding_profile: EmbeddingProfile | None = None
 
 
-class MemoryManifestEntry(BaseModel):
-    """One logical entry pointer and state in an immutable Revision."""
-
-    entry_id: str
-    entry_version_id: str
-    entry_content_hash: str
-    state: MemoryEntryState
-
-
-class MemoryManifest(BaseModel):
-    """The authoritative directory for one Memory Revision."""
-
-    entries: tuple[MemoryManifestEntry, ...] = ()
-    format: Literal["flat-v1"] = "flat-v1"
-
-
 class MemoryChange(BaseModel):
     """A compact entry change recorded by one Memory Revision."""
 
@@ -95,21 +79,39 @@ class MemoryChange(BaseModel):
     reason: str | None = None
 
 
-class MemoryContent(BaseModel):
-    """The complete canonical content of one Memory Artifact Revision."""
+class MemoryCapacityBudget(BaseModel):
+    """The capacity ceiling applied to one Memory Artifact."""
 
-    manifest: MemoryManifest
-    changes: tuple[MemoryChange, ...] = ()
-    schema_version: Literal["powercontext.memory.v1"] = Field(
-        default="powercontext.memory.v1",
-        alias="schema",
+    max_active_entries: int = Field(default=5_000, ge=1)
+    max_manifest_entries: int = Field(default=10_000, ge=1)
+    max_manifest_bytes: int = Field(default=4_194_304, ge=1_024)
+
+    @model_validator(mode="after")
+    def validate_entry_ceiling_order(self) -> MemoryCapacityBudget:
+        if self.max_active_entries > self.max_manifest_entries:
+            raise ValueError("max_active_entries cannot exceed max_manifest_entries")  # noqa: TRY003
+        return self
+
+
+class MemoryCapacity(BaseModel):
+    """Observed capacity of one exact Memory Revision against its budget."""
+
+    memory_ref: ArtifactRef
+    active_entry_count: int = Field(ge=0)
+    manifest_entry_count: int = Field(ge=0)
+    manifest_bytes: int = Field(ge=0)
+    compactable_entry_count: int = Field(ge=0)
+    budget: MemoryCapacityBudget
+    exceeded: tuple[MemoryCapacityDimension, ...] = ()
+
+
+class MemoryCompactionPolicy(BaseModel):
+    """Opt-in removal of inactive manifest pointers after a recovery window."""
+
+    enabled: bool = False
+    min_tombstone_revisions: int = Field(
+        default=10, ge=0, description="Completed Revision advances since deactivation; zero permits immediate removal."
     )
-
-
-class Memory(Artifact[MemoryContent]):
-    """An immutable snapshot in a Memory lifecycle."""
-
-    family: ClassVar[str] = "memory"
 
 
 class MemoryEntryInput(BaseModel):
@@ -157,7 +159,11 @@ class MemoryChannelHit(BaseModel):
 
 
 class MemoryHit(BaseModel):
-    """A fused retrieval result anchored to exact Memory content."""
+    """A fused retrieval result anchored to exact Memory content.
+
+    ``score_upper_bound`` is in-process fusion metadata used by the recall gate. It is
+    excluded from serialization and is not part of the public Memory hit contract.
+    """
 
     memory_ref: ArtifactRef
     entry_id: str
@@ -165,6 +171,8 @@ class MemoryHit(BaseModel):
     text: str
     score: float
     matched_by: tuple[MemoryMatchedBy, ...]
+    score_upper_bound: float | None = Field(default=None, gt=0.0, allow_inf_nan=False, exclude=True)
+    relevance: float | None = Field(default=None, ge=-1.0, le=1.0, allow_inf_nan=False, exclude=True)
 
 
 class MemoryRerankTrace(BaseModel):

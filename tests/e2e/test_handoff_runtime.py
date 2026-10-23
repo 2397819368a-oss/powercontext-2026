@@ -16,17 +16,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import time_machine
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory import AtomicMemoryContent
 from powercontext.builtin.artifacts.handoff import (
     HandoffEvidenceUnavailableError,
     HandoffScopeMismatchError,
     PrepareHandoff,
+    PrepareHandoffHint,
 )
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.records import ArtifactWrite
@@ -34,20 +37,20 @@ from powercontext.builtin.runtime import (
     ActivateHandoff,
     BuiltinConfig,
     CaptureSource,
+    CaptureWorkingNote,
     HandoffArtifactCitation,
     HandoffDraft,
-    HandoffMemoryCitation,
     HandoffOmission,
     HandoffSourceCitation,
     HandoffStatement,
     InferenceConfig,
     PreparedHandoff,
-    RememberMemoryRequest,
+    WorkingNoteKind,
     open_builtin_runtime,
 )
 from powercontext.builtin.runtime.relational import RelationalContexts
 from powercontext.builtin.scope import ScopeDraft
-from powercontext.builtin.source_eligibility import SourceNotEligibleError
+from powercontext.builtin.source_eligibility import SourceNotEligibleError, WorkingNoteUnavailableError
 from powercontext.errors import RevisionConflictError
 from powercontext.sources import SourceDefinitionRegistry, SourceRef
 from tests.builtin.persistence.contract import SOURCE_ADAPTERS, CommitAdapter, CommitInput, NoteInput
@@ -70,6 +73,82 @@ class _EchoHandoffPipeline:
                 citations=(citation,),
             ),
         )
+
+
+def test_handoff_can_use_an_explicit_working_note_citation() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            handoff_pipeline=_EchoHandoffPipeline(),
+        ) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Working note", summary="Handoff evidence", idempotency_key="working-note-handoff")
+            )
+            note = await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                CaptureWorkingNote(
+                    source_id="note-1",
+                    content="The malformed-input regression passed locally.",
+                    session_id="session-1",
+                    note_kind=WorkingNoteKind.VALIDATION,
+                )
+            )
+            citation = HandoffSourceCitation(source_ref=note.source_ref)
+
+            draft = await runtime.handoff.for_scope(scope.scope_id).prepare(
+                PrepareHandoff(objective="Continue parser validation.", evidence=(citation,))
+            )
+
+            assert draft.state[0].citations == (citation,)
+            assert draft.next_action is not None
+            assert draft.next_action.citations == (citation,)
+
+            handoffs = runtime.handoff.for_scope(scope.scope_id)
+            prepared = await handoffs.finalize(draft)
+            committed = await handoffs.commit(prepared)
+
+            assert committed.content == prepared.content
+            assert committed.lineage.sources == (note.source_ref,)
+            assert await handoffs.latest() == committed
+
+    asyncio.run(scenario())
+
+
+def test_handoff_rejects_an_expired_working_note_citation() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            handoff_pipeline=_EchoHandoffPipeline(),
+        ) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Expired note", summary="Handoff evidence", idempotency_key="expired-note-handoff")
+            )
+            with time_machine.travel(datetime(2030, 1, 1, tzinfo=UTC)):
+                note = await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                    CaptureWorkingNote(
+                        source_id="expired-note",
+                        content="This validation result is no longer current.",
+                        session_id="session-1",
+                        note_kind=WorkingNoteKind.VALIDATION,
+                        expires_at=datetime(2030, 1, 2, tzinfo=UTC),
+                    )
+                )
+            citation = HandoffSourceCitation(source_ref=note.source_ref)
+
+            with (
+                time_machine.travel(datetime(2030, 1, 3, tzinfo=UTC)),
+                pytest.raises(HandoffEvidenceUnavailableError) as error,
+            ):
+                await runtime.handoff.for_scope(scope.scope_id).prepare(
+                    PrepareHandoff(objective="Continue parser validation.", evidence=(citation,))
+                )
+
+            assert error.value.citation == citation
+            stored = await runtime.records.for_scope(scope.scope_id).get_source("content", "expired-note")
+            assert stored.content == "This validation result is no longer current."
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("family", ["unregistered-family", "experience"])
@@ -121,7 +200,7 @@ def test_handoff_batch_rejects_existing_prompt_as_evidence(tmp_path: Path) -> No
             prompt = await runtime.records.for_scope(scope.scope_id).create_artifact(
                 "prompt",
                 ArtifactWrite(
-                    prompt_key="memory.extract",
+                    prompt_key="atomic_memory.extract",
                     content={
                         "schema_version": "powercontext.prompt.v1",
                         "mode": "custom",
@@ -225,6 +304,67 @@ def test_runtime_owns_handoff_trigger_activation_and_deduplication() -> None:
     asyncio.run(scenario())
 
 
+def test_handoff_activation_accepts_active_working_note_boundary_and_rejects_expired_note() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            handoff_pipeline=_EchoHandoffPipeline(),
+        ) as runtime:
+            assert runtime.scopes is not None
+            active_scope = await runtime.scopes.create(
+                ScopeDraft(
+                    title="Active note boundary", summary="Activation evidence", idempotency_key="active-note-boundary"
+                )
+            )
+            active_note = await runtime.sources.for_scope(active_scope.scope_id).capture_working_note(
+                CaptureWorkingNote(
+                    source_id="active-note-boundary",
+                    content="The current validation state is ready for transfer.",
+                    session_id="session-1",
+                    note_kind=WorkingNoteKind.VALIDATION,
+                )
+            )
+            activation = await runtime.handoff.for_scope(active_scope.scope_id).activate(
+                ActivateHandoff(
+                    boundary_source=active_note.source_ref,
+                    objective="Continue validation in another session.",
+                )
+            )
+            assert activation.status == "generated"
+            assert activation.draft is not None
+            assert activation.draft.state[0].citations == (HandoffSourceCitation(source_ref=active_note.source_ref),)
+
+            expired_scope = await runtime.scopes.create(
+                ScopeDraft(
+                    title="Expired note boundary",
+                    summary="Activation evidence",
+                    idempotency_key="expired-note-boundary",
+                )
+            )
+            with time_machine.travel(datetime(2030, 1, 1, tzinfo=UTC)):
+                expired_note = await runtime.sources.for_scope(expired_scope.scope_id).capture_working_note(
+                    CaptureWorkingNote(
+                        source_id="expired-note-boundary",
+                        content="This state is no longer current.",
+                        session_id="session-1",
+                        note_kind=WorkingNoteKind.VALIDATION,
+                        expires_at=datetime(2030, 1, 2, tzinfo=UTC),
+                    )
+                )
+            with (
+                time_machine.travel(datetime(2030, 1, 3, tzinfo=UTC)),
+                pytest.raises(WorkingNoteUnavailableError),
+            ):
+                await runtime.handoff.for_scope(expired_scope.scope_id).activate(
+                    ActivateHandoff(
+                        boundary_source=expired_note.source_ref,
+                        objective="Do not transfer expired validation state.",
+                    )
+                )
+
+    asyncio.run(scenario())
+
+
 def test_handoff_activation_rejects_a_lineage_only_boundary_source() -> None:
     async def scenario() -> None:
         pipeline = _EchoHandoffPipeline()
@@ -237,8 +377,8 @@ def test_handoff_activation_rejects_a_lineage_only_boundary_source() -> None:
                 ScopeDraft(title="Project", summary="Reserved boundary", idempotency_key="reserved-boundary")
             )
             created = await runtime.records.for_scope(scope.scope_id).create_artifact(
-                "memory",
-                ArtifactWrite(content={"entries": [{"kind": "fact", "text": "Direct input."}]}),
+                "atomic-memory",
+                ArtifactWrite(content={"kind": "fact", "text": "Direct input."}),
             )
 
             with pytest.raises(SourceNotEligibleError):
@@ -248,6 +388,38 @@ def test_handoff_activation_rejects_a_lineage_only_boundary_source() -> None:
                         objective="Do not regenerate from management provenance.",
                     )
                 )
+
+    asyncio.run(scenario())
+
+
+def test_handoff_hint_omits_a_lineage_only_source_without_changing_continue_errors() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Hint evidence", summary="Eligibility boundary", idempotency_key="hint-eligibility")
+            )
+            created = await runtime.records.for_scope(scope.scope_id).create_artifact(
+                "atomic-memory", ArtifactWrite(content={"kind": "fact", "text": "Direct input."})
+            )
+            prepared = PreparedHandoff(
+                scope_id=scope.scope_id,
+                base=None,
+                content=HandoffDraft(
+                    objective="Continue historical work.",
+                    state=(
+                        HandoffStatement(
+                            text="Recorded state.", citations=(HandoffSourceCitation(source_ref=created.sources[0]),)
+                        ),
+                    ),
+                    disposition="continuable",
+                ).as_content(),
+            )
+            handoffs = runtime.handoff.for_scope(scope.scope_id)
+            hint = await handoffs.hint(PrepareHandoffHint(selection="prepared", prepared=prepared))
+            assert hint.status == "empty" and hint.content is None and hint.content_bytes == 0
+            with pytest.raises(SourceNotEligibleError):
+                await handoffs.continue_from(prepared)
 
     asyncio.run(scenario())
 
@@ -307,19 +479,16 @@ def test_handoff_runtime_supports_temporary_transfer_and_durable_milestones() ->
                     metadata={"origin": "e2e"},
                 )
             )
-            memory = await runtime.memory.for_scope(scope.scope_id).remember(
-                RememberMemoryRequest(
-                    entries=(
-                        MemoryEntryInput(
-                            kind="decision",
-                            text="Regression tests must use the public parser interface.",
-                        ),
-                    )
-                )
-            )
-            assert memory.entry is not None
+            assert runtime.atomic_memory is not None
+            memory = await runtime.atomic_memory.for_scope(scope.scope_id).create((
+                AtomicMemoryContent(
+                    kind="decision",
+                    text="Regression tests must use the public parser interface.",
+                ),
+            ))
+            assert memory.records
             source_citation = HandoffSourceCitation(source_ref=source.source_ref)
-            memory_citation = HandoffMemoryCitation(memory_citation=memory.entry.citation)
+            memory_citation = HandoffArtifactCitation(artifact_ref=memory.primary.ref)
             handoffs = runtime.handoff.for_scope(scope.scope_id)
 
             empty = await handoffs.continue_latest()
@@ -363,7 +532,7 @@ def test_handoff_runtime_supports_temporary_transfer_and_durable_milestones() ->
             assert first.revision == 1
             assert first.content == prepared.content
             assert first.lineage.sources == (source.source_ref,)
-            assert first.lineage.artifacts == (memory.memory_ref,)
+            assert first.lineage.artifacts == (memory.primary.ref,)
             assert await handoffs.revisions() == (first,)
 
             completed = await handoffs.finalize(
@@ -388,7 +557,7 @@ def test_handoff_runtime_supports_temporary_transfer_and_durable_milestones() ->
             historical = await handoffs.continue_from(first.as_ref())
 
             assert second.revision == 2
-            assert second.lineage.artifacts == (memory.memory_ref, first.as_ref())
+            assert second.lineage.artifacts == (memory.primary.ref, first.as_ref())
             assert latest.status == "resolved"
             assert latest.selection == "latest"
             assert latest.selected_revision == second.as_ref()

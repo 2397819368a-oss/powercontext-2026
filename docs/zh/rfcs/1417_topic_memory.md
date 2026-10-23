@@ -215,7 +215,9 @@ API 限制。过大或过深的捕获内容仍保留，但 Topic 处理持久记
 
 Worker 使用由 OpenAI/Anthropic SDK 支持的 provider（含兼容端点），并禁用 SDK 内部 transport 重试。
 binding 装配及 Worker 启动时执行相同校验，拒绝不支持的 provider。Topic 生成设置只允许有界标量形式的采样、输出、timeout 和
-service-tier 参数；Embedding 只允许 `dimensions` 与 `truncate`。拒绝 `extra_body`、隐藏 response/conversation 历史、
+service-tier 参数；Embedding 只允许 `dimensions` 与 `truncate`。`openai-chat:<model>` 生成额外允许精确的
+`extra_body={"chat_template_kwargs":{"enable_thinking":false}}`：值必须是布尔值，两层均不能包含其他字段。
+此例外不能覆盖 messages、输出上限、tools 或重试策略。拒绝其他形式的 `extra_body`（包括 Embedding）、隐藏 response/conversation 历史、
 background 生成和 native tools，避免未计量工作。底层模型响应边界会拒绝 suspended response，阻止推理库把分别收费
 的 continuation 合并计为一次请求。普通非 Topic 推理保留既有行为；不兼容配置不注册 Topic Worker，并明确声明 Topic
 处理不可用（含 API-only 副本）。若显式配置了自动 Topic 调度，则启动时返回配置错误。模型设置、Source metadata、新 Worker、flush
@@ -381,7 +383,10 @@ Chunk 策略变化需要重建对应检索投影。
 
 每个检索通道先按 Topic collapse，同一 Topic 的多个 detail 命中只保留最佳位置用于 snippet。当前部署启用的
 两个或四个通道通过 RRF 排名融合，不比较全文分数和向量距离的原始数值。最终一个 Topic 最多占一个结果位置，并保留
-`matched_by` 说明命中通道。每个通道都先按 Topic 折叠，再应用候选上限，因此单个 Topic 的大量命中 chunk 不会
+`matched_by` 说明被选中 Topic 通过准入的所有命中通道。零权重通道不贡献排名分数，也无法单独选中 Topic；但当同一 Topic
+被其他正权重通道选中时，该通道的证据仍保留在 `matched_by` 中。`hybrid` mode 对对应类型的 Topic 和 Detail 通道同时应用部署级
+归一化 FTS/vector 相对权重，单独的 FTS 和 vector mode 仍不加权。开启通道的加权理论最大值作为归一化分母，使公开 score 保持在
+`0..100`。每个通道都先按 Topic 折叠，再应用候选上限，因此单个 Topic 的大量命中 chunk 不会
 遮蔽其他 Topic。全文 snippet 以 Analyzer v1 查询命中为中心截取有界窗口；只有向量命中时，则稳定截取其命中 chunk
 内部的窗口。
 首版搜索 limit 与历史候选配置统一限制为 20。查询最多 8,192 个字符、64 个不同的 Analyzer term；构造后端
@@ -639,16 +644,39 @@ retry_states[(binding_name, scope_id)] = {
 采用带抖动的指数退避：约 30 秒、1 分钟、2 分钟，直至约 30 分钟上限。Supervisor 可继续检查失败键，但 Topic
 Worker 的持久额度限制整窗重算次数。尝试计数在 Source 投影前提交，provider 额度在调用前提交。第三次尝试可用剩余
 provider 额度完成工作，但不能再开始第四次。请求或 token 额度耗尽记录 `window_provider_budget_exceeded`，尝试次数
-耗尽报告 `window_attempt_limit`。Selector 在 materialize Source 或启动 Worker 前检查终止状态。
+耗尽报告 `window_attempt_limit`。派发前由 Topic 领域的 metadata probe 检查当前 Cursor、target/Source head 和额度
+记录；尝试次数已耗尽但 failure code 仍为空的旧记录也能识别。检查不选择或 materialize Source、不估算 token，
+也不构造模型。Worker 内 Selector 和调用前预留继续保留检查，防止准入后状态发生变化；已开始的第三次尝试仍可完成。
+
+持久拒绝进入终止等待，不按普通失败退避反复启动 Worker，不消耗 provider 额度、不增加失败计数，也不确认调用完成
+或推进进度。Supervisor 在五分钟后、新的显式 flush 或自动准入时重新检查 metadata；额度或 Cursor 经明确修复后
+可直接恢复处理，无需重启。暂时错误继续采用原有退避。首次发现终止或诊断发生变化时输出 `artifact_processing.blocked`，
+包含 stage、error code、Family、binding、Scope、已尝试的 Window 范围和尝试/请求/token 计数；缓存内状态未变化的
+检查保持安静。日志去重缓存有界且仅在当前 Supervisor 任期内有效，重启或缓存淘汰后可能再次报告该状态。
+淘汰的终止键仍由领域准入检查保护，并通过有界的持久调用发现重新检查；终止缓存压力不暂停其他 Scope 的准入。
+metadata 重新检查出错时保留已知终止状态、等待间隔和日志去重信息；Supervisor 共享准入时间额度耗尽时让出控制，
+不将正在检查的 Scope 记成新的失败。
 
 终止的 frontier 保留 Source、Cursor、Pending 以及同 Scope 尾部；不会视为 NOOP、成功或跳过证据的授权。其他 Scope
-仍可处理。剩余额度内重试成功后仍按原合同发布，并继续处理尾部。不提供自动额度重置、retry/reset API 或 quarantine
-跳过操作；终止输入或重复失败需要运维明确修复，反复 flush 或重启不能重新授权模型成本。
+仍可处理。剩余额度内重试成功后仍按原合同发布，并继续处理尾部。不提供自动额度重置或 quarantine 跳过操作。
+`POST /v1/topic-memory/processing/status` 返回当前 Cursor、Source head、target 和阻塞记录；仍在执行的最后一次尝试
+显示为 pending。`POST /v1/topic-memory/processing/blocks/get` 读取准确的历史阻塞记录。这些查询需要 `scope.read`。
+`POST /v1/topic-memory/processing/retry` 需要 `scope.admin` 和查询得到的 block ID，在一个事务中保留旧诊断、申请一次
+新的有限额度并接受处理请求，不推进 Cursor、不删除 target 或 Source。重复 ID 返回原接受结果，不能重置后续尝试；
+尚未重试且已过期的 ID 返回冲突。普通 flush 和重启仍不能重新授权模型成本。
+
+`pc_topic_memory_work_attempts` 为每次尝试保留一条 metadata 记录，包含准确的执行 owner、已尝试范围、target、额度
+快照及最后错误类别。首次观察到终止时记录稳定 block ID 和 `blocked_at`；retry 保存重试时间及接受的请求 generation，
+不覆盖原诊断。记录不含 Source 或模型原文。正常启动会创建新增表，不修改旧预算表。旧记录使用首次观察时间，缺失的
+历史错误类别为 null，不推测原始失败时间。没有逐次审计记录的旧范围保留预算的累计覆盖范围，不推测最后一次尝试的
+实际终点。查询使用索引身份，写入仅作用于一个 frontier；正常每个窗口额度最多产生
+三条尝试记录，显式接受的 retry 可再申请相同的有限额度。记录保留用于审计。
 
 `pc_topic_memory_work_budgets` 保存 frontier、尝试过的最远终点、不透明 attempt ID、尝试次数、预留请求/token 与有界
 failure code，不保存 prompt、Source 原文或模型输出。可结合 Cursor 和结构化错误日志检查这些列，区分持久终止与暂时
-退避。同一任期内新尝试也会使旧尝试失去发布权。只有成功原子发布事务才能与 Cursor CAS、Topic/index 写入一起删除
-该记录；回滚会恢复额度记录。不创建分片 checkpoint 或持久 Job history。该新增表会在现有受支持数据库打开时创建。
+退避。同一任期内新尝试也会使旧尝试失去发布权。成功原子发布事务与 Cursor CAS、Topic/index 写入一起删除额度记录，
+回滚会恢复记录。显式接受的 retry 也可在一个事务中移除准确的耗尽额度，并保留旧审计记录与新的处理请求。不创建
+分片 checkpoint。新增表会在现有受支持数据库打开时创建。
 
 模型调用、输出校验、检索、启用后的 Embedding、数据库提交、Worker crash 和 timeout 等实际错误采用同一退避策略，
 但必须按 `stage` 和 `error_code` 写结构化日志。Cursor/Head CAS 冲突与 leadership lost 是控制信号，不增加
@@ -656,8 +684,9 @@ failure code，不保存 prompt、Source 原文或模型输出。可结合 Curso
 Cursor 与 Head conflict 使用固定的短 retry deadline，而不是立即重新派发；冲突目标在延后期间释放当前页，使冻结
 尾页继续推进且不会形成热循环。
 
-日志至少包含 binding、scope、Window 范围、stage、error code、异常类型、失败次数、重试延迟、Supervisor
-generation、worker ID 和 traceback；不得记录 Source 原文、Prompt、模型完整输出或密钥。
+Console 和 JSON 运维日志保留 binding、Family、Scope、Window 范围、stage、error code 及适用的额度/重试计数。
+实际 Worker 错误保留子进程的 stage、异常类型和 Worker 身份。内部 Worker 失败诊断保留脱敏的栈位置；运维 formatter
+不序列化任意 extra 或 traceback 内容。不得记录 Source 原文、Prompt、模型完整输出或密钥。
 
 ## HTTP、MCP 与 Prepared Context
 

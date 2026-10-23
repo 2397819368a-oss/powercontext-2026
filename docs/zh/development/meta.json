@@ -3,10 +3,12 @@
   "collapsible": true,
   "defaultOpen": false,
   "pages": [
+    "releasing",
     "core-protocol",
     "memory-layer",
     "plugin-contract",
     "pydantic-ai-inference",
+    "observability",
     "remote-access-implementation",
     "dashboard",
     "desktop-delivery-plan"

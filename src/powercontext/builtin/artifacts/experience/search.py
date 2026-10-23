@@ -17,29 +17,38 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from powercontext.artifacts import ArtifactRef
-from powercontext.builtin.artifacts.experience.models import ExperienceContent
-from powercontext.builtin.artifacts.search import AdmissionCounts, analyze_text
+from powercontext.artifacts.search import ArtifactSearchMatch, ArtifactSearchQuery, ChannelScore
+from powercontext.builtin.artifacts.experience.models import Experience, ExperienceContent
+from powercontext.builtin.artifacts.search import AdmissionCounts, EmptyFilters, LexicalSearchAdmission, analyze_text
+
+
+class ExperienceSearchRequest(ArtifactSearchQuery):
+    """Public text search controls for approved, active Experience heads."""
+
+    mode: Literal["text"] | None = None
+    filters: EmptyFilters = Field(default_factory=EmptyFilters)
+    admission: LexicalSearchAdmission = Field(default_factory=LexicalSearchAdmission)
+    min_score: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
 
 
 @dataclass(frozen=True)
 class ExperienceSearchOutcome:
-    """Experience hits plus the admission accounting for the search that produced them.
+    """Experience hits and bounded admission observations for Recall recovery planning.
 
-    It replaces the bare ``tuple[ExperienceSearchHit, ...]`` the ``experience_recall`` callback
-    used to return, because the Runtime's recall gate needs the retrieved/admitted pair and the
-    callback signature is part of the Runtime's construction surface.
-
-    ``admission`` is ``None`` when the search did not measure — for example a configured index
-    with nothing to report — rather than a fabricated ``(0, 0)``. The counters are aggregates
-    with no hit identity, so carrying them costs nothing the callback did not already compute.
+    ``admission`` is ``None`` when the index did not measure candidates. Built-in
+    indexes observe selected qualified matches and at most one ranked-prefix rejection witness;
+    these counters do not represent the whole matching collection.
     """
 
     hits: tuple[ExperienceSearchHit, ...] = ()
     admission: AdmissionCounts | None = None
+    matches: tuple[ArtifactSearchMatch, ...] = ()
+    artifacts: tuple[Experience, ...] = ()
 
 
 class ExperienceSearchHit(BaseModel):
@@ -47,6 +56,8 @@ class ExperienceSearchHit(BaseModel):
 
     artifact_ref: ArtifactRef
     content: ExperienceContent
+    retrieval_score: float | None = None
+    channel_scores: dict[str, ChannelScore] | None = None
 
 
 def render_experience(content: ExperienceContent, /) -> str:
@@ -88,6 +99,7 @@ def experience_search_text(content: ExperienceContent, /) -> str:
 __all__ = [
     "ExperienceSearchHit",
     "ExperienceSearchOutcome",
+    "ExperienceSearchRequest",
     "experience_search_text",
     "experience_searchable_text",
     "render_experience",

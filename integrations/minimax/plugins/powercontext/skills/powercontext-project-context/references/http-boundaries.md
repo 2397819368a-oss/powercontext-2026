@@ -1,3 +1,5 @@
+
+<!-- POWERCONTEXT-GUIDANCE:START -->
 # HTTP and MCP boundaries
 
 The runtime tool catalog determines which capabilities are callable. PowerContext's HTTP API is larger than its MCP tool set. An OpenAPI operationId does not mean the host exposes a matching MCP tool.
@@ -7,11 +9,11 @@ The runtime tool catalog determines which capabilities are callable. PowerContex
 | Area | Raw MCP operation names |
 | --- | --- |
 | Scopes and bindings | `list_scopes`, `get_scope`, `create_scope`, `resolve_scope_binding`, `set_scope_binding`, `clear_scope_binding` |
-| Memory | `search_memory`, `list_memory_entries`, `get_memory_entry`, `remember_memory`, `revise_memory_entry`, `retire_memory_entry` |
+| Memory | `search_memory`, `list_atomic_memories`, `get_artifact`, `get_artifact_revision`, `get_atomic_memory_state`, `remember_memory`, `replace_artifact`, `change_atomic_memory_lifecycle`, `merge_atomic_memories`, `preview_atomic_memory_restoration`, `restore_atomic_memory`; `get_memory_entry` only maps a legacy logical target to current Atomic content |
 | Topic Memory | `search_topic_memory`, `get_topic_memory` |
 | Sources and work | `capture_content_source`, `create_work_contract`, `handoff_current_work`, `acknowledge_handoff`, `record_task_outcome` |
 | Handoffs | `activate_handoff`, `finalize_handoff`, `commit_handoff`, `continue_handoff`, `get_handoff_report` |
-| Candidate review | `list_artifact_candidates`, `get_artifact_candidate`, `approve_artifact_candidate`, `reject_artifact_candidate`, `revise_artifact_candidate` |
+| Candidate review | `list_candidates`, `get_candidate`, `approve_candidate`, `reject_candidate`, `revise_candidate` |
 | Artifact publication | `publish_artifact` |
 
 This table describes the server contract used by the package. Hosts may hide tools, and older servers may lack some operations. Check the active deployment's catalog.
@@ -39,3 +41,4 @@ Context assembly can select existing Memory, Experience, Topic Memory, Profile, 
 - [MCP projection](https://github.com/oceanbase/powercontext/blob/master/src/powercontext/server/mcp.py): tools selected from HTTP and their side-effect annotations.
 
 Prefer the corresponding local source files when available. Remote master changes over time; check the actual version and tool catalog when diagnosing an older deployment.
+<!-- POWERCONTEXT-GUIDANCE:END -->

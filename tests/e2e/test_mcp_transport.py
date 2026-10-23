@@ -148,7 +148,22 @@ def test_mcp_projects_curated_tools_at_the_configured_server_path(tmp_path: Path
                     "include_inactive": True,
                 },
             )
-            assert empty_list.structured_content == {"memory": None, "entries": []}
+            assert empty_list.structured_content == {"entries": [], "next_cursor": None}
+
+            assert "get_memory_capacity" not in projected_tools
+            assert "revise_memory_entry" not in projected_tools
+            assert "retire_memory_entry" not in projected_tools
+            written = await client.call_tool(
+                "remember_memory", {"scope_id": scope["scope_id"], "kind": "fact", "text": "Inspect capacity via MCP."}
+            )
+            before = await client.call_tool("list_memory_entries", {"scope_id": scope["scope_id"]})
+            assert written.structured_content is not None
+            assert len(written.structured_content["records"]) == 1
+            http_capacity = await http_client.post("/v1/memory/capacity", json={"scope_id": scope["scope_id"]})
+            assert http_capacity.status_code == 422
+            assert http_capacity.json()["error"]["code"] == "legacy_memory_operation_unsupported"
+            after = await client.call_tool("list_memory_entries", {"scope_id": scope["scope_id"]})
+            assert after.structured_content == before.structured_content
 
             created_review_scope = await client.call_tool(
                 "create_scope",
@@ -187,7 +202,7 @@ def test_mcp_projects_curated_tools_at_the_configured_server_path(tmp_path: Path
             candidate = candidate_response.json()
 
             approved = await client.call_tool(
-                "approve_artifact_candidate",
+                "approve_candidate",
                 {
                     "scope_id": review_scope_id,
                     "candidate_id": candidate["candidate_id"],
@@ -201,17 +216,34 @@ def test_mcp_projects_curated_tools_at_the_configured_server_path(tmp_path: Path
     tools = asyncio.run(exercise_tools())
 
     assert tools == {
+        "generate_experience",
+        "get_experience",
+        "propose_experience",
+        "generate_skill",
+        "get_skill",
+        "propose_skill",
+        "list_managed_skills",
+        "scan_external_skills",
+        "list_external_skills",
+        "resolve_external_skill",
+        "import_external_skill",
         "acknowledge_handoff",
         "activate_handoff",
-        "approve_artifact_candidate",
+        "approve_candidate",
         "capture_content_source",
+        "capture_working_note",
         "clear_scope_binding",
         "commit_handoff",
         "continue_handoff",
+        "prepare_handoff_hint",
         "create_scope",
         "create_work_contract",
         "finalize_handoff",
-        "get_artifact_candidate",
+        "get_artifact",
+        "get_candidate",
+        "get_candidate_history",
+        "get_artifact_revision",
+        "get_atomic_memory_state",
         "get_handoff_report",
         "get_scope",
         "get_memory_entry",
@@ -220,17 +252,23 @@ def test_mcp_projects_curated_tools_at_the_configured_server_path(tmp_path: Path
         "create_dream_run",
         "get_dream_run",
         "list_dream_runs",
-        "list_artifact_candidates",
+        "list_candidates",
+        "list_atomic_memories",
         "list_memory_entries",
         "list_scopes",
+        "merge_atomic_memories",
+        "change_atomic_memory_lifecycle",
+        "preview_atomic_memory_restoration",
         "publish_artifact",
+        "query_code",
         "record_task_outcome",
         "resolve_scope_binding",
-        "reject_artifact_candidate",
+        "reject_candidate",
         "remember_memory",
-        "retire_memory_entry",
-        "revise_artifact_candidate",
-        "revise_memory_entry",
+        "replace_artifact",
+        "restore_atomic_memory",
+        "revise_candidate",
+        "search_atomic_memory",
         "search_memory",
         "search_topic_memory",
         "set_scope_binding",

@@ -11,9 +11,13 @@
     "ingest-text-files-with-opendal",
     "---Artifact 与知识---",
     "artifacts",
+    "search-artifacts",
+    "search-fusion",
     "memory-and-context",
+    "atomic-memory",
     "---Experience---",
     "create-and-review-experience",
+    "review-dream-revisions",
     "review-candidates",
     "experience-and-skill-lifecycle",
     "---Skill---",
@@ -33,6 +37,7 @@
     "manage-prompts",
     "---上下文输出---",
     "prepare-context-text",
+    "repository-code",
     "configure-vector-search"
   ]
 }

@@ -11,12 +11,12 @@ description: 诊断 PowerContext 安装、Server、数据库和宿主集成问�
 powercontext doctor
 ```
 
-该命令检查安装包、Server liveness 和 Server readiness；只有所有检查均为 `ok` 时才以状态码 0 退出。
-`degraded` 表示仍可使用，但不算完整诊断成功。自动化场景可添加 `--json`，顶层结果和每个检查都会包含
-`ok` 与 `status`。可单独检查可选的宿主集成：
+该命令检查已保存的 Agent 及其 Server；未保存连接时检查安装包和 Server。只有所有检查均为 `ok` 时才以状态码 0 退出。
+`degraded` 表示仍可使用，但不算完整诊断成功。自动化场景可添加 `--json`，查看整体 `ok` 结果
+和各项诊断状态。可显式选择要检查的宿主集成：
 
 ```bash
-powercontext doctor integrations
+powercontext doctor codex dsh
 powercontext doctor codex
 powercontext doctor claude-code
 powercontext doctor dsh
@@ -26,8 +26,8 @@ powercontext doctor pi
 powercontext doctor hermes
 ```
 
-`doctor integrations` 会打印全部一级宿主。CLI 不在 PATH 上时该行是 `missing`，不会让整条命令失败；已安装但异常的
-宿主仍会以状态码 1 退出。单宿主命令（如 `doctor codex`）在该 CLI 缺失时仍然失败。
+`doctor` 默认检查已保存的 Agent 连接，没有已保存连接时检查安装包和 Server。显式名称用于选择检查对象。
+选中的 Agent 缺少必需 CLI 或检查异常时，命令以状态码 1 退出，其余选中 Agent 仍会得到各自结果。
 
 ## 安装时无法读取 Git 地址
 
@@ -59,12 +59,12 @@ command -v hermes
 必要时把 uv tool bin 目录加入 `PATH`。宿主 CLI 不可用时，`powercontext setup codex`、
 `powercontext setup claude-code`、`powercontext setup dsh`、`powercontext setup openclaw`、
 `powercontext setup opencode`、`powercontext setup pi` 和 `powercontext setup hermes` 都会报告错误，而不会尝试安装。
-`powercontext setup select` 只安装你选中的宿主。某个选中宿主未安装时，该行失败，但不会阻塞其余选中项；
+`powercontext setup codex dsh` 只安装你选中的宿主。某个选中宿主未安装时，该行失败，但不会阻塞其余选中项；
 未选中的宿主即使已在 `PATH` 上也不会安装。
 
 ## 插件缺失或版本不一致
 
-先在不涉及 Server 的情况下确认集成故障：
+检查选中的集成及其 Server 连接：
 
 ```bash
 powercontext doctor codex
@@ -178,16 +178,15 @@ Principal、Access Control 和 Bearer token 的配置方式见[Server 鉴权与�
 ## 本地 tracing 示例与已有 Server 配置冲突
 
 Phoenix 和 Langfuse 文档中的本地 tracing 示例按独立测试实例编写，默认使用 loopback 地址。
-实际是否启用 Dashboard 以所安装版本和生效配置为准。新版本的个人 Dashboard 要求 `ACCESS_MODE=enforced` 和有效
-`AUTH_TOKEN`；如果启动报 `DASHBOARD_ENABLED requires ACCESS_MODE=enforced and AUTH_TOKEN`，请补齐鉴权配置，
-或在独立的本机测试实例中关闭 Dashboard。
+Dashboard 遵循 Server 的访问模式：本地使用 `ACCESS_MODE=disabled` 时无需 token，也不设置 `AUTH_TOKEN`；
+`ACCESS_MODE=enforced` 时需要有效的静态 token。
 
 已有 Server 启用了静态 Bearer 鉴权时，应保留对应配置。下面是同时启用 Dashboard 的示例：
 
 ```dotenv
 POWERCONTEXT_SERVER_DASHBOARD_ENABLED=true
 POWERCONTEXT_SERVER_ACCESS_MODE=enforced
-POWERCONTEXT_SERVER_AUTH_TOKEN=<有效 token>
+POWERCONTEXT_SERVER_AUTH_TOKEN=<valid-token>
 ```
 
 已有 Server 接入 Phoenix 或 Langfuse 时，应继续使用该 Server 原有的鉴权配置，不要通过清除鉴权环境变量来绕过
@@ -251,16 +250,17 @@ collation，但不会包含数据库 URL 或凭据。
    删除它。由于 `pc_scopes.parent_scope_id` 自引用 `pc_scopes`，导出的 `pc_scopes` 数据必须让祖先 Scope 记录排在
    后代记录之前。
    源数据库早于三张 Skill 生命周期表（`pc_skill_packages`、`pc_agent_skill_targets` 和
-   `pc_skill_publications`）、Profile 表或 `pc_receipt_migration_review` 时，应从对应层删除缺失的表。
-
-   旧版本没有 `pc_topic_memory_work_budgets` 时可从清单移除该表；若该表存在，必须与 Cursor 一起恢复，
-   保留已消耗的失败额度，避免迁移后重置累计成本。
+   `pc_skill_publications`）、Profile 表、`pc_topic_memory_work_budgets`、`pc_topic_memory_work_blocks`、
+   `pc_recall_effort_daily`、`pc_receipt_migration_review`、`pc_context_bootstrap_receipts` 或
+   `pc_decision_observations` 时，应从对应层删除缺失的表。
+   如果存在 work-budget 表，必须与 Cursor 一起恢复，保留已消耗的失败额度，避免迁移后重置累计成本。
+   work-attempt 表也应一起恢复，保留阻塞身份、诊断信息与已接受的重试回执。
 
    第 1 层包含父表和无外键的表：
 
    ```bash
    obloader <connection-options> -D <new-database> --csv \
-      --table 'pc_scopes,pc_source_journal_heads,pc_sources,pc_artifacts,pc_source_cursors,pc_artifact_processing_leases,pc_artifact_processing_binding_states,pc_artifact_processing_pending,pc_artifact_processing_auto_wave_targets,pc_artifact_processing_sequences,pc_artifact_processing_intents,pc_topic_memory_processing_targets,pc_artifact_processing_schema,pc_artifact_processing_migration_receipts,pc_topic_memory_work_budgets,pc_topic_memory_retrieval_shape,pc_connector_checkpoints,pc_source_definition_manifests,pc_external_skill_registrations,pc_skill_packages,pc_agent_skill_targets,pc_skill_publications,pc_model_usage_daily,pc_recall_token_daily,pc_receipt_migration_review' \
+      --table 'pc_scopes,pc_source_journal_heads,pc_sources,pc_artifacts,pc_source_cursors,pc_memory_source_windows,pc_artifact_processing_leases,pc_artifact_processing_binding_states,pc_artifact_processing_pending,pc_artifact_processing_auto_wave_targets,pc_artifact_processing_sequences,pc_artifact_processing_intents,pc_topic_memory_processing_targets,pc_artifact_processing_schema,pc_artifact_processing_migration_receipts,pc_topic_memory_work_budgets,pc_topic_memory_work_blocks,pc_topic_memory_retrieval_shape,pc_connector_checkpoints,pc_source_definition_manifests,pc_external_skill_registrations,pc_skill_packages,pc_agent_skill_targets,pc_skill_publications,pc_model_usage_daily,pc_recall_token_daily,pc_recall_effort_daily,pc_receipt_migration_review,pc_decision_observations,pc_lexical_projection_versions' \
      -f <export-directory>
    ```
 
@@ -268,7 +268,7 @@ collation，但不会包含数据库 URL 或凭据。
 
    ```bash
    obloader <connection-options> -D <new-database> --csv \
-     --table 'pc_dream_runs,pc_scope_context_references,pc_scope_external_references,pc_scope_creation_requests,pc_scope_settings,pc_scope_bindings,pc_artifact_heads,pc_artifact_lineage_sources,pc_artifact_lineage_artifacts,pc_artifact_publications,pc_artifact_candidate_versions,pc_topic_memory_revision_publications,pc_memory_entry_versions' \
+     --table 'pc_dream_runs,pc_context_bootstrap_receipts,pc_scope_context_references,pc_scope_external_references,pc_scope_creation_requests,pc_scope_settings,pc_scope_bindings,pc_artifact_handles,pc_artifact_heads,pc_artifact_lineage_sources,pc_artifact_lineage_artifacts,pc_artifact_publications,pc_candidate_versions,pc_topic_memory_revision_publications,pc_memory_entry_versions' \
      -f <export-directory>
    ```
 
@@ -276,7 +276,7 @@ collation，但不会包含数据库 URL 或凭据。
 
    ```bash
    obloader <connection-options> -D <new-database> --csv \
-      --table 'pc_artifact_candidate_heads,pc_topic_memory_active_topics,pc_topic_memory_active_chunks,pc_memory_entry_heads,pc_artifact_tags,pc_recurrence_match,pc_recurrence_observation' \
+      --table 'pc_candidate_heads,pc_topic_memory_active_topics,pc_topic_memory_active_chunks,pc_memory_entry_heads,pc_artifact_tags,pc_recurrence_match,pc_recurrence_observation' \
      -f <export-directory>
    ```
 
@@ -410,3 +410,30 @@ powercontext doctor
 Server。召回会正常降级，并在 Server 不可用、重定向、超时或返回无效 PreparedContext 时通过宿主终端输出无内容
 warning；Pi 会继续运行且不添加上下文。恢复 Server 后，运行 `powercontext capabilities`，确认 Context versions 中包含
 `powercontext.prepared-context.v1`。
+
+## MySQL 驱动兼容性与 Source 二进制写入
+
+在使用 aiomysql 0.3.2 时，内置依赖将 PyMySQL 限制为 `>=1.2,<1.2.1`，同时覆盖 OceanBase 和内嵌 seekdb。
+PyMySQL 1.2.1、1.2.2 会导致 aiomysql 导入失败；1.2.3 虽然能够导入，但编码 bytes 时仍会失败，
+包括 Source 持久化载荷。请重新安装或同步完整的 PowerContext 依赖集，不要单独升级 PyMySQL。
+`database: ready` 探针执行的是 `SELECT 1`，不验证二进制写入或写权限。
+
+这是一项临时兼容约束，不是通用的 PyMySQL 降级建议。
+[PyMySQL 1.2.1](https://github.com/PyMySQL/PyMySQL/blob/main/CHANGELOG.md) 修复了 bytes 和使用 surrogateescape
+解码的字符串在 big5、gbk、sjis、cp932、gb18030 字符集下的 SQL 注入问题。PowerContext 要求 OceanBase
+使用 `charset=utf8mb4`，并固定以 `utf8mb4` 创建 seekdb 连接，因此这两种受支持的配置不会选择上述旧字符集。
+此评估不覆盖自定义连接、会话字符集变更或共用环境中的其他应用，也不代表旧驱动不存在其他漏洞。
+请使用隔离环境并保留要求的字符集。解除版本限制前，需要异步驱动适配新的二进制编码，并在两种后端上通过
+Source 写入、读取和幂等重放测试。
+
+## Memory 提取持续超时
+
+生成超时不会推进 Memory 的 Source 游标。Memory 处理器会将失败的日志窗口减半，供下一次尝试使用，
+最小为一个日志位置。缩小后的上限按 Scope 持久化，跨 Worker 更换和 Server 重启保留，且不会超过
+`SOURCE_WINDOW_LIMIT` 或显式 flush 的 limit。每次调用只尝试一次提取，仍受 Supervisor 退避和 Worker
+截止时间约束。缩窗上限在处理超时时已可见的积压期间保留，并在积压消费完成时随业务提交原子清除。
+
+处理器不会跳过失败的 Source，也不会确认失败调用。单条 Source 仍可能超时；服务不可用、Embedding 失败
+或 Worker 被强制终止不会触发这一生成超时恢复策略。其他 Scope 可以独立继续。请检查
+`memory.window_reduced` 日志事件及模型错误；如果单条仍失败，可调整模型或生成超时后重试。
+Worker 超时应大于模型请求超时与启动、提交开销之和，让处理器能在 Worker 被终止前记录缩窗结果。

@@ -25,10 +25,13 @@ from base64 import b64decode, urlsafe_b64encode
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from copy import copy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 from uuid import uuid4
+
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from powercontext.limits import MAX_POLICY_REVISION_LENGTH
 from powercontext.server.authz.errors import (
@@ -67,8 +70,18 @@ from powercontext.server.authz.profiles import (
     validate_binding_subject,
 )
 
+if TYPE_CHECKING:
+    from powercontext.server.authz.casbin import CasbinAuthorizationProvider
+
+
 _T = TypeVar("_T")
 _MAX_AUTHORIZED_FILTER_IDENTITIES = 10_000
+_STATIC_SCOPE_ROLES = (
+    AccessRole.SCOPE_VIEWER,
+    AccessRole.SCOPE_CONTRIBUTOR,
+    AccessRole.SCOPE_REVIEWER,
+    AccessRole.SCOPE_DELEGATOR,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +394,7 @@ async def read_decision_state(
     now: datetime,
     artifact_resources: Sequence[ResourceRef] = (),
     owned_by: PrincipalRef | None = None,
+    binding_resources: Sequence[ResourceRef] | None = None,
 ) -> DecisionState:
     """Read decision inputs from one snapshot when the repository offers one.
 
@@ -390,7 +404,11 @@ async def read_decision_state(
     comparison in the decision.
     """
 
-    snapshot_reader = getattr(repository, "decision_snapshot", None)
+    from powercontext.server.authz.repository import RelationalAccessRepository
+
+    native = type(repository) is RelationalAccessRepository
+    options = {"binding_resources": binding_resources} if native else {}
+    snapshot_reader = repository._decision_snapshot if native else getattr(repository, "decision_snapshot", None)
     if callable(snapshot_reader):
         # A snapshot read reports an unstable revision rather than a mixture of
         # states; retry it within the same budget the separate-read fallback
@@ -400,7 +418,7 @@ async def read_decision_state(
         for _ in range(_SNAPSHOT_RETRY_LIMIT):
             try:
                 return await snapshot_reader(
-                    subjects, now=now, artifact_resources=artifact_resources, owned_by=owned_by
+                    subjects, now=now, artifact_resources=artifact_resources, owned_by=owned_by, **options
                 )
             except AccessUnavailableError as error:
                 if error.code != "policy-snapshot-unstable":
@@ -502,6 +520,7 @@ class BuiltinAuthorizationProvider:
             self._repository,
             (principal, *requests[0].context.subject_groups),
             now=self._clock(),
+            binding_resources=tuple(request.resource for request in requests),
             artifact_resources=tuple(
                 request.resource for request in requests if request.resource.type is AccessResourceType.ARTIFACT
             ),
@@ -513,18 +532,15 @@ class BuiltinAuthorizationProvider:
             if request.action is AccessAction.ACCESS_SELF:
                 decisions.append(AccessDecision(True, "authenticated", revision))
                 continue
+            binding_decision = _binding_decision(bindings, request.action, request.resource, policy_revision=revision)
+            if binding_decision.allowed:
+                decisions.append(binding_decision)
+                continue
             owner = (
                 state.artifact_owners.get(request.resource.key)
                 if request.resource.type is AccessResourceType.ARTIFACT
                 else None
             )
-            if request.resource.type is AccessResourceType.ARTIFACT and owner is None:
-                binding_decision = _binding_decision(
-                    bindings, request.action, request.resource, policy_revision=revision
-                )
-                reason = "artifact-owner-pending" if binding_decision.allowed else "no-matching-policy"
-                decisions.append(AccessDecision(False, reason, revision))
-                continue
             if (
                 owner is not None
                 and owner.owner == principal
@@ -539,7 +555,7 @@ class BuiltinAuthorizationProvider:
                     )
                 )
                 continue
-            decisions.append(_binding_decision(bindings, request.action, request.resource, policy_revision=revision))
+            decisions.append(binding_decision)
         return tuple(decisions)
 
     async def resolve_resource_filter(
@@ -566,6 +582,13 @@ class BuiltinAuthorizationProvider:
             request=request,
             policy_revision=revision,
         )
+
+
+def _require_allowed(decision: AccessDecision) -> None:
+    if not decision.allowed and decision.reason_code == "artifact-owner-pending":
+        raise AccessUnavailableError("artifact_owner_pending")
+    if not decision.allowed:
+        raise AccessDeniedError
 
 
 class AccessControlService:
@@ -609,16 +632,66 @@ class AccessControlService:
             raise AccessUnavailableError("transactional_relationships_unavailable")
         repository = self.relationships.with_connection(connection)
         provider = self.provider
-        if isinstance(provider, BuiltinAuthorizationProvider):
+        # Binding a Provider or Repository subclass could discard its custom rules; keep it unchanged.
+        if type(provider) is BuiltinAuthorizationProvider and type(provider._repository) is RelationalAccessRepository:
             provider = provider.with_repository(repository)
-        return AccessControlService(
-            provider,
-            relationships=repository,
-            audit=repository,
-            deployment_id=self.deployment_id,
-            provider_capabilities=self.provider_capabilities,
-            clock=self._clock,
-            static_scope_principal=self._static_scope_principal,
+        bound = copy(self)
+        bound.provider = provider
+        bound.relationships = bound.audit = repository
+        return bound
+
+    def supports_read_snapshot(self, engine: AsyncEngine) -> bool:
+        """Whether binding local policy to this engine preserves the Provider's rules."""
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
+        provider = self.provider
+        canonical = type(provider) is BuiltinAuthorizationProvider
+        if not canonical and type(provider).__module__ == "powercontext.server.authz.casbin":
+            from powercontext.server.authz.casbin import CasbinAuthorizationProvider
+
+            canonical = type(provider) is CasbinAuthorizationProvider
+        if not canonical:
+            return False
+        repository = cast("BuiltinAuthorizationProvider | CasbinAuthorizationProvider", provider)._repository
+        if type(repository) is not RelationalAccessRepository:
+            return False
+        policy_engine = repository._database.engine
+        return policy_engine.url == engine.url and not (
+            engine.dialect.name == "sqlite"
+            and engine.url.database in {None, "", ":memory:"}
+            and policy_engine is not engine
+        )
+
+    def supports_write_transaction(self, engine: AsyncEngine) -> bool:
+        """Whether owner relations and audit can join this business database."""
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
+        if type(self.relationships) is not RelationalAccessRepository or self.audit is not self.relationships:
+            return False
+        relationship_engine = self.relationships._database.engine
+        return relationship_engine.url == engine.url and not (
+            engine.dialect.name == "sqlite"
+            and engine.url.database in {None, "", ":memory:"}
+            and relationship_engine is not engine
+        )
+
+    def for_read(self, connection: AsyncConnection) -> AccessControlService:
+        """Use a local policy snapshot when available, preserving external point decisions."""
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
+        if not self.supports_read_snapshot(connection.engine):
+            return self
+        access = copy(self)
+        provider = cast("BuiltinAuthorizationProvider | CasbinAuthorizationProvider", self.provider)
+        repository = cast(RelationalAccessRepository, provider._repository).with_connection(connection)
+        access.provider = provider.with_repository(repository)
+        if self.relationships is provider._repository:
+            access.relationships = repository
+        return access
+
+    async def require_scope_read(self, principal, scope_id: str, *, connection, context: AccessAuditContext):
+        return await self.for_read(connection).require(
+            principal, AccessAction.SCOPE_READ, ResourceRef.scope(scope_id), context=context
         )
 
     async def bootstrap_subject_scope(self, connection, principal, scope_id, *, context):
@@ -678,6 +751,16 @@ class AccessControlService:
     def uses_static_preset(self, principal: PrincipalRef | None) -> bool:
         return self._static_scope_principal is not None and principal == self._static_scope_principal
 
+    def can_bootstrap_static_scope(
+        self, principal: PrincipalRef | None, action: AccessAction, resource: ResourceRef
+    ) -> bool:
+        """Whether the fixed preset can supply a denied action on this Scope."""
+
+        if not self.uses_static_preset(principal) or resource.scope_id is None:
+            return False
+        actions = ROLE_ACTIONS if resource.type is AccessResourceType.SCOPE else ROLE_CHILD_ACTIONS
+        return any(action in actions[role] for role in _STATIC_SCOPE_ROLES)
+
     async def bootstrap_static_scope(
         self,
         principal: PrincipalRef | None,
@@ -685,19 +768,22 @@ class AccessControlService:
         *,
         context: AccessAuditContext,
     ) -> None:
-        """Idempotently materialize the fixed static preset before scope content access."""
+        """Materialize the fixed preset for creation or a denied action's cold retry."""
 
         actor = _required_principal(principal)
         if self._static_scope_principal is None or actor != self._static_scope_principal:
             return
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
         resource = ResourceRef.scope(scope_id)
+        keys = tuple(
+            f"static-preset:{self.deployment_id}:{actor.id}:{scope_id}:{role.value}" for role in _STATIC_SCOPE_ROLES
+        )
+        repository = self._relationship_writer()
+        if type(repository) is RelationalAccessRepository and await repository.static_scope_initialized(actor, keys):
+            return
         now = self._clock()
-        for role in (
-            AccessRole.SCOPE_VIEWER,
-            AccessRole.SCOPE_CONTRIBUTOR,
-            AccessRole.SCOPE_REVIEWER,
-            AccessRole.SCOPE_DELEGATOR,
-        ):
+        for role in _STATIC_SCOPE_ROLES:
             key = f"static-preset:{self.deployment_id}:{actor.id}:{scope_id}:{role.value}"
             binding = AccessBinding(
                 binding_id=str(uuid4()),
@@ -743,10 +829,7 @@ class AccessControlService:
         context: AccessAuditContext,
     ) -> AccessDecision:
         decision = await self.check(principal, action, resource, context=context)
-        if not decision.allowed and decision.reason_code == "artifact-owner-pending":
-            raise AccessUnavailableError("artifact_owner_pending")
-        if not decision.allowed:
-            raise AccessDeniedError
+        _require_allowed(decision)
         return decision
 
     async def check_batch(
@@ -1049,6 +1132,20 @@ class AccessControlService:
     async def candidate_owner(self, scope_id: str, candidate_id: str) -> CandidateOwnerAttestation | None:
         return await _access_call(self._relationship_reader().get_candidate_owner(scope_id, candidate_id))
 
+    async def candidate_owners(self, scope_id, candidate_ids):
+        """Read persisted owner attestations without deriving ownership from grants."""
+        from powercontext.server.authz.repository import RelationalAccessRepository
+
+        repository = self._relationship_reader()
+        if type(repository) is RelationalAccessRepository:
+            return await _access_call(repository.get_candidate_owners(scope_id, candidate_ids))
+        owners = {}
+        for identity in candidate_ids:
+            owner = await _access_call(repository.get_candidate_owner(scope_id, identity))
+            if owner is not None:
+                owners[identity] = owner
+        return owners
+
     async def artifact_owner(self, resource: ResourceRef) -> ArtifactOwnerRelation | None:
         """Return owner metadata without reading the protected Artifact body."""
 
@@ -1077,11 +1174,6 @@ class AccessControlService:
             _administrative_checks(request.resource, deployment_id=self.deployment_id),
             context=context,
         )
-        if (
-            request.resource.type is AccessResourceType.ARTIFACT
-            and await _access_call(self._relationship_reader().get_artifact_owner(request.resource)) is None
-        ):
-            raise AccessUnavailableError("artifact_owner_pending")
         if validate_resource is not None:
             await validate_resource(request.resource)
         candidate = AccessBinding(
@@ -1218,8 +1310,13 @@ class AccessControlService:
             yield
         finally:
             self._deferred_decisions.reset(token)
-            for event in events:
-                await _access_call(self.audit.append_audit(event))
+            from powercontext.server.authz.repository import RelationalAccessRepository
+
+            if type(self.audit) is RelationalAccessRepository:
+                await _access_call(self.audit.append_audits(events))
+            else:
+                for event in events:
+                    await _access_call(self.audit.append_audit(event))
 
     async def _append_decision_audit(self, event: AccessAuditEvent) -> None:
         events = self._deferred_decisions.get()

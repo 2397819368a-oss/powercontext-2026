@@ -23,7 +23,7 @@ from powercontext.builtin.artifacts.memory.fusion import (
     admit_vector_candidates,
     fuse_rankings,
 )
-from powercontext.builtin.artifacts.search import AdmissionFloor
+from powercontext.builtin.artifacts.search import AdmissionFloor, RecallChannelWeights
 
 
 def channel_hit(
@@ -34,7 +34,7 @@ def channel_hit(
     distance: float | None = None,
 ) -> MemoryChannelHit:
     return MemoryChannelHit(
-        memory_ref=ArtifactRef(family="memory", artifact_id=memory_id, revision=2),
+        memory_ref=ArtifactRef(family="atomic-memory", artifact_id=memory_id, revision=2),
         entry_id=entry_id,
         entry_version_id=f"version-{entry_id}",
         text=entry_id if text is None else text,
@@ -62,6 +62,15 @@ def test_single_channel_uses_public_rrf_score_and_identity_order() -> None:
     assert tuple(hit.entry_id for hit in hits) == ("zulu", "alpha")
     assert tuple(hit.score for hit in hits) == pytest.approx((1 / 61, 1 / 62))
     assert all(hit.matched_by == ("fts",) for hit in hits)
+    assert all(hit.relevance is None for hit in hits)
+
+
+def test_vector_relevance_survives_fusion_with_fts_first() -> None:
+    fts = channel_hit("alpha", text="alpha beta")
+    vector = channel_hit("alpha", text="alpha beta", distance=1.0)
+    hit = fuse_rankings(fts=(fts,), vector=(vector,), limit=1)[0]
+    assert hit.relevance == pytest.approx(0.5)
+    assert hit.score == pytest.approx(2 / 61)
 
 
 def test_duplicate_channel_rows_contribute_only_the_first_rank() -> None:
@@ -71,6 +80,49 @@ def test_duplicate_channel_rows_contribute_only_the_first_rank() -> None:
 
     assert len(hits) == 1
     assert hits[0].score == pytest.approx(1 / 61)
+
+
+@pytest.mark.parametrize(
+    ("fts_weight", "vector_weight", "expected_order"),
+    [
+        (3.0, 1.0, ("lexical", "semantic")),
+        (1.0, 3.0, ("semantic", "lexical")),
+    ],
+)
+def test_hybrid_weights_prefer_the_higher_weight_channel(
+    fts_weight: float,
+    vector_weight: float,
+    expected_order: tuple[str, str],
+) -> None:
+    lexical = channel_hit("lexical")
+    semantic = channel_hit("semantic")
+
+    hits = fuse_rankings(
+        fts=(lexical, semantic),
+        vector=(semantic, lexical),
+        limit=2,
+        channel_weights=RecallChannelWeights(fts=fts_weight, vector=vector_weight),
+    )
+
+    assert tuple(hit.entry_id for hit in hits) == expected_order
+    assert hits[0].score_upper_bound == pytest.approx(2 / 61)
+
+
+def test_zero_weight_excludes_only_that_channel_and_its_matches() -> None:
+    lexical_only = channel_hit("lexical-only")
+    semantic_only = channel_hit("semantic-only")
+
+    hits = fuse_rankings(
+        fts=(lexical_only,),
+        vector=(semantic_only,),
+        limit=2,
+        channel_weights=RecallChannelWeights(fts=0.0, vector=1.0),
+    )
+
+    assert tuple(hit.entry_id for hit in hits) == ("semantic-only",)
+    assert hits[0].matched_by == ("vector",)
+    assert hits[0].score == pytest.approx(2 / 61)
+    assert hits[0].score_upper_bound == pytest.approx(2 / 61)
 
 
 def test_limit_must_be_positive() -> None:
@@ -163,6 +215,7 @@ def test_fts_keeps_domain_constraints_and_explicit_policy_queries(query, text) -
         "`AND` `OR` precedence",
         "“AND” “OR” precedence",
         "‘AND’ ‘OR’ precedence",  # noqa: RUF001 - quoted identifiers use typographic single quotes.
+        "‘AND’and‘OR’ precedence",  # noqa: RUF001 - adjacent quoted identifiers remain distinct.
     ],
 )
 def test_quoted_function_words_remain_lexical_evidence(query) -> None:
@@ -170,6 +223,21 @@ def test_quoted_function_words_remain_lexical_evidence(query) -> None:
     arithmetic = channel_hit("arithmetic", text="Multiplication has precedence over addition.")
 
     assert admit_fts_candidates(query, (operators, arithmetic)) == (operators,)
+
+
+@pytest.mark.parametrize(
+    ("query", "text"),
+    [
+        ("'I'm'", "I'm"),
+        ("'we're'", "we're"),
+        ("‘don’t’", "don't"),  # noqa: RUF001 - real query quotes and apostrophe.
+    ],
+)
+def test_quoted_contractions_remain_lexical_evidence(query, text) -> None:
+    contraction = channel_hit("contraction", text=text)
+    unrelated = channel_hit("unrelated", text="Deployment evidence.")
+
+    assert admit_fts_candidates(query, (contraction, unrelated)) == (contraction,)
 
 
 def test_vector_admission_converts_unit_l2_distance_to_cosine_threshold() -> None:

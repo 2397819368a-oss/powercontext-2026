@@ -69,6 +69,83 @@ var ServerResponseError = class extends ClientError {
 //#endregion
 //#region src/operations.generated.ts
 const OPERATIONS = {
+	list_atomic_memories: {
+		method: "POST",
+		path: "/v1/atomic-memory/list",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	search_atomic_memory: {
+		method: "POST",
+		path: "/v1/atomic-memory/search",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	merge_atomic_memories: {
+		method: "POST",
+		path: "/v1/atomic-memory/merges",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	change_atomic_memory_lifecycle: {
+		method: "POST",
+		path: "/v1/atomic-memory/lifecycle",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	preview_atomic_memory_restoration: {
+		method: "POST",
+		path: "/v1/atomic-memory/restoration-previews",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	restore_atomic_memory: {
+		method: "POST",
+		path: "/v1/atomic-memory/restorations",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	get_atomic_memory_state: {
+		method: "GET",
+		path: "/v1/scopes/{scope_id}/artifacts/atomic-memory/{artifact_id}/state",
+		location: null,
+		scopeMode: "current",
+		pathParameters: ["scope_id", "artifact_id"],
+		queryParams: [],
+		headerParams: ["If-None-Match"],
+		successStatuses: [200, 304],
+		emptyStatuses: [304]
+	},
 	create_subject_source: {
 		method: "POST",
 		path: "/v1/scopes/{scope_id}/subject-sources",
@@ -127,6 +204,17 @@ const OPERATIONS = {
 	get_readiness: {
 		method: "GET",
 		path: "/health/ready",
+		location: null,
+		scopeMode: "none",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	get_server_info: {
+		method: "GET",
+		path: "/v1/server-info",
 		location: null,
 		scopeMode: "none",
 		pathParameters: [],
@@ -287,6 +375,17 @@ const OPERATIONS = {
 		successStatuses: [202],
 		emptyStatuses: []
 	},
+	capture_working_note: {
+		method: "POST",
+		path: "/v1/sources/working-notes",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [202],
+		emptyStatuses: []
+	},
 	register_source_definition: {
 		method: "POST",
 		path: "/v1/source-definitions/register",
@@ -326,6 +425,17 @@ const OPERATIONS = {
 		location: "body",
 		scopeMode: "none",
 		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	query_code: {
+		method: "POST",
+		path: "/v1/scopes/{scope_id}/code/query",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: ["scope_id"],
 		queryParams: [],
 		headerParams: [],
 		successStatuses: [200],
@@ -441,12 +551,34 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
+	prepare_handoff_hint: {
+		method: "POST",
+		path: "/v1/handoff/hint",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
 	flush_topic_memory: {
 		method: "POST",
 		path: "/v1/topic-memory/flush",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	search_artifacts: {
+		method: "POST",
+		path: "/v1/scopes/{scope_id}/artifacts/{family}/search",
+		location: "body",
+		scopeMode: "none",
+		pathParameters: ["scope_id", "family"],
 		queryParams: [],
 		headerParams: [],
 		successStatuses: [200],
@@ -507,6 +639,17 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
+	get_memory_capacity: {
+		method: "POST",
+		path: "/v1/memory/capacity",
+		location: "body",
+		scopeMode: "none",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
 	list_memory_entries: {
 		method: "POST",
 		path: "/v1/memory/entries/list",
@@ -533,7 +676,7 @@ const OPERATIONS = {
 		method: "POST",
 		path: "/v1/memory/entries/revise",
 		location: "body",
-		scopeMode: "current",
+		scopeMode: "none",
 		pathParameters: [],
 		queryParams: [],
 		headerParams: [],
@@ -544,7 +687,7 @@ const OPERATIONS = {
 		method: "POST",
 		path: "/v1/memory/entries/retire",
 		location: "body",
-		scopeMode: "current",
+		scopeMode: "none",
 		pathParameters: [],
 		queryParams: [],
 		headerParams: [],
@@ -555,7 +698,7 @@ const OPERATIONS = {
 		method: "POST",
 		path: "/v1/memory/changes",
 		location: "body",
-		scopeMode: "current",
+		scopeMode: "none",
 		pathParameters: [],
 		queryParams: [],
 		headerParams: [],
@@ -886,9 +1029,9 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	list_artifact_candidates: {
+	list_candidates: {
 		method: "POST",
-		path: "/v1/artifact-candidates/list",
+		path: "/v1/candidates/list",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -897,9 +1040,9 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	get_artifact_candidate: {
+	get_candidate: {
 		method: "POST",
-		path: "/v1/artifact-candidates/get",
+		path: "/v1/candidates/get",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -908,9 +1051,9 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	approve_artifact_candidate: {
+	approve_candidate: {
 		method: "POST",
-		path: "/v1/artifact-candidates/approve",
+		path: "/v1/candidates/approve",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -919,9 +1062,9 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	reject_artifact_candidate: {
+	reject_candidate: {
 		method: "POST",
-		path: "/v1/artifact-candidates/reject",
+		path: "/v1/candidates/reject",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -930,9 +1073,20 @@ const OPERATIONS = {
 		successStatuses: [200],
 		emptyStatuses: []
 	},
-	revise_artifact_candidate: {
+	revise_candidate: {
 		method: "POST",
-		path: "/v1/artifact-candidates/revise",
+		path: "/v1/candidates/revise",
+		location: "body",
+		scopeMode: "current",
+		pathParameters: [],
+		queryParams: [],
+		headerParams: [],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	get_candidate_history: {
+		method: "POST",
+		path: "/v1/candidates/history",
 		location: "body",
 		scopeMode: "current",
 		pathParameters: [],
@@ -1031,7 +1185,7 @@ const OPERATIONS = {
 		method: "GET",
 		path: "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}",
 		location: null,
-		scopeMode: "none",
+		scopeMode: "current",
 		pathParameters: [
 			"scope_id",
 			"family",
@@ -1046,7 +1200,7 @@ const OPERATIONS = {
 		method: "PUT",
 		path: "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}",
 		location: "body",
-		scopeMode: "none",
+		scopeMode: "current",
 		pathParameters: [
 			"scope_id",
 			"family",
@@ -1132,7 +1286,7 @@ const OPERATIONS = {
 		method: "GET",
 		path: "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions/{revision}",
 		location: null,
-		scopeMode: "none",
+		scopeMode: "current",
 		pathParameters: [
 			"scope_id",
 			"family",
@@ -1551,6 +1705,7 @@ var PowerContextClient = class {
 	}
 	init(spec, request, signal) {
 		const headers = {
+			"X-PowerContext-Dream-Contract": "2",
 			Accept: "application/json",
 			"User-Agent": PLUGIN_USER_AGENT,
 			...request.headers
@@ -1573,6 +1728,82 @@ var PowerContextClient = class {
 };
 
 //#endregion
+//#region src/memory-operations.ts
+var MemoryOperationError = class extends Error {
+	code;
+	constructor(code, message) {
+		super(message);
+		this.name = "MemoryOperationError";
+		this.code = code;
+	}
+};
+function atomicReference(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new MemoryOperationError("invalid_request", "Supply the exact Atomic Memory artifact reference.");
+	const ref = value;
+	if (ref.family !== "atomic-memory" || typeof ref.artifact_id !== "string" || !/^[\x21-\x7E]{1,128}$/.test(ref.artifact_id) || typeof ref.revision !== "number" || !Number.isSafeInteger(ref.revision) || ref.revision < 1) throw new MemoryOperationError("invalid_request", "Supply the exact Atomic Memory artifact reference.");
+	return {
+		family: "atomic-memory",
+		artifact_id: ref.artifact_id,
+		revision: ref.revision
+	};
+}
+/** Translate the maintained Memory tool names at their identity and write boundary. */
+async function requestMemoryOperation(client, operationId, payload, scopeId, signal) {
+	const body = payload ?? {};
+	if (operationId === "list_memory_entries") return client.request("list_atomic_memories", {
+		scope_id: scopeId,
+		states: body.states ?? (body.include_inactive ? [
+			"active",
+			"forgotten",
+			"merged",
+			"retired"
+		] : ["active"]),
+		limit: body.limit ?? 50,
+		cursor: body.cursor
+	}, signal);
+	if (![
+		"get_memory_entry",
+		"revise_memory_entry",
+		"retire_memory_entry"
+	].includes(operationId)) return void 0;
+	const ref = atomicReference(body.artifact);
+	const identity = {
+		scope_id: scopeId,
+		family: ref.family,
+		artifact_id: ref.artifact_id
+	};
+	if (operationId === "get_memory_entry") {
+		const head = await client.request("get_artifact", identity, signal);
+		const current = head.value;
+		if (head.kind === "json" && current?.revision === ref.revision) return head;
+		return client.request("get_artifact_revision", {
+			...identity,
+			revision: ref.revision
+		}, signal);
+	}
+	if (operationId === "revise_memory_entry") {
+		if (typeof body.if_match !== "string" || body.if_match !== `"revision:${ref.revision}"`) throw new MemoryOperationError("invalid_request", "Use the content ETag returned by pc_memory_get for this exact current revision.");
+		return client.request("replace_artifact", {
+			...identity,
+			if_match: body.if_match,
+			content: {
+				kind: body.kind,
+				text: body.text
+			}
+		}, signal);
+	}
+	if (typeof body.state_version !== "number" || !Number.isSafeInteger(body.state_version) || body.state_version < 0) throw new MemoryOperationError("invalid_request", "Supply the current state_version from search, list or pc_memory_state.");
+	return client.request("change_atomic_memory_lifecycle", {
+		scope_id: scopeId,
+		target: {
+			artifact: ref,
+			state_version: body.state_version
+		},
+		state: "forgotten"
+	}, signal);
+}
+
+//#endregion
 //#region src/secrets.ts
 const SECRET_PATTERNS = [
 	/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/giu,
@@ -1592,8 +1823,11 @@ function containsSecret(text) {
 const WRITE_OPERATIONS = new Set([
 	"remember_memory",
 	"capture_content_source",
+	"capture_working_note",
 	"revise_memory_entry",
 	"retire_memory_entry",
+	"replace_artifact",
+	"change_atomic_memory_lifecycle",
 	"activate_handoff",
 	"commit_handoff",
 	"generate_experience",
@@ -1608,6 +1842,11 @@ function hasSecret(value) {
 	return Boolean(value && typeof value === "object" && Object.values(value).some(hasSecret));
 }
 function errorResult(error) {
+	if (error instanceof MemoryOperationError) return {
+		ok: false,
+		code: error.code,
+		message: error.message
+	};
 	if (error instanceof ServerResponseError) {
 		if (error.statusCode === 401) return {
 			ok: false,
@@ -1654,7 +1893,7 @@ async function invokeOperation(client, operationId, payload, scopeId, signal) {
 			mode: "exact",
 			scope_ids: [scopeId]
 		}
-	} : mode === "current" ? {
+	} : mode === "current" || operationId === "get_atomic_memory_state" ? {
 		...payload,
 		scope_id: scopeId
 	} : payload;
@@ -1664,11 +1903,12 @@ async function invokeOperation(client, operationId, payload, scopeId, signal) {
 		message: "Refused to send secret-like content to PowerContext."
 	};
 	try {
-		const result = await client.request(operationId, body, signal);
+		const result = await requestMemoryOperation(client, operationId, body, scopeId, signal) ?? await client.request(operationId, body, signal);
 		return {
 			ok: true,
 			status: result.status,
 			request_id: result.requestId,
+			...result.etag === void 0 ? {} : { etag: result.etag },
 			data: result.value
 		};
 	} catch (error) {
@@ -1693,7 +1933,7 @@ async function call(runtime, scopeId, operationId, payload, signal) {
 }
 async function handleReview(tokens, runtime, scopeId, signal) {
 	const action = tokens[1];
-	if (!action) return call(runtime, scopeId, "list_artifact_candidates", { status: "pending" }, signal);
+	if (!action) return call(runtime, scopeId, "list_candidates", { status: "pending" }, signal);
 	if (action === "approve") {
 		const candidateId = tokens[2];
 		const version = Number(tokens[3]);
@@ -1701,7 +1941,7 @@ async function handleReview(tokens, runtime, scopeId, signal) {
 			kind: "error",
 			text: "Usage: /pc review approve <candidate_id> <expected_version>"
 		};
-		return call(runtime, scopeId, "approve_artifact_candidate", {
+		return call(runtime, scopeId, "approve_candidate", {
 			candidate_id: candidateId,
 			expected_version: version
 		}, signal);
@@ -1714,7 +1954,7 @@ async function handleReview(tokens, runtime, scopeId, signal) {
 			kind: "error",
 			text: "Usage: /pc review reject <candidate_id> <expected_version> <reason>"
 		};
-		return call(runtime, scopeId, "reject_artifact_candidate", {
+		return call(runtime, scopeId, "reject_candidate", {
 			candidate_id: candidateId,
 			expected_version: version,
 			reason
@@ -1796,8 +2036,8 @@ const DEFAULTS = {
 	scopeId: void 0,
 	authorization: void 0,
 	capturePrompts: true,
-	requestTimeoutMs: 1e3,
-	httpBudgetMs: 4e3,
+	requestTimeoutMs: 3e3,
+	httpBudgetMs: 6e3,
 	maxBytes: 8e3,
 	flushOnCapture: false,
 	flushMaxCalls: 4

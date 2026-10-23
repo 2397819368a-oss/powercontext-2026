@@ -19,9 +19,8 @@ import { PowerContextClient, type FetchFn } from '../src/client.ts'
 import { registerCommands, type CommandResult } from '../src/commands.ts'
 import { resolveConfig } from '../src/config.ts'
 import { createDiagnosticEmitter } from '../src/diagnostics.ts'
-import type { PluginRuntime, ToolResult } from '../src/invoke.ts'
+import { renderToolResult, type PluginRuntime, type ToolResult } from '../src/invoke.ts'
 import { resolveScopeId } from '../src/scope.ts'
-import { registerTools } from '../src/tools.ts'
 
 const RESOLVE_PATH = '/v1/scope-bindings/resolve'
 const PRIVATE = 'private-response-marker'
@@ -44,11 +43,6 @@ function fixture(fetchImpl: FetchFn, baseUrl = 'http://127.0.0.1:8000', requestT
     resolveScope: (cwd, signal) => resolveScopeId(client, cwd, config.scopeId, signal),
     log: createDiagnosticEmitter(line => events.push(JSON.parse(line))),
   }
-  const tools: Array<{
-    name: string
-    execute: (args: Record<string, unknown>, exec: unknown) => Promise<ToolResult>
-  }> = []
-  registerTools({ tools: { register: tool => tools.push(tool as never) }, on: () => undefined }, runtime, value => value)
   let command!: (invocation: {
     rawInput: string
     signal: AbortSignal
@@ -62,8 +56,6 @@ function fixture(fetchImpl: FetchFn, baseUrl = 'http://127.0.0.1:8000', requestT
   })
   return {
     calls, events, runtime,
-    tool: (name: string, args: Record<string, unknown> = {}, signal?: AbortSignal) =>
-      tools.find(tool => tool.name === name)!.execute(args, invocation(signal)),
     command: (rawInput: string, signal?: AbortSignal) => command({ ...invocation(signal), rawInput }),
   }
 }
@@ -74,9 +66,8 @@ function domainResponse(status: number, code: unknown): Response {
   })
 }
 
-describe.each(['tool', 'command'] as const)('registered %s failure boundary', entry => {
+describe('registered command failure boundary', () => {
   async function remember(h: ReturnType<typeof fixture>, signal?: AbortSignal): Promise<ToolResult> {
-    if (entry === 'tool') return h.tool('pc_remember', { kind: 'decision', text: 'Keep the API stable.' }, signal)
     const result = await h.command('remember Keep the API stable.', signal)
     expect(result.kind).toBe('error')
     return JSON.parse(result.text)
@@ -109,13 +100,29 @@ describe.each(['tool', 'command'] as const)('registered %s failure boundary', en
     expect(h.events).toEqual([])
   })
 
+  it('surfaces a missing persisted Scope target with operator repair guidance before a write', async () => {
+    const h = fixture(async () => Response.json({
+      error: { code: 'scope_binding_target_missing', message: PRIVATE, details: { scope_id: PRIVATE } },
+    }, { status: 409, headers: { 'X-PowerContext-Request-ID': 'request-1' } }))
+    const result = await remember(h)
+    const rendered = renderToolResult({}, result)[0].text
+    expect(JSON.parse(rendered)).toMatchObject({
+      ok: false, code: 'scope_binding_target_missing', status: 409, request_id: 'request-1',
+    })
+    expect(result.message).toContain('An operator must investigate the data loss')
+    expect(result.message).toContain('restore the original Scope or explicitly repair the binding')
+    expect(result.message).toContain('Do not automatically create a replacement Scope')
+    expect(result.message).not.toContain('retry')
+    expect(rendered).not.toContain(PRIVATE)
+    expect(h.calls.map(call => call.path)).toEqual([RESOLVE_PATH])
+    expect(h.events).toEqual([])
+  })
+
   it('preserves a resource 404 and its domain code after resolving Scope', async () => {
     const h = fixture(async url => new URL(url).pathname === RESOLVE_PATH
       ? Response.json({ scope_id: 'scope-workspace' })
       : domainResponse(404, 'memory_not_found'))
-    const result = entry === 'tool'
-      ? await h.tool('pc_memory_get', { citation: {} })
-      : JSON.parse((await h.command('search API')).text)
+    const result = JSON.parse((await h.command('search API')).text)
     expect(result).toMatchObject({
       ok: false, code: 'not_found', error_code: 'memory_not_found', status: 404, request_id: 'request-1',
     })
@@ -173,7 +180,7 @@ describe.each(['tool', 'command'] as const)('registered %s failure boundary', en
     await remember(h)
     await remember(h)
     expect(h.events).toEqual([expect.objectContaining({
-      event: entry === 'tool' ? 'tool_call' : 'command', outcome: 'server_unavailable', recovery: 'powercontext doctor',
+      event: 'command', outcome: 'server_unavailable', recovery: 'powercontext doctor',
     })])
   })
 

@@ -21,13 +21,20 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 
-from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from powercontext.artifacts import ArtifactRef, MemoryCitation
+from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemory, AtomicMemoryStateValue
 from powercontext.builtin.artifacts.experience import Experience
-from powercontext.builtin.artifacts.memory import Memory, MemoryEntryVersion
-from powercontext.builtin.artifacts.memory.errors import InvalidMemoryCitationError, MemoryEntryNotFoundError
+from powercontext.builtin.artifacts.handoff.models import (
+    Handoff,
+    HandoffArtifactCitation,
+    HandoffSourceCitation,
+)
+from powercontext.builtin.artifacts.profile.models import Profile
+from powercontext.builtin.artifacts.prompt.models import Prompt
+from powercontext.builtin.artifacts.skill import Skill
+from powercontext.builtin.artifacts.topic_memory.models import TopicMemory
 from powercontext.builtin.evidence.models import (
     EVIDENCE_TRANSFORM_VERSION,
     EvidenceEdge,
@@ -41,28 +48,31 @@ from powercontext.builtin.evidence.models import (
     RootEvidenceGroup,
     content_digest,
     reference_key,
-    unique_references,
 )
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
+from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 from powercontext.builtin.persistence.generation_sources import GenerationSourceAccess
 from powercontext.builtin.persistence.sources import SourceRepository
-from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
 from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.errors import InvalidSourceProjectionError, SourceProjectionNotFoundError
 from powercontext.sources import Source, SourceRef
 
-EvidenceReference = ArtifactRef | MemoryCitation | SourceRef
+EvidenceReference = ArtifactRef | SourceRef
+EvidenceChild = tuple[EvidenceReference, str | None]
 EvidenceAuthorizer = Callable[[EvidenceReference], Awaitable[None]]
 AuthorizationContext = Callable[[], AbstractAsyncContextManager[None]]
 ScopedEvidenceAuthorizer = Callable[[str, EvidenceReference], Awaitable[None]]
-MemoryReader = Callable[[AsyncConnection, MemoryCitation], Awaitable[MemoryEntryVersion]]
+ScopedEvidenceBatchAuthorizer = Callable[[str, tuple[EvidenceReference, ...], AsyncConnection], Awaitable[None]]
 RootIdentityResolver = Callable[[SourceRef, Source], str | None]
 
 
 @dataclass
 class _Traversal:
     project: bool = True
+    target_ref: ArtifactRef | None = None
+    prompt_target: ArtifactRef | None = None
+    catalog_target: ArtifactRef | None = None
     nodes: dict[str, EvidenceNode] = field(default_factory=dict)
     bodies: dict[str, str] = field(default_factory=dict)
     edges: set[tuple[str, str]] = field(default_factory=set)
@@ -76,7 +86,6 @@ class EvidenceResolver:
         scope_id: str,
         sources: SourceRepository,
         artifacts: ArtifactRepository,
-        memory_reader: MemoryReader,
         authorize: EvidenceAuthorizer | None = None,
         root_identity: RootIdentityResolver | None = None,
         source_projector: Callable[[Source], str] | None = None,
@@ -86,7 +95,6 @@ class EvidenceResolver:
         self.sources = sources
         self.generation_sources = GenerationSourceAccess(sources)
         self.artifacts = artifacts
-        self.memory_reader = memory_reader
         self.authorize = authorize
         self.root_identity = root_identity
         self.source_projector = source_projector
@@ -98,21 +106,24 @@ class EvidenceResolver:
         *,
         sources: tuple[SourceRef, ...] = (),
         artifacts: tuple[ArtifactRef, ...] = (),
-        memory_citations: tuple[MemoryCitation, ...] = (),
     ) -> tuple[SourceRef, ...]:
-        """Validate Review lineage and return direct entry dependencies, without a model budget."""
+        """Validate lineage and return eligible Source roots of directly selected Memory evidence."""
 
-        refs: tuple[EvidenceReference, ...] = (*sources, *artifacts, *memory_citations)
+        refs: tuple[EvidenceReference, ...] = (*sources, *artifacts)
         state = await self._validate_lineage(connection, refs)
-        owners = tuple(citation for node in state.nodes.values() for citation in node.memory_citations)
-        if owners:
+        atomic_refs = tuple(
+            node.artifact
+            for node in state.nodes.values()
+            if node.artifact is not None and node.artifact.family == "atomic-memory"
+        )
+        if atomic_refs:
             # Immutable lineage discovers the owners; current reads under ordered
             # head locks serialize approval against entry deactivation.
-            await self._lock_memories(connection, owners)
+            await self.artifacts.lock_heads(connection, self.scope_id, atomic_refs)
             state = await self._validate_lineage(connection, refs, locked=True)
         roots: set[str] = set()
-        for citation in memory_citations:
-            roots.update(root_ids(evidence_id(citation), state.nodes, state.edges))
+        for origin in (ref for ref in artifacts if ref.family == "atomic-memory"):
+            roots.update(root_ids(evidence_id(origin), state.nodes, state.edges))
         return tuple(source for key in sorted(roots) if (source := state.nodes[key].source) is not None)
 
     async def _validate_lineage(
@@ -123,46 +134,51 @@ class EvidenceResolver:
         locked: bool = False,
     ) -> _Traversal:
         state = _Traversal(project=False)
-        pending = deque((ref, True) for ref in refs)
-        visited: set[str] = set()
+        pending: deque[tuple[EvidenceReference, bool, str | None]] = deque((ref, True, None) for ref in refs)
+        visited: set[tuple[str, str | None]] = set()
         while pending:
-            ref, direct = pending.popleft()
-            key = reference_key(ref)
+            ref, direct, history_owner = pending.popleft()
+            key = (reference_key(ref), history_owner)
             if key in visited:
                 continue
             visited.add(key)
-            if self.authorize is not None:
-                await self.authorize(ref)
+            await self._authorize_reference(connection, ref)
             try:
                 if isinstance(ref, ArtifactRef):
-                    node, children = await self._read_review_artifact(connection, ref)
+                    node, children = await self._read_review_artifact(
+                        connection, ref, direct=direct, locked=locked, history_owner=history_owner
+                    )
                 else:
-                    node, _, children = await self._read(connection, ref, state, direct=direct, locked=locked)
+                    node, _, children = await self._read(
+                        connection, ref, state, direct=direct, locked=locked, history_owner=history_owner
+                    )
             except RepositoryNotFoundError as error:
                 raise EvidenceResolutionError("reference_not_found" if direct else "evidence_unavailable") from error
-            except (InvalidMemoryCitationError, MemoryEntryNotFoundError) as error:
-                raise EvidenceResolutionError("invalid_memory_citation") from error
-            previous = state.nodes.get(node.evidence_id)
-            if previous is not None:
-                node = previous.model_copy(
-                    update={
-                        "memory_citations": unique_references((*previous.memory_citations, *node.memory_citations)),
-                    }
-                )
-            state.nodes[node.evidence_id] = node
-            state.edges.update((node.evidence_id, evidence_id(child)) for child in children)
-            pending.extend((child, False) for child in children)
+            state.nodes.setdefault(node.evidence_id, node)
+            state.edges.update((node.evidence_id, evidence_id(child)) for child, _ in children)
+            pending.extend((child, False, owner) for child, owner in children)
         return state
 
     async def _read_review_artifact(
-        self, connection: AsyncConnection, ref: ArtifactRef
-    ) -> tuple[EvidenceNode, tuple[EvidenceReference, ...]]:
+        self,
+        connection: AsyncConnection,
+        ref: ArtifactRef,
+        *,
+        direct: bool = True,
+        locked: bool = False,
+        history_owner: str | None = None,
+    ) -> tuple[EvidenceNode, tuple[EvidenceChild, ...]]:
         """Follow local Review lineage independently of Dream's supported input Families."""
 
         artifact = await self.artifacts.get(connection, self.scope_id, ref)
-        children: tuple[EvidenceReference, ...] = ()
+        if isinstance(artifact, AtomicMemory):
+            node, _, children = await self._read_atomic(
+                connection, ref, artifact, locked=locked, history_owner=history_owner
+            )
+            return node, children
+        children: tuple[EvidenceChild, ...] = ()
         if ref.family != "prompt" and artifact.lineage.publication_source is None:
-            children = (*artifact.lineage.sources, *artifact.lineage.artifacts, *artifact.lineage.memory_citations)
+            children = _artifact_children(artifact, ref, _Traversal(project=False))
         return (
             EvidenceNode(
                 evidence_id=evidence_id(ref),
@@ -180,14 +196,21 @@ class EvidenceResolver:
         *,
         sources: tuple[SourceRef, ...] = (),
         artifacts: tuple[ArtifactRef, ...] = (),
-        memory_citations: tuple[MemoryCitation, ...] = (),
+        target: ArtifactRef | None = None,
         include_memory_text: bool = True,
         lock_memory: bool = False,
         pinned: EvidenceManifest | None = None,
         project: bool = True,
+        expose_prompt_target: bool = False,
+        expose_catalog_target: bool = False,
     ) -> ResolvedEvidence:
-        traversal = _Traversal(project=project)
-        refs: tuple[EvidenceReference, ...] = (*sources, *artifacts, *memory_citations)
+        traversal = _Traversal(
+            project=project,
+            target_ref=target,
+            prompt_target=target if expose_prompt_target and isinstance(target, ArtifactRef) else None,
+            catalog_target=target if expose_catalog_target and isinstance(target, ArtifactRef) else None,
+        )
+        refs: tuple[EvidenceReference, ...] = (*sources, *artifacts)
         if lock_memory:
             # Discover immutable entry paths first; lock every owner in one order, then
             # use current reads to observe deactivations committed before these locks.
@@ -195,13 +218,21 @@ class EvidenceResolver:
                 connection,
                 sources=sources,
                 artifacts=artifacts,
-                memory_citations=memory_citations,
+                target=target,
                 project=False,
+                expose_prompt_target=expose_prompt_target,
+                expose_catalog_target=expose_catalog_target,
             )
-            owners = tuple(citation for node in observed.manifest.nodes for citation in node.memory_citations)
-            await self._lock_memories(connection, owners)
+            atomic_refs = tuple(
+                node.artifact
+                for node in observed.manifest.nodes
+                if node.artifact is not None and node.artifact.family == "atomic-memory"
+            )
+            await self.artifacts.lock_heads(connection, self.scope_id, atomic_refs)
         for ref in refs:
             await self._visit(connection, ref, traversal, depth=0, direct=True, lock_memory=lock_memory)
+        if target is not None and (target_id := evidence_id(target)) in traversal.nodes:
+            traversal.nodes[target_id] = traversal.nodes[target_id].model_copy(update={"role": "target"})
         if pinned is not None:
             self._restore_snapshot(traversal, pinned)
         groups = self._groups(traversal)
@@ -230,7 +261,6 @@ class EvidenceResolver:
         manifest = EvidenceManifest(
             artifacts=artifacts,
             sources=sources,
-            memory_citations=memory_citations,
             nodes=tuple(traversal.nodes[key] for key in sorted(traversal.nodes)),
             edges=tuple(EvidenceEdge(derived_id=left, upstream_id=right) for left, right in sorted(traversal.edges)),
             root_groups=groups,
@@ -251,40 +281,38 @@ class EvidenceResolver:
         depth: int,
         direct: bool = False,
         lock_memory: bool = False,
+        history_owner: str | None = None,
     ) -> str:
         if depth > self.limits.max_depth:
             raise EvidenceResolutionError("evidence_limit_exceeded")
-        if self.authorize is not None:
-            await self.authorize(ref)
+        await self._authorize_reference(connection, ref)
         identity = evidence_id(ref)
-        if identity in state.nodes and not isinstance(ref, MemoryCitation):
-            return identity
         try:
-            node, body, children = await self._read(connection, ref, state, direct=direct, locked=lock_memory)
+            node, body, children = await self._read(
+                connection, ref, state, direct=direct, locked=lock_memory, history_owner=history_owner
+            )
         except RepositoryNotFoundError as error:
             raise EvidenceResolutionError("reference_not_found" if direct else "evidence_unavailable") from error
-        except (InvalidMemoryCitationError, MemoryEntryNotFoundError) as error:
-            raise EvidenceResolutionError("invalid_memory_citation") from error
         if identity in state.nodes:
-            previous = state.nodes[identity]
-            state.nodes[identity] = previous.model_copy(
-                update={
-                    "memory_citations": unique_references((*previous.memory_citations, *node.memory_citations)),
-                }
-            )
             return identity
         state.nodes[identity] = node
         state.bodies[identity] = body
         if len(state.nodes) > self.limits.max_nodes:
             raise EvidenceResolutionError("evidence_limit_exceeded")
-        for child in children:
-            child_id = await self._visit(connection, child, state, depth=depth + 1, lock_memory=lock_memory)
+        for child, owner in children:
+            child_id = await self._visit(
+                connection, child, state, depth=depth + 1, lock_memory=lock_memory, history_owner=owner
+            )
             state.edges.add((identity, child_id))
             if len(state.edges) > self.limits.max_edges:
                 raise EvidenceResolutionError("evidence_limit_exceeded")
         return identity
 
-    async def _read(
+    async def _authorize_reference(self, connection, ref):
+        if self.authorize is not None:
+            await self.authorize(ref)
+
+    async def _read(  # noqa: C901 - explicit projection contracts for each Family
         self,
         connection: AsyncConnection,
         ref: EvidenceReference,
@@ -292,14 +320,62 @@ class EvidenceResolver:
         *,
         direct: bool,
         locked: bool,
-    ) -> tuple[EvidenceNode, str, tuple[EvidenceReference, ...]]:
+        history_owner: str | None = None,
+    ) -> tuple[EvidenceNode, str, tuple[EvidenceChild, ...]]:
         if isinstance(ref, SourceRef):
             return await self._read_source(connection, ref, state, direct=direct)
-        if isinstance(ref, MemoryCitation):
-            return await self._read_memory(connection, ref, locked=locked)
         artifact = await self.artifacts.get(connection, self.scope_id, ref)
         digest = content_digest(artifact.model_dump_json().encode())
+        if isinstance(artifact, AtomicMemory):
+            node, body, children = await self._read_atomic(
+                connection, ref, artifact, locked=locked, history_owner=history_owner
+            )
+            if ref == state.target_ref:
+                return node.model_copy(update={"role": "target"}), body, ()
+            return node, body, children
+        if ref == state.catalog_target:
+            return (
+                EvidenceNode(
+                    evidence_id=evidence_id(ref), kind="catalog_target", artifact=ref, digest=digest, role="target"
+                ),
+                artifact.content.model_dump_json(),
+                (),
+            )
+        if isinstance(artifact, Skill):
+            return (
+                EvidenceNode(evidence_id=evidence_id(ref), kind="skill", artifact=ref, digest=digest, role="derived"),
+                artifact.content.model_dump_json(),
+                _artifact_children(artifact, ref, state),
+            )
+        if isinstance(artifact, Profile):
+            return (
+                EvidenceNode(evidence_id=evidence_id(ref), kind="profile", artifact=ref, digest=digest, role="derived"),
+                artifact.content.content,
+                _artifact_children(artifact, ref, state),
+            )
+        if isinstance(artifact, TopicMemory):
+            return (
+                EvidenceNode(
+                    evidence_id=evidence_id(ref), kind="topic_memory", artifact=ref, digest=digest, role="derived"
+                ),
+                artifact.content.model_dump_json(),
+                _artifact_children(artifact, ref, state),
+            )
+        if isinstance(artifact, Handoff):
+            return (
+                EvidenceNode(evidence_id=evidence_id(ref), kind="handoff", artifact=ref, digest=digest, role="derived"),
+                artifact.content.model_dump_json(),
+                _artifact_children(artifact, ref, state),
+            )
         if ref.family == "prompt":
+            if isinstance(artifact, Prompt) and ref == state.prompt_target:
+                return (
+                    EvidenceNode(
+                        evidence_id=evidence_id(ref), kind="prompt", artifact=ref, digest=digest, role="target"
+                    ),
+                    artifact.content.model_dump_json(),
+                    (),
+                )
             return (
                 EvidenceNode(
                     evidence_id=evidence_id(ref),
@@ -309,7 +385,7 @@ class EvidenceResolver:
                     role="lineage_only",
                 ),
                 "",
-                (),
+                _artifact_children(artifact, ref, state),
             )
         if not isinstance(artifact, Experience) or artifact.lineage.publication_source is not None:
             return (
@@ -334,11 +410,42 @@ class EvidenceResolver:
                 historical=current.as_ref() != ref,
             ),
             artifact.content.model_dump_json(),
-            (
-                *artifact.lineage.sources,
-                *artifact.lineage.artifacts,
-                *artifact.lineage.memory_citations,
+            _artifact_children(artifact, ref, state),
+        )
+
+    async def _read_atomic(self, connection, ref, artifact, *, locked, history_owner):
+        current = await self.artifacts.latest(
+            connection,
+            self.scope_id,
+            "atomic-memory",
+            ref.artifact_id,
+            for_update=locked,
+            known=None if locked else artifact,
+        )
+        state = await AtomicMemoryStateRepository().get(connection, self.scope_id, ref.artifact_id, for_update=locked)
+        if state.state is not AtomicMemoryStateValue.ACTIVE:
+            same_identity_history = history_owner == ref.artifact_id
+            frozen_merge_input = (
+                state.state is AtomicMemoryStateValue.MERGED
+                and state.merged_into_id == history_owner
+                and current.as_ref() == ref
+            )
+            if not same_identity_history and not frozen_merge_input:
+                raise EvidenceResolutionError("memory_entry_inactive")
+        digest = content_digest(
+            (artifact.model_dump_json() + current.as_ref().model_dump_json() + state.model_dump_json()).encode()
+        )
+        return (
+            EvidenceNode(
+                evidence_id=evidence_id(ref),
+                kind="memory",
+                artifact=ref,
+                digest=digest,
+                role="derived",
+                historical=current.as_ref() != ref or state.state is not AtomicMemoryStateValue.ACTIVE,
             ),
+            artifact.content.model_dump_json(),
+            _lineage_children(artifact),
         )
 
     async def _read_source(
@@ -348,7 +455,7 @@ class EvidenceResolver:
         state: _Traversal,
         *,
         direct: bool,
-    ) -> tuple[EvidenceNode, str, tuple[EvidenceReference, ...]]:
+    ) -> tuple[EvidenceNode, str, tuple[EvidenceChild, ...]]:
         try:
             stored = await self.generation_sources.require_for_generation(connection, self.scope_id, (ref,))
             source = stored[0].value
@@ -383,58 +490,6 @@ class EvidenceResolver:
             (),
         )
 
-    async def _read_memory(
-        self,
-        connection: AsyncConnection,
-        ref: MemoryCitation,
-        *,
-        locked: bool,
-    ) -> tuple[EvidenceNode, str, tuple[EvidenceReference, ...]]:
-        if ref.memory_ref.family != Memory.family:
-            raise EvidenceResolutionError("invalid_memory_citation")
-        memory = await self.artifacts.get(connection, self.scope_id, ref.memory_ref)
-        current = await self.artifacts.latest(
-            connection,
-            self.scope_id,
-            Memory.family,
-            ref.memory_ref.artifact_id,
-            for_update=locked,
-        )
-        if not isinstance(memory, Memory) or not isinstance(current, Memory):
-            raise EvidenceResolutionError("invalid_memory_citation")
-        item = next((item for item in memory.content.manifest.entries if item.entry_id == ref.entry_id), None)
-        if item is None or item.entry_version_id != ref.entry_version_id:
-            raise EvidenceResolutionError("invalid_memory_citation")
-        head = next((item for item in current.content.manifest.entries if item.entry_id == ref.entry_id), None)
-        if item.state != "active" or head is None or head.state != "active":
-            raise EvidenceResolutionError("memory_entry_inactive")
-        entry = await self.memory_reader(connection, ref)
-        return (
-            EvidenceNode(
-                evidence_id=evidence_id(ref),
-                kind="memory",
-                memory_citations=(ref,),
-                digest=entry.entry_content_hash,
-                role="derived",
-                historical=current.as_ref() != ref.memory_ref or head.entry_version_id != ref.entry_version_id,
-                current_entry_version_id=head.entry_version_id,
-            ),
-            entry.model_dump_json(),
-            (*entry.sources, *entry.artifacts),
-        )
-
-    async def _lock_memories(self, connection: AsyncConnection, citations: tuple[MemoryCitation, ...]) -> None:
-        for artifact_id in sorted({citation.memory_ref.artifact_id for citation in citations}):
-            await connection.execute(
-                update(ARTIFACT_HEADS_TABLE)
-                .where(
-                    ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id,
-                    ARTIFACT_HEADS_TABLE.c.family == Memory.family,
-                    ARTIFACT_HEADS_TABLE.c.artifact_id == artifact_id,
-                )
-                .values(revision=ARTIFACT_HEADS_TABLE.c.revision)
-            )
-
     @staticmethod
     def _groups(state: _Traversal) -> tuple[RootEvidenceGroup, ...]:
         groups: dict[str, list[SourceRef]] = {}
@@ -463,17 +518,33 @@ class EvidenceResolver:
             raise EvidenceResolutionError("evidence_unavailable")
         for key, node in state.nodes.items():
             old = before[key]
-            if node.digest != old.digest or node.memory_citations != old.memory_citations:
+            if node.digest != old.digest:
                 raise EvidenceResolutionError("evidence_unavailable")
             state.nodes[key] = old
 
 
+def _lineage_children(artifact) -> tuple[EvidenceChild, ...]:
+    lineage = artifact.lineage
+    refs = (*lineage.sources, *lineage.artifacts)
+    selected = ()
+    if isinstance(artifact, AtomicMemory) and artifact.content.creation is not None:
+        selected = artifact.content.creation.input_artifact_ids
+    return tuple(
+        (
+            child,
+            artifact.artifact_id
+            if isinstance(artifact, AtomicMemory)
+            and isinstance(child, ArtifactRef)
+            and child.family == "atomic-memory"
+            and (child.artifact_id == artifact.artifact_id or child.artifact_id in selected)
+            else None,
+        )
+        for child in refs
+    )
+
+
 def evidence_id(ref: EvidenceReference) -> str:
-    if isinstance(ref, MemoryCitation):
-        identity = f"memory:{ref.memory_ref.artifact_id}:{ref.entry_id}:{ref.entry_version_id}"
-    else:
-        identity = reference_key(ref)
-    return "e_" + content_digest(identity.encode())[7:39]
+    return "e_" + content_digest(reference_key(ref).encode())[7:39]
 
 
 def root_ids(node_id: str, nodes: dict[str, EvidenceNode], edges: set[tuple[str, str]]) -> set[str]:
@@ -489,3 +560,33 @@ def root_ids(node_id: str, nodes: dict[str, EvidenceNode], edges: set[tuple[str,
             roots.add(current)
         pending.extend(upstream for derived, upstream in edges if derived == current)
     return roots
+
+
+def _artifact_children(artifact: object, ref: ArtifactRef, state: _Traversal) -> tuple[EvidenceChild, ...]:
+    """Return support dependencies while exempting the exact Dream target."""
+
+    if ref == state.target_ref and ref.family != "experience":
+        return ()
+    lineage = getattr(artifact, "lineage", None)
+    children: list[EvidenceReference] = []
+    if lineage is not None:
+        children.extend(lineage.sources)
+        children.extend(lineage.artifacts)
+    if isinstance(artifact, Handoff):
+        statements = (
+            *artifact.content.state,
+            *((artifact.content.next_action,) if artifact.content.next_action else ()),
+        )
+        citations = [citation for statement in statements for citation in statement.citations]
+        citations.extend(omission.citation for omission in artifact.content.omissions if omission.citation is not None)
+        for citation in citations:
+            if isinstance(citation, HandoffSourceCitation):
+                children.append(citation.source_ref)
+            elif isinstance(citation, HandoffArtifactCitation):
+                children.append(citation.artifact_ref)
+    return tuple(
+        {
+            (reference_key(child), owner): (child, owner)
+            for child, owner in (*_lineage_children(artifact), *((child, None) for child in children))
+        }.values()
+    )

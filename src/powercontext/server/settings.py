@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from powercontext.builtin.artifacts.skill import AgentSkillTarget
+from powercontext.builtin.code.models import CodeConfig
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime.config import (
@@ -159,7 +160,7 @@ class SourceManagementConfig(BaseModel):
 
 
 class DashboardConfig(BaseModel):
-    """Optional personal and demonstration UI using static Bearer authentication."""
+    """Optional personal and demonstration UI sharing the Server access mode."""
 
     enabled: bool = False
 
@@ -190,6 +191,7 @@ class MetricsConfig(BaseModel):
     """Prometheus metrics exposed by the Server."""
 
     enabled: bool = True
+    background_port: int = Field(default=8001, ge=1, le=65535)
 
 
 class TracingConfig(BaseModel):
@@ -226,6 +228,7 @@ class ServerSettings(BaseSettings):
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     cursor_signing_secret: SecretStr | None = Field(default=None, repr=False)
     handoff_generation_verification_secrets: tuple[SecretStr, ...] = Field(default=(), max_length=8, repr=False)
+    code: CodeConfig = Field(default_factory=CodeConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     source_plugins_dir: Path | None = None
     database: DatabaseConfig = Field(default_factory=_default_database, discriminator="kind")
@@ -332,15 +335,19 @@ class ServerSettings(BaseSettings):
                 raise ValueError("An identity map requires enforced Access Mode")  # noqa: TRY003
         if self.source_management.manager_subject is not None and self.access.mode != "enforced":
             raise ValueError("Source management requires authenticated enforced Access Mode")  # noqa: TRY003
-        if self.dashboard.enabled and (
-            self.access.mode != "enforced" or self.auth.token is None or not self.auth.token.get_secret_value()
+        if (
+            self.dashboard.enabled
+            and self.access.mode == "enforced"
+            and (self.auth.token is None or not self.auth.token.get_secret_value())
         ):
-            raise ValueError("DASHBOARD_ENABLED requires ACCESS_MODE=enforced and AUTH_TOKEN")  # noqa: TRY003
+            raise ValueError("DASHBOARD_ENABLED with ACCESS_MODE=enforced requires AUTH_TOKEN")  # noqa: TRY003
         if self.access.mode == "disabled" and self.auth.token is not None:
             raise ValueError("AUTH_TOKEN requires ACCESS_MODE=enforced or legacy AUTH_ENABLED=true")  # noqa: TRY003
         if self.access.mode == "disabled" and self.access.background_principal_id is not None:
             raise ValueError("ACCESS_MODE=disabled cannot configure a background Principal")  # noqa: TRY003
-        if self.runtime.artifact_processing_role != "background" and is_unauthenticated_non_loopback_bind(
+        if (
+            self.runtime.artifact_processing_role != "background" or self.metrics.enabled
+        ) and is_unauthenticated_non_loopback_bind(
             host=self.http.host,
             auth_enabled=self.access.mode != "disabled",
             allow_unauthenticated_non_loopback=self.allow_unauthenticated_non_loopback,
