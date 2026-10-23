@@ -48,6 +48,7 @@ from powercontext.builtin.persistence.atomic_memory_readiness import (
 )
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
+from powercontext.builtin.persistence.revision_metadata_schema import ensure_artifact_revision_metadata_schema
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE
 
 
@@ -225,6 +226,7 @@ async def verify_atomic_memory_current(
 
 async def _initialize_rebuild(connection: AsyncConnection, index: AtomicMemoryIndex) -> None:
     await _require_authority(connection)
+    await ensure_artifact_revision_metadata_schema(connection)
     await drop_obsolete_atomic_memory_projection(connection, index.table)
     try:
         await index.initialize(connection)

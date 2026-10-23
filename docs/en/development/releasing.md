@@ -59,6 +59,7 @@ the website lists stable releases only. `make docs-test` also runs this check as
 | `src/powercontext/http/_generated/` | `API_VERSION` in `operations.py` and `info.version` in `schema.py`, regenerated through `make api-generate`. |
 | `README.md`, `README_CN.md`, `README_JP.md` | Current release prose, pinned package installation commands, and matching Agent integration tag. |
 | `docs/en/docs/get-started/quickstart.md`, `docs/zh/docs/get-started/quickstart.md` | Current release and matching installation/tag instructions. |
+| `docs/en/docs/get-started/manual-start.md`, `docs/zh/docs/get-started/manual-start.md` | CLI/Server and Python Client installation pins, and the matching Agent integration tag. |
 | `docs/en/docs/get-started/install-and-run.md`, `docs/zh/docs/get-started/install-and-run.md` | Page description, current release prose, package/tag pins, upgrade target, and Python Client installation. |
 | `integrations/dsh/plugins/powercontext/README.md` | Server installation pin and the matching `setup dsh --ref` tag. |
 
@@ -72,6 +73,8 @@ the next release updates and checks it.
 | --- | --- |
 | Python wheel/sdist version and installed `powercontext --version` | `pyproject.toml` declares `dynamic = ["version"]`; Hatch VCS reads Git metadata. Use the intended release tag for the final build. |
 | Runtime package metadata | Reads the installed Python distribution version; there is no separate static runtime version to bump. |
+| Desktop API bindings | Regenerate OpenAPI types and contract digests with `pnpm --dir desktop generate`, then run `pnpm --dir desktop generate:check`. The Desktop application has its own package version. |
+| Dify tool contract | Regenerate with `uv run python integrations/dify/generate_contract.py`, then run the same command with `--check` to verify its API version and schemas. |
 | Docker and Bub harness build version | Build inputs pass `POWERCONTEXT_VERSION` from the selected package/Git version. Do not add a fixed release number to Dockerfiles. |
 | Website documentation and API references | Generated from documentation and API sources. Do not edit `website/content/docs/`, `website/.generated/`, or `website/out/`. |
 | Dependency lockfiles | Regenerate with the owning package manager when dependency or independently versioned package metadata changes. A main release bump alone does not require replacing versions in locks. |

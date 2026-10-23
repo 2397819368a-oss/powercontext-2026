@@ -5,14 +5,23 @@
 [![PyPI version](https://img.shields.io/pypi/v/powercontext)](https://pypi.org/project/powercontext/)
 [![License Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/74cF8vbNEs)
+[![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-147DFF)](https://deepwiki.com/oceanbase/powercontext)
 
 *[English](README.md) · [中文](README_CN.md) · [日本語](README_JP.md)*
 
-[网站](https://powercontext.oceanbase.io/zh/) · [快速开始](https://powercontext.oceanbase.io/zh/docs/get-started/quickstart/) · [接入 Agent](https://powercontext.oceanbase.io/zh/docs/integrations/) · [评测](https://powercontext.oceanbase.io/zh/benchmarks/) · [接口](https://powercontext.oceanbase.io/zh/docs/develop/interfaces/)
+[网站](https://powercontext.oceanbase.io/zh/) · [快速开始](https://powercontext.oceanbase.io/zh/docs/get-started/quickstart/) · [手动启动](docs/zh/docs/get-started/manual-start.md) · [接入 Agent](https://powercontext.oceanbase.io/zh/docs/integrations/) · [评测](https://powercontext.oceanbase.io/zh/benchmarks/) · [接口](https://powercontext.oceanbase.io/zh/docs/develop/interfaces/)
 
 ## PowerContext 是什么？
 
 **PowerContext 是一个面向 AI Agent 的开源上下文服务。** 它把工作里值得长期保留的部分——已经确认的决定、约束、证据、进展——从某一次对话里搬出来，这样下一个会话、下一个 Agent、或者下一个接手的人，都能从当前进展继续，而不必重读全部记录。
+
+可以把 PowerContext 理解为三层，也可以直接使用完整 Server 或把同一套契约嵌入其他应用：
+
+| 层 | 负责什么 | 适合什么时候使用 |
+| --- | --- | --- |
+| Core protocol | `Source`、`Artifact`、`Trigger` 抽象契约 | 嵌入 PowerContext 或扩展组件 |
+| Builtin runtime | Memory、Handoff、Experience、Skill 服务，以及调度、推理和受支持的存储后端 | 运行标准本地 Server |
+| Server 与 integrations | HTTP/MCP、Python Client、CLI、Dashboard 和 Agent 插件 | 接入 Agent 或应用 |
 
 工作很少会由开始它的人或 Agent 独自完成。你把任务交给 Agent，Agent 推进一部分，之后可能由你或其他人接手。推理过程和当前状态却常常留在那段对话里。PowerContext 把它们从对话里移出来，变成可以查看、带版本号的 Artifact：
 
@@ -63,16 +72,20 @@ Experience 记录一个场景、一次动作、观察到的结果，以及可复
 
 一个受管的 Skill 包含名称、发现描述、指令、校验项和血缘。评审通过**不等于**安装或执行：必须先显式导出某一个明确的已通过 Revision，Agent 宿主才能发现对应的宿主内副本。
 
+[运行指标](docs/zh/docs/operate/observability.md)提供依赖状态观察、处理进度新鲜度和执行尝试延迟；独立后台部署也可使用受保护的专用指标端点。
+
 ## 为什么选 PowerContext？
 
 - **上下文活在对话之外。** Memory、Handoff、Experience、Skill 都是服务端 Artifact，不是某个 Agent 家目录里的文件。从 Codex 换到 Claude Code，或者把工作交给同事，工作本身跟着你走。
 - **一切都带版本、可追溯。** 每个 Artifact 都以 `家族/ARTIFACT_ID@REVISION` 寻址。通过替换产生的后续 Revision 不会改变 Artifact ID，读取一个精确的引用会返回那一份历史快照，即使家族主版本已经前进。
 - **生成、评审、执行是三个分开的步骤。** 模型可以提出内容，评审通过某个 Revision，导出生成宿主内副本。这三步都不会授予 Agent 执行指令的权限。各个入口目前各自暴露了什么，见[接口说明](https://powercontext.oceanbase.io/zh/docs/develop/interfaces/)。
-- **召回是有边界的，不是整包倾倒。** `PreparedContext` 会为这一轮 Agent 挑选活跃的 Memory 和已通过的 Experience 主版本，套用一个共享的字节预算，返回 `ready` 内容或 `empty`。召回的内容是历史，不是指令权威：接收方仍然要遵循当前指令，并检查工作区的实时状态。
-- **复用之前先评审。** Experience 和 Skill 都要经过一次评审决策，无论通过还是驳回都是终态。模型负责提议，而不是悄悄把自己生成的内容提上去。
+- **召回是有边界的，不是整包倾倒。** `PreparedContext` 会按请求选择活跃的 Memory 和已通过的 Experience，并可选加入 Profile 快照和 Topic Memory，再套用一个共享的字节预算，返回 `ready` 内容或 `empty`。召回的内容是历史，不是指令权威：接收方仍然要遵循当前指令，并检查工作区的实时状态。
+- **复用之前先评审。** Experience 和 Skill 都要经过一次评审决策，无论通过还是驳回都是终态；批准会写入不可变 Revision。启用权限控制后，批准需要 `scope.review`。有审核权限的 Agent 仍可批准自己的 Candidate；需要由人决定时，应使用不同身份和权限[分离 Agent 提交与审核](https://powercontext.oceanbase.io/zh/docs/workflows/review-candidates/#分离-agent-提交与审核)。
 - **一个 Server，同一份契约的多个视图。** HTTP 是完整的远端应用契约。Python Client 提供带类型的访问，MCP 是面向 Agent 的精选投影，Core 协议则允许应用自行组装 Source、Artifact 和 Trigger 实现。
 
 ### 横向对比
+
+以下按常见的单 Agent 或宿主本地部署方式比较；具体能力取决于各系统的部署与集成方式。
 
 | | 手动翻聊天记录 | 对聊天记录做 RAG | 宿主本地记忆文件（如 CLAUDE.md） | PowerContext |
 |---|---|---|---|---|
@@ -89,10 +102,10 @@ Experience 记录一个场景、一次动作、观察到的结果，以及可复
 
 ![PowerContext 在 LoCoMo 和 SWE-bench Pro 上的紧凑对比图](docs/assets/readme-benchmark-summary.svg)
 
-- **长对话记忆（LoCoMo）：准确率 90.78%**，PowerMem 为 87.79%，全量上下文重放为 52.9% —— 相对后者
-  **+37.88 个百分点**。
-- **编码任务（SWE-bench Pro）：开启 PowerContext 后任务解决率 86.73%，关闭时 82.35%** —— **+4.38 个百分点**，
-  在 731 题的配对运行中多解出 32 题。
+- **长对话记忆（LoCoMo；类别 1–4 的 1,540 个计分问题）：准确率 90.78%**，PowerMem 为 87.79%，全量上下文
+  重放为 52.9% —— 相对后者 **+37.88 个百分点**。
+- **编码任务（SWE-bench Pro；731 个公开 v2 任务的配对项目运行，非官方提交）：开启 PowerContext 后任务解决率
+  86.73%，关闭时 82.35%** —— **+4.38 个百分点**，多解出 32 题。
 - **召回质量（LoCoMo Plus）**：原生 PowerContext 对比检索后用 Jev 做候选筛选。每组模型同时用于 Memory 抽取与回答，向量模型为 `qwen3.7-text-embedding`（1024 维）：
 
   | 模型 | PowerContext | PowerContext + Jev | 差值 |
@@ -105,19 +118,42 @@ Experience 记录一个场景、一次动作、观察到的结果，以及可复
 
 ## 快速开始
 
-PowerContext 1.3.0 包含交互式配置向导。需要准备 Git、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和你使用的 Agent CLI。需要 Python 3.11+，uv 可以按需安装。支持 macOS 和 Linux；Windows 支持为 `experimental`。
+如果希望自己一步一步配置并启动 PowerContext，请查看[手动启动文档](docs/zh/docs/get-started/manual-start.md)。
 
-<details open>
-<summary><strong>在独立目录里运行向导</strong></summary>
+PowerContext 把可长期复用的项目上下文放在单次对话之外。一次完整体验可以概括为：
+
+```text
+Agent 输入 → Source 证据 → Memory / Topic Memory → PreparedContext → 新会话或新 Agent
+```
+
+PowerContext 1.4.0 包含交互式配置向导。需要 Python 3.11+、Git 和
+[uv](https://docs.astral.sh/uv/getting-started/installation/)；需要时 uv 可以按需提供 Python。
+要接入 Agent，还需要安装对应的 CLI。向导中选择“基础记忆”即可在没有模型 API 的情况下显式保存与召回；
+选择“完整记忆能力”则需要独立的 Generation、Embedding API 凭据。只想启动不依赖模型 API 的本地 Server 时，
+请参考[安装与运行](docs/zh/docs/get-started/install-and-run.md)。
+支持 macOS 和 Linux；Windows 支持为 `experimental`。
+
+请选择与你目标匹配的路径：
+
+| 目标 | 选择 | 需要 |
+| --- | --- | --- |
+| 体验显式保存与召回 | **基础记忆** | CLI 和 Server；无需模型 API |
+| 自动处理 Source，使用 Topic Memory 或语义检索 | **完整记忆能力** | 独立的 Generation、Embedding API 凭据；仍受调度和 Scope 策略影响 |
+| 用 Python 学习核心工作流 | 前七篇 Jupyter 教程 | 仓库 checkout 和 `uv`；不需要模型或 API Key |
+
+### 1. 安装并运行配置向导
 
 ```bash
-uv tool install --force "powercontext[cli,server]==1.3.0"
+uv tool install --force "powercontext[cli,server]==1.4.0"
 mkdir -p powercontext-config && cd powercontext-config
 powercontext config init --language zh --output .env
+powercontext config validate --env-file .env
 powercontext server run --env-file .env      # 保持这个终端不关
 ```
 
-向导生成一个 `.env` 环境文件和 `.env.next-steps.md`。保持 Server 运行，在另一个终端回到 `powercontext-config` 目录，仅加载客户端配置并检查服务：
+向导会询问存储、本机或远程使用场景、记忆能力、Dashboard/访问控制和 Agent 连接。首次体验可以使用 SQLite；只有确实需要时再选择嵌入式 seekdb，并同意依赖安装。
+
+向导生成一个 `.env` 环境文件和 `.env.next-steps.md`。这些文件可能包含凭据，请勿提交到 Git。保持 Server 运行，在另一个终端回到 `powercontext-config` 目录，重新加载生成的环境文件并检查服务：
 
 ```bash
 set -a
@@ -127,40 +163,62 @@ powercontext ready
 powercontext capabilities
 ```
 
-接着按 `.env.next-steps.md` 创建并绑定 Scope、安装相同版本的插件，再打开新 Agent 会话。[完整安装流程](https://powercontext.oceanbase.io/zh/docs/get-started/quickstart/)包含 Codex、Claude Code、Dashboard 登录、SSH 隧道、HTTPS 前提及逐项验收。例如，匹配本版本的 Codex 安装命令是：
+接着按 `.env.next-steps.md` 创建并绑定 Scope。使用创建请求返回的真实 `scope_id`；向导规划的 `codex-...` 标题不是 ID。
+切换目录不会创建隔离；Dashboard 和 Agent 要使用同一个 Server 和 Scope。然后安装相同版本的插件，再打开新 Agent 会话。
+[完整安装流程](https://powercontext.oceanbase.io/zh/docs/get-started/quickstart/)包含 Codex、Claude Code、Dashboard 登录、SSH 隧道、HTTPS 前提及逐项验收。例如，匹配本版本的 Codex 安装命令是：
 
 ```bash
-powercontext setup codex --ref powercontext-v1.3.0
+powercontext setup codex --ref powercontext-v1.4.0
 powercontext doctor codex
 ```
 
-</details>
+在新 Codex 会话发送第一条消息前，打开 `/hooks` 检查 PowerContext Hook，并在收到提示时授予信任。
+`UserPromptSubmit` Hook 未启用时，即使 MCP 连通，也不会自动采集输入或召回上下文。
+检查与恢复步骤见[首次会话 Hook 信任](docs/zh/docs/integrations/codex.md#首次会话-hook-信任)。
+完成下面的首次验收后，可按[能力与触发指南](docs/zh/docs/get-started/quickstart.md#5-选择下一项工作流)
+体验七类 Artifact、Source 和 Tag。基础记忆无需独立的 Server 模型 API；Agent 仍使用自己的模型。
 
-<details>
-<summary><strong>先用 Python 体验，不需要 API Key</strong></summary>
+### 2. 验收第一条端到端结果
 
-教程需要在仓库 checkout 内运行，依赖由 `uv` 的 dependency group 提供，不在 `powercontext` 包内。在仓库根目录执行：
+这一步检查 PowerContext 真正有用的链路：Source 采集 → 后台处理 → 跨会话召回。
+在绑定了同一 Scope 的新 Agent 会话中，发送一条具体决定，例如：
+
+```text
+我们正在设计 Aurora 验收项目。决定用 uv 管理 Python 依赖，配置文件使用 .env。
+第一阶段只在一台 Linux 服务器运行，Mac 通过 SSH 隧道访问。请复述这些约束，暂时不要修改代码。
+```
+
+如果开启了 Dashboard，打开向导打印的地址；采集前页面为空是正常现象。然后：
+
+1. 确认这条输入出现在 Source 中。
+2. 等待配置的检查周期和模型处理，确认出现相关 Topic Memory。
+3. 发送一条相关更新，确认新的 Source 入库，且主题内容或修订记录反映了更新。
+4. 使用同一 Scope 开启新的 Agent 会话，要求它带引用找回 Aurora 的决定。
+
+`doctor codex` 只检查安装与连接。Source 采集本身不会创建 Memory 或 Topic Memory，后台处理还要等待配置的调度和模型运行。
+基础记忆模式下，可以显式要求 Agent 保存一条决定，再在新会话中搜索；这不能验收自动提取。
+
+### 3. 先用 Python 体验
+
+教程需要在仓库 checkout 内运行，依赖由 `uv` 的依赖组提供，不在 `powercontext` 包内。在仓库根目录执行：
 
 ```bash
 uv sync --locked --group notebooks
 uv run --locked --group notebooks jupyter lab --notebook-dir=examples/jupyter
 ```
 
-想用 Python 逐步体验？从 [22 篇中文 Jupyter 教程与完整团队工作流](examples/jupyter/README.md)开始，亲手运行 Memory、上下文、交接、Experience、Skill 和真实 Agent。前七篇不需要模型或 API Key。
+先从 [01 · 让新会话用上项目约定](examples/jupyter/01_memory_across_sessions.ipynb)开始，再通过
+[22 篇中文 Jupyter 教程与完整团队工作流](examples/jupyter/README.md)亲手运行 Memory、上下文、交接、Experience、Skill
+和真实 Agent。前七篇不需要模型或 API Key。
 
-</details>
+### 常见问题
 
-<details>
-<summary><strong>出问题之前，先看这几条</strong></summary>
-
-- `doctor` 通过只代表集成安装就绪。自动记忆验收需要确认：真实输入进入 Source、产生 Topic、相关输入推动主题演进，并能在使用同一 Scope 的新会话中召回。
+- `doctor codex` 只验证 Codex 集成的安装和连接，不代表自动记忆流程已通过。要验收自动记忆，需要确认真实输入进入 Source、产生 Topic、相关输入推动主题演进，并能在使用同一 Scope 的新会话中召回。
 - Python 依赖下载缓慢或失败时，可先为 [uv](https://docs.astral.sh/uv/configuration/indexes/) 配置包索引（镜像源）再重试。
 - 要体验自动 Memory 提取和 Topic Memory，请选择**完整记忆能力**并准备独立的 Generation、Embedding API 凭据；Agent 官方订阅不会自动给 PowerContext Server 提供这些凭据。选择**基础记忆**则可显式保存与召回，无需额外模型 API。
 - 选择 seekdb 且缺少依赖时，会在确认后后台增量安装。
 - 可选的召回充分性门控会按 Scope 记录每日搜索工作量和字节预算遗漏，供后续策略评估使用。记录范围与失败行为见[配置说明](docs/zh/docs/operate/configuration.md)。
-- Server 部署在另一台机器上时，请使用 HTTPS 或参考[远程连接说明](docs/zh/docs/operate/connect-remote-server.md)。Setup 会从参数或环境变量识别远端 HTTP 地址并要求显式确认；自动化场景使用 `--allow-insecure-http`。
-
-</details>
+- Server 部署在另一台机器上时，请使用 HTTPS 或参考[远程连接说明](docs/zh/docs/operate/connect-remote-server.md)。配置向导会从参数或环境变量识别远端 HTTP 地址并要求显式确认；自动化场景使用 `--allow-insecure-http`。
 
 ## 接入你的 Agent
 

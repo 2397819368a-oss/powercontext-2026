@@ -223,6 +223,7 @@ def test_topic_lifecycle_tags_filtered_pages_and_publication_survive_restart(tmp
         )
         _create(client, scope, "unmatched")
         listing = f"/v1/scopes/{scope}/artifacts/topic-memory"
+        assert client.get(listing, params={"limit": 101}).status_code == 400
         first = client.get(listing, params={"tag": "CHOSEN", "limit": 1}).json()
         assert first["next_cursor"] and len(first["items"]) == 1
         assert first["items"][0]["artifact_id"] == second.json()["artifact_id"]
@@ -938,3 +939,19 @@ def test_manual_embedding_obeys_configured_timeout_without_writing(tmp_path):
         assert failed.status_code == 503, failed.text
         assert client.get(f"/v1/scopes/{scope}/artifacts/topic-memory").json()["items"] == []
         _create(client, scope, "recovered")
+
+
+def test_direct_topic_writes_keep_structural_validation_for_literal_templates(tmp_path):
+    content = {
+        "title": "T-19",
+        "summary": "S-19 coordinated without merging historical identities.",
+        "detail": "D-19 coordinated detail preserving distinct historical identity.",
+    }
+    with TestClient(_app(tmp_path)) as client:
+        scope = _scope(client, "literal-template")
+        created = client.post(f"/v1/scopes/{scope}/artifacts", json={"family": "topic-memory", "content": content})
+        assert created.status_code == 201, created.text
+        artifact_id = created.json()["artifact_id"]
+        exact = client.get(f"/v1/scopes/{scope}/artifacts/topic-memory/{artifact_id}/revisions/1")
+        assert exact.status_code == 200, exact.text
+        assert exact.json()["content"] == content

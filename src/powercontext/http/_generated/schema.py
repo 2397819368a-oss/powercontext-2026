@@ -7,7 +7,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
     "info": {
         "title": "PowerContext API",
         "description": "Remote PowerContext transport. Runtime behavior is reported by /v1/capabilities.",
-        "version": "1.3.0",
+        "version": "1.4.0",
     },
     "paths": {
         "/v1/atomic-memory/list": {
@@ -1938,6 +1938,159 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "503": {"$ref": "#/components/responses/Unavailable"},
                     "500": {"$ref": "#/components/responses/InternalError"},
                 },
+            }
+        },
+        "/v1/topic-memory/processing/status": {
+            "post": {
+                "tags": ["topic-memory"],
+                "summary": "Inspect Topic Memory processing and its current terminal block",
+                "description": "Return the current "
+                "Cursor, Source head, "
+                "retained target and "
+                "durable blocked-window "
+                "diagnostics. An active "
+                "final attempt remains "
+                "pending because it may "
+                "still finish. Legacy "
+                "blocks receive their "
+                "first observation "
+                "timestamp; an "
+                "unavailable historical "
+                "error code is null. "
+                "This operation never "
+                "grants new processing "
+                "allowance.",
+                "operationId": "get_topic_memory_processing_status",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/TopicMemoryProcessingStatusRequest"}
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Current durable processing state.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/TopicMemoryProcessingStatus"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "x-powercontext-scope-mode": "current",
+            }
+        },
+        "/v1/topic-memory/processing/blocks/get": {
+            "post": {
+                "tags": ["topic-memory"],
+                "summary": "Get a retained Topic Memory processing block",
+                "description": "Return one exact "
+                "block, including "
+                "its original "
+                "diagnostics and any "
+                "accepted retry, "
+                "after recovery.",
+                "operationId": "get_topic_memory_processing_block",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/GetTopicMemoryProcessingBlockRequest"}
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "The exact retained block.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/TopicMemoryProcessingBlock"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "x-powercontext-scope-mode": "current",
+            }
+        },
+        "/v1/topic-memory/processing/retry": {
+            "post": {
+                "tags": ["topic-memory"],
+                "summary": "Explicitly retry one observed Topic Memory block",
+                "description": "Require scope.admin and "
+                "the exact block_id "
+                "returned by status. "
+                "Atomically retain the "
+                "block's failure and "
+                "usage evidence, grant "
+                "one fresh bounded "
+                "allowance and request "
+                "asynchronous processing "
+                "without advancing the "
+                "Cursor or discarding the "
+                "target or Sources. "
+                "Repeating a block_id "
+                "returns its original "
+                "acceptance and cannot "
+                "reset a later attempt. "
+                "An unretried block that "
+                "no longer owns the "
+                "frontier returns "
+                "topic_memory_block_conflict. "
+                "Ordinary flushes, status "
+                "reads, restarts and "
+                "model changes never "
+                "reset allowance.",
+                "operationId": "retry_topic_memory_processing",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/RetryTopicMemoryProcessingRequest"}
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "One retry was durably accepted, including duplicate acceptance.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/RetryTopicMemoryProcessingResponse"}
+                            }
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.admin",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "x-powercontext-scope-mode": "current",
             }
         },
         "/v1/topic-memory/search": {
@@ -3904,7 +4057,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "name": "source_id",
                         "in": "path",
                         "required": True,
-                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[\\x21-\\x7E]+$"},
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
                     },
                 ],
                 "responses": {
@@ -4340,7 +4493,64 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "head "
                 "without "
                 "semantic "
-                "generation.",
+                "generation. "
+                "Profile "
+                "replacement "
+                "uses "
+                "the "
+                "same "
+                "conditional "
+                "write. "
+                "To "
+                "roll "
+                "back "
+                "Profile, "
+                "Prompt, "
+                "Experience, "
+                "Skill, "
+                "Handoff, "
+                "or "
+                "Topic "
+                "Memory, "
+                "set "
+                "restored_from_revision "
+                "and "
+                "reason. "
+                "The "
+                "server "
+                "checks "
+                "that "
+                "the "
+                "submitted "
+                "canonical "
+                "content "
+                "matches "
+                "that "
+                "revision "
+                "and "
+                "differs "
+                "from "
+                "the "
+                "current "
+                "head, "
+                "then "
+                "commits "
+                "a "
+                "new "
+                "revision. "
+                "Atomic "
+                "Memory "
+                "replacement "
+                "rejects "
+                "both "
+                "fields; "
+                "restore "
+                "Atomic "
+                "Memory "
+                "through "
+                "its "
+                "restoration "
+                "flow.",
                 "operationId": "replace_artifact",
                 "x-powercontext-scope-mode": "current",
                 "x-powercontext-access": {"resolver": "path_artifact_write_access"},
@@ -4365,6 +4575,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                                 "handoff",
                                 "prompt",
                                 "topic-memory",
+                                "profile",
                             ],
                         },
                     },
@@ -5801,7 +6012,36 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "required": ["family", "content"],
             },
             "ReplaceProfileArtifactRequest": {
-                "properties": {"content": {"$ref": "#/components/schemas/ProfileWriteContent"}},
+                "properties": {
+                    "content": {"$ref": "#/components/schemas/ProfileWriteContent"},
+                    "restored_from_revision": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "Historical "
+                        "Profile "
+                        "revision "
+                        "restored "
+                        "by "
+                        "this "
+                        "replacement. "
+                        "Must "
+                        "match "
+                        "content.restored_from_revision "
+                        "when "
+                        "both "
+                        "are "
+                        "set.",
+                        "nullable": True,
+                    },
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "description": "Required when restored_from_revision or content.restored_from_revision is set.",
+                        "nullable": True,
+                    },
+                },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["content"],
@@ -5861,6 +6101,10 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "description": "Family-provided number of direct Source inputs when available.",
                         "nullable": True,
                     },
+                    "created_at": {"type": "string", "format": "date-time", "nullable": True},
+                    "created_by": {"allOf": [{"$ref": "#/components/schemas/AccessPrincipal"}], "nullable": True},
+                    "restored_from_revision": {"type": "integer", "minimum": 1.0, "nullable": True},
+                    "reason": {"type": "string", "maxLength": 1024, "nullable": True},
                 },
                 "type": "object",
                 "required": ["scope_id", "family", "artifact_id", "revision", "sources", "artifacts", "content_digest"],
@@ -5904,6 +6148,41 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "sources": {"items": {"$ref": "#/components/schemas/SourceTypeReference"}, "type": "array"},
                     "artifacts": {"items": {"$ref": "#/components/schemas/ArtifactReference"}, "type": "array"},
                     "content_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "When "
+                        "this "
+                        "revision "
+                        "was "
+                        "committed. "
+                        "Absent "
+                        "for "
+                        "revisions "
+                        "stored "
+                        "before "
+                        "this "
+                        "field "
+                        "existed.",
+                        "nullable": True,
+                    },
+                    "created_by": {
+                        "allOf": [{"$ref": "#/components/schemas/AccessPrincipal"}],
+                        "description": "Principal that committed a rollback. Ordinary revisions omit it.",
+                        "nullable": True,
+                    },
+                    "restored_from_revision": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "Historical revision restored by this rollback.",
+                        "nullable": True,
+                    },
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1024,
+                        "description": "Reason recorded for a rollback.",
+                        "nullable": True,
+                    },
                 },
                 "type": "object",
                 "required": [
@@ -8184,6 +8463,84 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "status": {"$ref": "#/components/schemas/PreparedContextStatus"},
                     "content": {"type": "string", "nullable": True},
                     "content_bytes": {"type": "integer", "minimum": 0.0},
+                    "reason": {
+                        "allOf": [{"$ref": "#/components/schemas/PreparedContextReason"}],
+                        "description": "Why this "
+                        "preparation "
+                        "lost a "
+                        "retrieval "
+                        "channel "
+                        "it would "
+                        "otherwise "
+                        "have "
+                        "used. "
+                        "Absent "
+                        "unless "
+                        "the "
+                        "request "
+                        "asked "
+                        "with "
+                        "`explain` "
+                        "and a "
+                        "channel "
+                        "was "
+                        "lost, so "
+                        "a "
+                        "response "
+                        "a Host "
+                        "injects "
+                        "keeps "
+                        "its four "
+                        "fields. "
+                        "The "
+                        "values "
+                        "are the "
+                        "two "
+                        "inference "
+                        "failures "
+                        "among "
+                        "RFC "
+                        "1435's "
+                        "four "
+                        "`SearchGroup.fallback_reason` "
+                        "spellings, "
+                        "so a "
+                        "later "
+                        "Receipt "
+                        "reuses "
+                        "them "
+                        "instead "
+                        "of "
+                        "restating "
+                        "the "
+                        "cause. "
+                        "`none` "
+                        "travels "
+                        "as "
+                        "absence, "
+                        "and "
+                        "`reused_fts_fallback` "
+                        "is not a "
+                        "cause "
+                        "here: a "
+                        "later "
+                        "round "
+                        "reusing "
+                        "a failed "
+                        "round's "
+                        "keyword-only "
+                        "outcome "
+                        "is still "
+                        "explained "
+                        "by that "
+                        "round's "
+                        "`inference_*` "
+                        "value, "
+                        "which "
+                        "outranks "
+                        "it.",
+                        "nullable": True,
+                    },
                 },
                 "additionalProperties": False,
                 "type": "object",
@@ -9101,19 +9458,197 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "held_count": {
                         "type": "integer",
                         "minimum": 0.0,
-                        "description": "Compatibility field; Atomic Memory processing always returns zero.",
+                        "description": "Indicator "
+                        "that "
+                        "the "
+                        "write "
+                        "gate "
+                        "held "
+                        "this "
+                        "window: "
+                        "0 "
+                        "for "
+                        "no "
+                        "HOLD, "
+                        "1 "
+                        "for "
+                        "HOLD, "
+                        "regardless "
+                        "of "
+                        "how "
+                        "many "
+                        "Sources "
+                        "the "
+                        "window "
+                        "contains. "
+                        "A "
+                        "held "
+                        "window "
+                        "is "
+                        "consumed: "
+                        "current_cursor "
+                        "advances "
+                        "past "
+                        "those "
+                        "Sources "
+                        "and "
+                        "the "
+                        "Runtime "
+                        "does "
+                        "not "
+                        "retry "
+                        "them, "
+                        "so "
+                        "a "
+                        "caller "
+                        "that "
+                        "needs "
+                        "the "
+                        "content "
+                        "re-captures "
+                        "it.",
                         "default": 0,
                     },
                     "hold_codes": {
                         "items": {"type": "string"},
                         "type": "array",
-                        "description": "Compatibility field; Atomic Memory processing always returns an empty array.",
+                        "description": "Gate rejection codes reported for this window; empty unless held_count is 1.",
                         "default": [],
                     },
                 },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["status", "previous_cursor", "current_cursor", "high_watermark", "processed_source_count"],
+            },
+            "TopicMemoryProcessingStatusRequest": {
+                "properties": {"scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id"],
+            },
+            "GetTopicMemoryProcessingBlockRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "block_id": {"type": "string", "maxLength": 36, "minLength": 1},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "block_id"],
+            },
+            "RetryTopicMemoryProcessingRequest": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "block_id": {"type": "string", "maxLength": 36, "minLength": 1},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "block_id"],
+            },
+            "TopicMemoryProcessingBlock": {
+                "properties": {
+                    "block_id": {"type": "string"},
+                    "attempt_id": {"type": "string"},
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "binding_name": {"type": "string"},
+                    "source_after": {"type": "integer", "minimum": 0.0},
+                    "source_through": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "Exact selected Source end; null when historical selection is unknown.",
+                        "nullable": True,
+                    },
+                    "budget_source_through": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "Cumulative "
+                        "coverage "
+                        "of "
+                        "the "
+                        "original "
+                        "allowance; "
+                        "null "
+                        "only "
+                        "for "
+                        "imported "
+                        "blocks "
+                        "without "
+                        "that "
+                        "allowance.",
+                        "nullable": True,
+                    },
+                    "legacy_source_through": {
+                        "type": "integer",
+                        "minimum": 1.0,
+                        "description": "Original "
+                        "ambiguous "
+                        "range "
+                        "of "
+                        "an "
+                        "imported "
+                        "attempts-table "
+                        "block; "
+                        "neither "
+                        "exact "
+                        "selection "
+                        "nor "
+                        "cumulative "
+                        "coverage.",
+                        "nullable": True,
+                    },
+                    "target_source_through": {"type": "integer", "minimum": 1.0},
+                    "attempts": {"type": "integer", "minimum": 1.0},
+                    "requests": {"type": "integer", "minimum": 0.0},
+                    "tokens": {"type": "integer", "minimum": 0.0},
+                    "error_code": {"type": "string"},
+                    "last_error_code": {"type": "string", "nullable": True},
+                    "blocked_at": {"type": "string", "format": "date-time"},
+                    "retried_at": {"type": "string", "format": "date-time", "nullable": True},
+                    "retry_request_generation": {"type": "integer", "minimum": 1.0, "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "block_id",
+                    "attempt_id",
+                    "scope_id",
+                    "binding_name",
+                    "source_after",
+                    "source_through",
+                    "budget_source_through",
+                    "legacy_source_through",
+                    "target_source_through",
+                    "attempts",
+                    "requests",
+                    "tokens",
+                    "error_code",
+                    "last_error_code",
+                    "blocked_at",
+                    "retried_at",
+                    "retry_request_generation",
+                ],
+            },
+            "TopicMemoryProcessingState": {"type": "string", "enum": ["idle", "pending", "blocked"]},
+            "TopicMemoryProcessingRetryStatus": {"type": "string", "enum": ["accepted"]},
+            "TopicMemoryProcessingStatus": {
+                "properties": {
+                    "state": {"$ref": "#/components/schemas/TopicMemoryProcessingState"},
+                    "source_cursor": {"type": "integer", "minimum": 0.0},
+                    "source_head": {"type": "integer", "minimum": 0.0},
+                    "target_source_through": {"type": "integer", "minimum": 0.0, "nullable": True},
+                    "block": {"allOf": [{"$ref": "#/components/schemas/TopicMemoryProcessingBlock"}], "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["state", "source_cursor", "source_head", "target_source_through", "block"],
+            },
+            "RetryTopicMemoryProcessingResponse": {
+                "properties": {
+                    "status": {"$ref": "#/components/schemas/TopicMemoryProcessingRetryStatus"},
+                    "block": {"$ref": "#/components/schemas/TopicMemoryProcessingBlock"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["status", "block"],
             },
             "FlushTopicMemoryRequest": {
                 "properties": {"scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"}},
@@ -9660,6 +10195,37 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "built "
                         "during "
                         "preparation.",
+                        "default": False,
+                    },
+                    "explain": {
+                        "type": "boolean",
+                        "description": "Opt "
+                        "into "
+                        "reporting "
+                        "which "
+                        "retrieval "
+                        "channel "
+                        "this "
+                        "preparation "
+                        "lost, "
+                        "as "
+                        "`reason` "
+                        "on "
+                        "the "
+                        "response. "
+                        "Off "
+                        "by "
+                        "default, "
+                        "because "
+                        "a "
+                        "response "
+                        "a "
+                        "Host "
+                        "injects "
+                        "keeps "
+                        "its "
+                        "four "
+                        "fields.",
                         "default": False,
                     },
                     "assembly": {"$ref": "#/components/schemas/ContextAssembly"},
@@ -10548,7 +11114,17 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "required": ["family", "content"],
             },
             "ReplaceTopicMemoryArtifactRequest": {
-                "properties": {"content": {"$ref": "#/components/schemas/TopicMemoryWriteContent"}},
+                "properties": {
+                    "content": {"$ref": "#/components/schemas/TopicMemoryWriteContent"},
+                    "restored_from_revision": {"type": "integer", "minimum": 1.0, "nullable": True},
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["content"],
@@ -10921,7 +11497,17 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 ]
             },
             "ReplacePromptArtifactRequest": {
-                "properties": {"content": {"$ref": "#/components/schemas/PromptContent"}},
+                "properties": {
+                    "content": {"$ref": "#/components/schemas/PromptContent"},
+                    "restored_from_revision": {"type": "integer", "minimum": 1.0, "nullable": True},
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["content"],
@@ -11193,19 +11779,49 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "required": ["kind", "text"],
             },
             "ReplaceExperienceArtifactRequest": {
-                "properties": {"content": {"$ref": "#/components/schemas/ExperienceProposal"}},
+                "properties": {
+                    "content": {"$ref": "#/components/schemas/ExperienceProposal"},
+                    "restored_from_revision": {"type": "integer", "minimum": 1.0, "nullable": True},
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["content"],
             },
             "ReplaceSkillArtifactRequest": {
-                "properties": {"content": {"$ref": "#/components/schemas/SkillProposal"}},
+                "properties": {
+                    "content": {"$ref": "#/components/schemas/SkillProposal"},
+                    "restored_from_revision": {"type": "integer", "minimum": 1.0, "nullable": True},
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["content"],
             },
             "ReplaceHandoffArtifactRequest": {
-                "properties": {"content": {"$ref": "#/components/schemas/HandoffContent"}},
+                "properties": {
+                    "content": {"$ref": "#/components/schemas/HandoffContent"},
+                    "restored_from_revision": {"type": "integer", "minimum": 1.0, "nullable": True},
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["content"],
@@ -11229,7 +11845,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     },
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "source_type": {"type": "string", "enum": ["content"]},
-                    "source_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
+                    "source_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "content": {"description": "Persisted canonical JSON content."},
                     "position": {"type": "integer", "minimum": 1.0},
                     "content_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
@@ -11328,6 +11944,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "BootstrapContextStatus": {"type": "string", "enum": ["ready", "empty", "skipped"]},
             "BootstrapContextItemKind": {"type": "string", "enum": ["atomic-memory", "handoff"]},
             "BootstrapReceiptState": {"type": "string", "enum": ["pending", "injected", "skipped", "failed"]},
+            "PreparedContextReason": {"type": "string", "enum": ["inference_timeout", "inference_unavailable"]},
             "BootstrapSkipReason": {
                 "type": "string",
                 "enum": ["disabled", "no_eligible_context", "already_delivered", "preparation_failed"],

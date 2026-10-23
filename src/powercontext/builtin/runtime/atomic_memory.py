@@ -17,20 +17,27 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
+import logging
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from time import perf_counter
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import Text, and_, func, or_, select
+from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncConnection
 from typing_extensions import override
 
-from powercontext.artifacts import ArtifactRef, ArtifactSearchContractError, ArtifactSearchMatch
+from powercontext._logging import log_safely
+from powercontext.artifacts import ArtifactLineage, ArtifactRef, ArtifactSearchContractError, ArtifactSearchMatch
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
-from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError, AtomicMemoryPreviewStaleError
+from powercontext.builtin.artifacts.atomic_memory.errors import (
+    AtomicMemoryConflictError,
+    AtomicMemoryPreviewStaleError,
+    AtomicMemoryRelationError,
+)
 from powercontext.builtin.artifacts.atomic_memory.models import (
     AtomicMemory,
     AtomicMemoryContent,
@@ -59,8 +66,8 @@ from powercontext.builtin.inference import (
     InvalidInferenceOutputError,
     embed_query,
 )
-from powercontext.builtin.persistence.artifacts import ArtifactRepository
-from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository, atomic_memory_state_expression
+from powercontext.builtin.persistence.artifacts import ArtifactRepository, with_artifact_content
+from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository
 from powercontext.builtin.persistence.atomic_memory_index import (
     ATOMIC_MEMORY_RRF_CONSTANT,
     AtomicMemoryIndex,
@@ -78,11 +85,41 @@ from powercontext.builtin.persistence.atomic_memory_index_schema import ATOMIC_M
 from powercontext.builtin.persistence.cursor_codec import SignedCursorCodec
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
-from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE
+from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, ARTIFACTS_TABLE, MYSQL_IDENTITY_COLLATION
 from powercontext.builtin.persistence.tags import tag_predicate
 from powercontext.builtin.records import BaseOperationNotSupportedError, InvalidBaseAccessRequestError
 from powercontext.builtin.runtime.artifact_merge import ArtifactMergeAccess, merge_artifact_tags
 from powercontext.builtin.tags import TagFilter
+
+logger = logging.getLogger(__name__)
+
+
+def _fallback_reason(error: Exception) -> str:
+    """Why an abandoned query embedding gave way to lexical retrieval.
+
+    This is RFC 1435's ``fallback_reason`` vocabulary and the ``memory.search.embedding_fallback``
+    ``error_code`` at once: one classification, one spelling, so the event and the response cannot
+    describe the same lost channel differently.
+    """
+
+    return "inference_timeout" if isinstance(error, (InferenceTimeoutError, TimeoutError)) else "inference_unavailable"
+
+
+def _log_embedding_fallback(error: Exception) -> None:
+    """Record that a bounded query embedding gave way to lexical retrieval; the query itself is never logged."""
+
+    log_safely(
+        logger,
+        logging.WARNING,
+        "Memory search fell back to lexical retrieval",
+        extra={
+            "event": "memory.search.embedding_fallback",
+            "outcome": "fallback",
+            "mode": "text",
+            "error_code": _fallback_reason(error),
+            "unit": "memory",
+        },
+    )
 
 
 class AtomicMemoryAccess(ArtifactMergeAccess):
@@ -110,7 +147,7 @@ class AtomicMemoryAccess(ArtifactMergeAccess):
         ):
             from powercontext.server.authz import AccessAction, ResourceRef
 
-            access = self._read_access(context.access, connection)
+            access = context.access.for_read(connection)
             await access.require(
                 context.principal,
                 AccessAction.ARTIFACT_READ,
@@ -119,40 +156,6 @@ class AtomicMemoryAccess(ArtifactMergeAccess):
             )
             return
         await super().authorize(connection, scope_id, context, action, ref)
-
-    @staticmethod
-    def _read_access(access, connection: AsyncConnection):
-        """Keep configured point decisions and audit stores at the Artifact read boundary."""
-        from powercontext.server.authz import AccessUnavailableError
-        from powercontext.server.authz.repository import RelationalAccessRepository
-        from powercontext.server.authz.service import AccessControlService, BuiltinAuthorizationProvider
-
-        provider = access.provider
-        canonical = type(provider) is BuiltinAuthorizationProvider
-        if not canonical and type(provider).__module__ == "powercontext.server.authz.casbin":
-            from powercontext.server.authz.casbin import CasbinAuthorizationProvider
-
-            canonical = type(provider) is CasbinAuthorizationProvider
-        if not canonical or type(provider._repository) is not RelationalAccessRepository:
-            return access
-        try:
-            repository = provider._repository.with_connection(connection)
-        except AccessUnavailableError as error:
-            if error.code != "transactional_relationships_unavailable":
-                raise
-            return access
-        bound = AccessControlService(
-            provider.with_repository(repository),
-            relationships=access.relationships,
-            audit=access.audit,
-            deployment_id=access.deployment_id,
-            provider_capabilities=access.provider_capabilities,
-            clock=access._clock,
-            cursor_secret=access._cursor_secret,
-            static_scope_principal=access._static_scope_principal,
-        )
-        bound._deferred_decisions = access._deferred_decisions
-        return bound
 
     async def filters(
         self, connection: AsyncConnection, scope_id: str, context, *, tags: TagFilter | None = None
@@ -182,6 +185,7 @@ class AtomicMemorySearchHit:
     hit: AtomicMemoryIndexHit
     matched_by: tuple[str, ...]
     score_upper_bound: float | None = None
+    lineage: ArtifactLineage | None = None
 
     @property
     def text(self) -> str:
@@ -220,7 +224,10 @@ class AtomicMemorySearchPage:
     rerank: AtomicMemoryRerankTrace | None = None
     recoverable: bool = False
     matches: tuple[ArtifactSearchMatch, ...] = ()
-    artifacts: tuple[AtomicMemory, ...] | None = None
+    artifacts: tuple[AtomicMemory, ...] = ()
+    #: Set only when the query embedding was abandoned for lexical retrieval, so a
+    #: caller can tell "no vector channel was ever wanted" apart from "it was lost".
+    embedding_fallback: str | None = None
 
 
 class AtomicMemoryApplication:
@@ -279,28 +286,37 @@ class ScopedAtomicMemory:
         self.application = application
         self.scope_id = scope_id
 
-    async def get(self, artifact_id: str, *, revision: int | None = None, context=None) -> AtomicMemoryRecord:
-        # Builtin authority shares the business snapshot. Configured external
-        # providers keep their own decision boundary. Audit writes are flushed
-        # after it closes so SQLite never upgrades an old read snapshot.
-        # SAVEPOINT contains the business reads and composes with an existing
-        # in-memory write transaction without committing it.
+    @asynccontextmanager
+    async def _read(self, context, *, pin: bool = True):
+        # Local policy shares the business snapshot; external providers keep their boundary.
+        # Flush audit after closing the read snapshot. SAVEPOINT preserves enclosing writes.
         async with (
             deferred_decision_audit(context),
             self.application.database.transaction(consistent_snapshot=True) as connection,
         ):
             # Pin business data before a configured provider can consult a separate policy database.
-            await connection.execute(
-                select(ARTIFACT_HEADS_TABLE.c.artifact_id)
-                .where(ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id)
-                .limit(1)
-            )
+            if pin and context is not None and context.access is not None:
+                await connection.execute(
+                    select(ARTIFACT_HEADS_TABLE.c.artifact_id)
+                    .where(ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id)
+                    .limit(1)
+                )
+            yield connection
+
+    async def state(self, artifact_id: str, *, context=None) -> AtomicMemoryRead:
+        # The authoritative head itself pins revision and lifecycle before the PEP.
+        async with self._read(context, pin=False) as connection:
+            return await self.application.service.read_state(connection, self.scope_id, artifact_id, context)
+
+    async def get(self, artifact_id: str, *, revision: int | None = None, context=None) -> AtomicMemoryRecord:
+        async with self._read(context) as connection:
             return await self.application.service.get(
                 connection, self.scope_id, artifact_id, context, revision=revision
             )
 
-    async def list(
+    def list_query(
         self,
+        connection: AsyncConnection,
         *,
         states: tuple[str, ...] = ("active",),
         kind: str | None = None,
@@ -308,7 +324,8 @@ class ScopedAtomicMemory:
         limit: int = 50,
         cursor: str | None = None,
         context=None,
-    ) -> AtomicMemoryPage:
+    ):
+        """Build the canonical browse window; the caller owns its read transaction and PEP."""
         _validate_limit(limit)
         if not states or len(set(states)) != len(states):
             raise InvalidBaseAccessRequestError("states", "must contain distinct lifecycle values")
@@ -326,68 +343,110 @@ class ScopedAtomicMemory:
             "tag_match": None if tag_filter is None else tag_filter.match,
         }
         after = self.application.cursor.after_text(cursor, bound)
-        items: list[AtomicMemoryRecord] = []
-        last = after
-        has_more = False
         table = ARTIFACT_HEADS_TABLE
-        async with (
-            deferred_decision_audit(context),
-            self.application.database.transaction(consistent_snapshot=True) as connection,
-        ):
-            await connection.execute(
-                select(ARTIFACT_HEADS_TABLE.c.artifact_id)
-                .where(ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id)
-                .limit(1)
+        statement = (
+            select(table)
+            .where(
+                table.c.scope_id == self.scope_id,
+                table.c.family == "atomic-memory",
+                table.c.artifact_id > after,
+                # Keep lifecycle sargable; deprecated heads are split below.
+                table.c.lifecycle_state.in_(
+                    tuple(sorted({"deprecated" if state in {"forgotten", "merged"} else state for state in states}))
+                ),
             )
-            await self.application.security.filters(connection, self.scope_id, context, tags=tag_filter)
-            while len(items) <= limit:
+            .order_by(table.c.artifact_id)
+            .limit(limit + 1)
+        )
+        if states == ("active",):
+            from powercontext.builtin.persistence.oceanbase.atomic_memory_index import OceanBaseAtomicMemoryIndex
+            from powercontext.builtin.persistence.sqlite.atomic_memory_index import SQLiteAtomicMemoryIndex
+
+            index = self.application.index
+            if type(index) in (SQLiteAtomicMemoryIndex, OceanBaseAtomicMemoryIndex):
+                # The native current projection is the active candidate set. The
+                # write/rebuild lifecycle owns completeness; this read rejects stale rows.
+                current = index.table
                 statement = (
-                    select(table.c.artifact_id)
-                    .where(
-                        table.c.scope_id == self.scope_id,
-                        table.c.family == "atomic-memory",
-                        table.c.artifact_id > last,
-                        atomic_memory_state_expression().in_(states),
-                    )
-                    .order_by(table.c.artifact_id)
-                    .limit(100)
-                )
-                if tag_filter is not None:
-                    statement = statement.where(
-                        tag_predicate(
-                            self.scope_id,
-                            "atomic-memory",
-                            table.c.artifact_id,
-                            "artifact",
-                            table.c.artifact_id,
-                            tag_filter,
+                    statement
+                    .select_from(
+                        current.join(
+                            table,
+                            and_(
+                                current.c.scope_id == table.c.scope_id,
+                                current.c.artifact_id == table.c.artifact_id,
+                                current.c.revision == table.c.revision,
+                                current.c.state_version == table.c.governance_generation,
+                            ),
                         )
                     )
-                rows = (await connection.execute(statement)).scalars().all()
-                if not rows:
-                    break
-                for artifact_id in rows:
-                    record = await self._current_record(connection, str(artifact_id))
-                    if kind is not None and record.artifact.content.kind != kind:
-                        last = str(artifact_id)
-                        continue
-                    if len(items) == limit:
-                        has_more = True
-                        break
-                    items.append(record)
-                    last = str(artifact_id)
-                if has_more or len(rows) < 100:
-                    break
-        return AtomicMemoryPage(tuple(items), self.application.cursor.encode(bound, last) if has_more else None)
+                    .where(
+                        current.c.scope_id == self.scope_id,
+                        current.c.artifact_id > after,
+                        current.c.projection_format == ATOMIC_MEMORY_PROJECTION_FORMAT,
+                        table.c.merged_into_id.is_(None),
+                    )
+                    .order_by(None)
+                    .order_by(current.c.artifact_id)
+                )
+        if ("forgotten" in states) != ("merged" in states):
+            statement = statement.where(
+                or_(
+                    table.c.lifecycle_state != "deprecated",
+                    table.c.merged_into_id.is_(None) if "forgotten" in states else table.c.merged_into_id.is_not(None),
+                )
+            )
+        if tag_filter is not None:
+            statement = statement.where(
+                tag_predicate(
+                    self.scope_id,
+                    "atomic-memory",
+                    table.c.artifact_id,
+                    "artifact",
+                    table.c.artifact_id,
+                    tag_filter,
+                )
+            )
+        if kind is None:
+            # LIMIT before joining content keeps the optimizer from driving
+            # an ordinary page from the whole revision collection.
+            table = statement.subquery("selected_heads")
+            statement = select(table).order_by(table.c.artifact_id)
+        statement = with_artifact_content(statement, table)
+        if kind is not None:
+            stored_kind = func.json_extract(sql_cast(ARTIFACTS_TABLE.c.content, Text), "$.kind")
+            if connection.dialect.name == "mysql":
+                stored_kind = func.json_unquote(stored_kind).collate(MYSQL_IDENTITY_COLLATION)
+            else:
+                stored_kind = stored_kind.collate("BINARY")
+            statement = statement.where(stored_kind == kind)
+        return statement, bound, after
 
-    async def _current_record(self, connection, artifact_id: str) -> AtomicMemoryRecord:
-        """Load current authority after a Scope read boundary has been checked."""
-        application = self.application
-        artifact = await application.artifacts.latest(connection, self.scope_id, AtomicMemory.family, artifact_id)
-        return AtomicMemoryRecord(
-            artifact=cast(AtomicMemory, artifact),
-            state=await application.service.states.get(connection, self.scope_id, artifact_id),
-        )
+    async def list(
+        self,
+        *,
+        states: tuple[str, ...] = ("active",),
+        kind: str | None = None,
+        tag_filter: TagFilter | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+        context=None,
+    ) -> AtomicMemoryPage:
+        async with self._read(context) as connection:
+            statement, bound, after = self.list_query(
+                connection,
+                states=states,
+                kind=kind,
+                tag_filter=tag_filter,
+                limit=limit,
+                cursor=cursor,
+                context=context,
+            )
+            await self.application.security.filters(connection, self.scope_id, context, tags=tag_filter)
+            rows = (await connection.execute(statement)).mappings().all()
+            items = await self.application.service.read_many(connection, self.scope_id, rows[:limit])
+        last = after if not items else items[-1].ref.artifact_id
+        return AtomicMemoryPage(items, self.application.cursor.encode(bound, last) if len(rows) > limit else None)
 
     async def search(  # noqa: C901
         self,
@@ -424,7 +483,7 @@ class ScopedAtomicMemory:
             raise InvalidBaseAccessRequestError("mode", "must be auto, text, vector, or hybrid")
         if kind is not None:
             AtomicMemoryContent(kind=kind, text="validation")
-        mode, vector, query_embedding, embedding_calls = await self._resolve_query_embedding(
+        mode, vector, query_embedding, embedding_calls, embedding_fallback = await self._resolve_query_embedding(
             query,
             mode,
             query_embedding,
@@ -437,17 +496,7 @@ class ScopedAtomicMemory:
         # Inference finishes before the business snapshot opens. Builtin policy
         # reads share it; configured providers retain their own read boundary.
         # Decision audit writes flush only after the business snapshot closes.
-        async with (
-            deferred_decision_audit(context),
-            application.database.transaction(consistent_snapshot=True) as connection,
-        ):
-            # Pin SQLite's business read before a configured provider is consulted.
-            # Its decision repository may use a separate transaction.
-            await connection.execute(
-                select(ARTIFACT_HEADS_TABLE.c.artifact_id)
-                .where(ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id)
-                .limit(1)
-            )
+        async with self._read(context) as connection:
             filters = await application.security.filters(connection, self.scope_id, context, tags=tag_filter)
             request = AtomicMemorySearchRequest(
                 query,
@@ -473,14 +522,12 @@ class ScopedAtomicMemory:
                 )
             hits = hits[: request.limit]
             try:
-                await self._validate_search_hits(connection, hits, verify_vectors=vector is not None)
+                validated = await self._validate_search_hits(connection, hits, verify_vectors=vector is not None)
             except RepositoryNotFoundError as exc:
                 if artifact_request is None:
                     raise
                 raise ArtifactSearchContractError("atomic-memory", "Selected exact revision is unavailable") from exc
-            artifacts = None
-            if artifact_request is not None:
-                artifacts = await self._search_artifacts(connection, hits)
+            artifacts = validated if artifact_request is not None else ()
             recoverable = recovery_admission is not None and await application.index.probe_recoverable(
                 connection, self.scope_id, request, recovery_admission
             )
@@ -493,7 +540,7 @@ class ScopedAtomicMemory:
         if plan is not None:
             weights = {name: plan.fusion.weights.get(name, 1.0) for name in weights}
         candidates: list[AtomicMemorySearchHit] = []
-        for hit in hits:
+        for hit, artifact in zip(hits, validated, strict=True):
             matched_by = tuple(
                 channel
                 for channel, refs in (("text", fts), ("vector", vectors))
@@ -503,6 +550,7 @@ class ScopedAtomicMemory:
                 AtomicMemorySearchHit(
                     hit,
                     matched_by,
+                    lineage=artifact.lineage,
                     score_upper_bound=(
                         sum(weights[channel] for channel in matched_by) / (ATOMIC_MEMORY_RRF_CONSTANT + 1)
                         if plan is None
@@ -520,6 +568,7 @@ class ScopedAtomicMemory:
             context,
             artifact_request=artifact_request,
             artifacts=artifacts,
+            embedding_fallback=embedding_fallback,
         )
         if artifact_request is not None:
             matches = []
@@ -536,19 +585,7 @@ class ScopedAtomicMemory:
             page = replace(page, matches=tuple(matches))
         return replace(page, recoverable=recoverable)
 
-    async def _search_artifacts(self, connection, hits) -> tuple[AtomicMemory, ...]:
-        artifacts = []
-        for hit in hits:
-            try:
-                artifact = await self.application.artifacts.get(connection, self.scope_id, hit.artifact_ref)
-            except RepositoryNotFoundError as exc:
-                raise ArtifactSearchContractError("atomic-memory", "Selected exact revision is unavailable") from exc
-            if not isinstance(artifact, AtomicMemory):
-                raise ArtifactSearchContractError("atomic-memory", "Selected result has another Artifact Family")
-            artifacts.append(artifact)
-        return tuple(artifacts)
-
-    async def _validate_search_hits(self, connection, hits, *, verify_vectors):
+    async def _validate_search_hits(self, connection, hits, *, verify_vectors) -> tuple[AtomicMemory, ...]:
         """Verify only returned candidates against one bounded authority snapshot.
 
         The current projection still supplies the body and filters before LIMIT.
@@ -556,7 +593,7 @@ class ScopedAtomicMemory:
         or replaced with authority content. Every authority read is batched.
         """
         if not hits:
-            return
+            return ()
         ids = tuple(hit.artifact_ref.artifact_id for hit in hits)
         application = self.application
         table = application.index.table
@@ -572,34 +609,34 @@ class ScopedAtomicMemory:
             "profile_fingerprint",
             "projection_format",
         )
-        projected = {
-            row["artifact_id"]: row
+        heads = ARTIFACT_HEADS_TABLE
+        rows = {
+            row["projection_artifact_id"]: row
             for row in (
                 await connection.execute(
-                    select(*(table.c[name] for name in columns)).where(
-                        table.c.scope_id == self.scope_id, table.c.artifact_id.in_(ids)
-                    )
+                    with_artifact_content(
+                        select(heads, *(table.c[name].label(f"projection_{name}") for name in columns)).select_from(
+                            table.outerjoin(
+                                heads,
+                                and_(
+                                    heads.c.scope_id == table.c.scope_id,
+                                    heads.c.family == "atomic-memory",
+                                    heads.c.artifact_id == table.c.artifact_id,
+                                ),
+                            )
+                        )
+                    ).where(table.c.scope_id == self.scope_id, table.c.artifact_id.in_(ids))
                 )
             ).mappings()
         }
-        heads = {
-            row["artifact_id"]: row
-            for row in (
-                await connection.execute(
-                    select(ARTIFACT_HEADS_TABLE).where(
-                        ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id,
-                        ARTIFACT_HEADS_TABLE.c.family == "atomic-memory",
-                        ARTIFACT_HEADS_TABLE.c.artifact_id.in_(ids),
-                    )
-                )
-            ).mappings()
-        }
+        projected = {identity: {name: row[f"projection_{name}"] for name in columns} for identity, row in rows.items()}
         for hit in hits:
             identity = hit.artifact_ref.artifact_id
-            projection, head = projected.get(identity), heads.get(identity)
+            projection, head = projected.get(identity), rows.get(identity)
             if (
                 projection is None
                 or head is None
+                or head["artifact_id"] is None
                 or hit.artifact_ref.family != "atomic-memory"
                 or head["revision"] != hit.artifact_ref.revision
                 or projection["revision"] != hit.artifact_ref.revision
@@ -610,10 +647,12 @@ class ScopedAtomicMemory:
                 or head["governance_generation"] != hit.state_version
             ):
                 raise AtomicMemoryIndexError("stale-projection", "Atomic Memory projection identity is inconsistent")
-        artifacts = await application.artifacts.get_many(
-            connection, self.scope_id, tuple(hit.artifact_ref for hit in hits)
+        artifacts = await application.artifacts.decode_many(
+            connection, self.scope_id, tuple(rows[hit.artifact_ref.artifact_id] for hit in hits)
         )
         for hit, artifact in zip(hits, artifacts, strict=True):
+            if not isinstance(artifact, AtomicMemory):
+                raise ArtifactSearchContractError("atomic-memory", "Selected result has another Artifact Family")
             projection = projected[hit.artifact_ref.artifact_id]
             content = artifact.content
             payload_hash = sha256(canonical_json(content.model_dump(mode="json", by_alias=True))).hexdigest()
@@ -636,6 +675,8 @@ class ScopedAtomicMemory:
             ):
                 raise AtomicMemoryIndexError("stale-projection", "Atomic Memory projection content is inconsistent")
 
+        return cast(tuple[AtomicMemory, ...], artifacts)
+
     async def _resolve_query_embedding(
         self, query, mode, reuse, embedding_timeout_seconds, allow_embedding, *, public_search=False
     ):
@@ -646,14 +687,14 @@ class ScopedAtomicMemory:
         if mode == "auto":
             mode = "hybrid" if profile is not None else "text"
             if not allow_embedding and capabilities.fts:
-                return "text", None, None, 0
+                return "text", None, None, 0, None
         if mode not in {"vector", "hybrid"}:
-            return mode, None, None, 0
+            return mode, None, None, 0, None
         model = application.embedding_model
         if profile is None or model is None or model.profile != profile:
             raise AtomicMemoryIndexError("embedding-profile", "Requested vector retrieval is unavailable")
         if reuse is not None and reuse.embedding_profile == profile:
-            return mode, reuse.query_vector, reuse, 0
+            return mode, reuse.query_vector, reuse, 0, None
         try:
             async with asyncio.timeout(embedding_timeout_seconds):
                 result = await embed_query(model, (query,))
@@ -662,13 +703,14 @@ class ScopedAtomicMemory:
                 raise InferenceUnavailableError("embedding", "Atomic query embedding timed out") from exc
             if requested_mode != "auto" or not capabilities.fts:
                 raise
-            return "text", None, None, 1
+            _log_embedding_fallback(exc)
+            return "text", None, None, 1, _fallback_reason(exc)
         if len(result.vectors) != 1:
             raise AtomicMemoryIndexError("embedding-result", "Expected one query vector")
         vector = canonical_embedding(
             result.vectors[0], dimension=profile.dimension, normalization=profile.normalization
         )
-        return mode, vector, MemoryQueryEmbedding(vector, profile), 1
+        return mode, vector, MemoryQueryEmbedding(vector, profile), 1, None
 
     async def _filter_current_candidates(
         self,
@@ -681,22 +723,32 @@ class ScopedAtomicMemory:
             return ()
         application = self.application
         available: list[AtomicMemorySearchHit] = []
-        async with (
-            deferred_decision_audit(context),
-            application.database.transaction(consistent_snapshot=True) as connection,
-        ):
-            await connection.execute(
-                select(ARTIFACT_HEADS_TABLE.c.artifact_id)
-                .where(ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id)
-                .limit(1)
-            )
+        async with self._read(context) as connection:
             await application.security.authorize(connection, self.scope_id, context, "read")
+            rows = (
+                await connection.execute(
+                    select(ARTIFACT_HEADS_TABLE).where(
+                        ARTIFACT_HEADS_TABLE.c.scope_id == self.scope_id,
+                        ARTIFACT_HEADS_TABLE.c.family == "atomic-memory",
+                        ARTIFACT_HEADS_TABLE.c.artifact_id.in_(
+                            tuple(candidate.hit.artifact_ref.artifact_id for candidate in candidates)
+                        ),
+                    )
+                )
+            ).mappings()
+            heads = {str(row["artifact_id"]): row for row in rows}
             for candidate in candidates:
-                current = await self._current_record(connection, candidate.hit.artifact_ref.artifact_id)
+                artifact_id = candidate.hit.artifact_ref.artifact_id
+                head = heads.get(artifact_id)
+                if head is None:
+                    raise RepositoryNotFoundError("artifact", (self.scope_id, "atomic-memory", artifact_id))
+                if head["replacement_artifact_id"] is not None:
+                    raise AtomicMemoryRelationError("Atomic Memory does not use generic governance replacements")  # noqa: TRY003
                 if (
-                    current.ref == candidate.hit.artifact_ref
-                    and current.state.state_version == candidate.hit.state_version
-                    and current.state.state is AtomicMemoryStateValue.ACTIVE
+                    head["revision"] == candidate.hit.artifact_ref.revision
+                    and head["governance_generation"] == candidate.hit.state_version
+                    and head["lifecycle_state"] == "active"
+                    and head["merged_into_id"] is None
                 ):
                     available.append(candidate)
         return tuple(available)
@@ -712,7 +764,8 @@ class ScopedAtomicMemory:
         context,
         *,
         artifact_request=None,
-        artifacts=None,
+        artifacts=(),
+        embedding_fallback: str | None = None,
     ):
         application = self.application
         reranker = application.reranker
@@ -722,7 +775,8 @@ class ScopedAtomicMemory:
                 candidates[:limit],
                 query_embedding,
                 embedding_calls,
-                artifacts=(() if artifacts is None else artifacts) if artifact_request is not None else None,
+                artifacts=artifacts,
+                embedding_fallback=embedding_fallback,
             )
         # Reauthorize the exact candidate bodies immediately before an external rank model.
         try:
@@ -737,12 +791,10 @@ class ScopedAtomicMemory:
                 (),
                 query_embedding,
                 embedding_calls,
-                artifacts=() if artifact_request is not None else None,
+                embedding_fallback=embedding_fallback,
             )
         complete_artifacts = []
         if artifact_request is not None:
-            if artifacts is None:
-                raise ArtifactSearchContractError("atomic-memory", "Selected exact Artifacts are unavailable")
             artifacts_by_ref = {_artifact_key(artifact.as_ref()): artifact for artifact in artifacts}
             complete_artifacts = [
                 artifacts_by_ref[_artifact_key(candidate.hit.artifact_ref)] for candidate in candidates
@@ -777,7 +829,8 @@ class ScopedAtomicMemory:
             embedding_calls,
             1,
             rerank=trace,
-            artifacts=tuple(complete_artifacts[rank - 1] for rank in ranks) if artifact_request is not None else None,
+            artifacts=tuple(complete_artifacts[rank - 1] for rank in ranks) if artifact_request is not None else (),
+            embedding_fallback=embedding_fallback,
         )
 
     async def merge(

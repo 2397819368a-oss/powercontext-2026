@@ -32,7 +32,7 @@ from powercontext.builtin.artifacts.handoff import HandoffDraft, HandoffGenerati
 from powercontext.builtin.inference import GenerationResult
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime.config import InferenceConfig, RuntimeConfig
-from powercontext.client import ForbiddenResponseError, PowerContextClient, UnavailableResponseError
+from powercontext.client import ForbiddenResponseError, PowerContextClient
 from powercontext.http import (
     AccessAction,
     AccessResourceType,
@@ -413,6 +413,88 @@ def test_base_source_and_artifact_routes_preserve_access_boundaries(tmp_path: Pa
     asyncio.run(scenario())
 
 
+def test_query_parameters_cannot_override_path_authorization(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'query-path-authz.db'}")
+        async with open_builtin_access_control(
+            database,
+            bootstrap_administrators=(ADMIN,),
+            deployment_id=DEPLOYMENT_ID,
+        ) as access_control:
+            async with _client(
+                _app(database, access_control, ADMIN, "admin-token", tmp_path / "query-admin.db"),
+                "admin-token",
+            ) as admin:
+                allowed = await admin.create_scope(
+                    CreateScopeRequest(
+                        title="Allowed Scope",
+                        summary="The viewer may read this Scope.",
+                        idempotency_key="query-path-allowed",
+                    )
+                )
+                denied = await admin.create_scope(
+                    CreateScopeRequest(
+                        title="Denied Scope",
+                        summary="The viewer must not read this Scope.",
+                        idempotency_key="query-path-denied",
+                    )
+                )
+                await admin.create_access_binding(
+                    CreateAccessBindingRequest.model_validate({
+                        "subject": {"type": VIEWER.type, "id": VIEWER.id},
+                        "resource": {"type": "scope", "scope_id": allowed.scope_id},
+                        "role": "scope.viewer",
+                        "idempotency_key": "query-path-viewer",
+                    })
+                )
+
+            app = _app(database, access_control, VIEWER, "viewer-token", tmp_path / "query-viewer.db")
+            async with (
+                app.router.lifespan_context(app),
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://testserver",
+                    headers={"Authorization": "Bearer viewer-token"},
+                ) as viewer,
+            ):
+                denied_requests = (
+                    (f"/v1/scopes/{denied.scope_id}/artifacts/experience", {"scope_id": allowed.scope_id}),
+                    (
+                        f"/v1/scopes/{denied.scope_id}/artifacts/experience/missing/revisions",
+                        {"scope_id": allowed.scope_id, "family": "memory", "artifact_id": "allowed"},
+                    ),
+                    (f"/v1/scopes/{denied.scope_id}/dream", {"scope_id": allowed.scope_id}),
+                )
+                for path, params in denied_requests:
+                    denied_response = await viewer.get(path, params=params)
+                    assert denied_response.status_code == 403, path
+
+                strict_requests = (
+                    (f"/v1/scopes/{allowed.scope_id}/artifacts/experience", {"scope_id": allowed.scope_id}),
+                    (
+                        f"/v1/scopes/{allowed.scope_id}/artifacts/experience/missing/revisions",
+                        {"family": "memory", "artifact_id": "allowed"},
+                    ),
+                    (f"/v1/scopes/{allowed.scope_id}/dream", {"scope_id": allowed.scope_id}),
+                )
+                for path, params in strict_requests:
+                    unknown = await viewer.get(path, params=params)
+                    assert unknown.status_code == 422, path
+
+                duplicate = await viewer.get(
+                    f"/v1/scopes/{allowed.scope_id}/artifacts/experience",
+                    params=(("limit", "1"), ("limit", "2")),
+                )
+                assert duplicate.status_code == 422
+                repeated_tags = await viewer.get(
+                    f"/v1/scopes/{allowed.scope_id}/artifacts/experience",
+                    params=(("tag", "alpha"), ("tag", "beta")),
+                )
+                assert repeated_tags.status_code == 200
+
+    asyncio.run(scenario())
+
+
 def _scheduled_content_memory_worker(spec, assignment):
     from powercontext.builtin.runtime.composition import open_builtin_contexts
     from powercontext.builtin.runtime.family_processing import process_family_invocation
@@ -469,12 +551,7 @@ def test_scheduled_memory_processing_uses_the_static_service_principal_as_owner(
             )
             entries = None
             for _ in range(1500):
-                try:
-                    entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
-                except UnavailableResponseError as error:
-                    assert error.code == "artifact_owner_pending"
-                    await asyncio.sleep(0.02)
-                    continue
+                entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
                 if entries.entries:
                     break
                 await asyncio.sleep(0.02)

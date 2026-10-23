@@ -34,7 +34,9 @@ from sqlalchemy.exc import DBAPIError
 from .bundle import MigrationBundle
 from .models import MigrationError, digest
 
-_LEXEME = re.compile(r"\s+|`(?:``|[^`])*`|'(?:''|\\.|[^'\\])*'|[A-Za-z_][A-Za-z_0-9$]*|[0-9]+|>=|<=|<>|!=|[(),.=<>+-]")
+_LEXEME = re.compile(
+    r"\s+|`(?:``|[^`])*`|'(?:''|\\.|[^'\\])*'|[A-Za-z_][A-Za-z_0-9$]*|[0-9]+|>=|<=|<>|!=|[(),.=<>+*/%\^&|~!?:@-]"
+)
 _REVISIONS = ("p0001", "p0002", "p0003", "p0004")
 _CITATION_TABLES = ("pc_artifacts", "pc_artifact_candidate_versions")
 _FAMILY_CHECK = "ck_pc_artifact_tags_family"
@@ -125,7 +127,11 @@ def _reflect_tables(connection: Connection, database: str, exclude: frozenset[st
             row = connection.exec_driver_sql(f"SHOW CREATE TABLE {_quote(name)}").first()
             if row is None or not isinstance(row[1], str):
                 raise MigrationError("incompatible_schema", "A table definition could not be reflected.")
-            reflected_name, table = _parse_table(row[1], database=database)
+            try:
+                reflected_name, table = _parse_table(row[1], database=database)
+            except MigrationError as error:
+                detail = str(error).removeprefix(f"{error.code}: ")
+                raise MigrationError(error.code, f"Table {name!r}: {detail}") from error
             if reflected_name != name:
                 raise MigrationError("incompatible_schema", "A reflected table identity is inconsistent.")
             inventory["tables"][name] = table
@@ -225,8 +231,10 @@ class MySQLSchema:
         for name, table in expected["tables"].items():
             for check in table["checks"].values():
                 expression = _expression_sql(check["expression"])
+                # No bind parameters: keep literal percent signs out of DBAPI interpolation.
                 violation = connection.exec_driver_sql(
-                    f"SELECT 1 FROM {_quote(name)} WHERE NOT ({expression}) LIMIT 1"  # noqa: S608 -- frozen expressions
+                    f"SELECT 1 FROM {_quote(name)} WHERE NOT ({expression}) LIMIT 1",  # noqa: S608 -- frozen expressions
+                    execution_options={"no_parameters": True},
                 ).first()
                 if violation is not None:
                     raise MigrationError("data_integrity_error", "Existing rows violate a registered CHECK constraint.")
@@ -526,17 +534,28 @@ def _put_named(objects: dict[str, Any], name: str, definition: dict[str, Any]) -
 
 
 def _check_definition(part: list[str], constraint: str | None) -> tuple[str, dict[str, Any]]:
-    expression, end = _group(part, 1)
-    if constraint is None or part[end:] not in ([], ["enforced"], ["not", "enforced"]):
-        raise MigrationError("incompatible_schema", "An unsupported CHECK definition was discovered.")
-    return constraint, {"expression": _Expression(expression).parse(), "enforced": part[end:] != ["not", "enforced"]}
+    try:
+        expression, end = _group(part, 1)
+        if constraint is None or part[end:] not in ([], ["enforced"], ["not", "enforced"]):
+            raise MigrationError("incompatible_schema", "An unsupported CHECK definition was discovered.")  # noqa: TRY301
+        return constraint, {
+            "expression": _Expression(expression).parse(),
+            "enforced": part[end:] != ["not", "enforced"],
+        }
+    except MigrationError as error:
+        detail = str(error).removeprefix(f"{error.code}: ")
+        raise MigrationError(error.code, f"CHECK constraint {constraint!r}: {detail}") from error
 
 
-def _index_definition(part: list[str]) -> tuple[str, dict[str, Any]]:
+def _index_definition(part: list[str], constraint: str | None = None) -> tuple[str, dict[str, Any]]:
     unique = part[0] == "unique"
     offset = 2 if unique and part[1] in {"key", "index"} else 1
-    index_name = part[offset]
-    columns, end = _group(part, offset + 1)
+    if unique and part[offset] == "(" and constraint is not None:
+        index_name = constraint
+        columns, end = _group(part, offset)
+    else:
+        index_name = part[offset]
+        columns, end = _group(part, offset + 1)
     _physical(part[end:])
     return index_name, {"columns": _key_columns(columns), "unique": unique}
 
@@ -560,7 +579,7 @@ def _table_clause(
         constraint, definition = _check_definition(part, constraint)
         _put_named(table["checks"], constraint, definition)
     elif part[0] in {"key", "index", "unique"}:
-        index_name, definition = _index_definition(part)
+        index_name, definition = _index_definition(part, constraint)
         _put_named(table["indexes"], index_name, definition)
     elif constraint is None:
         _put_named(table["columns"], part[0], _column(part, defaults))
@@ -638,12 +657,37 @@ class _Expression:
     def parse(self) -> list[Any]:
         value = self._expression(0)
         if self.position != len(self.tokens):
-            raise MigrationError("incompatible_schema", "An unsupported CHECK expression was discovered.")
+            lexeme = self.tokens[self.position]
+            construct = "string literal" if lexeme.startswith("'") else repr(lexeme)
+            if (
+                lexeme == "("
+                and self.position > 0
+                and re.fullmatch(r"[a-z_][a-z_0-9$]*", self.tokens[self.position - 1])
+            ):
+                construct = f"function {self.tokens[self.position - 1]!r}"
+            raise MigrationError("incompatible_schema", f"Unsupported CHECK expression token {construct}.")
         return value
 
     def _expression(self, precedence: int) -> list[Any]:
         left = self._value()
-        priorities = {"or": 1, "and": 2, "=": 3, ">": 3, "<": 3, ">=": 3, "<=": 3, "!=": 3, "<>": 3, "is": 3, "in": 3}
+        priorities = {
+            "or": 1,
+            "and": 2,
+            "=": 3,
+            ">": 3,
+            "<": 3,
+            ">=": 3,
+            "<=": 3,
+            "!=": 3,
+            "<>": 3,
+            "is": 3,
+            "in": 3,
+            "+": 4,
+            "-": 4,
+            "*": 5,
+            "/": 5,
+            "%": 5,
+        }
         while self.position < len(self.tokens):
             operator = self.tokens[self.position]
             priority = priorities.get(operator, 0)
@@ -670,11 +714,12 @@ class _Expression:
         lexeme = self.tokens[self.position]
         self.position += 1
         if lexeme == "(":
-            value = self._expression(0)
-            if self.tokens[self.position : self.position + 1] != [")"]:
-                raise MigrationError("incompatible_schema", "A CHECK expression has unbalanced parentheses.")
-            self.position += 1
-            return value
+            # Parse a balanced group independently so unsupported operators are
+            # not mistaken for a missing closing parenthesis.
+            group, self.position = _group(self.tokens, self.position - 1)
+            return _Expression(group).parse()
+        if lexeme in {"+", "-"}:
+            return ["unary", lexeme, self._value()]
         if lexeme == "_utf8mb4":
             if self.position >= len(self.tokens) or not self.tokens[self.position].startswith("'"):
                 raise MigrationError("incompatible_schema", "A CHECK expression has an unsupported literal introducer.")
@@ -687,7 +732,7 @@ class _Expression:
         if lexeme == "null":
             return ["null"]
         if not re.fullmatch(r"[a-z_][a-z_0-9$]*", lexeme):
-            raise MigrationError("incompatible_schema", "An unsupported CHECK value was discovered.")
+            raise MigrationError("incompatible_schema", f"Unsupported CHECK value token {lexeme!r}.")
         return ["column", lexeme]
 
 
@@ -705,6 +750,8 @@ def _expression_sql(expression: list[Any]) -> str:
         return f"({_expression_sql(expression[1])} IS {'NOT ' if kind == 'is_not_null' else ''}NULL)"
     if kind == "in":
         return f"({_expression_sql(expression[1])} IN ({', '.join(_expression_sql(value) for value in expression[2])}))"
+    if kind == "unary":
+        return f"({expression[1]}{_expression_sql(expression[2])})"
     if kind == "binary":
         return f"({_expression_sql(expression[2])} {expression[1].upper()} {_expression_sql(expression[3])})"
     raise MigrationError("invalid_bundle", "An unsupported frozen CHECK expression was discovered.")

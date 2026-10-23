@@ -24,7 +24,12 @@ env:
   HUSKY: '0'
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-changes.yml
+
   controlled-cli:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').zcode) }}
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -96,7 +101,8 @@ jobs:
           node $env:ZCODE_CLI_BIN --version
 
       - name: Run all plugin Node tests including native host discovery
-        run: node --test integrations/zcode/plugins/powercontext/tests/*.test.mjs
+        # Process deadline checks must not compete with other test files for runner CPU and disk.
+        run: node --test --test-concurrency=1 integrations/zcode/plugins/powercontext/tests/*.test.mjs
 
       - name: Run two independent controlled CLI acceptances
         run: >-

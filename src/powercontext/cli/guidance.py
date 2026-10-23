@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import shutil
@@ -38,15 +37,22 @@ class HostGuidance:
     """Distribution facts; supported capabilities are read from capabilities.toml."""
 
     plugin: str
-    installer: str | None = None
-    server_default: str | None = None
-    server_option: bool = True
-    empty_server_uses_default: bool = True
-    capture_prompts: bool = False
-    allow_insecure_http: bool = False
-    target_option: bool = False
+    source_files: tuple[str, ...] = ("package.json",)
+    package_name: str | None = None
     variables: tuple[str, ...] = ()
     script_evidence: tuple[str, ...] = ()
+
+    def recognizes(self, path: Path) -> bool:
+        """Identify a host package without requiring optional build output."""
+        if not all((path / name).is_file() for name in self.source_files):
+            return False
+        if self.package_name is None:
+            return True
+        try:
+            manifest = json.loads((path / self.source_files[0]).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(manifest, dict) and manifest.get("name") == self.package_name
 
     @property
     def skill(self) -> Path:
@@ -56,66 +62,52 @@ class HostGuidance:
 HOST_GUIDANCE = {
     "codex": HostGuidance(
         "integrations/codex/plugins/powercontext",
-        "powercontext.cli.system:install_codex_plugin",
-        empty_server_uses_default=False,
         variables=("PLUGIN_ROOT",),
         script_evidence=("scripts/scope_binding.py",),
     ),
     "claude-code": HostGuidance(
         "integrations/claude-code/plugins/powercontext",
-        "powercontext.cli.system:install_claude_code_plugin",
-        server_default="http://127.0.0.1:8000",
-        empty_server_uses_default=False,
-        capture_prompts=True,
-        allow_insecure_http=True,
         variables=("PLUGIN_ROOT",),
         script_evidence=("scripts/workspace_scope.py",),
     ),
     "dsh": HostGuidance(
         "integrations/dsh/plugins/powercontext",
-        "powercontext.cli.dsh:install_dsh_plugin",
-        server_default="http://127.0.0.1:8000",
-        allow_insecure_http=True,
-        target_option=True,
+        package_name="powercontext-dsh",
     ),
     "openclaw": HostGuidance(
         "integrations/openclaw/plugins/memory-powercontext",
-        "powercontext.cli.openclaw:install_openclaw_plugin",
-        server_default="http://127.0.0.1:8000",
-        empty_server_uses_default=False,
-        allow_insecure_http=True,
+        package_name="@oceanbase/openclaw-memory-powercontext",
     ),
     "opencode": HostGuidance(
         "integrations/opencode/plugins/powercontext",
-        "powercontext.cli.opencode:install_opencode_plugin",
-        server_default="http://127.0.0.1:8000",
+        package_name="powercontext-opencode",
     ),
     "pi": HostGuidance(
         "integrations/pi/plugins/powercontext",
-        "powercontext.cli.pi:install_pi_plugin",
-        server_default="http://127.0.0.1:8000",
+        package_name="powercontext-pi",
     ),
     "hermes": HostGuidance(
         "integrations/hermes/plugins/powercontext",
-        "powercontext.cli.hermes:install_hermes_plugin",
-        server_option=False,
+        source_files=("plugin.yaml", "__init__.py"),
     ),
     "workbuddy": HostGuidance(
         "integrations/workbuddy/plugins/powercontext",
-        "powercontext.cli.workbuddy:install_workbuddy_plugin",
-        empty_server_uses_default=False,
         variables=("POWERCONTEXT_PYTHON", "POWERCONTEXT_SCOPE_BINDING_SCRIPT"),
         script_evidence=("scripts/workspace_scope.py",),
+        source_files=("hooks/workbuddy_powercontext_hook.py", "scripts/workspace_scope.py"),
     ),
     "zcode": HostGuidance(
         "integrations/zcode/plugins/powercontext",
-        "powercontext.cli.zcode:install_zcode_plugin",
-        server_default="http://127.0.0.1:8000",
-        capture_prompts=True,
-        allow_insecure_http=True,
         script_evidence=("scripts/scope.mjs",),
+        source_files=(".zcode-plugin/plugin.json", "hooks/user_prompt_submit.mjs"),
+        package_name="powercontext",
     ),
-    "kimi-code": HostGuidance("integrations/kimi-code/plugins/powercontext"),
+    "kimi-code": HostGuidance(
+        "integrations/kimi-code/plugins/powercontext",
+        script_evidence=("scripts/scope.mjs",),
+        source_files=("kimi.plugin.json",),
+        package_name="powercontext",
+    ),
     "agent-plugin": HostGuidance("integrations/agent-plugin/powercontext"),
     "minimax": HostGuidance("integrations/minimax/plugins/powercontext"),
 }
@@ -140,7 +132,7 @@ def _resource_name(value: object) -> str:
     return value
 
 
-def _resource_inventory(directory: Path) -> tuple[set[str], dict[str, str]] | None:
+def _resource_inventory(directory: Path) -> set[str] | None:
     manifest = directory / RESOURCE_MANIFEST
     if not manifest.exists():
         return None
@@ -152,23 +144,13 @@ def _resource_inventory(directory: Path) -> tuple[set[str], dict[str, str]] | No
         raise GuidanceError("invalid guidance manifest") from error  # noqa: TRY003
     if not isinstance(payload, dict):
         raise GuidanceError("invalid guidance manifest")  # noqa: TRY003
-    if "schema_version" in payload:
-        resources, legacy = payload.get("resources"), payload.get("legacy_sha256")
-        if payload["schema_version"] != 1 or not isinstance(resources, list) or not isinstance(legacy, dict):
-            raise GuidanceError("unsupported guidance manifest schema")  # noqa: TRY003
-    else:
-        # Initial generated packages used the frozen migration map as their inventory.
-        resources, legacy = list(payload), payload
+    resources = payload.get("resources")
+    if payload.get("schema_version") != 1 or not isinstance(resources, list):
+        raise GuidanceError("unsupported guidance manifest schema")  # noqa: TRY003
     names = {_resource_name(name) for name in resources}
     if "SKILL.md" not in names or len(names) != len(resources):
         raise GuidanceError("guidance manifest needs a unique resource inventory including SKILL.md")  # noqa: TRY003
-    hashes = {}
-    for name, digest in legacy.items():
-        key = _resource_name(name)
-        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-            raise GuidanceError("invalid legacy hash in guidance manifest")  # noqa: TRY003
-        hashes[key] = digest
-    return names, hashes
+    return names
 
 
 def _linked_resources(directory: Path, *, require_files: bool) -> set[str]:
@@ -200,15 +182,15 @@ def _linked_resources(directory: Path, *, require_files: bool) -> set[str]:
     return seen
 
 
-def _package_resources(directory: Path) -> tuple[set[str], dict[str, str]]:
+def _package_resources(directory: Path) -> set[str]:
     inventory = _resource_inventory(directory)
     linked = _linked_resources(directory, require_files=True)
     if inventory is None:
         for path in directory.rglob("*.md"):
             if guidance_region(path.read_text(encoding="utf-8")) is not None:
                 raise GuidanceError("managed guidance is missing its resource manifest")  # noqa: TRY003
-        return linked, {}
-    names, legacy = inventory
+        return linked
+    names = inventory
     packaged = {
         path.relative_to(directory).as_posix()
         for path in directory.rglob("*")
@@ -222,7 +204,7 @@ def _package_resources(directory: Path) -> tuple[set[str], dict[str, str]]:
         path = directory / name
         if not path.is_file() or not path.resolve().is_relative_to(directory.resolve()):
             raise GuidanceError(f"missing or out-of-package guidance resource: {name}")  # noqa: TRY003
-    return names, legacy
+    return names
 
 
 def guidance_region(content: str) -> tuple[int, int] | None:
@@ -237,16 +219,15 @@ def guidance_region(content: str) -> tuple[int, int] | None:
     return content.index(marker), content.index(END) + len(END)
 
 
-def merge_guidance(existing: str, generated: str, *, legacy_sha256: str | None = None) -> str:
-    """Replace only managed bytes; recognize pristine pre-marker packages on upgrade."""
+def merge_guidance(existing: str, generated: str) -> str:
+    """Replace only managed bytes; preserve content outside ownership markers."""
     desired = guidance_region(generated)
     if desired is None:
         message = "generated guidance has no managed region"
         raise GuidanceError(message)
     current = guidance_region(existing)
     if current is None:
-        digest = hashlib.sha256(existing.replace("\r\n", "\n").encode("utf-8")).hexdigest()
-        if not existing or digest == legacy_sha256:
+        if not existing:
             return generated
         message = "unmarked guidance contains unrecognized content; add ownership markers before refreshing"
         raise GuidanceError(message)
@@ -266,10 +247,8 @@ def _render_installed_markdown(
     content: bytes,
     current: Path,
     replacements: dict[str, str],
-    legacy_hash: str | None,
-    legacy_replacements: dict[str, str],
 ) -> bytes:
-    """Expand installation paths and safely migrate or refresh one Markdown resource."""
+    """Expand installation paths and refresh one Markdown resource."""
     generated = content.decode("utf-8").replace("\r\n", "\n")
     for placeholder, replacement in replacements.items():
         generated = generated.replace(placeholder, replacement)
@@ -280,26 +259,15 @@ def _render_installed_markdown(
                 return existing.encode("utf-8")
             message = "incoming unmarked guidance cannot safely replace existing content"
             raise GuidanceError(message)
-        for substitutions in (legacy_replacements, replacements):
-            unexpanded = existing
-            for placeholder, replacement in substitutions.items():
-                unexpanded = unexpanded.replace(replacement, placeholder)
-            if hashlib.sha256(unexpanded.replace("\r\n", "\n").encode("utf-8")).hexdigest() == legacy_hash:
-                legacy_hash = hashlib.sha256(existing.replace("\r\n", "\n").encode("utf-8")).hexdigest()
-                break
-        generated = merge_guidance(
-            existing,
-            generated,
-            legacy_sha256=legacy_hash,
-        )
+        generated = merge_guidance(existing, generated)
     return generated.encode("utf-8")
 
 
-def _validate_resource_transition(source: Path, previous: Path, resources: set[str], legacy: dict[str, str]) -> None:
+def _validate_resource_transition(source: Path, previous: Path, resources: set[str]) -> None:
     """Do not promote retired or ambiguously owned package files into user content."""
     if previous.is_dir():
         prior = _resource_inventory(previous)
-        owned = prior[0] if prior is not None else _linked_resources(previous, require_files=False) | set(legacy)
+        owned = prior if prior is not None else _linked_resources(previous, require_files=False)
         removed = {name for name in owned - resources if (previous / name).is_file()}
         if removed:
             message = f"removing owned guidance requires an explicit migration: {sorted(removed)}"
@@ -319,17 +287,16 @@ def refresh_skill(
     *,
     replacements: dict[str, str] | None = None,
     previous: Path | None = None,
-    legacy_replacements: dict[str, str] | None = None,
 ) -> None:
     """Refresh packaged resources without deleting user files or changing unchanged mtimes.
 
-    Plan every merge first, so malformed markers or an edited legacy file cannot
+    Plan every merge first, so malformed markers or unrecognized user content cannot
     leave a partially refreshed Skill. Native host installation remains separate.
     """
-    resources, legacy = _package_resources(source)
+    resources = _package_resources(source)
     writes: dict[Path, bytes] = {}
     previous = previous or target
-    _validate_resource_transition(source, previous, resources, legacy)
+    _validate_resource_transition(source, previous, resources)
     for path in source.rglob("*"):
         if not path.is_file():
             continue
@@ -345,9 +312,7 @@ def refresh_skill(
             raise GuidanceError(message)
         content = path.read_bytes()
         if path.suffix == ".md":
-            content = _render_installed_markdown(
-                content, current, replacements or {}, legacy.get(relative.as_posix()), legacy_replacements or {}
-            )
+            content = _render_installed_markdown(content, current, replacements or {})
         writes[destination] = content
     for destination, content in writes.items():
         old = previous / destination.relative_to(target)

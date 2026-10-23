@@ -31,6 +31,7 @@ from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
     AtomicMemoryReconciliationOutput,
     AtomicMemoryWindowWorkset,
     AtomicMemoryWorkingItem,
+    validate_reconciliation_decision,
 )
 from powercontext.builtin.inference import InvalidInferenceOutputError
 from powercontext.builtin.inference.pydantic_ai import InferenceLimits, PydanticAIStructuredGenerator
@@ -83,6 +84,7 @@ def test_unpublished_reconciliation_receives_bounded_identity_correction(correct
             input_type=AtomicMemoryReconciliationInput,
             output_type=AtomicMemoryReconciliationOutput,
             limits=InferenceLimits(max_requests=2),
+            output_check=validate_reconciliation_decision,
         )
         if corrected:
             result = await generator.generate(request)

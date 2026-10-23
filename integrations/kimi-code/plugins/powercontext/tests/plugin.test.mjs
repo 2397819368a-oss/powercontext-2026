@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,6 +27,35 @@ import { promisify } from 'node:util'
 
 const plugin = fileURLToPath(new URL('..', import.meta.url))
 const prompt = 'The deployment color is teal-731.'
+const { cases: privacyCases } = JSON.parse(await readFile(
+  new URL('../../../../../tests/fixtures/automatic_prompt_privacy.json', import.meta.url), 'utf8',
+))
+
+test('automatic prompt privacy preserves preparation and original accepted events', async t => {
+  const scenarios = [
+    ...privacyCases.map(sample => ({ sample, capture: true })),
+    ...privacyCases.filter(sample => sample.id.endsWith('-header')).map(sample => ({ sample, capture: false })),
+  ]
+  for (const { sample, capture } of scenarios) {
+    await t.test(`${sample.id}-capture-${capture}`, async t => {
+      const state = await fixture(t, {}, { use_token: Boolean(sample.authorization), capture_prompts: capture })
+      const result = await state.invoke({
+        hook_event_name: 'UserPromptSubmit', cwd: state.workspace,
+        session_id: `privacy-${sample.id}`, prompt: sample.prompt,
+      }, sample.authorization ? { POWERCONTEXT_KIMI_TOKEN: sample.authorization.slice(7) } : {})
+      const prepares = state.requests.filter(item => item.path === '/v1/context/prepare')
+      assert.equal(prepares.length, 1, result.stderr)
+      assert.equal(state.captures.length, sample.sensitive || !capture ? 0 : 1)
+      if (sample.sensitive) {
+        assert.doesNotMatch(JSON.stringify(state.requests.map(item => item.body)), /synthetic[-_]value[-_]2084/)
+        assert.doesNotMatch(JSON.stringify(result), /synthetic[-_]value[-_]2084/)
+      } else {
+        assert.equal(state.captures[0].content, sample.prompt)
+        assert.equal(prepares[0].body.query, sample.prompt)
+      }
+    })
+  }
+})
 async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1') {
   const root = await mkdtemp(join(tmpdir(), 'pc-kimi-'))
   const installed = join(root, 'plugin')
@@ -44,7 +73,7 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
     const answer = req.url === '/v1/scope-bindings/resolve' ? { scope_id: 'scope-test' } :
       req.url === '/v1/context/prepare' ? { schema: 'powercontext.prepared-context.v1', status: 'ready',
         content: 'Historical context: use uv.', content_bytes: Buffer.byteLength('Historical context: use uv.') } :
-      req.url === '/health/ready' ? { status: 'ready' } : undefined
+      req.url === '/health/ready' ? { status: 'ready', checks: {} } : undefined
     if (answer) { res.writeHead(200); res.end(JSON.stringify(answer)); return }
     if (req.url === '/v1/sources/content') {
       captures.push(body)
@@ -80,7 +109,20 @@ async function fixture(t, overrides = {}, settings = {}, listenHost = '127.0.0.1
       { env: { ...process.env, KIMI_CODE_HOME: home }, windowsHide: true }).catch(error => error)
     return { exit_code: result.code ?? 0, ...JSON.parse(result.stdout) }
   }
-  return { captures, requests, invoke, installed, home, status }
+  async function scope(action, scopeId, cwd = workspace) {
+    const args = [join(installed, 'scripts/scope.mjs'), action]
+    if (cwd !== null) args.push('--cwd', cwd)
+    if (scopeId !== undefined) args.push('--scope-id', scopeId)
+    const result = await promisify(execFile)(process.execPath, args,
+      { env: { ...process.env, KIMI_CODE_HOME: home }, windowsHide: true }).catch(error => error)
+    return { exit_code: result.code ?? 0, ...JSON.parse(result.stdout) }
+  }
+  async function doctor(cwd = workspace, mcp = false) {
+    const result = await promisify(execFile)(process.execPath, [join(installed, 'scripts/doctor.mjs'), '--cwd', cwd, ...(mcp ? ['--mcp'] : [])],
+      { env: { ...process.env, KIMI_CODE_HOME: home }, windowsHide: true })
+    return JSON.parse(result.stdout)
+  }
+  return { captures, requests, invoke, installed, home, workspace, status, scope, doctor }
 }
 
 test('context and capture use the explicit Scope and shared runtime token', async t => {
@@ -93,14 +135,72 @@ test('context and capture use the explicit Scope and shared runtime token', asyn
   assert.equal(f.captures[0].scope_id, 'scope-test')
   assert.equal(f.captures[0].metadata.session_id, 'session-test')
   assert.ok(f.requests.every(r => r.authorization === 'Bearer synthetic-token'))
-  assert.deepEqual(f.requests[0].body, { explicit_scope_id: 'scope-test', binding_keys: [] })
+  assert.equal(f.requests[0].body.explicit_scope_id, 'scope-test')
+  assert.deepEqual(f.requests[0].body.binding_keys, [])
   await f.invoke(undefined, { POWERCONTEXT_KIMI_TOKEN: 'synthetic-token' })
   assert.notEqual(f.captures[0].source_id, f.captures[1].source_id)
+})
+
+test('explicit Scope supplies context and captures without an absolute workspace', async t => {
+  const f = await fixture(t)
+  for (const cwd of ['relative/workspace', null, undefined]) {
+    const result = await f.invoke({ hook_event_name: 'UserPromptSubmit', cwd, prompt })
+    assert.match(result.output.message, /Historical context/)
+    assert.equal(f.captures.at(-1).scope_id, 'scope-test')
+  }
+  assert.equal(f.captures.length, 3)
+})
+
+test('Scope script resolves explicit Scope without a workspace but binding operations still require one', async t => {
+  const explicit = await fixture(t)
+  for (const cwd of [null, 'relative/workspace']) {
+    const result = await explicit.scope('resolve', undefined, cwd)
+    assert.equal(result.status, 'resolved')
+    assert.equal(result.scope_id, 'scope-test')
+  }
+  assert.equal((await explicit.scope('bind', 'scope-target', null)).code, 'workspace_required')
+  assert.equal((await explicit.scope('unbind', undefined, 'relative/workspace')).code, 'workspace_required')
+  assert.ok(explicit.requests.every(item => item.path === '/v1/scope-bindings/resolve'))
+  const workspace = await fixture(t, {}, { scope_id: null })
+  for (const cwd of [null, 'relative/workspace']) {
+    assert.equal((await workspace.scope('resolve', undefined, cwd)).code, 'workspace_required')
+  }
+  assert.deepEqual(workspace.requests, [])
 })
 
 test('disabled capture still supplies context', async t => {
   const f = await fixture(t, {}, { capture_prompts: false })
   assert.match((await f.invoke()).output.message, /Historical context/)
+  assert.deepEqual(f.captures, [])
+})
+
+test('doctor discovers paginated MCP tools without domain operations and reports missing tools', async t => {
+  let missing = false
+  const f = await fixture(t, { '/mcp/': (req, res, body) => {
+    if (req.method === 'DELETE') { res.writeHead(204); res.end(); return }
+    if (body.method === 'notifications/initialized') { res.writeHead(202); res.end(); return }
+    let result
+    if (body.method === 'initialize') {
+      result = { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+      res.setHeader('mcp-session-id', 'fixture-session')
+    } else {
+      assert.equal(body.method, 'tools/list')
+      assert.equal(req.headers['mcp-session-id'], 'fixture-session')
+      result = body.params.cursor ? { tools: missing ? [] : [{ name: 'remember_memory' }, { name: 'get_artifact_revision' }] } :
+        { tools: [{ name: 'search_memory' }], nextCursor: 'rest' }
+    }
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.end('event: message\ndata: ' + JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) + '\n\n')
+  } })
+  const discovered = (await f.doctor(f.workspace, true)).checks.mcp_discovery
+  assert.equal(discovered.status, 'ok')
+  assert.equal(discovered.checks.expected_tools, '3')
+  assert.match(discovered.detail, /operations are not verified/)
+  missing = true
+  const failed = (await f.doctor(f.workspace, true)).checks.mcp_discovery
+  assert.equal(failed.status, 'failed')
+  assert.equal(failed.checks.missing_tools, 'remember_memory, get_artifact_revision')
+  assert.ok(f.requests.every(item => !item.body?.method || ['initialize', 'notifications/initialized', 'tools/list'].includes(item.body.method)))
   assert.deepEqual(f.captures, [])
 })
 
@@ -329,4 +429,111 @@ test('retention preserves unowned files and incomplete attempts; capacity failur
   const result = await f.invoke()
   assert.match(result.output.message, /Historical context/)
   assert.match(result.stderr, /runtime_unavailable/)
+})
+
+test('workspace bindings route Hooks and doctor while explicit Scope still overrides a saved binding', async t => {
+  const bindings = new Map()
+  function reply(res, value) { res.writeHead(200); res.end(JSON.stringify(value)) }
+  const f = await fixture(t, {
+    '/v1/scope-bindings': (_req, res, body) => {
+      bindings.set(body.key.external_id, body.scope_id); reply(res, body)
+    },
+    '/v1/scope-bindings/clear': (_req, res, body) => {
+      reply(res, { cleared: bindings.delete(body.key.external_id) })
+    },
+    '/v1/scope-bindings/resolve': (_req, res, body) => {
+      reply(res, { scope_id: body.explicit_scope_id ?? bindings.get(body.binding_keys[0]?.external_id) ?? 'scope-default' })
+    },
+  }, { scope_id: null })
+  assert.equal((await f.scope('resolve')).scope_id, 'scope-default')
+  const other = join(f.workspace, '..', 'other-workspace')
+  for (const [cwd, scopeId] of [[f.workspace, 'scope-first'], [other, 'scope-second']]) {
+    await mkdir(cwd, { recursive: true })
+    const bound = await f.scope('bind', scopeId, cwd)
+    assert.equal(bound.binding.status, 'saved')
+    assert.equal(bound.bound_scope_is_current, true)
+    const result = await f.invoke({ cwd, session_id: 'session-test', hook_event_name: 'UserPromptSubmit', prompt })
+    assert.equal(result.stderr, '')
+    assert.match(result.output.message, new RegExp(scopeId))
+    assert.equal(f.captures.at(-1).scope_id, scopeId)
+    assert.equal((await f.status('session-test', cwd)).scope_id, scopeId)
+    assert.equal((await f.doctor(cwd)).checks.scope.checks.scope_id, scopeId)
+  }
+  const aliasParent = join(f.workspace, '..', 'alias-parent')
+  await mkdir(aliasParent)
+  const alias = join(aliasParent, 'workspace-alias')
+  await symlink(f.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  const variants = [alias, ...(process.platform === 'win32' ? [f.workspace.toLowerCase(), f.workspace.toUpperCase()] : [])]
+  for (const cwd of variants) {
+    assert.equal((await f.scope('resolve', undefined, cwd)).scope_id, 'scope-first')
+    const result = await f.invoke({ cwd, session_id: 'session-test', hook_event_name: 'UserPromptSubmit', prompt })
+    assert.match(result.output.message, /scope-first/)
+    assert.equal(f.captures.at(-1).scope_id, 'scope-first')
+    assert.equal((await f.doctor(cwd)).checks.scope.checks.scope_id, 'scope-first')
+  }
+  const lexical = join(aliasParent, 'workspace')
+  await mkdir(lexical)
+  await f.scope('bind', 'scope-parent', lexical)
+  const compound = alias + '/../workspace'
+  const expected = process.platform === 'win32' ? 'scope-parent' : 'scope-first'
+  const untouched = process.platform === 'win32' ? f.workspace : lexical
+  const untouchedScope = process.platform === 'win32' ? 'scope-first' : 'scope-parent'
+  assert.equal((await f.scope('resolve', undefined, compound)).scope_id, expected)
+  assert.equal((await f.doctor(compound)).checks.scope.checks.scope_id, expected)
+  const hook = await f.invoke({ cwd: compound, hook_event_name: 'UserPromptSubmit', prompt })
+  assert.match(hook.output.message, new RegExp(expected))
+  assert.equal(f.captures.at(-1).scope_id, expected)
+  assert.equal((await f.scope('bind', 'scope-compound', compound)).scope_id, 'scope-compound')
+  assert.equal((await f.scope('resolve', undefined, untouched)).scope_id, untouchedScope)
+  assert.equal((await f.scope('unbind', undefined, compound)).binding.status, 'cleared')
+  assert.equal((await f.scope('resolve', undefined, compound)).scope_id, 'scope-default')
+  assert.equal((await f.scope('resolve', undefined, untouched)).scope_id, untouchedScope)
+  assert.equal((await f.scope('bind', 'scope-alias', alias)).binding.status, 'saved')
+  assert.equal((await f.scope('resolve')).scope_id, 'scope-alias')
+  assert.equal((await f.scope('unbind', undefined, alias)).binding.status, 'cleared')
+  assert.equal((await f.scope('resolve')).scope_id, 'scope-default')
+  assert.ok(f.requests.filter(item => item.body?.key).every(item => !JSON.stringify(item.body.key).includes(f.workspace)))
+  const settingsPath = join(f.installed, 'powercontext.json')
+  const settings = JSON.parse(await readFile(settingsPath, 'utf8'))
+  await writeFile(settingsPath, JSON.stringify({ ...settings, scope_id: 'scope-explicit' }))
+  const overridden = await f.scope('bind', 'scope-third')
+  assert.equal(overridden.binding.scope_id, 'scope-third')
+  assert.equal(overridden.scope_id, 'scope-explicit')
+  assert.equal(overridden.bound_scope_is_current, false)
+  await writeFile(settingsPath, JSON.stringify(settings))
+  assert.equal((await f.scope('resolve')).scope_id, 'scope-third')
+  assert.equal((await f.scope('unbind')).binding.status, 'cleared')
+  assert.equal((await f.scope('unbind')).binding.status, 'absent')
+  assert.equal((await f.scope('resolve')).scope_id, 'scope-default')
+  assert.equal((await f.scope('resolve', undefined, other)).scope_id, 'scope-second')
+})
+
+test('a confirmed binding survives later resolution failure and failed resolution never captures', async t => {
+  const f = await fixture(t, {
+    '/v1/scope-bindings': (_req, res, body) => { res.writeHead(200); res.end(JSON.stringify(body)) },
+    '/v1/scope-bindings/resolve': (_req, res) => { res.writeHead(409); res.end('{}') },
+  }, { scope_id: null })
+  const result = await f.scope('bind', 'scope-saved')
+  assert.equal(result.exit_code, 1)
+  assert.equal(result.binding.status, 'saved')
+  assert.equal(result.binding.scope_id, 'scope-saved')
+  assert.equal(result.status, 'failed')
+  const hook = await f.invoke()
+  assert.deepEqual(hook.output, {})
+  assert.deepEqual(f.captures, [])
+  assert.ok(f.requests.every(item => !['/v1/context/prepare', '/v1/sources/content'].includes(item.path)))
+  const history = await f.status()
+  assert.equal(history.status, 'observed')
+  assert.equal(history.scope_id, null)
+  assert.equal(history.stages.scope.state, 'failed')
+})
+
+test('an unconfirmed binding write stays unknown without retry and invalid workspace input sends nothing', async t => {
+  const f = await fixture(t, { '/v1/scope-bindings': req => req.socket.destroy() }, { scope_id: null })
+  assert.equal((await f.scope('bind', 'scope-target', 'relative')).code, 'workspace_required')
+  assert.deepEqual(f.requests, [])
+  const result = await f.scope('bind', 'scope-target')
+  assert.equal(result.binding.status, 'unknown')
+  assert.equal(result.status, 'failed')
+  assert.equal(f.requests.filter(item => item.path === '/v1/scope-bindings').length, 1)
 })

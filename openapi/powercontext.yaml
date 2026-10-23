@@ -16,7 +16,7 @@ openapi: 3.0.3
 info:
   title: PowerContext API
   description: Remote PowerContext transport. Runtime behavior is reported by /v1/capabilities.
-  version: 1.3.0
+  version: 1.4.0
 x-powercontext-feature-contracts:
   access.principal: {major: 1, minor: 0}
   scope.selection: {major: 1, minor: 0}
@@ -1862,6 +1862,98 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/topic-memory/processing/status:
+    post:
+      tags: [topic-memory]
+      summary: Inspect Topic Memory processing and its current terminal block
+      description: >-
+        Return the current Cursor, Source head, retained target and durable blocked-window diagnostics. An active final
+        attempt remains pending because it may still finish. Legacy blocks receive their first observation timestamp;
+        an unavailable historical error code is null. This operation never grants new processing allowance.
+      operationId: get_topic_memory_processing_status
+      x-powercontext-access: {action: scope.read, resource: {type: scope, scope-id-from: scope_id}}
+      x-powercontext-scope-mode: current
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TopicMemoryProcessingStatusRequest"}
+      responses:
+        "200":
+          description: Current durable processing state.
+          headers:
+            X-PowerContext-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TopicMemoryProcessingStatus"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "422": {$ref: "#/components/responses/InvalidRequest"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /v1/topic-memory/processing/blocks/get:
+    post:
+      tags: [topic-memory]
+      summary: Get a retained Topic Memory processing block
+      description: Return one exact block, including its original diagnostics and any accepted retry, after recovery.
+      operationId: get_topic_memory_processing_block
+      x-powercontext-access: {action: scope.read, resource: {type: scope, scope-id-from: scope_id}}
+      x-powercontext-scope-mode: current
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GetTopicMemoryProcessingBlockRequest"}
+      responses:
+        "200":
+          description: The exact retained block.
+          headers:
+            X-PowerContext-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TopicMemoryProcessingBlock"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/InvalidRequest"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /v1/topic-memory/processing/retry:
+    post:
+      tags: [topic-memory]
+      summary: Explicitly retry one observed Topic Memory block
+      description: >-
+        Require scope.admin and the exact block_id returned by status. Atomically retain the block's failure and usage
+        evidence, grant one fresh bounded allowance and request asynchronous processing without advancing the Cursor or
+        discarding the target or Sources. Repeating a block_id returns its original acceptance and cannot reset a later
+        attempt. An unretried block that no longer owns the frontier returns topic_memory_block_conflict. Ordinary
+        flushes, status reads, restarts and model changes never reset allowance.
+      operationId: retry_topic_memory_processing
+      x-powercontext-access: {action: scope.admin, resource: {type: scope, scope-id-from: scope_id}}
+      x-powercontext-scope-mode: current
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RetryTopicMemoryProcessingRequest"}
+      responses:
+        "200":
+          description: One retry was durably accepted, including duplicate acceptance.
+          headers:
+            X-PowerContext-Request-ID:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RetryTopicMemoryProcessingResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/InvalidRequest"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+        "500": {$ref: "#/components/responses/InternalError"}
   /v1/topic-memory/search:
     post:
       tags: [topic-memory]
@@ -3892,7 +3984,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 256
-            pattern: '^[\x21-\x7E]+$'
+            pattern: '.*\S.*'
       responses:
         "200":
           description: The exact Source.
@@ -4190,6 +4282,10 @@ paths:
         an earlier revision. Artifact ownership does not authorize Prompt replacement after Scope role revocation.
         Topic Memory replacement also requires scope.admin and preserves independently versioned tags.
         Complete title, summary, and detail text replaces the head without semantic generation.
+        Profile replacement uses the same conditional write. To roll back Profile, Prompt, Experience, Skill,
+        Handoff, or Topic Memory, set restored_from_revision and reason. The server checks that the submitted
+        canonical content matches that revision and differs from the current head, then commits a new revision.
+        Atomic Memory replacement rejects both fields; restore Atomic Memory through its restoration flow.
       operationId: replace_artifact
       x-powercontext-scope-mode: current
       x-powercontext-access: {resolver: path_artifact_write_access}
@@ -4207,7 +4303,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [memory, atomic-memory, experience, skill, handoff, prompt, topic-memory]
+            enum: [memory, atomic-memory, experience, skill, handoff, prompt, topic-memory, profile]
         - name: artifact_id
           in: path
           required: true
@@ -5840,6 +5936,18 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/ProfileWriteContent"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Historical Profile revision restored by this replacement. Must match content.restored_from_revision when both are set.
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
+          description: Required when restored_from_revision or content.restored_from_revision is set.
     ActivateHandoffRequest:
       type: object
       additionalProperties: false
@@ -5923,6 +6031,22 @@ components:
           minimum: 0
           nullable: true
           description: Family-provided number of direct Source inputs when available.
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/AccessPrincipal"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          maxLength: 1024
+          nullable: true
     ArtifactCreated:
       type: object
       required: [scope_id, family, artifact_id, revision, sources, artifacts]
@@ -6006,6 +6130,26 @@ components:
         content_digest:
           type: string
           pattern: '^sha256:[0-9a-f]{64}$'
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When this revision was committed. Absent for revisions stored before this field existed.
+        created_by:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/AccessPrincipal"
+          description: Principal that committed a rollback. Ordinary revisions omit it.
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Historical revision restored by this rollback.
+        reason:
+          type: string
+          maxLength: 1024
+          nullable: true
+          description: Reason recorded for a rollback.
     ArtifactReference:
       type: object
       additionalProperties: false
@@ -8411,6 +8555,17 @@ components:
         content_bytes:
           type: integer
           minimum: 0
+        reason:
+          allOf:
+            - $ref: "#/components/schemas/PreparedContextReason"
+          nullable: true
+          description: >-
+            Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked
+            with `explain` and a channel was lost, so a response a Host injects keeps its four fields. The values are
+            the two inference failures among RFC 1435's four `SearchGroup.fallback_reason` spellings, so a later
+            Receipt reuses them instead of restating the cause. `none` travels as absence, and
+            `reused_fts_fallback` is not a cause here: a later round reusing a failed round's keyword-only outcome is
+            still explained by that round's `inference_*` value, which outranks it.
     BootstrapContextItem:
       type: object
       additionalProperties: false
@@ -9667,13 +9822,97 @@ components:
           type: integer
           minimum: 0
           default: 0
-          description: Compatibility field; Atomic Memory processing always returns zero.
+          description: >-
+            Indicator that the write gate held this window: 0 for no HOLD, 1 for HOLD,
+            regardless of how many Sources the window contains. A held window is consumed: current_cursor advances past those Sources and the
+            Runtime does not retry them, so a caller that needs the content re-captures it.
         hold_codes:
           type: array
           items:
             type: string
           default: []
-          description: Compatibility field; Atomic Memory processing always returns an empty array.
+          description: >-
+            Gate rejection codes reported for this window; empty unless held_count is 1.
+    TopicMemoryProcessingStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [scope_id]
+      properties:
+        scope_id: {type: string, minLength: 1, maxLength: 256, pattern: '.*\S.*'}
+    GetTopicMemoryProcessingBlockRequest:
+      type: object
+      additionalProperties: false
+      required: [scope_id, block_id]
+      properties:
+        scope_id: {type: string, minLength: 1, maxLength: 256, pattern: '.*\S.*'}
+        block_id: {type: string, minLength: 1, maxLength: 36}
+    RetryTopicMemoryProcessingRequest:
+      type: object
+      additionalProperties: false
+      required: [scope_id, block_id]
+      properties:
+        scope_id: {type: string, minLength: 1, maxLength: 256, pattern: '.*\S.*'}
+        block_id: {type: string, minLength: 1, maxLength: 36}
+    TopicMemoryProcessingBlock:
+      type: object
+      additionalProperties: false
+      required: [block_id, attempt_id, scope_id, binding_name, source_after, source_through, budget_source_through, legacy_source_through, target_source_through, attempts, requests, tokens, error_code, last_error_code, blocked_at, retried_at, retry_request_generation]
+      properties:
+        block_id: {type: string}
+        attempt_id: {type: string}
+        scope_id: {type: string, minLength: 1, maxLength: 256, pattern: '.*\S.*'}
+        binding_name: {type: string}
+        source_after: {type: integer, minimum: 0}
+        source_through:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Exact selected Source end; null when historical selection is unknown.
+        budget_source_through:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Cumulative coverage of the original allowance; null only for imported blocks without that allowance.
+        legacy_source_through:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Original ambiguous range of an imported attempts-table block; neither exact selection nor cumulative coverage.
+        target_source_through: {type: integer, minimum: 1}
+        attempts: {type: integer, minimum: 1}
+        requests: {type: integer, minimum: 0}
+        tokens: {type: integer, minimum: 0}
+        error_code: {type: string}
+        last_error_code: {type: string, nullable: true}
+        blocked_at: {type: string, format: date-time}
+        retried_at: {type: string, nullable: true, format: date-time}
+        retry_request_generation: {type: integer, nullable: true, minimum: 1}
+    TopicMemoryProcessingState:
+      type: string
+      enum: [idle, pending, blocked]
+    TopicMemoryProcessingRetryStatus:
+      type: string
+      enum: [accepted]
+    TopicMemoryProcessingStatus:
+      type: object
+      additionalProperties: false
+      required: [state, source_cursor, source_head, target_source_through, block]
+      properties:
+        state: {$ref: "#/components/schemas/TopicMemoryProcessingState"}
+        source_cursor: {type: integer, minimum: 0}
+        source_head: {type: integer, minimum: 0}
+        target_source_through: {type: integer, nullable: true, minimum: 0}
+        block:
+          nullable: true
+          allOf:
+            - {$ref: "#/components/schemas/TopicMemoryProcessingBlock"}
+    RetryTopicMemoryProcessingResponse:
+      type: object
+      additionalProperties: false
+      required: [status, block]
+      properties:
+        status: {$ref: "#/components/schemas/TopicMemoryProcessingRetryStatus"}
+        block: {$ref: "#/components/schemas/TopicMemoryProcessingBlock"}
     FlushTopicMemoryRequest:
       type: object
       additionalProperties: false
@@ -10365,6 +10604,12 @@ components:
           type: boolean
           default: false
           description: Opt into current-Scope native code evidence. No index is built during preparation.
+        explain:
+          type: boolean
+          default: false
+          description: >-
+            Opt into reporting which retrieval channel this preparation lost, as `reason` on the response. Off by
+            default, because a response a Host injects keeps its four fields.
         assembly:
           $ref: "#/components/schemas/ContextAssembly"
         bootstrap_receipt_id:
@@ -11080,6 +11325,8 @@ components:
       required: [content]
       properties:
         content: {$ref: '#/components/schemas/TopicMemoryWriteContent'}
+        restored_from_revision: {type: integer, minimum: 1, nullable: true}
+        reason: {type: string, minLength: 1, maxLength: 1024, pattern: '.*\S.*', nullable: true}
     CreatePromptArtifactRequest:
       type: object
       additionalProperties: false
@@ -11345,6 +11592,16 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/PromptContent"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
     ListArtifactRevisionsRequest:
       type: object
       additionalProperties: false
@@ -11610,6 +11867,16 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/ExperienceProposal"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
     ReplaceSkillArtifactRequest:
       type: object
       additionalProperties: false
@@ -11617,6 +11884,16 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/SkillProposal"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
     ReplaceHandoffArtifactRequest:
       type: object
       additionalProperties: false
@@ -11624,6 +11901,16 @@ components:
       properties:
         content:
           $ref: "#/components/schemas/HandoffContent"
+        restored_from_revision:
+          type: integer
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '.*\S.*'
+          nullable: true
     SourceRecord:
       type: object
       required: [scope_id, source_type, source_id, content, position, content_digest]
@@ -11644,7 +11931,7 @@ components:
           type: string
           minLength: 1
           maxLength: 256
-          pattern: '^[\x21-\x7E]+$'
+          pattern: '.*\S.*'
         content:
           description: Persisted canonical JSON content.
         position:
@@ -11736,6 +12023,9 @@ components:
     BootstrapReceiptState:
       type: string
       enum: [pending, injected, skipped, failed]
+    PreparedContextReason:
+      type: string
+      enum: [inference_timeout, inference_unavailable]
     BootstrapSkipReason:
       type: string
       enum: [disabled, no_eligible_context, already_delivered, preparation_failed]

@@ -1,3 +1,5 @@
+> 实现说明（[#2060](https://github.com/oceanbase/powercontext/pull/2060)）：下文的 owner-pending 门禁让无关记录阻断已授权访问，并放大 Dashboard 查询成本。应由创建、批准和发布流程建立 ownership，读取按当前有效 grant 或已记录的 owner 关系授权，Artifact grant 不扩展为 Scope 集合权限。
+
 - Proposal Name: `handoff_access_control`
 - RFC Number: 1396
 - Start Date: 2026-08-30
@@ -316,9 +318,10 @@ source 逻辑 Artifact 上的 artifact.share
 
 这样授权可以覆盖 source 的历史和后续 Revision，同时每次 publication 仍保留精确 provenance。复制成功后，Server 在
 返回成功前把执行 publication 的 Principal 建立为新 target identity 的 direct owner；target 不继承 source 的 Binding
-或 owner。相同 publication 重试会幂等修复缺失的 target owner relation，冲突 owner 则 fail closed。Binding 本身不会
-复制内容，publication 也不会授予 host path、工具、网络或 credential。具体 Artifact Family 能否完整复制仍由 Runtime
-决定；不支持的 complete-state copy 会在授权后失败，但不会放宽 Access 模型。
+或 owner。共用关系型事务时，publication 与 ownership 一起提交；重放保留已有 owner，历史 target 缺少 owner 时返回
+`artifact_owner_pending`。外部 relationship writer 保留重试时幂等建立 owner 的行为，冲突 owner 则 fail closed。
+Binding 本身不会复制内容，publication 也不会授予 host path、工具、网络或 credential。具体 Artifact Family 能否完整复制
+仍由 Runtime 决定；不支持的 complete-state copy 会在授权后失败，但不会放宽 Access 模型。
 
 ## B 真正接手 Workstream
 
@@ -583,9 +586,18 @@ identity 归 publisher 所有。
 
 首版假设 deployment 在持久化第一个 Artifact 前就已启用 enforced mode。它不会为 access control disabled 期间已写入的
 catalog 回填或推断 owner，也不提供通用 owner repair 流程。未经过独立 operator migration 就把这类 catalog 切换到
-enforced mode 时，其中的 Artifact 按设计保持不可用。若 domain persistence 已成功但 owner establishment 失败，请求仍
-fail closed；只有明确支持幂等重放的业务流程才能通过重试修复 relation。通用 transactional outbox 和 operator recovery
-流程属于本 RFC 之外的未来工作。
+enforced mode 时，其中的 Artifact 按设计保持不可用。
+
+标准关系型 repository 同时负责 relationship 和 audit，且与业务共用数据库时，Artifact 创建、首次 Handoff commit、跨 Scope
+publication，以及 Experience/Skill Candidate 创建，会在业务事务内提交 owner relation 或 proposed-owner attestation。
+这包括生成、上传、导入和定时处理产生的 Candidate。所有权写入失败时，相关业务写入一起回滚；定时 incubation 的
+Source cursor 也保持不变，供后续重试。Atomic Memory、Profile 生成、Dream 和 supervisor worker 保留各自领域已有的事务回调。
+
+外部 relationship writer 和独立 audit store 无法加入该事务。这类组合中，若 domain persistence 已成功但 owner
+establishment 失败，请求仍 fail closed；只有明确支持幂等重放的业务流程才能通过重试修复 relation。同库已有的 owner 缺失记录
+不会被归给当前调用者，也不会根据内容重建 owner；它们保持不可用，直到独立 operator migration 能根据可信持久化证据确认
+原始身份。同库 publication 重放和 Handoff no-op 重放会对这类记录返回 `artifact_owner_pending`，不会创建 owner。
+通用 transactional outbox 和 operator recovery 流程属于本 RFC 之外的未来工作。
 
 ### 内置关系型存储
 

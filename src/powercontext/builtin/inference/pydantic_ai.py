@@ -17,10 +17,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from copy import copy
-from typing import Generic, Literal, Self, TypeVar, cast
+from typing import Any, Generic, Literal, Self, TypeVar, cast
 
 from pydantic import BaseModel, Field
 from typing_extensions import override
@@ -72,7 +72,7 @@ class PydanticAIConfigurationError(InferenceConfigurationError):
 
 try:
     from pydantic import PydanticSchemaGenerationError, PydanticUserError, TypeAdapter, ValidationError
-    from pydantic_ai import Agent, Embedder, PromptedOutput
+    from pydantic_ai import Agent, Embedder, ModelRetry, PromptedOutput, RunContext
     from pydantic_ai.embeddings import EmbeddingModel as PydanticAIEmbeddingModelBase
     from pydantic_ai.exceptions import (
         ConcurrencyLimitExceeded,
@@ -137,6 +137,7 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
         model_settings: ModelSettings | None = None,
         name: str | None = None,
         prompt_key: str | None = None,
+        output_check: Callable[[InputT, OutputT], None] | None = None,
     ) -> None:
         if isinstance(model, str) or not isinstance(model, Model):
             raise PydanticAIConfigurationError("model-instance")
@@ -157,7 +158,6 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
                 model if self._limits.allow_continuations else _CompleteResponseModel(model),
                 deps_type=input_type,
                 output_type=PromptedOutput(output_type),
-                validation_context=lambda context: context.deps,
                 instructions=instructions,
                 model_settings=bounded_settings,
                 retries=self._limits.max_requests - 1,
@@ -165,6 +165,18 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
             )
         except (PydanticSchemaGenerationError, PydanticUserError, UserError) as error:
             raise PydanticAIConfigurationError("schema") from error
+        if output_check is not None:
+            # A rule relating output to input is returned to the model like a schema error, within the same budget.
+            # The InvalidInferenceOutputError detail is sent to the provider, so it must name the rule, not content.
+
+            def check(context: RunContext[InputT], output: Any) -> Any:
+                try:
+                    output_check(context.deps, cast(OutputT, output))
+                except InvalidInferenceOutputError as error:
+                    raise ModelRetry(error.detail) from error
+                return output
+
+            self._agent.output_validator(check)
 
     async def generate(self, value: InputT, /) -> GenerationResult[OutputT]:
         """Generate one structured value within the configured request and time limits."""
@@ -200,6 +212,10 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            # An exhausted retry budget reports the rule the last response broke, not a generic failure.
+            rejected = _checked_rule(error) if isinstance(error, UnexpectedModelBehavior) else None
+            if rejected is not None:
+                raise rejected from error
             mapped = _map_error(error, operation="generate", timeout_seconds=self._limits.timeout_seconds)
             if mapped is None:
                 raise
@@ -369,6 +385,15 @@ def _generation_usage(value: RunUsage) -> InferenceUsage:
         input_tokens=value.input_tokens,
         output_tokens=value.output_tokens,
     )
+
+
+def _checked_rule(error: BaseException) -> InvalidInferenceOutputError | None:
+    cause = error.__cause__
+    while cause is not None:
+        if isinstance(cause, InvalidInferenceOutputError):
+            return cause
+        cause = cause.__cause__
+    return None
 
 
 def _map_error(

@@ -77,7 +77,7 @@ async fn main() {
             .iter()
             .any(|v| v.field == "registration" && v.status == "not_installed")
     );
-    assert_eq!(integrations.hosts.len(), 8);
+    assert_eq!(integrations.hosts.len(), 10);
     let mut legacy = registration.clone();
     legacy["version"] = "0.0.0".into();
     let legacy_path = invalid_directory.path().join("legacy.json");

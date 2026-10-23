@@ -30,6 +30,10 @@ powercontext server run
 pi
 ```
 
+If an older PowerContext package at another path has Pi resource filters, setup stops before changing the host.
+Move that package entry to the managed path reported in the error, keeping its filters, then rerun setup.
+Refreshes at the managed path preserve existing filters.
+
 ## Understand what the package does
 
 Before Pi starts an agent turn, the package calls `POST /v1/context/prepare` once with an 8000-byte default budget.
@@ -145,3 +149,7 @@ changing these variables.
 
 Failure diagnostics are silent by default because Pi's TUI renders on stdout with cursor positioning, so
 anything written to stderr lands inside the input bar; set `POWERCONTEXT_PI_DIAGNOSTICS` to see them.
+
+## Automatic input privacy
+
+See [Automatic prompt privacy](index.md#automatic-prompt-privacy) for this host's capture default, disable control, credential recognition limits and independent read-only query handling. Recognized inputs are skipped for capture; accepted Source content and event identity are not rewritten.

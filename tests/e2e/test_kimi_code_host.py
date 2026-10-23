@@ -23,7 +23,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,7 +36,8 @@ from pydantic import AnyHttpUrl, SecretStr
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime.config import InferenceConfig, RuntimeConfig
-from powercontext.cli.kimi_code import install_kimi_plugin, run_kimi_diagnostics
+from powercontext.cli.installation import setup as install_plugin
+from powercontext.cli.kimi_code import KimiInstaller
 from powercontext.server.factory import create_server_app
 from powercontext.server.settings import BearerAuthConfig, ServerSettings
 
@@ -71,6 +72,7 @@ class ModelGateway(ThreadingHTTPServer):
         self.scope_id = scope_id
         self.requests = []
         self.generation_requests = []
+        self.choose_tool: Callable[..., tuple[str | None, dict[str, Any] | None]] | None = None
 
 
 class ModelHandler(BaseHTTPRequestHandler):
@@ -85,12 +87,24 @@ class ModelHandler(BaseHTTPRequestHandler):
         messages = body["messages"]
         user_text = json.dumps([m for m in messages if m["role"] == "user"], ensure_ascii=False)
         tool_messages = [m for m in messages if m["role"] == "tool"]
+        binding = next(
+            (obj for obj in _objects(messages) if obj.get("schema") == "powercontext.kimi-code.request-binding.v1"),
+            {},
+        )
+        scope_id = binding.get("scope_id")
+        workspace_text = EXPLICIT + (
+            " first-workspace."
+            if "WORKSPACE_FIRST" in user_text
+            else " second-workspace."
+            if "WORKSPACE_SECOND" in user_text
+            else ""
+        )
         tool = None
         arguments = None
         if "PC_KIMI_SAVE" in user_text:
             if not tool_messages:
                 tool = "remember_memory"
-                arguments = {"scope_id": self.server.scope_id, "kind": "fact", "text": EXPLICIT}
+                arguments = {"scope_id": scope_id, "kind": "fact", "text": workspace_text}
             elif len(tool_messages) == 1:
                 record = next(
                     (
@@ -103,10 +117,12 @@ class ModelHandler(BaseHTTPRequestHandler):
                 if record is not None:
                     artifact = record["artifact"]
                     tool = "get_artifact_revision"
-                    arguments = {"scope_id": self.server.scope_id, **artifact}
+                    arguments = {"scope_id": scope_id, **artifact}
         elif "PC_KIMI_SEARCH" in user_text and not tool_messages:
             tool = "search_memory"
-            arguments = {"scope_id": self.server.scope_id, "query": "amber", "mode": "fts"}
+            arguments = {"scope_id": scope_id, "query": "amber", "mode": "fts"}
+        elif self.server.choose_tool is not None:
+            tool, arguments = self.server.choose_tool(body, scope_id, tool_messages)
         delta = {"content": "PC_KIMI_OK"}
         finish = "stop"
         if tool:
@@ -304,14 +320,14 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
             '[[permission.rules]]\ndecision = "allow"\npattern = "mcp__plugin_powercontext_powercontext__*"\n',
             encoding="utf-8",
         )
-        installed = install_kimi_plugin(source=REPOSITORY, server_url=endpoint, scope_id=scope_id)
-        install_kimi_plugin(source=REPOSITORY)
-        diagnostics = run_kimi_diagnostics()
+        installed = install_plugin("kimi-code", source=str(REPOSITORY), server_url=endpoint, scope_id=scope_id)
+        install_plugin("kimi-code", source=str(REPOSITORY))
+        diagnostics = KimiInstaller().verify(mcp=True)
         assert all(check.ok for check in diagnostics.values()), diagnostics
         command = [node, str(cli)] if cli.suffix in {".mjs", ".js", ".cjs"} else [str(cli)]
         version = subprocess.run([*command, "--version"], capture_output=True, text=True, check=True, timeout=15)
 
-        def invoke(prompt, token: str | None = "kimi-synthetic-server-token"):  # noqa: S107 - disposable fixture credential.
+        def invoke(prompt, token: str | None = "kimi-synthetic-server-token", *, cwd: Path = workspace):  # noqa: S107 - disposable fixture credential.
             environment = dict(os.environ)
             if token is None:
                 environment.pop("POWERCONTEXT_KIMI_TOKEN", None)
@@ -320,7 +336,7 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
             result = subprocess.run(
                 [*command, "-p", prompt, "--output-format", "stream-json"],
                 env=environment,
-                cwd=workspace,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -392,7 +408,7 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
         history = subprocess.run(
             [
                 node,
-                str(Path(installed.plugin_path) / "scripts/status.mjs"),
+                str(Path(installed["plugin_path"]) / "scripts/status.mjs"),
                 "--cwd",
                 str(workspace),
                 "--session-id",
@@ -410,27 +426,27 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
         assert observed["stages"]["prepare"]["state"] == "ready"
         assert observed["stages"]["capture"]["state"] == "accepted"
         assert observed["stages"]["injection"]["state"] == "emitted"
-        diagnostics = run_kimi_diagnostics(runtime=True, cwd=workspace)
+        diagnostics = KimiInstaller().verify(runtime=True, cwd=workspace)
         assert diagnostics["runtime"].ok, diagnostics
         assert diagnostics["runtime"].checks is not None
         assert diagnostics["runtime"].checks["capture"] == "accepted"
 
-        install_kimi_plugin(source=REPOSITORY, capture_prompts=False)
+        install_plugin("kimi-code", source=str(REPOSITORY), capture_prompts=False)
         count = len(client.get(f"/v1/scopes/{scope_id}/sources").json()["items"])
         invoke("An ordinary task with capture disabled.")
         assert len(client.get(f"/v1/scopes/{scope_id}/sources").json()["items"]) == count
         invoke("Ordinary task with rejected credentials.", token="wrong-synthetic-token")  # noqa: S106
         invoke("Ordinary task with missing credentials.", token=None)
         monkeypatch.delenv("POWERCONTEXT_KIMI_TOKEN")
-        assert run_kimi_diagnostics()["credentials"].detail == "authentication_failed"
+        assert KimiInstaller().verify()["credentials"].detail == "authentication_failed"
         monkeypatch.setenv("POWERCONTEXT_KIMI_TOKEN", "wrong-synthetic-token")
-        assert run_kimi_diagnostics()["scope"].detail == "authentication_failed"
+        assert KimiInstaller().verify()["scope"].detail == "authentication_failed"
         monkeypatch.setenv("POWERCONTEXT_KIMI_TOKEN", "kimi-synthetic-server-token")
         server.should_exit = True
         server_thread.join(timeout=10)
         assert not server_thread.is_alive(), "PowerContext Server must actually stop before outage acceptance"
         invoke("An ordinary task during a PowerContext outage.")
-        assert run_kimi_diagnostics()["server"].detail == "server_unavailable"
+        assert KimiInstaller().verify()["server"].detail == "server_unavailable"
         basic_app = create_server_app(
             settings=ServerSettings(
                 database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'basic.db'}"),
@@ -448,8 +464,8 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
             new_scope.raise_for_status()
             gateway.scope_id = new_scope.json()["scope_id"]
             monkeypatch.delenv("POWERCONTEXT_KIMI_TOKEN")
-            install_kimi_plugin(source=REPOSITORY, server_url=basic_endpoint, scope_id=gateway.scope_id)
-            assert all(check.ok for check in run_kimi_diagnostics().values())
+            install_plugin("kimi-code", source=str(REPOSITORY), server_url=basic_endpoint, scope_id=gateway.scope_id)
+            assert all(check.ok for check in KimiInstaller().verify().values())
             start = len(gateway.requests)
             invoke("PC_KIMI_SAVE: Save explicitly without Generation.", token=None)
             assert any(
@@ -459,18 +475,145 @@ def test_real_kimi_memory_capture_recall_and_fail_open(tmp_path: Path, monkeypat
                 if m["role"] == "tool"
             )
             invoke("PC_KIMI_SEARCH: Search in basic memory mode.", token=None)
+
+            install_plugin("kimi-code", source=str(REPOSITORY), workspace_scope=True, capture_prompts=True)
+            default = basic.put("/v1/scopes/default", json={"scope_id": gateway.scope_id})
+            default.raise_for_status()
+            second_scope = basic.post(
+                "/v1/scopes",
+                json={
+                    "title": "Second Kimi workspace",
+                    "summary": "Isolated workspace",
+                    "idempotency_key": "kimi-second",
+                },
+            )
+            second_scope.raise_for_status()
+            other_scope_id = second_scope.json()["scope_id"]
+            other_workspace = tmp_path / "other workspace"
+            other_workspace.mkdir()
+            scope_script = Path(installed["plugin_path"]) / "scripts/scope.mjs"
+
+            def scope_action(action, cwd, target=None):
+                arguments = [node, str(scope_script), action, "--cwd", str(cwd)]
+                if target is not None:
+                    arguments.extend(["--scope-id", target])
+                result = subprocess.run(
+                    arguments, capture_output=True, text=True, encoding="utf-8", check=True, timeout=6
+                )
+                return json.loads(result.stdout)
+
+            for cwd, target, label, other_label in (
+                (workspace, gateway.scope_id, "FIRST", "second-workspace"),
+                (other_workspace, other_scope_id, "SECOND", "first-workspace"),
+            ):
+                bound = scope_action("bind", cwd, target)
+                assert bound["binding"]["status"] == "saved"
+                assert bound["scope_id"] == target
+                invoke(f"PC_KIMI_SAVE WORKSPACE_{label}: Save this workspace decision.", token=None, cwd=cwd)
+                start = len(gateway.requests)
+                recall = invoke("PC_KIMI_SEARCH: Find this workspace decision.", token=None, cwd=cwd)
+                tool_results = [
+                    message
+                    for request in gateway.requests[start:]
+                    for message in request["messages"]
+                    if message["role"] == "tool"
+                ]
+                serialized = json.dumps(tool_results)
+                assert label.lower() + "-workspace" in serialized, serialized
+                assert other_label not in serialized, serialized
+                assert all(
+                    obj.get("scope_id", target) == target
+                    for request in gateway.requests[start:]
+                    for obj in _objects(request["messages"])
+                    if obj.get("schema") == "powercontext.kimi-code.request-binding.v1"
+                )
+                observed = KimiInstaller().verify(runtime=True, cwd=cwd)
+                assert observed["scope"].checks is not None
+                assert observed["scope"].checks["scope_id"] == target
+                assert observed["runtime"].checks is not None
+                assert observed["runtime"].checks["scope_id"] == target
+                assert observed["runtime"].checks["capture"] == "accepted"
+                captured = basic.get(f"/v1/scopes/{target}/sources")
+                captured.raise_for_status()
+                assert any(item["source_id"].startswith("kimi-user-prompt:") for item in captured.json()["items"])
+            install_plugin("kimi-code", source=str(REPOSITORY), scope_id=gateway.scope_id)
+            shadowed = scope_action("bind", other_workspace, other_scope_id)
+            assert shadowed["binding"]["status"] == "saved"
+            assert shadowed["bound_scope_is_current"] is False
+            assert shadowed["scope_id"] == gateway.scope_id
+            install_plugin("kimi-code", source=str(REPOSITORY), workspace_scope=True)
+            assert scope_action("resolve", other_workspace)["scope_id"] == other_scope_id
+            assert scope_action("unbind", other_workspace)["binding"]["status"] == "cleared"
+            assert scope_action("resolve", other_workspace)["scope_id"] == gateway.scope_id
+            assert scope_action("resolve", workspace)["scope_id"] == gateway.scope_id
+            alias_parent = tmp_path / "alias parent"
+            alias_parent.mkdir()
+            alias = alias_parent / "workspace alias"
+            subprocess.run(
+                [
+                    node,
+                    "--input-type=module",
+                    "-e",
+                    "import { symlinkSync } from 'node:fs'; "
+                    "symlinkSync(process.argv[1], process.argv[2], process.platform === 'win32' ? 'junction' : 'dir')",
+                    str(other_workspace),
+                    str(alias),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=6,
+            )
+            assert scope_action("bind", other_workspace, other_scope_id)["scope_id"] == other_scope_id
+            variants = [alias]
+            if os.name == "nt":
+                variants.extend([Path(str(other_workspace).lower()), Path(str(other_workspace).upper())])
+            for variant in variants:
+                assert scope_action("resolve", variant)["scope_id"] == other_scope_id
+                observed = KimiInstaller().verify(cwd=variant)
+                assert observed["scope"].checks is not None
+                assert observed["scope"].checks["scope_id"] == other_scope_id
+            start = len(gateway.requests)
+            invoke("PC_KIMI_SEARCH: Find this workspace decision through its alias.", token=None, cwd=alias)
+            assert any(
+                "second-workspace" in json.dumps(message)
+                for request in gateway.requests[start:]
+                for message in request["messages"]
+                if message["role"] == "tool"
+            )
+            assert scope_action("bind", alias, gateway.scope_id)["scope_id"] == gateway.scope_id
+            assert scope_action("resolve", other_workspace)["scope_id"] == gateway.scope_id
+            assert scope_action("unbind", alias)["binding"]["status"] == "cleared"
+            lexical = alias_parent / "other workspace"
+            lexical.mkdir()
+            scope_action("bind", lexical, gateway.scope_id)
+            scope_action("bind", other_workspace, other_scope_id)
+            compound = alias / ".." / "other workspace"
+            expected = gateway.scope_id if os.name == "nt" else other_scope_id
+            untouched = other_workspace if os.name == "nt" else lexical
+            untouched_scope = other_scope_id if os.name == "nt" else gateway.scope_id
+            assert scope_action("resolve", compound)["scope_id"] == expected
+            observed = KimiInstaller().verify(cwd=compound)
+            assert observed["scope"].checks is not None
+            assert observed["scope"].checks["scope_id"] == expected
+            assert scope_action("bind", compound, other_scope_id)["scope_id"] == other_scope_id
+            assert scope_action("resolve", untouched)["scope_id"] == untouched_scope
+            assert scope_action("unbind", compound)["binding"]["status"] == "cleared"
+            assert scope_action("resolve", untouched)["scope_id"] == untouched_scope
         (tmp_path / "evidence.json").write_text(
             json.dumps(
                 {
                     "host_version": version.stdout.strip(),
                     "platform": os.name,
                     "inference": "controlled",
-                    "installation": installed.plugin_path,
+                    "installation": installed["plugin_path"],
                     "explicit_memory": True,
                     "exact_readback": True,
                     "source_generation": True,
                     "fresh_session_injection": True,
                     "runtime_observation": True,
+                    "workspace_scope_isolation": True,
+                    "workspace_scope_bind_unbind": True,
                     "capture_disabled": True,
                     "wrong_token_fail_open": True,
                     "outage_fail_open": True,

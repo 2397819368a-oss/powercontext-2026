@@ -260,6 +260,22 @@ class ReplaceProfileArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: ProfileWriteContent
+    restored_from_revision: Annotated[
+        StrictInt | None,
+        Field(
+            description="Historical Profile revision restored by this replacement. Must match content.restored_from_revision when both are set.",
+            ge=1,
+        ),
+    ] = None
+    reason: Annotated[
+        StrictStr | None,
+        Field(
+            description="Required when restored_from_revision or content.restored_from_revision is set.",
+            max_length=1024,
+            min_length=1,
+            pattern=".*\\S.*",
+        ),
+    ] = None
 
 
 class ArtifactReference(BaseModel):
@@ -1657,6 +1673,96 @@ class FlushMemoryRequest(BaseModel):
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
 
 
+class TopicMemoryProcessingStatusRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+
+
+class GetTopicMemoryProcessingBlockRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    block_id: Annotated[StrictStr, Field(max_length=36, min_length=1)]
+
+
+class RetryTopicMemoryProcessingRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    block_id: Annotated[StrictStr, Field(max_length=36, min_length=1)]
+
+
+class TopicMemoryProcessingBlock(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    block_id: StrictStr
+    attempt_id: StrictStr
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    binding_name: StrictStr
+    source_after: Annotated[StrictInt, Field(ge=0)]
+    source_through: Annotated[
+        StrictInt | None,
+        Field(description="Exact selected Source end; null when historical selection is unknown.", ge=1),
+    ]
+    budget_source_through: Annotated[
+        StrictInt | None,
+        Field(
+            description="Cumulative coverage of the original allowance; null only for imported blocks without that allowance.",
+            ge=1,
+        ),
+    ]
+    legacy_source_through: Annotated[
+        StrictInt | None,
+        Field(
+            description="Original ambiguous range of an imported attempts-table block; neither exact selection nor cumulative coverage.",
+            ge=1,
+        ),
+    ]
+    target_source_through: Annotated[StrictInt, Field(ge=1)]
+    attempts: Annotated[StrictInt, Field(ge=1)]
+    requests: Annotated[StrictInt, Field(ge=0)]
+    tokens: Annotated[StrictInt, Field(ge=0)]
+    error_code: StrictStr
+    last_error_code: Annotated[StrictStr | None, Field(...)]
+    blocked_at: AwareDatetime
+    retried_at: Annotated[AwareDatetime | None, Field(...)]
+    retry_request_generation: Annotated[StrictInt | None, Field(ge=1)]
+
+
+class TopicMemoryProcessingState(StrEnum):
+    IDLE = "idle"
+    PENDING = "pending"
+    BLOCKED = "blocked"
+
+
+class TopicMemoryProcessingRetryStatus(StrEnum):
+    ACCEPTED = "accepted"
+
+
+class TopicMemoryProcessingStatus(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    state: TopicMemoryProcessingState
+    source_cursor: Annotated[StrictInt, Field(ge=0)]
+    source_head: Annotated[StrictInt, Field(ge=0)]
+    target_source_through: Annotated[StrictInt | None, Field(ge=0)]
+    block: Annotated[TopicMemoryProcessingBlock | None, Field(...)]
+
+
+class RetryTopicMemoryProcessingResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    status: TopicMemoryProcessingRetryStatus
+    block: TopicMemoryProcessingBlock
+
+
 class FlushTopicMemoryRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -2344,6 +2450,8 @@ class ReplaceTopicMemoryArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: TopicMemoryWriteContent
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class Family3(StrEnum):
@@ -2880,6 +2988,11 @@ class BootstrapReceiptState(StrEnum):
     INJECTED = "injected"
     SKIPPED = "skipped"
     FAILED = "failed"
+
+
+class PreparedContextReason(StrEnum):
+    INFERENCE_TIMEOUT = "inference_timeout"
+    INFERENCE_UNAVAILABLE = "inference_unavailable"
 
 
 class BootstrapSkipReason(StrEnum):
@@ -3649,6 +3762,10 @@ class ArtifactCollectionItem(BaseModel):
     source_count: Annotated[
         StrictInt | None, Field(description="Family-provided number of direct Source inputs when available.", ge=0)
     ] = None
+    created_at: AwareDatetime | None = None
+    created_by: AccessPrincipal | None = None
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024)] = None
 
 
 class ArtifactCreated(BaseModel):
@@ -3682,6 +3799,17 @@ class ArtifactRevision(BaseModel):
     sources: list[SourceTypeReference]
     artifacts: list[ArtifactReference]
     content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
+    created_at: Annotated[
+        AwareDatetime | None,
+        Field(description="When this revision was committed. Absent for revisions stored before this field existed."),
+    ] = None
+    created_by: Annotated[
+        AccessPrincipal | None, Field(description="Principal that committed a rollback. Ordinary revisions omit it.")
+    ] = None
+    restored_from_revision: Annotated[
+        StrictInt | None, Field(description="Historical revision restored by this rollback.", ge=1)
+    ] = None
+    reason: Annotated[StrictStr | None, Field(description="Reason recorded for a rollback.", max_length=1024)] = None
 
 
 class HandoffReceiptIdentity(BaseModel):
@@ -3941,6 +4069,12 @@ class PreparedContext(BaseModel):
     status: PreparedContextStatus
     content: Annotated[StrictStr | None, Field(...)]
     content_bytes: Annotated[StrictInt, Field(ge=0)]
+    reason: Annotated[
+        PreparedContextReason | None,
+        Field(
+            description="Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields. The values are the two inference failures among RFC 1435's four `SearchGroup.fallback_reason` spellings, so a later Receipt reuses them instead of restating the cause. `none` travels as absence, and `reused_fts_fallback` is not a cause here: a later round reusing a failed round's keyword-only outcome is still explained by that round's `inference_*` value, which outranks it."
+        ),
+    ] = None
 
 
 class BootstrapContextItem(BaseModel):
@@ -4111,11 +4245,15 @@ class FlushMemoryResponse(BaseModel):
         StrictBool, Field(description="More Source journal work remains after the committed window.")
     ] = False
     held_count: Annotated[
-        StrictInt, Field(description="Compatibility field; Atomic Memory processing always returns zero.", ge=0)
+        StrictInt,
+        Field(
+            description="Indicator that the write gate held this window: 0 for no HOLD, 1 for HOLD, regardless of how many Sources the window contains. A held window is consumed: current_cursor advances past those Sources and the Runtime does not retry them, so a caller that needs the content re-captures it.",
+            ge=0,
+        ),
     ] = 0
     hold_codes: Annotated[
         list[StrictStr],
-        Field(description="Compatibility field; Atomic Memory processing always returns an empty array."),
+        Field(description="Gate rejection codes reported for this window; empty unless held_count is 1."),
     ] = []
 
 
@@ -4505,6 +4643,8 @@ class ReplaceExperienceArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: ExperienceProposal
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class ReplaceSkillArtifactRequest(BaseModel):
@@ -4512,6 +4652,8 @@ class ReplaceSkillArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: SkillProposal
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class SourceRecord(BaseModel):
@@ -4523,7 +4665,7 @@ class SourceRecord(BaseModel):
     ] = None
     scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     source_type: SourceType
-    source_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    source_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
     content: Annotated[Any, Field(description="Persisted canonical JSON content.")]
     position: Annotated[StrictInt, Field(ge=1)]
     content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
@@ -4694,6 +4836,12 @@ class PrepareContextRequest(BaseModel):
         StrictBool,
         Field(description="Opt into current-Scope native code evidence. No index is built during preparation."),
     ] = False
+    explain: Annotated[
+        StrictBool,
+        Field(
+            description="Opt into reporting which retrieval channel this preparation lost, as `reason` on the response. Off by default, because a response a Host injects keeps its four fields."
+        ),
+    ] = False
     assembly: ContextAssembly | None = None
     bootstrap_receipt_id: Annotated[
         StrictStr | None,
@@ -4728,6 +4876,8 @@ class ReplacePromptArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: PromptContent
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class ReplaceMemoryArtifactRequest(BaseModel):
@@ -5007,6 +5157,8 @@ class ReplaceHandoffArtifactRequest(BaseModel):
         extra="forbid",
     )
     content: HandoffContent
+    restored_from_revision: Annotated[StrictInt | None, Field(ge=1)] = None
+    reason: Annotated[StrictStr | None, Field(max_length=1024, min_length=1, pattern=".*\\S.*")] = None
 
 
 class Candidate(BaseModel):

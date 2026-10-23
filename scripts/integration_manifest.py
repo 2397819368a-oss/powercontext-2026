@@ -85,6 +85,7 @@ class ToolSurfaceProbe(StrEnum):
     ZCODE_PROMPT_HOOK = "zcode_prompt_hook"
     KIMI_CODE_MCP = "kimi_code_mcp"
     KIMI_CODE_PROMPT_HOOK = "kimi_code_prompt_hook"
+    KIMI_CODE_SCOPE = "kimi_code_scope"
     DIFY_TOOLS = "dify_tools"
     DSH_MCP = "dsh_mcp"
     DSH_LIFECYCLE = "dsh_lifecycle"
@@ -474,6 +475,14 @@ def _probe_toolset(probe: ToolSurfaceProbe, root: Path) -> set[str]:
         return {tool.name for tool in server_mcp_tools()}
     if probe is ToolSurfaceProbe.JSON_PROMPT_HOOK:
         return _prompt_hook_ids(root)
+    if probe is ToolSurfaceProbe.KIMI_CODE_SCOPE:
+        script = _read(root, "integrations/kimi-code/plugins/powercontext/scripts/scope.mjs")
+        if not all(
+            marker in script
+            for marker in ("['resolve', 'bind', 'unbind'].includes(action)", "/v1/scope-bindings/clear", "resolveScope")
+        ):
+            raise ValueError("missing Kimi workspace binding commands")
+        return {"kimi-code:scope:resolve", "kimi-code:scope:bind", "kimi-code:scope:unbind"}
     if probe in {ToolSurfaceProbe.KIMI_CODE_MCP, ToolSurfaceProbe.KIMI_CODE_PROMPT_HOOK}:
         plugin = root / "integrations/kimi-code/plugins/powercontext"
         manifest = json.loads((plugin / "kimi.plugin.json").read_text(encoding="utf-8"))
@@ -481,7 +490,10 @@ def _probe_toolset(probe: ToolSurfaceProbe, root: Path) -> set[str]:
             entry = manifest["mcpServers"]["powercontext"]
             if entry.get("url") != "http://127.0.0.1:8000/mcp":
                 raise ValueError("missing Kimi HTTP MCP endpoint")
-            return set(entry["enabledTools"])
+            profiles = json.loads((plugin / "profiles.json").read_text(encoding="utf-8"))["profiles"]
+            if entry["enabledTools"] != profiles["minimal"]:
+                raise ValueError("Kimi default tools do not match its minimal profile")
+            return set(profiles["full"])
         script = (plugin / "hooks/user_prompt_submit.mjs").read_text(encoding="utf-8")
         expected = {"event": "UserPromptSubmit", "command": "node ./hooks/user_prompt_submit.mjs", "timeout": 5}
         if manifest.get("hooks") != [expected] or not all(

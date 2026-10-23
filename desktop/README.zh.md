@@ -1,6 +1,6 @@
 # PowerContext Desktop 预览版
 
-这是 #1654 的内部工程预览。已建立 Tauri 2、React、TypeScript 和 Vite 独立工程，提供首页、连接、我的记忆、双语设置及浅色／深色／系统主题。无连接时保存和搜索不可用，不展示示例业务数据。
+这是 #1654 的 Windows 和 macOS 内部工程预览。已建立 Tauri 2、React、TypeScript 和 Vite 独立工程，提供首页、连接、我的记忆、双语设置及浅色／深色／系统主题。无连接时保存和搜索不可用，不展示示例业务数据。
 
 已实现连接配置、显式激活、身份与就绪检查、精确范围选择和本地诊断。已实现共享笔记表单、FTS 搜索和精确版本阅读；原生交互闭环仍待完整验收。当前不是已签名的正式发行版。
 
@@ -16,7 +16,9 @@
 
 ## 开发与构建
 
-Windows 11 x64 上需要 Node 24.14.1、pnpm 11.13.1、Rust 1.95.0 MSVC、Visual Studio C++ Build Tools、Windows SDK 和 WebView2。安装后的用户程序不依赖 Node、Rust、Python 或本地 Server。
+Windows 11 x64 上需要 Node 24.14.1、pnpm 11.13.1、Rust 1.95.0 MSVC、JDK 11 或更高版本（确保 `java` 位于 `PATH` 中）、Visual Studio C++ Build Tools、Windows SDK 和 WebView2。安装后的用户程序不依赖 Node、Rust、Python 或本地 Server。
+
+`generate` 和 `generate:check` 会启动基于 Java 的 OpenAPI Generator。首次运行时，`openapi-generator-cli` 可能从 Maven Central 下载固定版本的 Generator JAR，因此首次生成或漂移检查需要网络访问；后续运行可以复用已下载的 JAR。
 
 从仓库根目录执行：
 
@@ -44,6 +46,7 @@ pnpm --dir desktop desktop:dev
 工程边界：
 
 - OpenAPI 自动派生的 TypeScript schema 和十项 operation 映射，包含契约摘要及漂移检查。
+- `desktop/openapitools.json` 固定 OpenAPI Generator CLI 版本，Rust 模板位于 `desktop/scripts/openapi-generator/rust/`。修改 OpenAPI 合同或模板后，在仓库根目录执行 `pnpm --dir desktop generate`，不要手动编辑生成的 `src-tauri/src/transport/wire.rs`；CI 通过 `pnpm --dir desktop generate:check` 检查生成结果是否漂移。
 - Rust 自动派生的 IPC 类型与安全错误；凭据只写请求必须显式选择持久化或仅会话，成功回执只含存储模式，不含秘密或凭据标识。
 - Windows Credential Manager 原生适配器；保存失败直接报错，只有显式选择才采用仅会话内存。秘密类型不支持序列化，不实现 Debug。
 - 使用系统证书信任的原生 HTTPS；可为单个客户端添加显式 CA，继续校验主机名。
@@ -69,7 +72,7 @@ pnpm --dir desktop desktop:dev
 }
 ```
 
-Desktop 在每次诊断前检查固定路径和摘要，然后只允许 `service status --json` 或 `doctor integrations --json`。收到符合格式的诊断响应后，尝试读取实际 CLI 版本用于显示；版本查询失败时显示“未知”，不阻止有效诊断结果。版本查询最长 15 秒，服务检查最长 20 秒，集成检查最长 60 秒；每次进程调用的 stdout/stderr 合计最多 256 KiB。窗口隐藏，进程及其后代归属于本次专属 Windows Job，结束或超时后清理。界面只显示允许的状态字段，不显示任意 detail、路径或原始输出。合法 JSON 配合退出码 1 仍可显示不健康结果。
+Desktop 在每次诊断前检查固定路径和摘要，然后只允许 `service status --json` 或 `doctor codex claude-code dsh openclaw opencode pi hermes workbuddy kimi-code zcode --json`。收到符合格式的诊断响应后，尝试读取实际 CLI 版本用于显示；版本查询失败时显示“未知”，不阻止有效诊断结果。版本查询最长 15 秒，服务检查最长 20 秒，集成检查最长 60 秒；每次进程调用的 stdout/stderr 合计最多 256 KiB。窗口隐藏，进程及其后代归属于本次专属 Windows Job，结束或超时后清理。界面只显示允许的状态字段，不显示任意 detail、路径或原始输出。合法 JSON 配合退出码 1 仍可显示不健康结果。
 
 未配置或未通过核验时，本机诊断不可用，独立远程业务仍可使用。进程树清理和隔离真实 CLI 测试已通过；安装后交互与完整 S2 资格仍待验收。
 
@@ -99,4 +102,24 @@ Windows GitHub Actions 会构建未签名安装包，安装到临时中文路径
 
 从早期预览版升级后，请打开「连接」并选中已保存的连接。与当前 API 契约匹配的配置显示在「此 Desktop 构建可用」中；先核对已测试的 Server 构建与实际部署，再明确选择、保存、检查并使用该连接。新连接默认不选择兼容配置。
 
-历史配置显示为不可选择的记录。已保存的不匹配或不可用配置仍会显示并说明原因，须明确替换，不会静默升级。当前构建尚无匹配打包契约的产品资格记录，因此普通构建暂不开放业务操作。独立验证的 `ci-fixtures` 构建仅用于临时验收测试。历史资格证据和剩余要求见[验证说明](VALIDATION.md)。
+历史配置显示为不可选择的记录。已保存的不匹配或不可用配置仍会显示并说明原因，须明确替换，不会静默升级。对于已资格化的当前 Server 源码，明确选择 `sqlite-atomic-d9a78567-v1` 并在选取范围前检查连接；该记录的契约摘要与本构建的打包契约匹配，而 `sqlite-atomic-caf2a35a-v1`、`sqlite-atomic-683e2db0-v1` 与 `sqlite-atomic-cab054db-v1` 只资格化各自对应 Server 源码的部署，并不匹配打包契约。已记录的 Server 源码和 wheel 身份必须与实际部署一致。独立验证的 `ci-fixtures` 构建仅用于临时验收测试。历史资格证据和剩余要求见[验证说明](VALIDATION.md)。
+
+## 在 macOS 上构建
+
+使用 macOS 12 或更高版本、Xcode 命令行工具（`xcode-select --install`）、Node **24.14.1**、pnpm **11.13.1**、Rust **1.95.0** 和 **JDK 11 或更高版本（确保 `java` 位于 `PATH` 中）**。请在目标架构（Apple Silicon 或 Intel）上构建。
+
+`lint` 和 `build` 包含 `generate:check`，会启动 Java OpenAPI Generator。首次运行可能从 Maven Central 下载固定版本的 JAR，因此需要网络访问；后续运行可以复用已下载的 JAR。
+
+```sh
+cd desktop
+pnpm install --frozen-lockfile
+pnpm desktop:dev
+# 或直接构建应用包与磁盘镜像：
+pnpm desktop:build
+```
+
+应用位于 `src-tauri/target/release/bundle/macos/`，安装镜像位于 `src-tauri/target/release/bundle/dmg/`。打开 DMG 并把应用拖入「应用程序」后启动 **PowerContext Desktop Preview**。记忆操作需要已有独立 Server。Bearer 凭据可持久保存到 macOS 钥匙串，也可显式选择仅本次会话。移除应用不会删除 Server 数据或钥匙串凭据；如需一并删除凭据，请先在应用内移除已保存的连接配置。
+
+构建产物是未签名的内部预览。Developer ID 签名、公证、干净机器上的 Gatekeeper、辅助功能权限、真实输入法输入以及安装版钥匙串弹窗仍需单独验收。macOS CI 任务会测试 Apple Silicon 和 Intel 构建，但任务本身的存在不代表运行已通过。
+
+macOS 本机诊断读取 `~/Library/Application Support/com.powercontext.desktop.preview/diagnostic-cli.json`。登记与 Windows 使用相同的 JSON 契约：绝对路径的 `powercontext` 可执行文件、经核对的 SHA-256 摘要和 `source: "explicit_local_installation"`。渲染进程无法提供可执行文件或参数。原生适配器只执行经过核验的 launcher 的私有只读副本。请使用自包含可执行文件，或解释器路径为绝对路径的 launcher；以自身位置查找依赖的 launcher 不适用。CLI 不能依赖 shell 配置或交互式终端。诊断沿用既有的输出上限与超时，并在完成、超时和取消时终止自己的私有进程组。应用正常退出前会拒绝新诊断、取消当前诊断，并等待进程组清理和 launcher 回收完成。应用不会安装或管理 LaunchAgent。

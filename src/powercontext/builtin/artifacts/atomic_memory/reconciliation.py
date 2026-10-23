@@ -20,7 +20,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Literal, NoReturn
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.errors import AtomicMemoryConflictError
@@ -132,12 +132,6 @@ class AtomicMemoryReconciliationOutput(BaseModel):
         description="One brief sentence explaining the action. Do not repeat the memory content.",
     )
 
-    @model_validator(mode="after")
-    def supplied_contract(self, info: ValidationInfo) -> AtomicMemoryReconciliationOutput:
-        if isinstance(info.context, AtomicMemoryReconciliationInput):
-            validate_reconciliation_output(info.context, self)
-        return self
-
 
 @dataclass(frozen=True)
 class AtomicMemoryWorkingItem:
@@ -211,7 +205,7 @@ class AtomicMemoryWindowWorkset:
         output: AtomicMemoryReconciliationOutput,
     ) -> str:
         request = self.request(proposal_key, related)
-        validate_reconciliation_output(request, output)
+        validate_reconciliation_decision(request, output)
         key = self.resolve(proposal_key)
         proposal = self.items[key]
         supplied = {item.key: item for item in related}
@@ -294,28 +288,34 @@ def validate_reconciliation_output(
         or not set(output.evidence_ids) <= {item.evidence_id for item in request.evidence}
     ):
         _invalid("write must have supported content and only supplied evidence")
-    _validate_identity_transition(request, output)
 
 
-def _validate_identity_transition(
+def validate_reconciliation_decision(
     request: AtomicMemoryReconciliationInput, output: AtomicMemoryReconciliationOutput
 ) -> None:
-    targets = tuple(item for item in request.related if item.item_id in output.target_ids)
-    if output.action == "revise":
-        origins = {read.ref.artifact_id for item in (request.proposal, *targets) for read in item.original_refs}
-        if len(origins) != 1:
-            _invalid("revise requires exactly one published identity in original_refs; use merge for zero or multiple")
+    """Also enforce how a decision may consume or keep the published identities named by ``original_refs``.
+
+    The request alone determines these rules, so generation can return them to the model before the workset applies
+    the decision. Demonstration validation keeps the structural rules of ``validate_reconciliation_output``.
+    """
+
+    validate_reconciliation_output(request, output)
+    related = {item.item_id: item for item in request.related}
+    targets = tuple(related[identifier] for identifier in output.target_ids)
+    proposal_refs = _published(request.proposal)
     if output.action == "noop":
-        origins = {
-            (read.ref.family, read.ref.artifact_id, read.ref.revision) for read in request.proposal.original_refs
-        }
-        retained = {
-            (read.ref.family, read.ref.artifact_id, read.ref.revision)
-            for item in targets
-            for read in item.original_refs
-        }
-        if not origins <= retained:
+        if not targets and proposal_refs:
+            _invalid("noop cannot discard previously coordinated published identities")
+        if targets and not proposal_refs <= _published(targets[0]):
             _invalid("noop cannot discard a published identity; use merge")
+    elif output.action == "revise":
+        identities = {read.ref.artifact_id for item in (request.proposal, *targets) for read in item.original_refs}
+        if len(identities) != 1:
+            _invalid("revise must have exactly one published identity; use merge for multiple identities")
+
+
+def _published(item: AtomicMemoryComparisonItem) -> set[tuple[str, str, int]]:
+    return {(read.ref.family, read.ref.artifact_id, read.ref.revision) for read in item.original_refs}
 
 
 def unique_evidence(
