@@ -281,7 +281,7 @@ class RelationalRecordService:
         caller: str = "runtime",
     ) -> SourceRecordPage:
         _require_limit(limit)
-        expected_cursor = {
+        expected_cursor: dict[str, JsonValue] = {
             "version": 1,
             "endpoint": "list_sources",
             "scope_id": scope_id,
@@ -291,7 +291,14 @@ class RelationalRecordService:
             "limit": limit,
             "order": "journal_position:asc",
         }
-        cursor_state = self._cursor_after_text(cursor, expected_cursor)
+        content_only = False
+        try:
+            cursor_state = self._cursor_after_text(cursor, expected_cursor)
+        except InvalidCursorError:
+            # Cursors issued before Observation reads retain their content-only range.
+            expected_cursor["source_types"] = [CONTENT_SOURCE_NAME]
+            cursor_state = self._cursor_after_text(cursor, expected_cursor)
+            content_only = True
         async with self._database.transaction() as connection:
             high_watermark = await self._sources.journal_position(connection, scope_id)
             if cursor_state:
@@ -318,7 +325,7 @@ class RelationalRecordService:
                 after=after,
                 through=through,
                 limit=limit + 1,
-                source_types=(CONTENT_SOURCE_NAME, *observation_types),
+                source_types=(CONTENT_SOURCE_NAME,) if content_only else (CONTENT_SOURCE_NAME, *observation_types),
             )
             async with aclosing(source_stream):
                 async for stored in source_stream:
