@@ -703,18 +703,22 @@ def _codex_path_executable() -> str | None:
     before Python 3.12, and unless ``NoDefaultCurrentDirectoryInExePath`` is set from
     3.12 on), which lets a ``codex.cmd`` in the working directory shadow the PATH
     executable. Discovery per #2184 is about PATH, so enumerate PATH entries directly
-    while keeping which()'s PATHEXT matching semantics across Python 3.11-3.14.
+    while keeping which()'s matching semantics across Python 3.11-3.14: PATHEXT
+    candidates on Windows, the bare name with an executable-bit check on POSIX.
     Explicit PATH entries - including ``.`` and empty entries - keep their usual meaning.
     """
     name = "codex"
-    extensions = [
-        extension.rstrip(".")
-        for extension in (os.getenv("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
-        if extension
-    ]
-    candidates = [name + extension for extension in extensions]
-    if name.upper().endswith(tuple(extension.upper() for extension in extensions)):
-        candidates.insert(0, name)
+    if sys.platform == "win32":
+        extensions = [
+            extension.rstrip(".")
+            for extension in (os.getenv("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+            if extension
+        ]
+        candidates = [name + extension for extension in extensions]
+        if name.upper().endswith(tuple(extension.upper() for extension in extensions)):
+            candidates.insert(0, name)
+    else:
+        candidates = [name]
     seen: set[str] = set()
     for directory in (os.environ.get("PATH") or "").split(os.pathsep):
         key = os.path.normcase(directory)
@@ -723,7 +727,7 @@ def _codex_path_executable() -> str | None:
         seen.add(key)
         for candidate in candidates:
             resolved = os.path.join(directory, candidate)
-            if os.path.isfile(resolved):
+            if os.path.isfile(resolved) and (sys.platform == "win32" or os.access(resolved, os.X_OK)):
                 return resolved
     return None
 

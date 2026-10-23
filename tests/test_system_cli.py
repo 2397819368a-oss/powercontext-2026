@@ -1129,6 +1129,26 @@ def test_codex_runners_honor_an_explicit_dot_path_entry(tmp_path: Path, monkeypa
     assert result["marker"] == "CURRENT_DIRECTORY_SHIM"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable discovery has no PATHEXT")
+def test_codex_path_executable_finds_a_posix_executable(tmp_path: Path, monkeypatch) -> None:
+    executable = tmp_path / "codex"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert system_cli._codex_path_executable() == str(executable)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX discovery requires the executable bit")
+def test_codex_path_executable_skips_files_without_the_executable_bit(tmp_path: Path, monkeypatch) -> None:
+    plain = tmp_path / "codex"
+    plain.write_text("not executable\n", encoding="ascii")
+    plain.chmod(0o644)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert system_cli._codex_path_executable() is None
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows batch argument handling")
 @pytest.mark.parametrize("local", [True, False])
 def test_codex_batch_install_preserves_supported_input(
