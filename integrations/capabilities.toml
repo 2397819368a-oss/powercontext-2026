@@ -1068,6 +1068,9 @@ tests = ["integrations/dify/tests/test_plugin_contract.py", "tests/e2e/test_dify
 id = "kimi-code-mcp"
 probe = "kimi_code_mcp"
 [[toolsets.tools]]
+id = "get_recall_manifest"
+capabilities = ["memory_read"]
+[[toolsets.tools]]
 id = "search_memory"
 capabilities = ["memory_read"]
 [[toolsets.tools]]
