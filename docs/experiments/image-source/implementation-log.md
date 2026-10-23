@@ -5,6 +5,24 @@ description: 按阶段记录目标、实际变更、验证证据、限制和后�
 
 # 图片 Source 实验功能实施过程记录
 
+## 2026-10-23：CI 修复与主干冲突处理
+
+本轮属于集成维护：检查 `40e5b7e9` 的 GitHub Actions 失败，合入当前主干 `c535d816`，处理契约生成文件、依赖锁及双语文档冲突，完成相关验证后更新同一 PR。沿用隔离 worktree 和测试数据；不操作真实宿主或私有模型服务。
+
+主干集成保留图片开关、原图与解析证据、容量和透明缩略图修复，同时接入主干的自动输入隐私、CLI builtin 依赖和 Memory 协调决策校验。六个冲突文件已处理；Python、JS、Desktop 契约以及 DSH bundle 由官方脚本重建，双语 Codex 文档保留图片材料与自动输入隐私两节，两个 uv 锁文件按合并后的依赖生成。
+
+API／JS／Desktop／图片契约、图片投递与 Dashboard、Scope binding、system CLI 定向集合首轮为 369 passed、2 skipped、2 failed；两项失败发生在 Desktop 契约尚未生成时，生成后 `tests/test_desktop_contract.py` 为 2 passed。两个锁检查、Python／JS 生成漂移检查和 Linux 目标 ty 检查通过。Desktop UI 测试 32 passed。
+
+GitHub Desktop 三个平台均失败于 `bundled_qualification_allows_explicit_scope_browsing`：当前 OpenAPI 摘要没有对应的内置 Server 资格记录。在本机 Windows/Rust 1.95.0 定向执行原测试复现相同失败。使用合并提交 `ec32d953be18b52ace1099ceb7107f6a89ba66c9` 构建独立 wheel，执行原生客户端与真实 SQLite Server 协议验收后添加 `sqlite-atomic-ec32d953-v1`；保留所有历史记录与原测试断言。精确来源、契约、wheel 和源码清单摘要及复现命令记录于 `desktop/VALIDATION.md`。
+
+`uv build --wheel --out-dir desktop/.artifacts/server-wheel`、`fixture_qualification.py --server-commit ec32d953be18b52ace1099ceb7107f6a89ba66c9`、`cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml --example server_probe` 和 `uv run --no-sync python desktop/tests/real_server.py` 完成。Windows 11 AMD64 / Python 3.14.5 / Rust 1.95.0 下，匿名、Bearer、HTTPS 显式 CA/base path、注入 provider 强制授权四种真实 Server 模式均通过。556 个 wheel 运行时文件经 CRLF/LF 规范化后与记录提交一致；协议验收不代表图片原生 UI、安装包、macOS 或发布验收。
+
+补充验证：图片证据／解析／恢复／标准集成、Memory 协调和 MiniCPM 集合 69 passed；资格 fixture 测试 5 passed；`cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml` 全部 53 个测试通过，包含最初失败的 bundled qualification 用例。Desktop lint、32 项 UI 测试和 build、`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 通过，非类型 pre-commit hooks 通过。
+
+本机默认 Windows `ty check` 仍因已有 POSIX 接口及 `url2pathname` 弃用提示报告 34 项诊断；Linux 目标检查通过。没有修改检查配置或放宽类型规则。
+
+原 E2E harness 的 OceanBase 失败已读取上传产物确认：21 项数据库回归通过，正常批次与 LoCoMo 场景通过，fail-fast 场景启动时 Docker Hub 的 Python 基础镜像 HEAD 请求返回 HTTP 500，尚未执行任务。没有因此更改产品代码、失败策略或验收断言；新提交将重新触发该远端场景，本机没有声称执行 OceanBase Docker 验收。
+
 ## 2026-10-23：PR #1956 代码审查与缺陷修复
 
 本轮目标属于集成维护：使用 Open Code Review 审查 `0bc42d0b..bada5053`，核实并修复可复现问题，验证后推送同一 PR。使用独立 worktree `pr1956-review-1023` 和隔离测试数据库、资产及宿主配置；不操作现有桌面服务或私有模型。重点检查队列容量回收、授权、任务恢复和历史证据读取。真实宿主及模型验收边界保持不变。
