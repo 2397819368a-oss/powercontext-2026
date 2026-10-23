@@ -876,6 +876,7 @@ from powercontext.server.images import (
     reparse_image,
     retry_image_task,
 )
+from powercontext.server.request_id import REQUEST_ID_HEADER
 from powercontext.server.tracing import request_id_from_span
 from powercontext.sources import ConnectorBinding as RuntimeConnectorBinding
 from powercontext.sources import SourceDefinitionManifest as RuntimeSourceDefinitionManifest
@@ -885,7 +886,6 @@ if TYPE_CHECKING:
     from powercontext.server.tracing import ServerTracing
 
 _SCALAR_JS_URL = "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.66.1"
-REQUEST_ID_HEADER = "X-PowerContext-Request-ID"
 REPORT_SELECTION_DIGEST_HEADER = "X-PowerContext-Selection-Digest"
 REPORT_DIGEST_HEADER = "X-PowerContext-Report-Digest"
 MAX_HANDOFF_REPORT_BYTES = 10 * 1024 * 1024
@@ -1408,7 +1408,7 @@ def create_app(
 
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next: RequestResponseEndpoint) -> Response:
-        request_id = request_id_from_span()
+        request_id = current_request_id() or request_id_from_span()
         request.state.request_id = request_id
         token = bind_request_id(request_id)
         try:
@@ -1553,7 +1553,10 @@ def create_app(
     _add_route(app, SEARCH_MEMORY, search_memory)
     _add_route(app, PREPARE_BOOTSTRAP_CONTEXT, prepare_bootstrap_context)
     _add_route(app, RECORD_BOOTSTRAP_DELIVERY, record_bootstrap_delivery)
-    _add_route(app, PREPARE_CONTEXT, prepare_context)
+    # This response publishes exactly the fields it built: ``reason`` exists only when the request asked
+    # with ``explain``, and serializing the model's defaults would add a null that every Host's
+    # four-field validator rejects on an ordinary injection.
+    _add_route(app, PREPARE_CONTEXT, prepare_context, response_model_exclude_unset=True)
     _add_route(app, QUERY_CODE, query_code)
     _add_route(app, CREATE_WORK_CONTRACT, create_work_contract)
     _add_route(app, HANDOFF_CURRENT_WORK, handoff_current_work)
@@ -1564,7 +1567,8 @@ def create_app(
     _add_route(app, FINALIZE_HANDOFF, finalize_handoff)
     _add_route(app, COMMIT_HANDOFF, commit_handoff)
     _add_route(app, CONTINUE_HANDOFF, continue_handoff)
-    _add_route(app, PREPARE_HANDOFF_HINT, prepare_handoff_hint)
+    # A hint carries no retrieval, so ``reason`` stays unset and the envelope keeps its four fields.
+    _add_route(app, PREPARE_HANDOFF_HINT, prepare_handoff_hint, response_model_exclude_unset=True)
     _add_route(app, LIST_MEMORY_ENTRIES, list_memory_entries)
     _add_route(app, GET_MEMORY_CAPACITY, get_memory_capacity)
     _add_route(app, GET_MEMORY_ENTRY, get_memory_entry)
@@ -4856,6 +4860,8 @@ def _add_route(
     app: FastAPI,
     operation: Operation[_RequestT, _ResponseT],
     endpoint: Callable[..., Awaitable[_ResponseT | Response]],
+    *,
+    response_model_exclude_unset: bool = False,
 ) -> None:
     observed = _observe_application_operation(app, operation, endpoint)
     app.router.add_api_route(
@@ -4870,6 +4876,7 @@ def _add_route(
         tags=list(operation.tags),
         dependencies=[] if operation.access is None else [Depends(_authorization_dependency(operation))],
         route_class_override=_EncodedPathAPIRoute if operation.path.startswith("/v1/scopes/") else None,
+        response_model_exclude_unset=response_model_exclude_unset,
     )
 
 
@@ -5995,6 +6002,24 @@ def _map_scope_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | 
     return None
 
 
+_CANDIDATE_ERROR_REASONS = {
+    ("artifacts", "must include the exact target"): ("artifact_refs", "target_not_in_artifact_refs"),
+    ("artifacts", "new managed Skill lineage"): ("artifact_refs", "skill_lineage_not_permitted"),
+    ("artifacts", "managed Skill lineage"): ("artifact_refs", "target_not_in_artifact_refs"),
+    ("target", "must identify a"): ("target", "target_family_mismatch"),
+    ("target", "Artifact is not available in this scope"): ("target", "target_unavailable"),
+}
+
+
+def _candidate_error_details(error: InvalidCandidateError) -> dict[str, Any] | None:
+    for (field, prefix), (public_field, reason) in _CANDIDATE_ERROR_REASONS.items():
+        if error.field == field and error.detail.startswith(prefix):
+            return {"field": public_field, "reason": reason}
+    # Internal-only fields (audit, basis, family) and reasons shared by several
+    # public fields (evidence) have no stable name a caller can act on.
+    return None
+
+
 def _map_candidate_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:
     if isinstance(error, CandidateNotFoundError):
         return status.HTTP_404_NOT_FOUND, "candidate_not_found", "The requested Candidate was not found.", None
@@ -6020,7 +6045,12 @@ def _map_candidate_error(error: Exception) -> tuple[int, str, str, dict[str, Any
             {"status": error.status},
         )
     if isinstance(error, InvalidCandidateError):
-        return status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_request", "The request is invalid.", None
+        return (
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "invalid_request",
+            "The request is invalid.",
+            _candidate_error_details(error),
+        )
     return None
 
 
@@ -6154,7 +6184,17 @@ def _invalid_request_details(error: Exception) -> dict[str, Any] | None:
         and error.canonical_code is not None
     ):
         return {"code": error.canonical_code, "message": str(error.detail)}
+    if isinstance(error, InvalidRuntimeRequestError):
+        reason = _WORKING_NOTE_EXPIRY_REASONS.get(error.code)
+        if reason is not None:
+            return {"field": "expires_at", "reason": reason}
     return None
+
+
+_WORKING_NOTE_EXPIRY_REASONS = {
+    "working-note-expiry-timezone": "missing_time_zone",
+    "working-note-expiry-past": "not_in_future",
+}
 
 
 def _map_source_ingestion_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:

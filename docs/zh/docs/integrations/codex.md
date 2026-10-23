@@ -28,6 +28,15 @@ powercontext doctor codex
 未提供新地址时，setup 复用保存的地址。文件与进程中声明的地址冲突时，仍需显式选择：使用 `--server-url`，
 并在重新执行前统一或清除运行时地址覆盖。`--source` 指定插件代码来源，不指定 Server 地址。
 
+在 Windows 上，安装与诊断会使用 PATH 中解析出的 Codex 可执行入口，包括 npm 的 `.cmd` 启动脚本。
+当前目录中的启动脚本不会优先于 PATH：解析直接枚举 PATH 目录；PATH 中显式写入的 `.` 条目与空条目仍按其位置与语义生效。
+`PATH` 为空字符串时完全不搜索，未设置时回退到系统标准搜索根；两种行为均与 `shutil.which` 一致。
+对于 `.cmd` / `.bat` 入口，PowerContext 会在启动该条命令前拒绝可执行路径或命令参数中的 shell 元字符
+（`& | < > ( ) ^ % ! "`）及 ASCII 控制字符，支持空格和 Unicode。这可避免批处理解释静默改写来源或 ref；
+请使用原生可执行文件，或不含这些字符的启动脚本路径及参数。该限制不作用于原生可执行文件或其他平台。
+不支持的 source/ref 参数会在注册 marketplace 前被拒绝；如果后续命令因返回的 marketplace 名称而被拒绝，
+注册步骤可能已经完成，安装不会因此自动回滚。
+
 ### 首次会话 Hook 信任
 
 配置完成后开启新的 Codex 会话。发送第一条消息前，通过 `/hooks` 检查 PowerContext Hook，并在收到提示时授予信任。
@@ -332,3 +341,7 @@ Server 正常启动后执行常规 `powercontext setup codex`，setup 会保存�
 Dashboard 的“图片材料”可在 Memory 生成前查看原图、解析状态和结果；生成 Memory 后，可以通过“原始材料”回到准确历史图片。功能关闭仍允许读取历史材料。关闭授权执行 `powercontext setup codex --no-capture-images`。设置 `POWERCONTEXT_CODEX_CAPTURE_IMAGES=true` 会在 setup 时授权采集；未设置或值为 false 时保留已保存的授权，重新运行 setup 也不会撤销。
 
 自动采集限已验证记录格式：CLI exec 0.141.0／0.162.0-alpha.2／0.162.0-alpha.17.2，Desktop 内核 0.162.0-alpha.2／0.162.0-alpha.17.2。未知版本拒绝并报告诊断；CLI TUI 尚未开放自动适配。Windows 原生生命周期已验证，其他平台需要独立验收。配置说明见[配置模型](../get-started/configure-models.md)。
+
+## 自动输入隐私
+
+本宿主的捕获默认值、关闭方式、凭据识别局限及独立只读查询行为见[自动 prompt 隐私策略](index.md#自动-prompt-隐私策略)。识别到凭据的输入会跳过捕获，已接受的 Source 正文和事件身份不被改写。

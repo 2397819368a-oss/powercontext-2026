@@ -311,3 +311,7 @@ message. Verify the whole installation with `powercontext doctor`.
 3. Remove the hook files and the scope resolver from `<WORKBUDDY_HOOKS_DIR>`.
 4. Remove `~/.workbuddy/skills/powercontext-project-context`.
 5. Optionally stop the Server and delete its local data directory.
+
+## Automatic input privacy
+
+See [Automatic prompt privacy](index.md#automatic-prompt-privacy) for this host's capture default, disable control, credential recognition limits and independent read-only query handling. Recognized inputs are skipped for capture; accepted Source content and event identity are not rewritten.

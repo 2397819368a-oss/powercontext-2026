@@ -537,8 +537,22 @@ def test_prepared_context_is_a_generic_typed_operation_outside_the_mcp_memory_to
         "assembly",
         "bootstrap_receipt_id",
         "include_code",
+        "explain",
     }
-    assert set(schemas["PreparedContext"]["properties"]) == {"schema", "status", "content", "content_bytes"}
+    assert set(schemas["PreparedContext"]["properties"]) == {
+        "schema",
+        "status",
+        "content",
+        "content_bytes",
+        "reason",
+    }
+    # ``reason`` is a cause code, not a retrieval result: it must stay out of the ban below while
+    # remaining optional, so a Host written before it existed still validates an injected response.
+    assert "reason" not in schemas["PreparedContext"]["required"]
+    assert schemas["PreparedContext"]["properties"]["reason"]["nullable"] is True
+    # ``explain`` is how a caller asks for it, so the default stays the four-field envelope.
+    assert schemas["PrepareContextRequest"]["properties"]["explain"]["default"] is False
+    assert "explain" not in schemas["PrepareContextRequest"]["required"]
     assert not {"memory", "mode", "selection"} & set(schemas["PreparedContext"]["properties"])
 
 

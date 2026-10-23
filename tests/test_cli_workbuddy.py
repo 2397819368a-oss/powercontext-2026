@@ -37,6 +37,7 @@ _HOOK_MODULES = (
     "workbuddy_settings.py",
     "powercontext_client_config.py",
     "prepared_context.py",
+    "prompt_privacy.py",
 )
 
 

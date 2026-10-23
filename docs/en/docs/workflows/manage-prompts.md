@@ -36,3 +36,15 @@ Generic Artifact publication rejects Prompts with `422 / artifact_publication_un
 For applications, read effective configuration through `GET /v1/scopes/{scope_id}/prompts/{prompt_key}` and use the
 [Artifact API](artifacts.md) with conditional writes to save revisions. See the [HTTP API](../develop/http-api.md)
 for supported keys, request shapes, and demonstration generation.
+
+## Topic Memory content requirements
+
+Topic Memory's built-in stage instructions use version `v2`. Auto and custom generation must produce concrete
+business content supported by supplied material, preserve still-valid history on updates, and keep opaque IDs in
+routing fields. Counts are upper bounds, not quotas. Probe/global may return empty results and evolve may return
+`proposal: null`; temporary and reduction stages retain their existing non-empty evidence-preservation contracts.
+
+Custom demonstrations that teach recognizable placeholder or coordination-only output are rejected with
+`prompt_definition_incompatible`, including when an existing custom revision is resolved for inference. Stored Prompt
+revisions remain unchanged. A custom Prompt cannot disable runtime content admission. Instruction-only custom
+Prompts remain supported, but their generated output passes the same admission checks as Auto output.

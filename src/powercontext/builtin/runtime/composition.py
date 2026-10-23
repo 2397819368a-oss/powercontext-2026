@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, JsonValue, SecretStr
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncConnection
 from typing_extensions import override
 
 from powercontext._logging import log_safely
@@ -44,6 +46,7 @@ from powercontext.builtin.artifacts.atomic_memory.reconciliation import (
     ATOMIC_MEMORY_RECONCILIATION_INSTRUCTIONS,
     AtomicMemoryReconciliationInput,
     AtomicMemoryReconciliationOutput,
+    validate_reconciliation_decision,
 )
 from powercontext.builtin.artifacts.experience import ExperienceCandidatePipeline, ExperienceGenerator
 from powercontext.builtin.artifacts.experience.merge import ExperienceMergeAdapter
@@ -119,6 +122,7 @@ from powercontext.builtin.persistence.processing_migration import (
     bootstrap_processing_schema,
 )
 from powercontext.builtin.persistence.revision_metadata_schema import ensure_artifact_revision_metadata_schema
+from powercontext.builtin.persistence.schema import ensure_portable_timestamp_precision
 from powercontext.builtin.persistence.scope_search_schema import ensure_scope_search_schema
 from powercontext.builtin.persistence.seekdb.profile import SeekDBConfig, SeekDBProfile
 from powercontext.builtin.persistence.skill_distribution_schema import ensure_skill_distribution_schema
@@ -129,7 +133,7 @@ from powercontext.builtin.persistence.sqlite.topic_memory_index import (
     SQLiteTopicMemoryFTSIndex,
     SQLiteTopicMemoryVectorIndex,
 )
-from powercontext.builtin.persistence.tables import BUILTIN_TABLES
+from powercontext.builtin.persistence.tables import BUILTIN_TABLES, PORTABLE_RESTORE_RECEIPTS_TABLE
 from powercontext.builtin.persistence.tag_schema import ensure_topic_memory_tag_schema
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
 from powercontext.builtin.persistence.topic_memory_budget import record_topic_memory_work_failure
@@ -137,6 +141,7 @@ from powercontext.builtin.persistence.topic_memory_index import (
     CompositeTopicMemoryIndex,
     TopicMemoryIndex,
 )
+from powercontext.builtin.portability import BundleRecoveryRequiredError
 from powercontext.builtin.runtime._scope_cache import ScopeCacheObserver
 from powercontext.builtin.runtime.application import (
     BuiltinRuntime,
@@ -524,6 +529,7 @@ async def open_builtin_runtime(
     cursor_secret: bytes | None = None,
     handoff_verification_keys: tuple[bytes, ...] = (),
     recall_effort_sink: RecallEffortSink | None = None,
+    _archive_recovery: bool = False,
 ) -> AsyncIterator[BuiltinRuntime]:
     """Open the selected database, inference adapters, and built-in runtime.
 
@@ -647,6 +653,7 @@ async def open_builtin_runtime(
         contexts = await resources.enter_async_context(
             open_builtin_contexts(
                 config,
+                _archive_recovery=_archive_recovery,
                 model_usage_observer=model_usage_observer,
                 candidate_pipeline=configured_pipeline,
                 experience_pipeline=configured_incubation,
@@ -810,7 +817,9 @@ async def open_builtin_runtime(
                     ),
                 ),
                 context_assembly_max_entries=config.runtime.context_assembly_max_entries,
-                recall_sufficiency_policy=RecallSufficiencyPolicy.from_runtime_config(config.runtime),
+                recall_sufficiency_policy=RecallSufficiencyPolicy.from_runtime_config(
+                    config.runtime.model_copy(update={"memory_rerank_enabled": configured_reranker is not None})
+                ),
                 recall_embedding_timeout_seconds=config.runtime.recall_embedding_timeout_seconds,
                 scope_cache_size=config.runtime.scope_cache_size,
                 scope_evictor=contexts.evict,
@@ -877,11 +886,17 @@ async def open_builtin_runtime(
                 scheduled_source_runner=scheduled_source_runner,
                 scheduled_experience_runner=scheduled_experience_runner,
                 remote_ingestion=contexts,
+                archive_service=contexts.portability,
             )
         )
         runtime.artifact_processing_supervisor = await resources.enter_async_context(
             _open_artifact_processing_supervisor(
-                config, contexts, processing_bindings, tracing=tracing, processing_observer=processing_observer
+                config,
+                contexts,
+                processing_bindings,
+                tracing=tracing,
+                recovery=_archive_recovery,
+                processing_observer=processing_observer,
             )
         )
         contexts.profiles.operation_context = runtime._operation
@@ -1070,9 +1085,10 @@ async def _open_artifact_processing_supervisor(
     bindings: Sequence[ArtifactProcessingBinding],
     *,
     tracing: RuntimeTracing | None = None,
+    recovery: bool = False,
     processing_observer: Callable[[str, str, float], None] | None = None,
 ) -> AsyncIterator[ArtifactProcessingSupervisors | None]:
-    if config.runtime.artifact_processing_role == "api" or not bindings:
+    if recovery or config.runtime.artifact_processing_role == "api" or not bindings:
         yield None
         return
     groups = (
@@ -1122,6 +1138,7 @@ async def open_builtin_contexts(
     handoff_verification_keys: tuple[bytes, ...] = (),
     model_usage_observer: Callable[[int, int, int, int], None] | None = None,
     _topic_memory_worker: bool = False,
+    _archive_recovery: bool = False,
 ) -> AsyncIterator[RelationalContexts]:
     """Open the selected database and expose scope-bound PowerContext providers."""
 
@@ -1154,6 +1171,7 @@ async def open_builtin_contexts(
                 await ensure_topic_memory_tag_schema(connection)
                 await ensure_scope_search_schema(connection)
                 await ensure_artifact_revision_metadata_schema(connection)
+                await ensure_portable_timestamp_precision(connection, BUILTIN_TABLES)
                 # A Topic child reuses its parent's schema. It never reads or
                 # writes Memory/Experience projections; rebuilding their FTS
                 # indexes here would take the shared SQLite write lock once
@@ -1168,8 +1186,8 @@ async def open_builtin_contexts(
                     await ensure_artifact_head_searchable_text(connection)
                     await assert_atomic_memory_migration_ready(connection)
                     await experience_index.initialize(connection)
-                await TopicMemoryRepository(index=topic_index).initialize(
-                    connection, configure_retrieval_shape=not _topic_memory_worker
+                await _initialize_archive_aware_topics(
+                    connection, topic_index, worker=_topic_memory_worker, recovery=_archive_recovery
                 )
             contexts = RelationalContexts(
                 model_usage_observer=model_usage_observer,
@@ -1210,13 +1228,8 @@ async def open_builtin_contexts(
                 cursor_secret=cursor_secret,
                 tracing=tracing,
             )
-            try:
-                await contexts.scopes.bootstrap_default()
+            async with _contexts_lifecycle(contexts, recovery=_archive_recovery):
                 yield contexts
-            finally:
-                # Producers are stopped by now, and the profile below still owns
-                # the database this recorder writes into.
-                await contexts.aclose_usage_recorder()
         return
     experience_index = OceanBaseExperienceFTSIndex()
     topic_indexes: list[TopicMemoryIndex] = [OceanBaseTopicMemoryFTSIndex()]
@@ -1240,6 +1253,7 @@ async def open_builtin_contexts(
             await ensure_topic_memory_tag_schema(connection)
             await ensure_scope_search_schema(connection)
             await ensure_artifact_revision_metadata_schema(connection)
+            await ensure_portable_timestamp_precision(connection, BUILTIN_TABLES)
             if not _topic_memory_worker:
                 await _initialize_atomic_memory_authority(connection)
                 await atomic_index.initialize(connection)
@@ -1250,8 +1264,8 @@ async def open_builtin_contexts(
                 await ensure_artifact_head_searchable_text(connection)
                 await assert_atomic_memory_migration_ready(connection)
                 await experience_index.initialize(connection)
-            await TopicMemoryRepository(index=topic_index).initialize(
-                connection, configure_retrieval_shape=not _topic_memory_worker
+            await _initialize_archive_aware_topics(
+                connection, topic_index, worker=_topic_memory_worker, recovery=_archive_recovery
             )
         contexts = RelationalContexts(
             model_usage_observer=model_usage_observer,
@@ -1290,13 +1304,36 @@ async def open_builtin_contexts(
             cursor_secret=cursor_secret,
             tracing=tracing,
         )
-        try:
-            await contexts.scopes.bootstrap_default()
+        async with _contexts_lifecycle(contexts, recovery=_archive_recovery):
             yield contexts
-        finally:
-            # Producers are stopped by now, and the profile below still owns the
-            # database this recorder writes into.
-            await contexts.aclose_usage_recorder()
+
+
+@asynccontextmanager
+async def _contexts_lifecycle(contexts: RelationalContexts, /, *, recovery: bool) -> AsyncIterator[None]:
+    """Expose initialized Contexts and settle their usage before the owning database closes."""
+
+    try:
+        if not recovery:
+            await contexts.scopes.bootstrap_default()
+        yield
+    finally:
+        await contexts.aclose_usage_recorder()
+
+
+async def _initialize_archive_aware_topics(
+    connection: AsyncConnection, index: TopicMemoryIndex, *, worker: bool, recovery: bool
+) -> None:
+    pending = await connection.scalar(
+        select(PORTABLE_RESTORE_RECEIPTS_TABLE.c.bundle_id)
+        .where(PORTABLE_RESTORE_RECEIPTS_TABLE.c.projections_ready.is_(False))
+        .limit(1)
+    )
+    if pending and (not recovery or worker):
+        raise BundleRecoveryRequiredError()
+    if pending:
+        await index.initialize(connection)
+    else:
+        await TopicMemoryRepository(index=index).initialize(connection, configure_retrieval_shape=not worker)
 
 
 def _register_prompt_demonstrators(
@@ -1342,6 +1379,8 @@ async def _dream_generator(
         resources=resources,
         instrumentation=instrumentation,
         disable_provider_retries=True,
+        streaming=settings.generation_streaming,
+        stream_idle_timeout_seconds=settings.generation_stream_idle_timeout_seconds,
     )
     model_settings = cast(ModelSettings, dict(settings.generation_model_settings))
     model_settings["max_tokens"] = min(int(model_settings.get("max_tokens") or 4096), budget.max_output_tokens)
@@ -1461,6 +1500,8 @@ async def _generation_pipelines(
             headers=settings.generation_headers,
             resources=resources,
             instrumentation=instrumentation,
+            streaming=settings.generation_streaming,
+            stream_idle_timeout_seconds=settings.generation_stream_idle_timeout_seconds,
         )
         generation_request_settings = cast(ModelSettings, dict(settings.generation_model_settings)) or None
         generation_limits = InferenceLimits(
@@ -1519,6 +1560,7 @@ async def _generation_pipelines(
             model_settings=generation_request_settings,
             name="atomic_memory_reconciliation",
             prompt_key="atomic_memory.reconcile",
+            output_check=validate_reconciliation_decision,
         )
         experience_generator = PydanticAIStructuredGenerator(
             model=generation_model,
@@ -1608,6 +1650,8 @@ async def _generation_pipelines(
                 headers=rerank_headers,
                 resources=resources,
                 instrumentation=instrumentation,
+                streaming=settings.generation_streaming,
+                stream_idle_timeout_seconds=settings.generation_stream_idle_timeout_seconds,
             )
         if rerank_provider_model is not None and rerank_model is not None:
             rerank_values = (
@@ -1729,6 +1773,8 @@ async def _generation_decision(
             headers=decision_headers,
             resources=resources,
             instrumentation=instrumentation,
+            streaming=settings.generation_streaming,
+            stream_idle_timeout_seconds=settings.generation_stream_idle_timeout_seconds,
         )
     if decision_provider_model is None or decision_model is None:
         return None, None
@@ -1831,6 +1877,8 @@ async def _open_pydantic_ai_model(
     resources: AsyncExitStack,
     instrumentation: InstrumentationSettings | None,
     disable_provider_retries: bool = False,
+    streaming: Literal["auto", "disabled"] = "disabled",
+    stream_idle_timeout_seconds: float = 60.0,
 ) -> tuple[Model, Model]:
     from pydantic_ai.models import infer_model
     from pydantic_ai.models.instrumented import InstrumentedModel
@@ -1871,8 +1919,31 @@ async def _open_pydantic_ai_model(
                 inferred_model.model_name, provider=OpenAIProvider(openai_client=inferred_model.client), profile=profile
             )
     provider_model = await resources.enter_async_context(inferred_model)
-    model = provider_model if instrumentation is None else InstrumentedModel(provider_model, instrumentation)
+    model = provider_model
+    if streaming == "auto" and model_name.split(":", 1)[0] in _STREAMING_AGGREGATED_PROVIDERS:
+        # Gateways in front of non-streaming endpoints may drop idle exchanges
+        # long before the configured generation timeout; aggregate one streamed
+        # request instead. The wall-clock budget stays owned by the generator.
+        from powercontext.builtin.inference.pydantic_ai import StreamingAggregateModel
+
+        model = StreamingAggregateModel(model, idle_timeout_seconds=stream_idle_timeout_seconds)
+    elif streaming == "auto":
+        log_safely(
+            logger,
+            logging.WARNING,
+            "Streamed generation aggregation was not applied because the model provider prefix "
+            "is outside the supported set",
+            extra={
+                "event": "inference.generation.streaming_not_applied",
+                "operation": "generate",
+                "unit": "inference",
+            },
+        )
+    model = model if instrumentation is None else InstrumentedModel(model, instrumentation)
     return provider_model, model
+
+
+_STREAMING_AGGREGATED_PROVIDERS = frozenset({"anthropic", "openai", "openai-chat", "openai-responses"})
 
 
 def _provider_factory(

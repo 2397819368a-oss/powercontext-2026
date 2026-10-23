@@ -29,6 +29,18 @@ client settings and the previously installed MCP URL. Without a new declaration,
 Conflicting file and process declarations still require an explicit choice; use `--server-url` and align or unset
 runtime URL overrides before rerunning setup. `--source` selects plugin code, not the Server endpoint.
 
+On Windows, setup and diagnostics resolve the Codex executable on PATH, including npm `.cmd` launchers.
+A launcher found in the working directory is not preferred over PATH: discovery enumerates PATH directories
+directly, while explicit entries - including `.` and empty entries - keep their usual position and meaning.
+An empty `PATH` value means no search at all, and an unset `PATH` falls back to the standard system search
+roots, matching `shutil.which` in both cases.
+For `.cmd` / `.bat` launchers, PowerContext rejects shell metacharacters (`& | < > ( ) ^ % ! "`) and ASCII control characters
+in the executable path or command arguments before starting that command. Spaces and Unicode are supported.
+This avoids silently changing a source or ref through batch interpretation; use a native executable or a launcher path
+and arguments without these characters. The restriction does not apply to native executables or other platforms.
+Unsupported source/ref arguments are rejected before marketplace registration. If a later command is rejected because
+of a returned marketplace name, registration may already have completed; this does not roll back the installation.
+
 ### First-session Hook trust
 
 Open a new Codex session after setup. Before sending the first message, use `/hooks` to inspect PowerContext's hooks
@@ -372,3 +384,7 @@ Start Server normally, then run `powercontext setup codex`. Setup records consen
 The Dashboard Image materials page shows originals and parsing status before Memory exists. Generated Memory links to its exact historical material. Disabling images keeps retained materials readable. Run `powercontext setup codex --no-capture-images` to revoke capture consent. Setting `POWERCONTEXT_CODEX_CAPTURE_IMAGES=true` authorizes capture during setup; an absent or false value preserves saved consent, including when setup runs again.
 
 Automatic capture accepts verified record formats only: CLI exec 0.141.0, 0.162.0-alpha.2 and 0.162.0-alpha.17.2; Desktop engines 0.162.0-alpha.2 and 0.162.0-alpha.17.2. Unknown versions fail closed with diagnostics; interactive CLI TUI is not enabled. Native lifecycle execution is verified on Windows; other platforms need separate acceptance.
+
+## Automatic input privacy
+
+See [Automatic prompt privacy](index.md#automatic-prompt-privacy) for this host's capture default, disable control, credential recognition limits and independent read-only query handling. Recognized inputs are skipped for capture; accepted Source content and event identity are not rewritten.
