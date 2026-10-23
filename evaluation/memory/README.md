@@ -11,6 +11,7 @@ the shared `evaluation/` environment.
 | [LoCoMo-Plus](locomo_plus/README.md) | Factual and cognitive memory evaluation with bounded smoke and full profiles. |
 | [Memory write gate](write_gate/README.md) | Offline evidence-sufficiency calibration, held-out checks, and promotion decision. |
 | [Capture ownership](capture_ownership/README.md) | WorkBuddy joined-prompt evidence ownership, candidate contamination and current-fact retention. |
+| [Source poisoning observation](source_poisoning/README.md) | Versioned synthetic inputs, immutable citations, and actual host answers from a bounded live-model run. |
 
 Add dataset-specific Memory quality suites here. Put latency, throughput, storage, and capacity measurements in
 [performance](../performance/README.md). Keep each suite's execution and grading tools with the suite; see

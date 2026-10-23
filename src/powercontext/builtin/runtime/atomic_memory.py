@@ -94,6 +94,17 @@ from powercontext.builtin.tags import TagFilter
 logger = logging.getLogger(__name__)
 
 
+def _fallback_reason(error: Exception) -> str:
+    """Why an abandoned query embedding gave way to lexical retrieval.
+
+    This is RFC 1435's ``fallback_reason`` vocabulary and the ``memory.search.embedding_fallback``
+    ``error_code`` at once: one classification, one spelling, so the event and the response cannot
+    describe the same lost channel differently.
+    """
+
+    return "inference_timeout" if isinstance(error, (InferenceTimeoutError, TimeoutError)) else "inference_unavailable"
+
+
 def _log_embedding_fallback(error: Exception) -> None:
     """Record that a bounded query embedding gave way to lexical retrieval; the query itself is never logged."""
 
@@ -105,9 +116,7 @@ def _log_embedding_fallback(error: Exception) -> None:
             "event": "memory.search.embedding_fallback",
             "outcome": "fallback",
             "mode": "text",
-            "error_code": "inference_timeout"
-            if isinstance(error, (InferenceTimeoutError, TimeoutError))
-            else "inference_unavailable",
+            "error_code": _fallback_reason(error),
             "unit": "memory",
         },
     )
@@ -216,6 +225,9 @@ class AtomicMemorySearchPage:
     recoverable: bool = False
     matches: tuple[ArtifactSearchMatch, ...] = ()
     artifacts: tuple[AtomicMemory, ...] = ()
+    #: Set only when the query embedding was abandoned for lexical retrieval, so a
+    #: caller can tell "no vector channel was ever wanted" apart from "it was lost".
+    embedding_fallback: str | None = None
 
 
 class AtomicMemoryApplication:
@@ -471,7 +483,7 @@ class ScopedAtomicMemory:
             raise InvalidBaseAccessRequestError("mode", "must be auto, text, vector, or hybrid")
         if kind is not None:
             AtomicMemoryContent(kind=kind, text="validation")
-        mode, vector, query_embedding, embedding_calls = await self._resolve_query_embedding(
+        mode, vector, query_embedding, embedding_calls, embedding_fallback = await self._resolve_query_embedding(
             query,
             mode,
             query_embedding,
@@ -556,6 +568,7 @@ class ScopedAtomicMemory:
             context,
             artifact_request=artifact_request,
             artifacts=artifacts,
+            embedding_fallback=embedding_fallback,
         )
         if artifact_request is not None:
             matches = []
@@ -674,14 +687,14 @@ class ScopedAtomicMemory:
         if mode == "auto":
             mode = "hybrid" if profile is not None else "text"
             if not allow_embedding and capabilities.fts:
-                return "text", None, None, 0
+                return "text", None, None, 0, None
         if mode not in {"vector", "hybrid"}:
-            return mode, None, None, 0
+            return mode, None, None, 0, None
         model = application.embedding_model
         if profile is None or model is None or model.profile != profile:
             raise AtomicMemoryIndexError("embedding-profile", "Requested vector retrieval is unavailable")
         if reuse is not None and reuse.embedding_profile == profile:
-            return mode, reuse.query_vector, reuse, 0
+            return mode, reuse.query_vector, reuse, 0, None
         try:
             async with asyncio.timeout(embedding_timeout_seconds):
                 result = await embed_query(model, (query,))
@@ -691,13 +704,13 @@ class ScopedAtomicMemory:
             if requested_mode != "auto" or not capabilities.fts:
                 raise
             _log_embedding_fallback(exc)
-            return "text", None, None, 1
+            return "text", None, None, 1, _fallback_reason(exc)
         if len(result.vectors) != 1:
             raise AtomicMemoryIndexError("embedding-result", "Expected one query vector")
         vector = canonical_embedding(
             result.vectors[0], dimension=profile.dimension, normalization=profile.normalization
         )
-        return mode, vector, MemoryQueryEmbedding(vector, profile), 1
+        return mode, vector, MemoryQueryEmbedding(vector, profile), 1, None
 
     async def _filter_current_candidates(
         self,
@@ -752,6 +765,7 @@ class ScopedAtomicMemory:
         *,
         artifact_request=None,
         artifacts=(),
+        embedding_fallback: str | None = None,
     ):
         application = self.application
         reranker = application.reranker
@@ -762,6 +776,7 @@ class ScopedAtomicMemory:
                 query_embedding,
                 embedding_calls,
                 artifacts=artifacts,
+                embedding_fallback=embedding_fallback,
             )
         # Reauthorize the exact candidate bodies immediately before an external rank model.
         try:
@@ -776,6 +791,7 @@ class ScopedAtomicMemory:
                 (),
                 query_embedding,
                 embedding_calls,
+                embedding_fallback=embedding_fallback,
             )
         complete_artifacts = []
         if artifact_request is not None:
@@ -814,6 +830,7 @@ class ScopedAtomicMemory:
             1,
             rerank=trace,
             artifacts=tuple(complete_artifacts[rank - 1] for rank in ranks) if artifact_request is not None else (),
+            embedding_fallback=embedding_fallback,
         )
 
     async def merge(

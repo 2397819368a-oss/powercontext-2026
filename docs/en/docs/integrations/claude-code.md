@@ -274,3 +274,7 @@ Authorization is environment-only and must not be added to the Server URL or plu
 The outer `UserPromptSubmit` Hook timeout is ten seconds. Recall and capture use one shared wall-clock budget but fail
 independently. HTTPS certificate validation remains enabled when HTTP is explicitly permitted. Restart Claude Code
 after changing its environment.
+
+## Automatic input privacy
+
+See [Automatic prompt privacy](index.md#automatic-prompt-privacy) for this host's capture default, disable control, credential recognition limits and independent read-only query handling. Recognized inputs are skipped for capture; accepted Source content and event identity are not rewritten.

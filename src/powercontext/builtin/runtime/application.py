@@ -341,6 +341,7 @@ if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     from powercontext.builtin.handoff_report.application import HandoffReportApplication
+    from powercontext.builtin.portability import PortableBundleService
     from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingSupervisors
     from powercontext.builtin.runtime.scope_reads import ScopeReadSnapshot
 
@@ -425,6 +426,8 @@ class TopicMemoryRecallOutcome:
     admission: AdmissionCounts | None = None
     query_embedding: MemoryQueryEmbedding | None = None
     embedding_calls: int = 0
+    #: Non-null only when Topic Memory wanted a vector and had to fall back to FTS.
+    embedding_fallback: str | None = None
 
 
 @dataclass(frozen=True)
@@ -441,8 +444,29 @@ class _ScopeRecallOutcome:
     experience_admission: AdmissionCounts | None = None
     memory_query_embedding: MemoryQueryEmbedding | None = None
     memory_recoverable: bool = False
+    #: Non-null only when Atomic Memory wanted a vector and had to fall back to lexical.
+    memory_embedding_fallback: str | None = None
     embedding_calls: int = 0
     generation_calls: int = 0
+
+
+#: The one cause that outranks the others when a preparation loses several channels at once.
+_TIMEOUT_REASON = "inference_timeout"
+
+
+def _degradation(current: str | None, observed: str | None) -> str | None:
+    """Fold one more observed cause into the preparation's reason.
+
+    A timeout outranks an unavailable provider because it is the one an operator can fix by
+    raising ``recall_embedding_timeout_seconds``; reporting the provider error instead would
+    point at the wrong knob when both occurred.
+    """
+
+    if observed is None:
+        return current
+    if current == _TIMEOUT_REASON:
+        return current
+    return _TIMEOUT_REASON if observed == _TIMEOUT_REASON else (current or observed)
 
 
 @dataclass(frozen=True)
@@ -456,6 +480,9 @@ class _RecallRoundOutcome:
     embedding_calls: int = 0
     generation_calls: int = 0
     memory_recoverable: bool = False
+    #: A channel this pass wanted and lost, reported once per preparation. A timeout wins
+    #: over an unavailable provider when both happen, because it is the actionable one.
+    degradation: str | None = None
 
 
 SkillRecall = Callable[[str, str, int], Awaitable[tuple[SkillSearchHit, ...]]]
@@ -528,7 +555,7 @@ class ScopedSourceApplication:
         if not value.note_kind.strip():
             raise ValueError("note_kind must not be blank")  # noqa: TRY003
         if value.expires_at is not None and (value.expires_at.tzinfo is None or value.expires_at.utcoffset() is None):
-            raise InvalidRuntimeRequestError("working-note-expiry")
+            raise InvalidRuntimeRequestError("working-note-expiry-timezone")
         metadata = dict(value.metadata)
         metadata.update({
             "kind": WORKING_NOTE_SOURCE_KIND,
@@ -542,7 +569,7 @@ class ScopedSourceApplication:
             replay = await self._replay_working_note(capture)
             if replay is not None:
                 return replay
-            raise InvalidRuntimeRequestError("working-note-expiry")
+            raise InvalidRuntimeRequestError("working-note-expiry-past")
         return await self._capture(capture, working_note=True)
 
     async def _replay_working_note(self, value: CaptureSource, /) -> SourceReceipt | None:
@@ -1030,7 +1057,12 @@ class ScopedContextApplication:
             else:
                 if measurement is not None:
                     await self._runtime.statistics.for_scope(self.scope_id).record_recall(measurement)
-        return build.context
+        context = build.context
+        if request.explain and build.degradation is not None:
+            # The reason is set here, not in the Builder: the Builder is pure and never sees a
+            # failed provider, so the only layer that can name the cause is the one that ran it.
+            context = context.model_copy(update={"reason": build.degradation})
+        return context
 
     async def _prepare_build(
         self,
@@ -1182,7 +1214,9 @@ class ScopedContextApplication:
                         "powercontext.context.build.recall.truncated_items": recall_effort.truncated_items,
                         "powercontext.context.build.recall.dropped_items": recall_effort.dropped_items,
                     })
-        return build, recall_effort
+        # Round zero is the round that embeds: later expansion rounds reuse its vector when it
+        # has one, so a cause observed here is the whole preparation's cause.
+        return replace(build, degradation=round_zero.degradation), recall_effort
 
     async def _available_atomic_candidates(
         self, candidates: list[PreparedMemoryCandidates]
@@ -1484,6 +1518,7 @@ class ScopedContextApplication:
         embedding_calls = 0
         generation_calls = 0
         memory_recoverable = False
+        degradation: str | None = None
         shared_embedding = next((embedding for embedding in reuse.values() if embedding is not None), None)
         for scope_id in scope_ids:
             memory_limit = (
@@ -1501,6 +1536,7 @@ class ScopedContextApplication:
                 allow_embedding=scope_id not in reuse or reuse[scope_id] is not None,
             )
             memory_recoverable |= outcome.memory_recoverable
+            degradation = _degradation(degradation, outcome.memory_embedding_fallback)
             memory_candidates.append(
                 replace(
                     outcome.memory,
@@ -1557,6 +1593,7 @@ class ScopedContextApplication:
             embedding_calls=embedding_calls + topic_outcome.embedding_calls,
             generation_calls=generation_calls,
             memory_recoverable=memory_recoverable,
+            degradation=_degradation(degradation, topic_outcome.embedding_fallback),
         )
 
     async def _recall_scope(
@@ -1581,6 +1618,7 @@ class ScopedContextApplication:
                 memory_embedding_calls = 0
                 memory_generation_calls = 0
                 search_mode: str | None = None
+                memory_embedding_fallback: str | None = None
                 atomic = self._runtime.atomic_memory
                 if memory_limit > 0 and atomic is not None:
                     policy = self._runtime.recall_sufficiency_policy
@@ -1600,6 +1638,7 @@ class ScopedContextApplication:
                     memory_admission = result.admission
                     memory_recoverable = result.recoverable
                     search_mode = result.mode
+                    memory_embedding_fallback = result.embedding_fallback
                     reuse = result.query_embedding
                     memory_embedding_calls = result.embedding_calls
                     memory_generation_calls = result.generation_calls
@@ -1649,6 +1688,7 @@ class ScopedContextApplication:
             ),
             memory_query_embedding=reuse,
             memory_recoverable=memory_recoverable,
+            memory_embedding_fallback=memory_embedding_fallback,
             embedding_calls=memory_embedding_calls,
             generation_calls=memory_generation_calls,
         )
@@ -1691,6 +1731,7 @@ class ScopedContextApplication:
                 admission=result.admission,
                 query_embedding=result.query_embedding,
                 embedding_calls=result.embedding_calls,
+                embedding_fallback=result.embedding_fallback,
             )
 
 
@@ -3811,6 +3852,7 @@ class BuiltinRuntime:
         remote_ingestion: RemoteIngestion | None = None,
         dream_service: DreamService | None = None,
         generation_concurrency: int = 4,
+        archive_service: PortableBundleService | None = None,
     ) -> None:
         if source_window_limit < 1:
             raise _RuntimeConfigurationError("source_window_limit")
@@ -3936,6 +3978,7 @@ class BuiltinRuntime:
         self.skill = SkillApplication(self)
         self.remote_skills = RemoteSkillApplication(self)
         self.statistics = StatisticsApplication(self)
+        self.archive = archive_service
         self.handoff_report: HandoffReportApplication | None = None
         self.artifact_processing_supervisor: ArtifactProcessingSupervisors | None = None
         source_ids = scope_ids if source_scope_ids is None else source_scope_ids
