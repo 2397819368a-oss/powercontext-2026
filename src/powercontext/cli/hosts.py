@@ -63,6 +63,8 @@ def validate_native_options(selected: Sequence[str], **options: Any) -> None:
         "boundary_flush": ("zcode",),
         "profile": ("dsh", "kimi-code"),
         "dsh_command": ("dsh",),
+        "minimax_data_dir": ("minimax",),
+        "minimax_command": ("minimax",),
         "runtime": ("kimi-code",),
         "mcp": ("kimi-code",),
         "cwd": ("kimi-code",),
@@ -98,6 +100,7 @@ def native_options(host: str, **options: Any) -> dict[str, Any]:
         "dsh": ("dsh_target",),
         "kimi-code": ("scope_id", "capture_prompts", "workspace_scope", "profile"),
         "zcode": ("capture_prompts", "boundary_flush"),
+        "minimax": ("minimax_data_dir", "minimax_command"),
     }
     return {key: options[key] for key in fields.get(host, ()) if options.get(key) is not None}
 
@@ -119,6 +122,9 @@ def doctor_checks(host: str, **options) -> dict[str, Any]:
     except Exception as error:  # Each target must produce a result even when native configuration is malformed.
         return {"verification": Diagnostic(DiagnosticStatus.FAILED, str(error))}
     try:
+        if host == "minimax":
+            checks.update(installer.server_checks())
+            return checks
         target = {"dsh_target": installer.dsh_target} if host == "dsh" else {}
         endpoint, allowed = resolve_host_transport(host, **target)
         checks.update(

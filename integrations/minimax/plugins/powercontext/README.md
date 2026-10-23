@@ -43,7 +43,18 @@ uv run powercontext server run --env-file .env
 
 Keep the server running in its terminal. The plugin connects to `http://127.0.0.1:8000/mcp` by default.
 
-Enable the PowerContext plugin in MiniMax Code. To check that MiniMax Code has discovered it, run:
+Install the complete native plugin from the same checkout:
+
+```bash
+uv run powercontext setup minimax --source .
+uv run powercontext doctor minimax --json
+```
+
+For custom/profile installations, pass `--minimax-data-dir /path/to/data`; for a launcher outside PATH, pass `--minimax-command /path/to/mcode`. The data root is selected from that flag, `MINIMAX_DATA_DIR`, `MAVIS_DATA_DIR`, the saved target, or the selected CLI’s native marketplace directory. With no CLI or selected profile, the fallback is `~/.minimax`. Existing private MCP configuration and user files are preserved; conflicting manual or modified installations require migration before replacement.
+
+Files copied, native discovery, and CLI Server access are separate checks. Missing `mcode` leaves native verification incomplete and the overall command nonzero. The supported CLI qualification is recorded in the [MiniMax guide](https://powercontext.oceanbase.io/en/docs/integrations/minimax/); desktop discovery requires separate qualification.
+
+Refresh Local plugins with `Ctrl+R` in `/plugins`, or restart MiniMax using the selected data directory. Setup preserves existing disablement. To check that MiniMax Code has discovered the enabled package, run:
 
 ```bash
 mcode plugin list --marketplace local --json
@@ -55,7 +66,7 @@ MiniMax Code uses its own account or model provider. Saving and reading explicit
 
 ## Connect to a protected server
 
-The bundled connection uses a local server without authentication. If your deployment requires a Bearer token, configure the endpoint and token in MiniMax Code's private `mcp.json`: `~/.minimax/mcp.json`, or `$MINIMAX_DATA_DIR/mcp.json` when that variable is set. Merge this entry into any existing `mcpServers` object:
+The bundled connection uses a local server without authentication. If your deployment requires a Bearer token, configure the endpoint and token in MiniMax Code's private `mcp.json`: `<effective MiniMax data directory>/mcp.json`. Setup uses `--minimax-data-dir`, `MINIMAX_DATA_DIR`, the `MAVIS_DATA_DIR` fallback, or the selected native/saved target. Merge this entry into any existing `mcpServers` object:
 
 ```json
 {
@@ -71,7 +82,7 @@ The bundled connection uses a local server without authentication. If your deplo
 }
 ```
 
-Replace the URL and token with your deployment values. Use `http://127.0.0.1:8000/mcp` for a protected server on the same machine. MiniMax Code 0.2.7 gives the enabled user-configured `powercontext` server precedence over the plugin's connection; the Skill remains available. Restart MiniMax Code after changing the configuration.
+Replace the URL and token with your deployment values. Use `http://127.0.0.1:8000/mcp` for a protected server on the same machine. The qualified MiniMax CLI gives the enabled user-configured `powercontext` server precedence over the plugin's connection; the Skill remains available. Restart MiniMax Code after changing the configuration.
 
 Keep this file private and out of version control; on Linux and macOS, restrict its permissions to `600`. Do not put the token in the plugin's `powercontext.mcp.json` or `plugin.json`. Enter the token value directly in the private configuration; a `${TOKEN}` placeholder will not load it from the environment.
 

@@ -66,6 +66,7 @@ def prepare_setup_transport(
     allow_insecure_http: bool | None = None,
     json_output: bool = False,
     dsh_target: DshTarget | None = None,
+    native_endpoint: str | None = None,
 ) -> SetupTransport:
     """Resolve and confirm the endpoint before any installation side effects."""
 
@@ -82,7 +83,9 @@ def prepare_setup_transport(
                 executable=dsh_target.command if dsh_target else None,
             )
         prefix = "POWERCONTEXT_" + ("CLAUDE" if host == "claude-code" else host.upper().replace("-", "_")) + "_"
-        server_url = resolve_setup_endpoint(host, server_url=server_url, native_endpoint=native.get("baseUrl"))
+        server_url = resolve_setup_endpoint(
+            host, server_url=server_url, native_endpoint=native_endpoint if host == "minimax" else native.get("baseUrl")
+        )
         allow_insecure_http = _setup_consent(host, server_url, allow_insecure_http, native)
         endpoint, allowed = resolve_client_transport(
             host, server_url=server_url, allow_insecure_http=allow_insecure_http
@@ -191,6 +194,8 @@ def _explicit_setup_endpoint(host: str, server_url: str) -> str:
 
 def _saved_setup_endpoints(host: str, native_endpoint: str | None) -> list[tuple[str, str]]:
     """Read saved endpoint fallbacks, using the supplied native URL for DSH."""
+    if host == "minimax":
+        return [("native MiniMax settings", native_endpoint)] if native_endpoint else []
     saved = load_client_settings(host).get("server_url")
     native = native_endpoint if host == "dsh" else existing_native_endpoint(host)
     return [
