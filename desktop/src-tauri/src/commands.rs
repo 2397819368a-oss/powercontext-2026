@@ -149,7 +149,7 @@ pub async fn local_diagnostics<R: tauri::Runtime>(
     kind: crate::diagnostics::DiagnosticKind,
 ) -> Result<crate::diagnostics::DiagnosticReport, SafeError> {
     authorize_window(window.label())?;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         state
             .local
@@ -158,7 +158,7 @@ pub async fn local_diagnostics<R: tauri::Runtime>(
             .run(kind)
             .await
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (state, kind);
         Err(SafeError::NotFound)

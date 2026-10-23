@@ -45,6 +45,8 @@ pub fn foundation_info<R: tauri::Runtime>(
         phase: "S3".into(),
         credential_backend: if cfg!(windows) {
             "windows_credential_manager"
+        } else if cfg!(target_os = "macos") {
+            "macos_keychain"
         } else {
             "unavailable"
         }
@@ -54,8 +56,11 @@ pub fn foundation_info<R: tauri::Runtime>(
 }
 
 pub fn allowed_navigation(url: &url::Url) -> bool {
-    let packaged =
-        url.scheme() == "http" && url.host_str() == Some("tauri.localhost") && url.port().is_none();
+    let packaged = if cfg!(target_os = "macos") {
+        url.scheme() == "tauri" && url.host_str() == Some("localhost") && url.port().is_none()
+    } else {
+        url.scheme() == "http" && url.host_str() == Some("tauri.localhost") && url.port().is_none()
+    };
     let development =
         cfg!(debug_assertions) && url.origin().ascii_serialization() == "http://127.0.0.1:1420";
     (packaged || development) && url.username().is_empty() && url.password().is_none()

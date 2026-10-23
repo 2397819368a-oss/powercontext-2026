@@ -55,6 +55,7 @@ function createRuntime(): PluginRuntime {
     recordCapture: (scopeId, position) => flusher.record(scopeId, position),
     flushPending: (lifecycleEvent, signal) => flusher.flush(lifecycleEvent, signal),
     diagnostic,
+    observe: emitDiagnostic,
   }
 }
 
