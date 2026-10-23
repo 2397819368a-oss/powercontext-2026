@@ -93,13 +93,20 @@ def test_supported_long_query_preserves_all_terms_in_both_http_searches(
     migration_backend, query, mode, sqlite_expression_limit
 ):
     async def scenario():
+        settings = ServerSettings(
+            database=migration_backend.config,
+            runtime=RuntimeConfig(artifact_processing_families=()),
+            metrics=MetricsConfig(enabled=False),
+            mcp=McpConfig(enabled=False),
+        )
+        await asyncio.to_thread(
+            prepare_server_database,
+            settings,
+            evidence_dir=migration_backend.directory / "migration-evidence",
+            embedding_profile=_Embedding.profile,
+        )
         app = create_server_app(
-            settings=ServerSettings(
-                database=migration_backend.config,
-                runtime=RuntimeConfig(artifact_processing_families=()),
-                metrics=MetricsConfig(enabled=False),
-                mcp=McpConfig(enabled=False),
-            ),
+            settings=settings,
             scheduler_path=migration_backend.directory / "scheduler.db",
             embedding_model=_Embedding(),
         )
