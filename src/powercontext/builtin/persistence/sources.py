@@ -268,6 +268,7 @@ class SourceRepository:
         through: int | None = None,
         limit: int | None = None,
         source_type: str | None = None,
+        source_types: tuple[str, ...] | None = None,
     ) -> AsyncGenerator[StoredSource, None]:
         """Stream a stable journal-ordered page without decoding it eagerly."""
 
@@ -286,6 +287,8 @@ class SourceRepository:
             predicates.append(SOURCES_TABLE.c.journal_position <= through)
         if source_type is not None:
             predicates.append(SOURCES_TABLE.c.source_type == source_type)
+        if source_types is not None:
+            predicates.append(SOURCES_TABLE.c.source_type.in_(source_types))
         statement = select(SOURCES_TABLE).where(*predicates).order_by(SOURCES_TABLE.c.journal_position)
         if limit is not None:
             statement = statement.limit(limit)
