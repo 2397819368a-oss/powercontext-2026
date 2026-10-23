@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Annotated, Literal, Self, cast
 from urllib.parse import urlsplit
@@ -45,6 +46,20 @@ def read_json(path: Path) -> object:
 
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+
+
+def contains_literal(text: str, literal: str) -> bool:
+    """Match frozen values without accepting identifier, path or numeric extensions."""
+
+    if not literal:
+        return False
+    if literal.isdecimal():
+        pattern = rf"(?<![\dA-Za-z_.+−-]){re.escape(literal)}(?![\dA-Za-z_]|[.,/]\d)"
+    else:
+        # ASCII values may directly adjoin CJK prose, but not identifier/path characters.
+        identifier = r"\w" if not literal.isascii() else r"\dA-Za-z_"
+        pattern = rf"(?<![{identifier}./-]){re.escape(literal)}(?![{identifier}/-]|\.[{identifier}])"
+    return re.search(pattern, text) is not None
 
 
 class Span(Frozen):
@@ -95,7 +110,7 @@ class Case(Frozen):
             if not set(claim.span_ids) <= span_ids.keys():
                 raise ValueError("claim references an unknown span")
             supporting = "".join(self.prompt[span_ids[key].start : span_ids[key].end] for key in claim.span_ids)
-            if any(not value or value not in supporting for value in claim.exact_literals):
+            if any(not contains_literal(supporting, value) for value in claim.exact_literals):
                 raise ValueError("required literal is absent from its labeled support")
             if claim.required_current and (
                 self.expected_turn != "eligible" or any(span_ids[key].owner != "current" for key in claim.span_ids)

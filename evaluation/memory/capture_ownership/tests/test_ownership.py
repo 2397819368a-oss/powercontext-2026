@@ -48,6 +48,13 @@ def test_ground_truth_rejects_historical_positive_control(manifest):
         Manifest.model_validate(value)
 
 
+def test_ground_truth_requires_a_complete_literal_value(manifest):
+    value = manifest.model_dump(mode="json")
+    value["cases"][0]["claims"][-1]["exact_literals"] = ["eu-west"]
+    with pytest.raises(ValidationError, match="required literal is absent"):
+        Manifest.model_validate(value)
+
+
 @pytest.mark.parametrize(
     "changes",
     [

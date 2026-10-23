@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, cast
 
-from .models import ARMS, Manifest, ReviewFile, RunConfig, fingerprint, read_json, write_json
+from .models import ARMS, Manifest, ReviewFile, RunConfig, contains_literal, fingerprint, read_json, write_json
 
 
 def review_template(run: dict[str, Any]) -> dict[str, Any]:
@@ -175,6 +175,7 @@ def summarize(
         review = reviewed.get(key)
         supported_current: set[str] = set()
         critical = 0
+        ownership_contamination = 0
         unsupported = 0
         false_attribution = 0
         exact_literal_failures = 0
@@ -219,10 +220,11 @@ def summarize(
                 attributed = bool(label.current_user_attribution and owners - {"current"})
                 false_attribution += attributed
                 unsupported += bool(label.unsupported_claim)
+                ownership_contamination += bool(outside_current or attributed)
                 critical += bool(outside_current or attributed or label.unsupported_claim)
                 for claim_id in claim_ids & required:
                     literals = claim_by_id[claim_id].exact_literals
-                    if any(literal not in candidate["text"] for literal in literals):
+                    if any(not contains_literal(candidate["text"], literal) for literal in literals):
                         exact_literal_failures += 1
                     elif not label.unsupported_claim and label.support_complete:
                         supported_current.add(claim_id)
@@ -255,6 +257,7 @@ def summarize(
                 "review_complete": accepted,
                 "support_categories": dict(support_categories) if accepted else {},
                 "critical_candidates": critical_count,
+                "ownership_contamination_candidates": ownership_contamination if accepted else None,
                 "unsupported_candidates": unsupported if accepted else None,
                 "false_current_attribution": false_attribution if accepted else None,
                 "near_duplicate_candidates": sum(count - 1 for count in duplicate_groups.values())
@@ -288,7 +291,7 @@ def summarize(
     )
     if run["mode"] == "live" and all_ready:
         for row in output_rows:
-            if row["arm"] != ARMS[0] or not row["critical_candidates"]:
+            if row["arm"] != ARMS[0] or not row["ownership_contamination_candidates"]:
                 continue
             other = by_key[(row["case_id"], ARMS[1], row["repetition"])]
             if (
@@ -306,6 +309,7 @@ def summarize(
         and all_ready
         and any(row["required_current_claims"] for row in output_rows)
         and all(row["critical_candidates"] == 0 for row in output_rows)
+        and all(row["exact_literal_failures"] == 0 for row in output_rows if row["arm"] == ARMS[0])
         and all(
             row["retained_current_claims"] == row["required_current_claims"]
             for row in output_rows
@@ -321,7 +325,7 @@ def summarize(
         labels_complete = all(row["review_complete"] for row in arm_rows)
         candidates = sum(row["candidate_count"] for row in arm_rows)
         required = sum(row["required_current_claims"] for row in arm_rows)
-        generated = [row for row in arm_rows if row["status"] == "completed"]
+        generated = [row for row in arm_rows if row["status"] in {"completed", "generation_failed"}]
         usage_complete = all(
             row["provider_usage"] is not None
             and all(row["provider_usage"][key] is not None for key in ("input_tokens", "output_tokens"))
@@ -329,6 +333,11 @@ def summarize(
         ) and bool(generated)
         input_tokens = sum(row["provider_usage"]["input_tokens"] for row in generated) if usage_complete else None
         output_tokens = sum(row["provider_usage"]["output_tokens"] for row in generated) if usage_complete else None
+        known_usage = [row["provider_usage"] for row in generated if row["provider_usage"] is not None]
+        known_inputs = [usage["input_tokens"] for usage in known_usage if usage["input_tokens"] is not None]
+        known_outputs = [usage["output_tokens"] for usage in known_usage if usage["output_tokens"] is not None]
+        known_input_tokens = sum(known_inputs) if known_inputs else None
+        known_output_tokens = sum(known_outputs) if known_outputs else None
         critical = sum(row["critical_candidates"] for row in arm_rows) if labels_complete else None
         retained = sum(row["retained_current_claims"] for row in arm_rows) if labels_complete else None
         totals[arm] = {
@@ -336,17 +345,24 @@ def summarize(
             "outcomes": dict(Counter(row["status"] for row in arm_rows)),
             "candidate_count": candidates,
             "critical_candidates": critical,
+            "ownership_contamination_candidates": sum(row["ownership_contamination_candidates"] for row in arm_rows)
+            if labels_complete
+            else None,
             "critical_candidate_rate": critical / candidates if critical is not None and candidates else None,
             "required_current_claims": required,
             "retained_current_claims": retained,
             "required_current_retention": retained / required if retained is not None and required else None,
             "provider_input_tokens": input_tokens,
             "provider_output_tokens": output_tokens,
+            "known_provider_input_tokens": known_input_tokens,
+            "known_provider_output_tokens": known_output_tokens,
+            "provider_usage_complete": usage_complete,
             "known_usage_cost_cny": (
-                input_tokens * config.input_cny_per_million + output_tokens * config.output_cny_per_million
+                (known_input_tokens or 0) * config.input_cny_per_million
+                + (known_output_tokens or 0) * config.output_cny_per_million
             )
             / 1_000_000
-            if input_tokens is not None and output_tokens is not None
+            if known_input_tokens is not None or known_output_tokens is not None
             else None,
             "cost_reservation_cny": sum(row["cost_reservation_cny"] for row in arm_rows),
             "generation_seconds": sum(row["generation_seconds"] for row in arm_rows),

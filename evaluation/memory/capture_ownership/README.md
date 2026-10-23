@@ -53,8 +53,10 @@ readback, exact evidence IDs, pairing, input carriers, and fallback behavior. It
 `insufficient_evidence`; empty simulated output is not evidence of clean real-model extraction.
 
 The lock binds the canonical manifest, provider/model/settings, extraction profile, built-in instructions/version,
-host parser version, production and evaluation source file hashes, dependency locks, code commit, repetition count,
-budgets, and decision policy. A changed dataset/code/configuration is rejected before replay. Freeze a new experiment
+host parser version, the complete Runtime source/resource tree, WorkBuddy Python helpers, evaluation sources and audit
+scripts, package configuration, dependency locks, code commit, repetition count, budgets, and decision policy.
+Working-file edits and source additions/deletions invalidate the lock even when HEAD is unchanged; generated Python
+bytecode is excluded. A changed dataset/code/configuration is rejected before replay. Freeze a new experiment
 for intentional changes; do not reuse a reviewed output under a different lock.
 
 ## Real generation and cost
@@ -74,11 +76,13 @@ input tokens and 1.5 CNY per million output tokens for the short-input tier, fro
 using another account/date. These are configurable estimates; the provider's invoice is authoritative.
 
 The example reserves at most 0.8 CNY for the complete run, caps each response at 1024 tokens, uses one request per
-extraction with provider SDK retries disabled, runs each arm twice, and spaces requests eight seconds apart. A conservative input reservation uses UTF-8
+extraction with provider SDK retries and automatic continuations disabled, runs each arm twice, and spaces requests
+eight seconds apart. A conservative input reservation uses UTF-8
 bytes plus an 8192-token schema/framing allowance. Failed calls retain their reservation because they may be billed.
 No calls are made for candidate-arm unknown/empty turns. The actual provider token counts are saved when available;
-failed/timeout usage is unknown, never reported as zero. The character estimate used for input limits is separately
-reported and is not presented as measured provider usage.
+usage that the adapter did not return remains unknown, never reported as zero. Usage returned before a candidate is
+rejected (for example for an invalid evidence ID) is still retained. The character estimate used for input limits is
+separately reported and is not presented as measured provider usage.
 
 ```bash
 uv run --project evaluation --extra capture-ownership capture-ownership freeze \
@@ -159,6 +163,26 @@ The aggregate separates UTF-8 occupancy (including repeated carriers), candidate
 unsupported/false attribution, semantic duplicates, required fact/literal retention, parser eligibility, provider usage,
 and generation latency. Pending labels remain unknown. Mixed support is not automatically clean. Input occupancy and
 cost/latency improvements cannot pass the quality gate.
+
+Usage aggregation includes completed and generation-failed rows. `provider_input_tokens` and `provider_output_tokens`
+are complete totals only when both token counts are known for every attempted extraction; otherwise they are null.
+`known_provider_input_tokens` and `known_provider_output_tokens` retain the available subtotals (null when none are
+known), and `provider_usage_complete` indicates coverage. `known_usage_cost_cny` prices those known subtotals; when
+coverage is incomplete it is a lower bound, not a full bill. Measured zero usage remains zero.
+
+Ground-truth validation, current-fact literal retention, and the synthetic support audit share a complete-value
+matcher with identifier/path and numeric boundaries. Substrings such as `37` inside `370`, `eu-west-3` inside
+`eu-west-30`, and `/srv/atlas/api` inside `/srv/atlas/api-old` do not preserve the frozen value. Quotes and sentence
+punctuation are allowed; ASCII values can directly adjoin CJK prose. These checks supplement support annotations,
+not semantic review. The audit also requires the output-bound annotation to identify the matching frozen claim.
+A witness attests only the matched canary; additional unsupported assertions in the same candidate remain failures
+in the report.
+
+`critical_candidates` includes non-current-only support, false attribution, and unsupported assertions.
+`ownership_contamination_candidates` counts only the first two, without double counting a candidate. Only ownership
+contamination can qualify a case for a projection follow-up; unsupported output alone yields insufficient evidence.
+Unsupported assertions still block a clean decision, as do failed required literals in the control arm even when
+another candidate retains the same fact. Pending ownership annotations remain null.
 
 `projection_follow_up_required` requires two repeats of a contamination case and paired candidate-arm preservation
 of every required current fact with zero critical contamination/literal failures. `no_production_change` requires live,

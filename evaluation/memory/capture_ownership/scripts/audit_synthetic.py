@@ -21,7 +21,14 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
-from powercontext_eval_capture_ownership.models import Manifest, ReviewFile, fingerprint, read_json, write_json
+from powercontext_eval_capture_ownership.models import (
+    Manifest,
+    ReviewFile,
+    contains_literal,
+    fingerprint,
+    read_json,
+    write_json,
+)
 from powercontext_eval_capture_ownership.report import summarize
 
 # These are values from the frozen synthetic support, never private corpus content.
@@ -45,6 +52,7 @@ def audit(directory: Path) -> dict[str, Any]:
     report = summarize(manifest, lock, run, review)
     reported = {(row["case_id"], row["arm"], row["repetition"]): row for row in report["rows"]}
     cases = {case.case_id: case for case in manifest.cases}
+    reviews = {(row.case_id, row.arm, row.repetition): row for row in review.cases}
     entries = []
     for case_id, claim_id, literal in ANCHORS:
         if case_id not in report["reproduced_case_ids"]:
@@ -53,7 +61,9 @@ def audit(directory: Path) -> dict[str, Any]:
         claim = next(item for item in case.claims if item.claim_id == claim_id)
         support = [span for span in case.spans if span.span_id in claim.span_ids]
         current = "".join(case.prompt[span.start : span.end] for span in case.spans if span.owner == "current")
-        if literal in current or not any(literal in case.prompt[span.start : span.end] for span in support):
+        if contains_literal(current, literal) or not any(
+            contains_literal(case.prompt[span.start : span.end], literal) for span in support
+        ):
             raise ValueError("canary does not establish exclusively non-current support")
         if any(span.owner == "current" for span in support):
             raise ValueError("canary support crosses the current-user boundary")
@@ -70,10 +80,18 @@ def audit(directory: Path) -> dict[str, Any]:
             quality = reported[(case_id, "host-turn-candidate-v1", row["repetition"])]
             if quality["required_current_retention"] != 1 or quality["critical_candidates"] != 0:
                 raise ValueError("the paired output did not preserve the required current fact cleanly")
-            if any(literal in item["text"] for item in paired["candidates"]):
+            if any(contains_literal(item["text"], literal) for item in paired["candidates"]):
                 raise ValueError("the paired output still contains the non-current canary")
+            labels = {
+                item.candidate_index: item for item in reviews[(case_id, row["arm"], row["repetition"])].candidates
+            }
             for index, candidate in enumerate(row["candidates"]):
-                if literal not in candidate["text"]:
+                label = labels[index]
+                if (
+                    not contains_literal(candidate["text"], literal)
+                    or not label.support_complete
+                    or claim_id not in (label.claim_ids or ())
+                ):
                     continue
                 entries.append(
                     {

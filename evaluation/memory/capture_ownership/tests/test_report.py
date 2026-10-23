@@ -93,9 +93,134 @@ def test_reproducible_contamination_and_current_retention_require_follow_up(mani
     assert values[0].cases[0].claims[-1].text not in str(report)
 
 
+def bind_review(run, review):
+    """Keep annotations bound when a regression changes saved candidate output."""
+
+    for row, annotation in zip(run["rows"], review["cases"], strict=True):
+        row["output_sha256"] = fingerprint(row["candidates"])
+        annotation["output_sha256"] = row["output_sha256"]
+        for candidate, label in zip(row["candidates"], annotation["candidates"], strict=True):
+            label["candidate_sha256"] = fingerprint(candidate)
+    review["run_sha256"] = fingerprint(run)
+    return ReviewFile.model_validate(review)
+
+
+@pytest.mark.parametrize("support", ["history", "false_attribution", "unsupported"])
+def test_follow_up_requires_ownership_contamination_not_unsupported_output_alone(manifest, support):
+    manifest, lock, run, review = experiment(manifest, contaminated=True)
+    labels = review.model_dump(mode="json")
+    for row, annotation in zip(run["rows"], labels["cases"], strict=True):
+        if row["arm"] != ARMS[0]:
+            continue
+        label = annotation["candidates"][1]
+        label["current_user_attribution"] = support == "false_attribution"
+        if support == "unsupported":
+            row["candidates"][1]["text"] = "The invented service identifier is ZETA-99."
+            label.update(claim_ids=[], support_span_ids=[], unsupported_claim=True)
+        elif support == "false_attribution":
+            # Mixed support becomes false attribution only with the explicit label.
+            label["support_span_ids"] = list(manifest.cases[0].claims[-1].span_ids)
+    report = summarize(manifest, lock, run, bind_review(run, labels))
+    owned = support != "unsupported"
+    assert report["decision"] == ("projection_follow_up_required" if owned else "insufficient_evidence")
+    assert report["reproduced_case_ids"] == ([manifest.cases[0].case_id] if owned else [])
+    control = report["totals_by_arm"][ARMS[0]]
+    assert control["critical_candidates"] == 2
+    assert control["ownership_contamination_candidates"] == (2 if owned else 0)
+    assert all(row["unsupported_candidates"] == int(not owned) for row in report["rows"] if row["arm"] == ARMS[0])
+    assert all(
+        row["ownership_contamination_candidates"] == int(owned) for row in report["rows"] if row["arm"] == ARMS[0]
+    )
+
+
+def test_one_ownership_failure_and_one_hallucination_do_not_establish_reproduction(manifest):
+    manifest, lock, run, review = experiment(manifest, contaminated=True)
+    labels = review.model_dump(mode="json")
+    for row, annotation in zip(run["rows"], labels["cases"], strict=True):
+        if row["arm"] == ARMS[0] and row["repetition"] == 1:
+            row["candidates"][1]["text"] = "The invented service identifier is ZETA-99."
+            annotation["candidates"][1].update(
+                claim_ids=[], support_span_ids=[], unsupported_claim=True, current_user_attribution=False
+            )
+    report = summarize(manifest, lock, run, bind_review(run, labels))
+    assert report["decision"] == "insufficient_evidence"
+    assert report["reproduced_case_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "case_id,literal,changed",
+    [
+        ("history-before-current", "eu-west-3", "eu-west-30"),
+        ("history-before-current", "eu-west-3", "eu-west-3-old"),
+        ("history-before-current", "eu-west-3", "eu-west-3.example"),
+        ("history-before-current", "eu-west-3", "prefix-eu-west-3"),
+        ("quoted-inline-tags", "Python 3.12", "Python 3.120"),
+        ("quoted-inline-tags", "Python 3.12", "Python 3.12.1"),
+        ("exact-command-path-config", "/srv/atlas/api", "/srv/atlas/api-old"),
+        ("exact-command-path-config", "/srv/atlas/api", "/srv/atlas/api/sub"),
+        ("exact-command-path-config", "/srv/atlas/api", "/srv/atlas/api.py"),
+        ("exact-command-path-config", "ATLAS_TLS_VERIFY=true", "ATLAS_TLS_VERIFY=trueish"),
+        ("exact-command-path-config", "uv run pytest tests/integration -q", "uv run pytest tests/integration -q-extra"),
+    ],
+)
+def test_extended_values_do_not_satisfy_exact_current_literal_retention(manifest, case_id, literal, changed):
+    case = next(case for case in manifest.cases if case.case_id == case_id)
+    manifest, lock, run, review = experiment(manifest.model_copy(update={"cases": (case,)}))
+    for row in run["rows"]:
+        row["candidates"][0]["text"] = row["candidates"][0]["text"].replace(literal, changed)
+    # A mistaken support annotation must not bypass the deterministic literal check.
+    report = summarize(manifest, lock, run, bind_review(run, review.model_dump(mode="json")))
+    assert report["decision"] == "insufficient_evidence"
+    assert all(row["exact_literal_failures"] == 1 for row in report["rows"])
+    assert all(row["required_current_retention"] == 0 for row in report["rows"])
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Use `eu-west-3`.", "Use (eu-west-3).", "区域固定为eu-west-3。", "eu-west-3, for Atlas.", "eu-west-3."],
+)
+def test_complete_current_values_retain_credit_with_quotes_punctuation_and_cjk(manifest, text):
+    manifest, lock, run, review = experiment(manifest)
+    for row in run["rows"]:
+        row["candidates"][0]["text"] = text
+    report = summarize(manifest, lock, run, bind_review(run, review.model_dump(mode="json")))
+    assert report["decision"] == "no_production_change"
+    assert all(row["exact_literal_failures"] == 0 for row in report["rows"])
+    assert all(row["required_current_retention"] == 1 for row in report["rows"])
+
+
+def test_extended_current_value_in_paired_arm_cannot_qualify_a_follow_up(manifest):
+    manifest, lock, run, review = experiment(manifest, contaminated=True)
+    for row in run["rows"]:
+        if row["arm"] == ARMS[1]:
+            row["candidates"][0]["text"] = row["candidates"][0]["text"].replace("eu-west-3", "eu-west-30")
+    report = summarize(manifest, lock, run, bind_review(run, review.model_dump(mode="json")))
+    assert report["decision"] == "insufficient_evidence"
+    assert report["reproduced_case_ids"] == []
+
+
+def test_a_valid_current_candidate_does_not_hide_another_candidates_literal_failure(manifest):
+    manifest, lock, run, review = experiment(manifest)
+    labels = review.model_dump(mode="json")
+    for row, annotation in zip(run["rows"], labels["cases"], strict=True):
+        candidate = deepcopy(row["candidates"][0])
+        candidate["text"] = candidate["text"].replace("eu-west-3", "eu-west-4")
+        row["candidates"].append(candidate)
+        label = deepcopy(annotation["candidates"][0])
+        label["candidate_index"] = 1
+        annotation["candidates"].append(label)
+    report = summarize(manifest, lock, run, bind_review(run, labels))
+    assert all(row["required_current_retention"] == 1 for row in report["rows"])
+    assert all(row["exact_literal_failures"] == 1 for row in report["rows"])
+    assert report["decision"] == "insufficient_evidence"
+
+
 def test_unreviewed_or_offline_outputs_cannot_claim_clean_generation(manifest):
     manifest, lock, run, review = experiment(manifest)
-    assert summarize(manifest, lock, run)["decision"] == "insufficient_evidence"
+    unreviewed = summarize(manifest, lock, run)
+    assert unreviewed["decision"] == "insufficient_evidence"
+    assert all(row["ownership_contamination_candidates"] is None for row in unreviewed["rows"])
+    assert all(total["ownership_contamination_candidates"] is None for total in unreviewed["totals_by_arm"].values())
     run["mode"] = "offline"
     review = ReviewFile.model_validate(review.model_dump(mode="json") | {"run_sha256": fingerprint(run)})
     assert summarize(manifest, lock, run, review)["decision"] == "insufficient_evidence"
@@ -174,3 +299,47 @@ def test_review_can_reference_frozen_spans_outside_retention_targets(manifest):
     value["cases"][0]["candidates"][0]["support_span_ids"] = ["unknown-span"]
     with pytest.raises(ValueError):
         summarize(manifest, lock, run, ReviewFile.model_validate(value))
+
+
+@pytest.mark.parametrize("usage_mode", ["complete", "partial", "unknown", "input_only", "zero"])
+def test_failed_requests_contribute_known_usage_without_claiming_unknown_usage(manifest, usage_mode):
+    manifest, lock, run, _ = experiment(manifest)
+    config = RunConfig.model_validate(lock["config"]).model_copy(
+        update={"input_cny_per_million": 0.15, "output_cny_per_million": 1.5}
+    )
+    lock["config"] = config.model_dump(mode="json")
+    run["lock_sha256"] = fingerprint(lock)
+    for index, row in enumerate(run["rows"]):
+        row.update(status="generation_failed", candidates=[], output_sha256=fingerprint([]))
+        row["provider_usage"] = {"requests": 1, "input_tokens": 101, "output_tokens": 7}
+        if usage_mode == "unknown" or usage_mode == "partial" and index == 0:
+            row["provider_usage"] = None
+        elif usage_mode == "input_only":
+            row["provider_usage"]["output_tokens"] = None
+        elif usage_mode == "zero":
+            row["provider_usage"].update(input_tokens=0, output_tokens=0)
+    total = summarize(manifest, lock, run)["totals_by_arm"][ARMS[0]]
+    complete = usage_mode in {"complete", "zero"}
+    assert total["provider_usage_complete"] is complete
+    assert total["provider_input_tokens"] == (202 if usage_mode == "complete" else 0 if usage_mode == "zero" else None)
+    assert total["provider_output_tokens"] == (14 if usage_mode == "complete" else 0 if usage_mode == "zero" else None)
+    known_input = (
+        None if usage_mode == "unknown" else 101 if usage_mode == "partial" else 0 if usage_mode == "zero" else 202
+    )
+    known_output = (
+        None
+        if usage_mode in {"unknown", "input_only"}
+        else 7
+        if usage_mode == "partial"
+        else 0
+        if usage_mode == "zero"
+        else 14
+    )
+    assert total["known_provider_input_tokens"] == known_input
+    assert total["known_provider_output_tokens"] == known_output
+    if usage_mode == "unknown":
+        assert total["known_usage_cost_cny"] is None
+    else:
+        assert total["known_usage_cost_cny"] == pytest.approx(
+            ((known_input or 0) * 0.15 + (known_output or 0) * 1.5) / 1_000_000
+        )

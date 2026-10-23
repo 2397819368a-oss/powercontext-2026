@@ -42,19 +42,26 @@ def prompt_definition(config: RunConfig) -> Any:
 
 def freeze(root: Path, manifest: Manifest, config: RunConfig) -> dict[str, Any]:
     definition = prompt_definition(config)
-    paths = [
-        "integrations/workbuddy/plugins/powercontext/hooks/workbuddy_powercontext_hook.py",
-        "src/powercontext/builtin/sources/content.py",
-        "src/powercontext/builtin/artifacts/atomic_memory/extraction.py",
-        "src/powercontext/builtin/artifacts/prompt/builtin.py",
-        "uv.lock",
-        "evaluation/uv.lock",
-    ]
-    paths += [
-        str(path.relative_to(root)).replace("\\", "/")
-        for path in sorted((root / "evaluation/memory/capture_ownership/src").rglob("*.py"))
-    ]
-    files = {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
+    paths = {"pyproject.toml", "evaluation/pyproject.toml", "uv.lock", "evaluation/uv.lock"}
+    # Include working-file contents and file inventory, not just the committed HEAD.
+    # Runtime resources can change prompts/schema behavior just as Python sources can.
+    runtime = root / "src/powercontext"
+    paths.update(
+        path.relative_to(root).as_posix()
+        for path in runtime.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"}
+    )
+    for directory in (
+        "integrations/workbuddy/plugins/powercontext",
+        "evaluation/memory/capture_ownership/src",
+        "evaluation/memory/capture_ownership/scripts",
+    ):
+        paths.update(
+            path.relative_to(root).as_posix()
+            for path in (root / directory).rglob("*.py")
+            if "__pycache__" not in path.parts
+        )
+    files = {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in sorted(paths)}
     return {
         "schema_version": "capture-ownership.lock.v1",
         "manifest_sha256": fingerprint(manifest.model_dump(mode="json")),
@@ -276,7 +283,9 @@ async def run_experiment(
             input_type=AtomicMemoryExtractionInput,
             output_type=AtomicMemoryExtractionOutput,
             model_settings=cast(ModelSettings, config.model_settings),
-            limits=InferenceLimits(timeout_seconds=config.timeout_seconds, max_requests=config.max_requests),
+            limits=InferenceLimits(
+                timeout_seconds=config.timeout_seconds, max_requests=config.max_requests, allow_continuations=False
+            ),
         )
         measured = MeasuredGenerator(generator)
         reconciler = PydanticAIStructuredGenerator(
@@ -399,7 +408,6 @@ async def run_experiment(
                                     # Keep the runtime evidence-ID validation in the actual pipeline.
                                     candidates = await pipeline.extract(request)
                                     row["candidates"] = [item.model_dump(mode="json") for item in candidates]
-                                    row["provider_usage"] = measured.usage if mode == "live" else None
                                 except Exception as error:  # noqa: BLE001 -- private failure class, never raw provider text.
                                     row["status"] = "generation_failed"
                                     row["failure_class"] = type(error).__name__
@@ -409,6 +417,9 @@ async def run_experiment(
                                         if isinstance(status, int):
                                             row["provider_http_status"] = status
                                         cause = cause.__cause__
+                                finally:
+                                    # Evidence-ID validation can fail after generation returned known usage.
+                                    row["provider_usage"] = measured.usage if mode == "live" else None
                             row["generation_seconds"] = perf_counter() - started
                             row["output_sha256"] = fingerprint(row["candidates"])
                             rows.append(row)

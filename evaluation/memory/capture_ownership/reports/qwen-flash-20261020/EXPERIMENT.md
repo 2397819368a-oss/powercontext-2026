@@ -6,14 +6,14 @@ qualify the experimental projection for deployment. Production behavior is uncha
 ## Revision scope
 
 This is a historical live experiment frozen at generation commit
-[`2c21132ba5dd1caa986484b8d71e1504f0dca3e2`](https://github.com/tmt-123/powercontext/commit/2c21132ba5dd1caa986484b8d71e1504f0dca3e2).
+[`2c21132ba5dd1caa986484b8d71e1504f0dca3e2`](https://github.com/oceanbase/powercontext/commit/2c21132ba5dd1caa986484b8d71e1504f0dca3e2).
 The adjacent `report.json` retains that `code_sha`, the original run/lock hashes, and the original measurements.
 All 38 `joined-source-v1` rows have `occupancy.text_carriers == 2`: the runtime then included the complete body in
 both materialized content and Source metadata.
 
 Runtime changes [#2139](https://github.com/oceanbase/powercontext/pull/2139) and
 [#2163](https://github.com/oceanbase/powercontext/pull/2163), brought into this branch by merge
-[`f71f6955`](https://github.com/tmt-123/powercontext/commit/f71f6955fd61a85e02dba4b295f40f92f20d281b), compact duplicate
+[`f71f6955`](https://github.com/oceanbase/powercontext/commit/f71f6955fd61a85e02dba4b295f40f92f20d281b), compact duplicate
 bodies. The offline ContentSource replay at that merge has one joined-source text carrier, as asserted by the
 updated regression test. These are different frozen runtime inputs; running the current checkout does not reproduce
 this report's two-carrier occupancy.
