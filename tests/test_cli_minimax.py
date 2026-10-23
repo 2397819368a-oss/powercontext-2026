@@ -94,13 +94,33 @@ def installed(native):
     return native[0] / "宿主 profile/plugins/powercontext"
 
 
-def test_complete_package_and_saved_target_are_reused_by_readonly_doctor(native):
-    result = setup(native)
+@pytest.mark.parametrize(
+    "newline,indent",
+    [(None, 2), ("\n", 2), ("\r\n", 2), ("\n", 4)],
+    ids=["repository", "lf", "crlf", "four-space-indent"],
+)
+def test_complete_package_and_saved_target_are_reused_by_readonly_doctor(native, newline, indent):
+    package = PACKAGE
+    source_root = ROOT
+    if newline is not None:
+        package = native[0] / "source"
+        shutil.copytree(PACKAGE, package)
+        mcp = package / "powercontext.mcp.json"
+        content = json.dumps(json.loads(mcp.read_bytes()), ensure_ascii=False, indent=indent) + "\n"
+        mcp.write_bytes(content.replace("\n", newline).encode("utf-8"))
+        source_root = package
+    result = setup(native, source=source_root)
     assert result.exit_code == 0, result.output
     plugin = installed(native)
-    for source in PACKAGE.rglob("*"):
+    for source in package.rglob("*"):
         if source.is_file():
-            assert (plugin / source.relative_to(PACKAGE)).read_bytes() == source.read_bytes()
+            relative = source.relative_to(package)
+            target = plugin / relative
+            if relative.as_posix() == "powercontext.mcp.json":
+                # Setup renders this configuration; source whitespace is not part of its contract.
+                assert json.loads(target.read_bytes()) == json.loads(source.read_bytes())
+            else:
+                assert target.read_bytes() == source.read_bytes()
     before = {path: path.read_bytes() for path in native[0].rglob("*") if path.is_file()}
     result = invoke("doctor", "minimax", "--json")
     assert result.exit_code == 0, result.output
