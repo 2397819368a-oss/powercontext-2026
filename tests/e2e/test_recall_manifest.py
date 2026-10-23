@@ -21,7 +21,7 @@ import asyncio
 import pytest
 from sqlalchemy import Engine, event
 
-from tests.e2e.test_access_control_regressions import _scope, _server
+from tests.e2e.test_access_control_regressions import _grant, _scope, _server
 
 
 def test_manifest_is_bounded_metadata_and_refs_are_readable(tmp_path):
@@ -325,5 +325,66 @@ def test_invalid_supplied_description_is_rejected(tmp_path, description):
             assert response.status_code in {400, 422}, response.text
             manifest = await client.post("/v1/recall/manifest", json={"scope_id": scope})
             assert manifest.json()["items"] == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("long_tags", [False, True], ids=["short-tag", "max-unicode-tags"])
+def test_manifest_cursors_round_trip_with_maximum_filters(tmp_path, long_tags):
+    from powercontext.http import RecallManifestRequest
+
+    async def scenario():
+        async with _server(tmp_path) as (_, client, _):
+            scope = await _scope(client)
+            tags = ["界" * 63 + chr(97 + index) for index in range(16)] if long_tags else ["release"]
+            kind = "类" * 128
+            identifiers = set()
+            for number in range(2):
+                created = await client.post(
+                    f"/v1/scopes/{scope}/artifacts",
+                    json={"family": "atomic-memory", "content": {"kind": kind, "text": f"Release rule {number}."}},
+                )
+                assert created.status_code == 201, created.text
+                identifier = created.json()["artifact_id"]
+                identifiers.add(identifier)
+                path = f"/v1/scopes/{scope}/artifacts/atomic-memory/{identifier}/tags"
+                current = await client.get(path)
+                tagged = await client.put(path, json={"tags": tags[:1]}, headers={"If-Match": current.headers["ETag"]})
+                assert tagged.status_code == 200, tagged.text
+            request = {"scope_id": scope, "kind": kind, "tags": tags, "tag_match": "any", "limit": 1}
+            first = await client.post("/v1/recall/manifest", json=request)
+            assert first.status_code == 200, first.text
+            cursor = first.json()["next_cursor"]
+            assert cursor is not None and len(cursor) <= 4096
+            next_request = RecallManifestRequest.model_validate({**request, "cursor": cursor})
+            second = await client.post(
+                "/v1/recall/manifest", json=next_request.model_dump(mode="json", exclude_none=True)
+            )
+            assert second.status_code == 200, second.text
+            assert second.json()["next_cursor"] is None
+            found = [item["ref"]["artifact_id"] for item in first.json()["items"] + second.json()["items"]]
+            assert len(found) == len(set(found)) == 2 and set(found) == identifiers
+            other = await client.post(
+                "/v1/scopes",
+                json={"title": "Other scope", "summary": "Cursor isolation", "idempotency_key": "cursor-other-scope"},
+            )
+            assert other.status_code == 201, other.text
+            for changed in (
+                {"tags": ["different"]},
+                {"tag_match": "all"},
+                {"kind": "fact"},
+                {"scope_id": other.json()["scope_id"]},
+            ):
+                rejected = await client.post("/v1/recall/manifest", json={**request, "cursor": cursor, **changed})
+                assert rejected.status_code == 400, rejected.text
+            await _grant(client, scope, "stranger", "scope.viewer")
+            rejected_subject = await client.post(
+                "/v1/recall/manifest", json={**request, "cursor": cursor}, headers={"Authorization": "Bearer stranger"}
+            )
+            assert rejected_subject.status_code == 400, rejected_subject.text
+            tampered = await client.post("/v1/recall/manifest", json={**request, "cursor": cursor + "tampered"})
+            assert tampered.status_code == 400, tampered.text
+            wrong_endpoint = await client.post("/v1/atomic-memory/list", json={**request, "cursor": cursor})
+            assert wrong_endpoint.status_code == 400, wrong_endpoint.text
 
     asyncio.run(scenario())

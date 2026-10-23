@@ -316,14 +316,20 @@ class ScopedAtomicMemory:
         _validate_limit(limit)
         if kind is not None:
             AtomicMemoryContent(kind=kind, text="validation", description="validation")
+        # Hash the complete binding so accepted Unicode filters cannot inflate the
+        # signed cursor beyond the transport's 4096-character request limit.
         bound = {
             "endpoint": "recall_manifest",
-            "version": 1,
-            "scope_id": self.scope_id,
-            "subject": self.application.security.subject(context),
-            "kind": kind,
-            "tags": None if tag_filter is None else list(tag_filter.keys),
-            "tag_match": None if tag_filter is None else tag_filter.match,
+            "version": 2,
+            "binding_hash": sha256(
+                canonical_json({
+                    "scope_id": self.scope_id,
+                    "subject": self.application.security.subject(context),
+                    "kind": kind,
+                    "tags": None if tag_filter is None else list(tag_filter.keys),
+                    "tag_match": None if tag_filter is None else tag_filter.match,
+                })
+            ).hexdigest(),
         }
         after = self.application.cursor.after_text(cursor, bound)
         async with self._read(context) as connection:

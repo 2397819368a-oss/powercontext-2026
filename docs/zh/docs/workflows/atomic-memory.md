@@ -268,6 +268,9 @@ unsupported 通过 `ServerResponseError.status_code`、`.code`、`.details` 检�
 `kind`、`description` 和 `state_version`。选择相关引用后，通过 `get_artifact_revision` 读取正文并引用证据。
 摘要只帮助选择，不是证据。筛选后的空清单不能证明 Scope 为空，也不允许跳过 `prepare_context`。
 
+游标通过固定长度指纹绑定请求身份和筛选条件，长 Unicode 标签不会使返回的游标超出请求允许的 4,096 字符上限。
+游标格式升级前签发的游标会被拒绝，需要从第一页重新分页。
+
 每页默认 50 条，允许 1–100 条，超限明确报错。翻页时携带 `next_cursor`，保持 Scope、调用主体、类型和标签筛选一致。
 游标带签名并绑定接口，按 Artifact ID 进行实时键集分页，不是跨请求快照；并发新增且 ID 排在游标之前的记录需要重新遍历。
 `next_cursor: null` 明确表示末页。清单读取要求 Scope 读取权限。主键按 Scope 和 ID 限定遍历范围；类型或标签筛选可能扫描多于返回数量的元数据行，

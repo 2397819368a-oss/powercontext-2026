@@ -289,6 +289,10 @@ The response contains `items`, `next_cursor`, and `code` (`page` or `empty_inven
 full content. A description is a selection aid, not evidence. An empty filtered page never proves a Scope empty or
 permits skipping `prepare_context`.
 
+The cursor binds request identity and filters through a fixed-length fingerprint, so long Unicode tags do not
+expand the returned token beyond the accepted 4,096-character limit. Cursors issued before a cursor-format upgrade
+are rejected; restart pagination from the first page.
+
 The limit defaults to 50 and accepts 1–100; oversized requests fail explicitly. Copy `next_cursor` into the next
 request with the same Scope, principal, kind and tag filters. Cursors are signed and endpoint-bound. Ordering is by
 Artifact ID using live keyset pagination, not a snapshot across requests: concurrent new IDs behind the cursor
