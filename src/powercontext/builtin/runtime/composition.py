@@ -1895,6 +1895,18 @@ async def _open_pydantic_ai_model(
         from powercontext.builtin.inference.pydantic_ai import StreamingAggregateModel
 
         model = StreamingAggregateModel(model, idle_timeout_seconds=stream_idle_timeout_seconds)
+    elif streaming == "auto":
+        log_safely(
+            logger,
+            logging.WARNING,
+            "Streamed generation aggregation was not applied because the model provider prefix "
+            "is outside the supported set",
+            extra={
+                "event": "inference.generation.streaming_not_applied",
+                "operation": "generate",
+                "unit": "inference",
+            },
+        )
     model = model if instrumentation is None else InstrumentedModel(model, instrumentation)
     return provider_model, model
 

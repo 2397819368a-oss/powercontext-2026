@@ -69,6 +69,10 @@ With streamed generation aggregation enabled (`POWERCONTEXT_SERVER_INFERENCE_GEN
 an `inference.generation.usage_missing` WARNING with `unit` `inference` reports one generation request that
 completed successfully while the provider did not return usage with the stream; usage statistics for that
 request will be missing. The event carries no prompt or response content and does not affect the request result.
+When `auto` is set and the model provider prefix is outside `anthropic`, `openai`, `openai-chat`, and
+`openai-responses`, an `inference.generation.streaming_not_applied` WARNING with `unit` `inference` reports that
+the model stayed on a non-streaming request. The event carries no prompt or response content and does not change
+the request result.
 For child cancellation, the supervisor emits `artifact_processing.failed` at `INFO` with outcome/category `cancelled`
 and diagnostic code `worker_cancelled`. Application spans classify mapped diagnostic codes even when sensitive
 exception values are excluded from logs and traces.

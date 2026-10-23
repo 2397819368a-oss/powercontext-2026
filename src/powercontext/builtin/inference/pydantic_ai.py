@@ -140,9 +140,10 @@ class StreamingAggregateModel(WrapperModel):
 
     Gateways in front of non-streaming inference endpoints may drop an idle
     HTTP exchange long before the configured generation timeout. Streaming the
-    same request keeps the connection active, while a chunk-arrival watchdog
-    bounds silent stalls. The wall-clock budget stays owned by the calling
-    generator; this wrapper only watches the gap between chunks.
+    same request keeps the connection active. The watchdog bounds the gap
+    between model events (text, thinking, or tool-call parts). Provider
+    heartbeat frames that are not yielded as model events do not reset it.
+    The wall-clock budget stays owned by the calling generator.
 
     The complete-state guard only rejects provider continuations (separately
     billed follow-up requests). A stream that breaks mid-flight is caught by
