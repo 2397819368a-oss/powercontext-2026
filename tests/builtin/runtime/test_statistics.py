@@ -191,35 +191,52 @@ def test_scoped_statistics_reports_current_inventory_and_recall_reduction() -> N
 
 def test_recall_estimates_each_source_as_complete_text() -> None:
     async def scenario() -> None:
-        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            candidate_pipeline=AtomicMemoryGenerationPipeline(
+                extractor=_ContentCandidatePipeline(),
+                reconciler=_IndependentMemoryReconciler(),
+                estimator=character_token_estimator(),
+            ),
+        ) as runtime:
             scope_id = await _create_scope(runtime, "statistics-recall")
             sources = runtime.sources.for_scope(scope_id)
             first = await sources.capture(CaptureSource(source_id="short-a", content="a", metadata={}))
-            second = await sources.capture(CaptureSource(source_id="short-b", content="b", metadata={}))
-            candidate = await runtime.experience.for_scope(scope_id).propose(
+            await sources.capture(CaptureSource(source_id="short-b", content="b", metadata={}))
+            assert runtime.atomic_memory is not None
+            memory = runtime.atomic_memory.for_scope(scope_id)
+            await memory.flush()
+            originals = await memory.list()
+            merged = await memory.merge(
+                tuple(item.as_read() for item in originals.items),
+                AtomicMemoryContent(kind="fact", text="Estimate each complete Source through ancestry."),
+            )
+            descendant = await runtime.experience.for_scope(scope_id).propose(
                 ProposeExperienceRequest(
                     proposal=ExperienceContent(
-                        situation="A short Source recall baseline was needed.",
-                        action="Estimate each complete Source separately.",
-                        outcome="Per-Source rounding remains visible in statistics.",
-                        lesson="Do not join independent Source text before estimation.",
+                        situation="An ancestry baseline was needed.",
+                        action="Estimate each complete Source through ancestry.",
+                        outcome="Shared ancestry contributes each Source once.",
+                        lesson="Preserve complete Source text and deduplicate shared ancestry.",
                     ),
-                    sources=(first.source_ref, second.source_ref),
+                    sources=(first.source_ref,),
+                    artifacts=(merged.primary.ref,),
                 )
             )
             await runtime.review.for_scope(scope_id).approve(
                 ApproveCandidateRequest(
-                    candidate_id=candidate.candidate_id,
-                    expected_version=candidate.version,
+                    candidate_id=descendant.candidate_id,
+                    expected_version=descendant.version,
                 )
             )
-            prepared = await runtime.context.for_scope(scope_id).prepare(
-                PrepareContextRequest(query="estimate each complete Source separately")
-            )
+            prepared = await runtime.context.for_scope(scope_id).prepare(PrepareContextRequest(query="ancestry"))
             result = await runtime.statistics.for_scope(scope_id).overview(period=StatisticsPeriod.TODAY)
 
         estimator = character_token_estimator()
         assert prepared.status == "ready"
+        assert prepared.content is not None and "through ancestry" in prepared.content
+        assert '"kind":"experience"' in prepared.content
+        assert '"family":"atomic-memory"' in prepared.content
         assert result.recall.totals.comparable_preparations == 1
         assert result.recall.totals.baseline_tokens == estimator.estimate("a") + estimator.estimate("b") == 2
 
@@ -581,6 +598,44 @@ def test_statistics_selection_reads_each_table_once_regardless_of_scope_count() 
     assert dict(large) == dict(small)
 
 
+# Measured with 32 Handoffs citing one Experience; slack of one statement above the observed value.
+_STATISTICS_CITED_READ_CEILING = 12
+
+
+def test_statistics_overview_statement_count_does_not_grow_with_cited_handoffs() -> None:
+    """Cited Experience reads must be batched, not one query per Handoff."""
+
+    async def counted(handoff_count: int) -> int:
+        statements: list[str] = []
+        armed = False
+
+        def record(_conn, _cursor, statement, *_args) -> None:
+            if armed:
+                statements.append(statement)
+
+        url = _database_url()
+        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig(url=url))) as runtime:
+            scope_id = await _create_scope(runtime, f"statistics-cited-{handoff_count}")
+            reference = await _create_artifact(url, scope_id, "experience-1", _experience_draft())
+            for index in range(handoff_count):
+                await _create_artifact(url, scope_id, f"handoff-{index:03d}", _handoff_draft(reference))
+            await runtime.statistics.for_scope(scope_id).overview(period=StatisticsPeriod.THIRTY_DAYS)
+            event.listen(Engine, "before_cursor_execute", record)
+            armed = True
+            try:
+                await runtime.statistics.for_scope(scope_id).overview(period=StatisticsPeriod.THIRTY_DAYS)
+            finally:
+                armed = False
+                event.remove(Engine, "before_cursor_execute", record)
+        return len(statements)
+
+    small = asyncio.run(counted(1))
+    large = asyncio.run(counted(32))
+
+    assert small == large
+    assert large <= _STATISTICS_CITED_READ_CEILING
+
+
 def test_statistics_selection_reports_the_same_scope_rows_as_scoped_overviews() -> None:
     async def scenario() -> None:
         async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
@@ -609,7 +664,7 @@ def test_statistics_selection_reports_the_same_scope_rows_as_scoped_overviews() 
 
 
 # Measured on the default text-recall path; slack of one statement above the observed value.
-_PREPARE_STATEMENT_CEILING = 41
+_PREPARE_STATEMENT_CEILING = 18
 
 
 def test_prepare_context_statement_count_does_not_grow_with_memory_count() -> None:

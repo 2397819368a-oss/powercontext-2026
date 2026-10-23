@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Literal, get_args, get_origin
+from typing import Any, Literal
 
 import rfc8785
 from pydantic import (
@@ -261,9 +261,14 @@ def _validation_schema_matches_payload(
         serialization_key = (field.serialization_alias or field.alias or name) if serialize_by_alias else name
         if field.is_required() and _validation_schema_key(name, field) != serialization_key:
             return False
-        for nested in _nested_models(field.annotation):
-            if not _validation_schema_matches_payload(nested, visited):
-                return False
+        annotation = field.annotation
+        if (
+            field.is_required()
+            and isinstance(annotation, type)
+            and issubclass(annotation, BaseModel)
+            and not _validation_schema_matches_payload(annotation, visited)
+        ):
+            return False
     return True
 
 
@@ -278,18 +283,6 @@ def _validation_schema_key(name: str, field: Any) -> str | None:
     if alias is not None:
         return None
     return field.alias if field.alias is not None else name
-
-
-def _nested_models(annotation: object) -> tuple[type[BaseModel], ...]:
-    origin = get_origin(annotation)
-    if origin is None:
-        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-            return (annotation,)
-        return ()
-    nested: list[type[BaseModel]] = []
-    for argument in get_args(annotation):
-        nested.extend(_nested_models(argument))
-    return tuple(nested)
 
 
 def _source_definition_fingerprint(

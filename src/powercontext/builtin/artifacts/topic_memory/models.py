@@ -249,6 +249,8 @@ class TopicMemorySearchResult(BaseModel):
     embedding_calls: int = Field(default=0, exclude=True)
     matches: tuple[ArtifactSearchMatch, ...] = Field(default=(), exclude=True)
     artifacts: tuple[TopicMemory, ...] = Field(default=(), exclude=True)
+    #: Set only when a wanted query embedding was abandoned, never when FTS was the plan.
+    embedding_fallback: str | None = Field(default=None, exclude=True)
 
 
 class PublishedTopicMemory(BaseModel):

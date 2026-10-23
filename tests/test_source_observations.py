@@ -22,7 +22,7 @@ from typing import Self
 
 import pytest
 import rfc8785
-from pydantic import ConfigDict, Field, ValidationError, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_serializer
 from pydantic.alias_generators import to_camel
 from referencing.exceptions import Unresolvable
 
@@ -30,8 +30,9 @@ from powercontext.builtin.persistence.source_definitions import SourceDefinition
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import SHARED_TABLES
 from powercontext.builtin.runtime import SubmitSourceObservation
-from powercontext.builtin.runtime.relational import RelationalContexts, _json_schema_validator
+from powercontext.builtin.runtime.relational import RelationalContexts
 from powercontext.builtin.sources import CONTENT_SOURCE_DEFINITION, ContentCapture
+from powercontext.builtin.sources.observation_validation import json_schema_validator
 from powercontext.sources import (
     TEXT_EVIDENCE_PROJECTION_KEY,
     AdapterSourceDefinition,
@@ -276,6 +277,60 @@ def test_optional_alias_keeps_the_preexisting_manifest_fingerprint(tmp_path) -> 
     asyncio.run(scenario())
 
 
+def test_nullable_nested_alias_keeps_the_preexisting_manifest_fingerprint(tmp_path) -> None:
+    class Detail(BaseModel):
+        label: str = Field(alias="wire_label")
+
+    class NullableSource(Source):
+        detail: Detail | None = None
+
+    class NullableAdapter:
+        name = "nullable-nested"
+        input_class = str
+        source_class = NullableSource
+
+        async def resolve(self, value: str, /) -> NullableSource:
+            return NullableSource(
+                name="nullable",
+                definition_version="2",
+                materialization=SourceMaterialization.CAPTURED,
+                detail=None,
+            )
+
+        async def read(self, source: NullableSource, /) -> str:
+            return source.name
+
+    async def scenario() -> None:
+        definition = AdapterSourceDefinition(NullableAdapter(), version="2")
+        registry = SourceDefinitionRegistry((definition,))
+        source = await registry.resolve("Retained.")
+        manifest = manifest_for_definition(definition)
+        observation = project_source_for_transport(registry, source)
+        baseline = {
+            "name": definition.name,
+            "version": definition.version,
+            "source_schema": NullableSource.model_json_schema(),
+            "projections": [],
+        }
+        assert manifest.source_schema == NullableSource.model_json_schema()
+        assert manifest.fingerprint == f"sha256:{hashlib.sha256(rfc8785.dumps(baseline)).hexdigest()}"
+        assert observation.payload["detail"] is None
+
+        config = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'nullable-nested.db'}")
+        async with SQLiteProfile.open(config, tables=SHARED_TABLES) as profile:
+            contexts = RelationalContexts(database=profile.database, source_registry=SourceDefinitionRegistry(()))
+            assert await contexts.register_source_definition(manifest) == manifest
+        async with SQLiteProfile.open(config, tables=SHARED_TABLES) as profile:
+            contexts = RelationalContexts(database=profile.database, source_registry=SourceDefinitionRegistry(()))
+            assert await contexts.register_source_definition(manifest) == manifest
+            receipt = await contexts.submit_source_observation(
+                SubmitSourceObservation(scope_id="scope-a", observation=observation)
+            )
+            assert receipt.source_ref.source_id == "nullable"
+
+    asyncio.run(scenario())
+
+
 def test_decimal_source_manifest_fingerprint_survives_upgrade(tmp_path) -> None:
     class AmountSource(Source):
         amount: Decimal
@@ -447,7 +502,7 @@ def test_remote_schema_references_are_rejected_without_network_access(monkeypatc
         raise OSError("network access is forbidden")  # noqa: TRY003
 
     monkeypatch.setattr(urllib.request, "urlopen", reject_request)
-    validator = _json_schema_validator("remote", {"$ref": "http://127.0.0.1:9/schema"})
+    validator = json_schema_validator("remote", {"$ref": "http://127.0.0.1:9/schema"})
 
     with pytest.raises(Unresolvable):
         validator.validate({})

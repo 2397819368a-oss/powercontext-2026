@@ -155,7 +155,10 @@ def test_queue_capacity_drops_without_sql_or_sensitive_logs(caplog: pytest.LogCa
 def test_in_memory_usage_does_not_join_outer_rollback() -> None:
     async def scenario() -> None:
         async with _database() as database:
-            recorder = _ModelUsageRecorder(database, StatisticsRepository())
+            # Verify rollback isolation after settlement, not the short best-effort flush deadline.
+            recorder = _ModelUsageRecorder(
+                database, StatisticsRepository(), write_timeout_seconds=5.0, flush_timeout_seconds=6.0
+            )
             try:
                 with pytest.raises(ValueError, match="business rollback"):
                     async with database.transaction() as connection:
@@ -727,7 +730,8 @@ def test_commit_lock_rolls_back_usage_and_restores_connection(tmp_path: Path, mo
         path = tmp_path / "commit-locked.db"
         config = SQLiteConfig(url=f"sqlite+aiosqlite:///{path}", journal_mode="DELETE")
         async with _database(config) as database:
-            recorder = _ModelUsageRecorder(database, StatisticsRepository())
+            # Recovery requires settlement beyond the default one-second write budget.
+            recorder = _ModelUsageRecorder(database, StatisticsRepository(), flush_timeout_seconds=2.0)
             reader = sqlite3.connect(path)
             try:
                 reader.execute("BEGIN")
