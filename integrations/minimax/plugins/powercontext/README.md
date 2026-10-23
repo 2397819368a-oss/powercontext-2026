@@ -66,7 +66,26 @@ MiniMax Code uses its own account or model provider. Saving and reading explicit
 
 ## Connect to a protected server
 
-The bundled connection uses a local server without authentication. If your deployment requires a Bearer token, configure the endpoint and token in MiniMax Code's private `mcp.json`: `<effective MiniMax data directory>/mcp.json`. Setup uses `--minimax-data-dir`, `MINIMAX_DATA_DIR`, the `MAVIS_DATA_DIR` fallback, or the selected native/saved target. Merge this entry into any existing `mcpServers` object:
+The distributed package defaults to a local server without authentication. For a protected deployment, supply `POWERCONTEXT_MINIMAX_AUTHORIZATION` through the process environment or a private environment file. Keep the file outside version control and restrict access to it. For example, `/path/to/private.env` can contain:
+
+```dotenv
+POWERCONTEXT_MINIMAX_AUTHORIZATION=<your-server-token>
+```
+
+Configure an installed plugin and check the result:
+
+```bash
+uv run powercontext config agent minimax \
+  --server-url https://your-powercontext-server.example \
+  --env-file /path/to/private.env
+uv run powercontext doctor minimax --json
+```
+
+Use `http://127.0.0.1:8000` for a protected server on the same machine. Use the same data directory as your installation: `MINIMAX_DATA_DIR` and the `MAVIS_DATA_DIR` fallback override the saved target. For a first installation, run `setup minimax --source .` with the same `--server-url` and `--env-file` options.
+
+MiniMax CLI 0.6.9 exposes private and plugin MCP connections independently, potentially as `powercontext` and `powercontext_2`. Setup/config synchronize their endpoints and headers so both tool sets reach the selected server. Restart MiniMax Code after changing the connection. Configuration does not automatically enable a disabled plugin or private entry.
+
+If you edit MiniMax Code's private configuration manually, merge this entry into the existing `mcpServers` object in `<effective MiniMax data directory>/mcp.json`:
 
 ```json
 {
@@ -82,17 +101,24 @@ The bundled connection uses a local server without authentication. If your deplo
 }
 ```
 
-Replace the URL and token with your deployment values. Use `http://127.0.0.1:8000/mcp` for a protected server on the same machine. The qualified MiniMax CLI gives the enabled user-configured `powercontext` server precedence over the plugin's connection; the Skill remains available. Restart MiniMax Code after changing the configuration.
+Replace the URL and token with your deployment values; use `http://127.0.0.1:8000/mcp` for a protected local server. After editing an enabled private entry, synchronize the installed plugin connection before restarting MiniMax Code:
 
-Keep this file private and out of version control; on Linux and macOS, restrict its permissions to `600`. Do not put the token in the plugin's `powercontext.mcp.json` or `plugin.json`. Enter the token value directly in the private configuration; a `${TOKEN}` placeholder will not load it from the environment.
+```bash
+uv run powercontext config agent minimax
+uv run powercontext doctor minimax --json
+```
+
+A disabled private entry stays disabled. To configure the active plugin connection while keeping that entry disabled, use the explicit `--server-url` and authorization flow above.
+
+Keep real tokens out of the source/distributed package, `plugin.json`, and examples. Setup/config store literal headers in the private `mcp.json` and synchronize them into the installed `plugins/powercontext/powercontext.mcp.json`; let these commands update the managed plugin connection. Keep both installed connection files private and out of version control. On Linux/macOS, setup/config apply owner-only permissions to updated connection files; restrict manually edited files and the credential environment file to mode `600`. On Windows, protect these files with appropriate ACLs. A `${TOKEN}` placeholder in the private JSON does not load a token from the environment.
 
 For server-side setup, see [Enable authentication](https://powercontext.oceanbase.io/en/docs/operate/deploy-server/#enable-authentication). The PowerContext server token authenticates MCP requests; model provider credentials belong in the server's model configuration.
 
 This package contains a Skill and native MCP configuration, with no local
 PowerContext HTTP client. MiniMax Code owns the MCP connection and its HTTP/TLS
 policy; `POWERCONTEXT_CLIENT_ALLOW_INSECURE_HTTP` and PowerContext's saved client
-settings do not control that native transport. Configure any remote endpoint
-in MiniMax Code's private MCP configuration. Prefer HTTPS: HTTP transmits
+settings do not control that native transport. Configure remote endpoints
+through setup/config so both MCP connections are updated. Prefer HTTPS: HTTP transmits
 content and authorization headers without encryption.
 
 ## Your data
@@ -103,9 +129,9 @@ The plugin saves context when requested; it does not automatically capture every
 
 ## Troubleshooting
 
-If PowerContext is unavailable, check that the server is running and that MiniMax Code can reach `http://127.0.0.1:8000/mcp`. If the plugin is missing from the listing, check that it is installed and enabled in the MiniMax data directory you are using.
+If PowerContext is unavailable, check that the server is running and that MiniMax Code can reach the configured endpoint (`http://127.0.0.1:8000/mcp` by default). If the plugin is missing from the listing, check that it is installed and enabled in the MiniMax data directory you are using.
 
-For a custom endpoint, check the URL in your private MCP configuration. A `401` response means the server did not accept the credentials; check the Bearer token and restart MiniMax Code after updating it. A `403` response means the authenticated identity lacks permission for the requested operation.
+For a custom endpoint, check the URL in your private MCP configuration. A `401` response means the server did not accept the credentials; correct the Bearer token, run the configuration and doctor commands above to synchronize both connections, then restart MiniMax Code. If doctor reports that the private and plugin MCP connections differ, run `config agent minimax` for the same data directory; editing only the private file does not update the plugin connection. A `403` response means the authenticated identity lacks permission for the requested operation.
 
 An empty search means no matching memory was found. Ask to save the relevant decision or constraint if you want it available later. A failed save remains incomplete; the plugin reports the failure so you can retry after resolving the connection or server issue.
 
