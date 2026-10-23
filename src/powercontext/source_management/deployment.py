@@ -18,6 +18,7 @@ import yaml
 from pydantic import Field
 from typing_extensions import override
 
+from powercontext._logging import log_safely
 from powercontext.server.authentication import (
     AuthenticationRejectedError,
     MultiBearerAuthenticationProvider,
@@ -335,10 +336,8 @@ class DeploymentCoordinator:
             for path in sorted(directory.expanduser().glob("*/powercontext.yml")):
                 try:
                     await self.load(path)
-                except Exception as error:
-                    logger.error(  # noqa: TRY400 - plugin failures can contain credentials
-                        "Source instance preparation failed (%s); configuration: %s", type(error).__name__, path
-                    )
+                except Exception:
+                    log_safely(logger, logging.ERROR, "Source instance preparation failed; inspect local configuration")
 
 
 async def inspect_manifests(config):
