@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from typing_extensions import override
 
 from powercontext._logging import log_safely
-from powercontext.artifacts import ArtifactRef, ArtifactSearchContractError, ArtifactSearchMatch
+from powercontext.artifacts import ArtifactLineage, ArtifactRef, ArtifactSearchContractError, ArtifactSearchMatch
 from powercontext.artifacts.search import ArtifactSearchExecutionContext
 from powercontext.builtin.artifacts.atomic_memory.errors import (
     AtomicMemoryConflictError,
@@ -185,6 +185,7 @@ class AtomicMemorySearchHit:
     hit: AtomicMemoryIndexHit
     matched_by: tuple[str, ...]
     score_upper_bound: float | None = None
+    lineage: ArtifactLineage | None = None
 
     @property
     def text(self) -> str:
@@ -539,7 +540,7 @@ class ScopedAtomicMemory:
         if plan is not None:
             weights = {name: plan.fusion.weights.get(name, 1.0) for name in weights}
         candidates: list[AtomicMemorySearchHit] = []
-        for hit in hits:
+        for hit, artifact in zip(hits, validated, strict=True):
             matched_by = tuple(
                 channel
                 for channel, refs in (("text", fts), ("vector", vectors))
@@ -549,6 +550,7 @@ class ScopedAtomicMemory:
                 AtomicMemorySearchHit(
                     hit,
                     matched_by,
+                    lineage=artifact.lineage,
                     score_upper_bound=(
                         sum(weights[channel] for channel in matched_by) / (ATOMIC_MEMORY_RRF_CONSTANT + 1)
                         if plan is None

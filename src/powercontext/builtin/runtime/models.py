@@ -213,8 +213,9 @@ class RuntimeCapabilities(BaseModel):
 class MemoryFlushResult(BaseModel):
     """Result of processing one scoped Source window.
 
-    ``held_count`` and ``hold_codes`` are retained compatibility fields. Atomic Memory
-    processing leaves them at zero and advances the cursor only with its domain commit.
+    ``held_count`` and ``hold_codes`` report a write-gate ``HOLD``. A held window commits nothing,
+    yet it still advances the cursor past its Sources, so those Sources are consumed rather than
+    retried; ``held_count`` is 0 or 1 and ``hold_codes`` carries the gate rejection codes.
     """
 
     previous_cursor: int
