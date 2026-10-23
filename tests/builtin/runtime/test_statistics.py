@@ -598,6 +598,44 @@ def test_statistics_selection_reads_each_table_once_regardless_of_scope_count() 
     assert dict(large) == dict(small)
 
 
+# Measured with 32 Handoffs citing one Experience; slack of one statement above the observed value.
+_STATISTICS_CITED_READ_CEILING = 12
+
+
+def test_statistics_overview_statement_count_does_not_grow_with_cited_handoffs() -> None:
+    """Cited Experience reads must be batched, not one query per Handoff."""
+
+    async def counted(handoff_count: int) -> int:
+        statements: list[str] = []
+        armed = False
+
+        def record(_conn, _cursor, statement, *_args) -> None:
+            if armed:
+                statements.append(statement)
+
+        url = _database_url()
+        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig(url=url))) as runtime:
+            scope_id = await _create_scope(runtime, f"statistics-cited-{handoff_count}")
+            reference = await _create_artifact(url, scope_id, "experience-1", _experience_draft())
+            for index in range(handoff_count):
+                await _create_artifact(url, scope_id, f"handoff-{index:03d}", _handoff_draft(reference))
+            await runtime.statistics.for_scope(scope_id).overview(period=StatisticsPeriod.THIRTY_DAYS)
+            event.listen(Engine, "before_cursor_execute", record)
+            armed = True
+            try:
+                await runtime.statistics.for_scope(scope_id).overview(period=StatisticsPeriod.THIRTY_DAYS)
+            finally:
+                armed = False
+                event.remove(Engine, "before_cursor_execute", record)
+        return len(statements)
+
+    small = asyncio.run(counted(1))
+    large = asyncio.run(counted(32))
+
+    assert small == large
+    assert large <= _STATISTICS_CITED_READ_CEILING
+
+
 def test_statistics_selection_reports_the_same_scope_rows_as_scoped_overviews() -> None:
     async def scenario() -> None:
         async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
@@ -626,7 +664,7 @@ def test_statistics_selection_reports_the_same_scope_rows_as_scoped_overviews() 
 
 
 # Measured on the default text-recall path; slack of one statement above the observed value.
-_PREPARE_STATEMENT_CEILING = 41
+_PREPARE_STATEMENT_CEILING = 18
 
 
 def test_prepare_context_statement_count_does_not_grow_with_memory_count() -> None:

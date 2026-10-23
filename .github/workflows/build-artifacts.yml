@@ -385,6 +385,9 @@ jobs:
             # Requested historical refs may predate the role smoke harness.
             build/cli-smoke-venv/bin/powercontext skill remote-sync --help
           fi
+          if [ -f src/powercontext/cli/archive.py ]; then
+            build/cli-smoke-venv/bin/powercontext archive --help
+          fi
 
           plugin_root="$BUNDLE_ROOT/integrations/plugins/powercontext"
           (

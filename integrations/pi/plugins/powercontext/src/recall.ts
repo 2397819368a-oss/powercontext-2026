@@ -18,6 +18,8 @@ import { captureUserPrompt } from './capture.ts'
 import { combineSignals, createTimeoutSignal, type PowerContextClient } from './client.ts'
 import type { ResolvedConfig } from './config.ts'
 import { validatePreparedContext } from './prepared-context.ts'
+import { scrubSecrets } from './secrets.ts'
+import type { DiagnosticEvent } from './diagnostics.ts'
 
 export interface PluginRuntime {
   client: PowerContextClient
@@ -26,6 +28,7 @@ export interface PluginRuntime {
   recordCapture?: (scopeId: string, position: number) => void
   flushPending?: (signal?: AbortSignal) => Promise<void>
   diagnostic?: (event: string, error: unknown) => void
+  observe?: (event: DiagnosticEvent) => void
 }
 
 export interface BeforeAgentStartInput {
@@ -76,11 +79,19 @@ export async function recallBeforeAgentStart(input: BeforeAgentStartInput): Prom
     const signals = [createTimeoutSignal(input.runtime.config.httpBudgetMs)]
     if (input.signal) signals.push(input.signal)
     const signal = combineSignals(signals)
+    const safePrompt = scrubSecrets(prompt, input.runtime.config.authorization)
+    if (safePrompt !== prompt) {
+      try {
+        input.runtime.observe?.({ event: 'capture_source', outcome: 'skipped', reason: 'sensitive_content' })
+      } catch {
+        // Diagnostic delivery must not change preparation or capture behavior.
+      }
+    }
     let content: string | undefined
     try {
       const response = await input.runtime.client.request('prepare_context', {
         scope_id: scopeId,
-        query: prompt,
+        query: safePrompt,
         max_bytes: input.runtime.config.maxBytes,
         ...(input.runtime.config.contextAssembly === undefined ? {} : { assembly: input.runtime.config.contextAssembly }),
       }, signal)

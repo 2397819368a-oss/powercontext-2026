@@ -889,12 +889,17 @@ def topic_memory_response(value: PublishedTopicMemory) -> TopicMemoryArtifact:
 
 
 def prepared_context_response(value: PreparedContext) -> TransportPreparedContext:
-    return TransportPreparedContext.model_validate({
+    payload: dict[str, object] = {
         "schema": PreparedContextSchema(value.schema_version),
         "status": PreparedContextStatus(value.status),
         "content": value.content,
         "content_bytes": value.content_bytes,
-    })
+    }
+    if value.reason is not None:
+        # Named on purpose rather than dumped: the four fields above are what every Host validates,
+        # so this key appears only on a preparation that asked for it with ``explain``.
+        payload["reason"] = value.reason
+    return TransportPreparedContext.model_validate(payload)
 
 
 def bootstrap_context_response(value: RuntimeBootstrapContext) -> TransportBootstrapContext:

@@ -108,7 +108,7 @@ class TopicMemorySearcher:
         )
         if len(result.matches) != len(result.hits) or len(result.artifacts) != len(result.matches):
             raise ArtifactSearchContractError(self.family, "public Topic search requires complete exact Artifacts")
-        self._observe(result, fallback)
+        self._observe(result, fallback is not None)
         return result
 
     async def search_legacy(
@@ -135,7 +135,7 @@ class TopicMemorySearcher:
             embedding_model=self._embedding,
             execution_context=execution_context,
         )
-        self._observe(result, fallback)
+        self._observe(result, fallback is not None)
         return result
 
     async def _execute(
@@ -152,7 +152,7 @@ class TopicMemorySearcher:
         artifact_request: TopicArtifactSearchRequest | None = None,
         plan: TopicSearchPlan | None = None,
         execution_context: ArtifactSearchExecutionContext | None = None,
-    ) -> tuple[TopicMemorySearchResult, bool]:
+    ) -> tuple[TopicMemorySearchResult, str | None]:
         embedding = embedding_model if allow_embedding and (plan is None or plan.mode != "fts") else None
         keywords: dict[str, Any] = {"limit": limit}
         if admission is not None:
@@ -163,7 +163,7 @@ class TopicMemorySearcher:
             keywords["execution_context"] = execution_context
         if embedding is None:
             result = await self._search(scope_id, query, mode="fts", **keywords)
-            return result.model_copy(update={"embedding_calls": 0}), False
+            return result.model_copy(update={"embedding_calls": 0}), None
         mode = "hybrid" if plan is None else plan.mode
         if query_embedding is not None and query_embedding.embedding_profile == embedding.profile:
             result = await self._search(
@@ -174,8 +174,8 @@ class TopicMemorySearcher:
                 embedding_profile=query_embedding.embedding_profile,
                 **keywords,
             )
-            return result.model_copy(update={"query_embedding": query_embedding, "embedding_calls": 0}), False
-        embedded = await self._embed_for_search(
+            return result.model_copy(update={"query_embedding": query_embedding, "embedding_calls": 0}), None
+        embedded, fallback = await self._embed_for_search(
             embedding,
             query,
             timeout_seconds=embedding_timeout_seconds,
@@ -183,7 +183,10 @@ class TopicMemorySearcher:
         )
         if embedded is None:
             result = await self._search(scope_id, query, mode="fts", **keywords)
-            return result.model_copy(update={"embedding_calls": 1}), True
+            return (
+                result.model_copy(update={"embedding_calls": 1, "embedding_fallback": fallback}),
+                fallback,
+            )
         result = await self._search(
             scope_id,
             query,
@@ -199,7 +202,7 @@ class TopicMemorySearcher:
                 ),
                 "embedding_calls": 1,
             }
-        ), False
+        ), None
 
     async def _embed_for_search(
         self,
@@ -208,7 +211,7 @@ class TopicMemorySearcher:
         *,
         timeout_seconds: float | None,
         allow_fallback: bool,
-    ) -> EmbeddingResult | None:
+    ) -> tuple[EmbeddingResult | None, str | None]:
         try:
             async with asyncio.timeout(timeout_seconds):
                 embedded = await embed_query(embedding, (query,))
@@ -220,11 +223,24 @@ class TopicMemorySearcher:
                     raise InferenceUnavailableError("embed", "embedding request timed out") from None
                 raise
             self._log_fallback(error)
-            return None
-        return embedded
+            return None, self._fallback_reason(error)
+        return embedded, None
 
     @staticmethod
-    def _log_fallback(error: Exception) -> None:
+    def _fallback_reason(error: Exception) -> str:
+        """Why an abandoned embedding gave way to FTS.
+
+        The same value is the ``topic_memory.search.embedding_fallback`` ``error_code`` and, when a
+        preparation asked for it, ``PreparedContext.reason``. RFC 1435 spells this vocabulary
+        ``inference_*`` because the failure belongs to the inference provider, not to the channel it
+        was going to feed.
+        """
+
+        return (
+            "inference_timeout" if isinstance(error, (InferenceTimeoutError, TimeoutError)) else "inference_unavailable"
+        )
+
+    def _log_fallback(self, error: Exception) -> None:
         log_safely(
             logger,
             logging.WARNING,
@@ -233,9 +249,9 @@ class TopicMemorySearcher:
                 "event": "topic_memory.search.embedding_fallback",
                 "outcome": "fallback",
                 "mode": "fts",
-                "error_code": "inference_timeout"
-                if isinstance(error, (InferenceTimeoutError, TimeoutError))
-                else "inference_unavailable",
+                # Derived from the public reason so the event and the response cannot disagree
+                # about why the vector channel was lost.
+                "error_code": self._fallback_reason(error),
                 "unit": "topic-memory",
             },
         )

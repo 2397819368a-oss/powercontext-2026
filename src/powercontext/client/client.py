@@ -1412,6 +1412,17 @@ def _prepare_request(
             and "assembly" not in request.model_fields_set
         ):
             payload.pop("assembly", None)
+        if (
+            operation is PREPARE_CONTEXT
+            and isinstance(request, PrepareContextRequest)
+            and not payload.get("explain", False)
+        ):
+            # ``PREPARE_CONTEXT`` serializes its defaults because an older Server needs the fields
+            # it already knows about. ``explain`` is not one of them: a Server that predates it
+            # rejects the key with ``422 invalid_request``, so a client upgraded ahead of its
+            # Server must not volunteer a flag whose default means "say nothing extra". ``false``
+            # and absence are the same request.
+            payload.pop("explain", None)
         if operation.request_location == "query":
             request_query.update({key: value for key, value in payload.items() if value is not None})
         else:
