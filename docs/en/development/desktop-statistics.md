@@ -57,5 +57,7 @@ Neither Server APIs nor historical qualification records are changed.
 See [the qualification record](../../../desktop/VALIDATION.md#current-scope-statistics-qualification)
 for the tested Server/contract/wheel identities and actual validation limits.
 Synthetic tests establish local handling; the built-wheel harness separately
-establishes the observed SQLite protocol behavior. Installed Windows/macOS page
-acceptance remains a platform gate.
+establishes the observed SQLite protocol behavior. The record also distinguishes
+the exercised macOS ARM64 bundled debug-app journey from Windows installed UI,
+Intel, IME and screen-reader gates. The Windows installed journey compares the
+page's tables with independent real Server responses.

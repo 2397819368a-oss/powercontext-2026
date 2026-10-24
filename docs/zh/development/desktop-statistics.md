@@ -44,4 +44,6 @@ Rust `export_ipc` example 生成。原生的精确选择投影复用具体生成
 已验证的 Server、合同、wheel 标识和实际验证边界见
 [资格记录](../../../desktop/VALIDATION.md#current-scope-statistics-qualification)。
 模拟测试验证本地处理；构建 wheel 的独立夹具另行验证实际 SQLite 协议行为。
-Windows/macOS 安装后的页面验收仍由平台 gate 负责。
+记录另行列明已执行的 macOS ARM64 打包调试应用流程，以及仍待验证的 Windows
+安装界面、Intel、输入法和屏幕阅读器 gate。Windows 安装流程将页面表格与独立的
+真实 Server 响应进行比较。

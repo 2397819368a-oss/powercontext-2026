@@ -6,6 +6,7 @@
     "main"
   ],
   "permissions": [
+    "core:webview:allow-set-webview-zoom",
     "allow-foundation-info",
     "allow-local-diagnostics",
     "allow-remember-memory",

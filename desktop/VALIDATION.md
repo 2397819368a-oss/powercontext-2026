@@ -22,7 +22,7 @@ cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
 
 ## Compatibility scope
 
-[compatibility.json](src-tauri/src/connections/compatibility.json) preserves the recorded Server sources, normalized OpenAPI contract digests and qualification-wheel digests for the historical profiles below. The current contract is qualified by `sqlite-atomic-d9a78567-v1` below; ordinary builds require explicitly selecting it and checking the connection before business operations become available. The `sqlite-atomic-caf2a35a-v1`, `sqlite-atomic-683e2db0-v1` and `sqlite-atomic-cab054db-v1` records qualify their corresponding Server source deployments and do not match this bundled contract. Historical records are disabled in the selector, and saved unavailable selections remain visible until explicitly replaced. CI builds have their own artifact identities and do not change product qualification.
+[compatibility.json](src-tauri/src/connections/compatibility.json) preserves the recorded Server sources, normalized OpenAPI contract digests and qualification-wheel digests for the historical profiles below. The current contract is qualified by `sqlite-stats-1da99747-v1` below; ordinary builds require explicitly selecting it and checking the connection before business operations become available. The `sqlite-atomic-caf2a35a-v1`, `sqlite-atomic-683e2db0-v1` and `sqlite-atomic-cab054db-v1` records qualify their corresponding Server source deployments and do not match this bundled contract. Historical records are disabled in the selector, and saved unavailable selections remain visible until explicitly replaced. CI builds have their own artifact identities and do not change product qualification.
 
 The real Server harness covers SQLite with anonymous loopback, static Bearer, HTTPS with explicit CA/base path, and injected-provider/enforced access. It exercises save/search/exact reads, identity changes, binding revocation, ambiguous writes without replay and Scope pagination. Installed UI checks cover repeated launches preserving the existing editor, late committed-save responses preserving a new Scope draft, explicit connection/Scope selection, clipboard copies, connection isolation, draft cancellation, byte limits and independent Server survival after Desktop exit.
 
@@ -56,15 +56,34 @@ Synthetic native tests separately cover cancellation, changed Scope, independent
 Memory cancellation, response bounds, and invalid response selection/period.
 The harness reports are generated under `.artifacts/`; reproduce them with
 `fixture_qualification.py`, the `server_probe` example and `real_server.py`.
-These results qualify the observed Server protocol; they do not establish the
-statistics page's installed Windows/Intel/macOS UI, IME, accessibility, signing
-or release acceptance.
+These results qualify the observed Server protocol.
+
+The bundled macOS ARM64 debug app was also exercised against two isolated real
+Servers on this host, using an isolated application identifier and an 800 × 600
+window. The build used Desktop `34c61c5f` plus the main-window zoom permission
+in this PR; its executable SHA-256 is
+`43d0d149d3194739171ffb70a57736280c14d2cd3d63fe47001c8f2b3381065d`.
+Observed results include explicit activation after restart, empty inventory,
+Chinese and English partial-token displays, clearing on Scope/connection changes,
+and the second Server's independent one-entry inventory with zero usage.
+Command+0 followed by five Command+= steps exercised 200% webview zoom, including
+a successful statistics reload. The zoom IPC permission is restricted to the
+trusted local main window. This was a bundled debug-app check, not installer,
+IME, screen-reader, signing or complete accessibility acceptance.
+
+`installed_statistics.py` extends the Windows installed WebDriver journey with
+independent real `/v1/stats` table comparisons, all three UTC periods, bilingual
+unknown-token handling, and Scope/connection isolation. Its fixture and Python
+checks ran locally; the Windows UI journey requires actual Windows execution.
+Hosted workflows at `34c61c5f` required maintainer approval (`action_required`),
+so that head had no Windows acceptance result. Intel and release gates remain
+separate.
 
 ### Current Server protocol qualification
 
 #### Server d9a78567 protocol qualification
 
-The bundled contract is qualified by `sqlite-atomic-d9a78567-v1`. The record identifies Server
+The historical contract is qualified by `sqlite-atomic-d9a78567-v1`. The record identifies Server
 sources at `d9a785675dedb72cd72a386b346e590f4c067ac0` and normalized OpenAPI digest
 `a6758fd35296abefb55ab86b152584a369d5f2deedfee7a3f9822e16ad1edc25`.
 The qualification wheel is `powercontext-1.4.1.dev69+ga200d6094.d20261022-py3-none-any.whl`,

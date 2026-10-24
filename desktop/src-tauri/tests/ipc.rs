@@ -94,6 +94,35 @@ fn permissions_reject_untrusted_window_origin_and_arbitrary_commands() {
     }
 }
 #[test]
+fn zoom_is_available_only_to_the_trusted_main_window() {
+    use tauri::Manager;
+    let app = mock_builder().build(test_context()).unwrap();
+    for (label, origin, allowed) in [
+        ("main", LOCAL_ORIGIN, true),
+        ("other", LOCAL_ORIGIN, false),
+        ("main", "https://evil.example", false),
+    ] {
+        let window = app.get_webview_window(label).unwrap_or_else(|| {
+            tauri::WebviewWindowBuilder::new(&app, label, Default::default())
+                .build()
+                .unwrap()
+        });
+        let result = get_ipc_response(
+            &window,
+            InvokeRequest {
+                cmd: "plugin:webview|set_webview_zoom".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: origin.parse().unwrap(),
+                body: InvokeBody::Json(serde_json::json!({"value":2.0})),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.into(),
+            },
+        );
+        assert_eq!(result.is_ok(), allowed, "{label} {origin}: {result:?}");
+    }
+}
+#[test]
 fn blocks_remote_navigation_and_userinfo() {
     for url in [
         "https://evil.example",
