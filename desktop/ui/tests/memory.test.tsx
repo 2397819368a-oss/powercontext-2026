@@ -173,7 +173,7 @@ test.each([1, 2])(
     await user.type(screen.getByLabelText("Memory text"), "Atomic note");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(screen.getByRole("status").textContent).toBe(
-      `Saved successfully. ${count} record${count === 1 ? "" : "s"} returned; each can open its exact revision directly.`,
+      `Saved successfully. ${count} record${count === 1 ? "" : "s"} returned. Each can open its exact revision directly.`,
     );
     expect(
       screen.getAllByRole("button", { name: "Open saved record" }),
@@ -262,7 +262,7 @@ test("an Atomic save can be searched, opened and copied by exact Artifact refere
   await user.type(screen.getByLabelText("Memory text"), "Atomic note");
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(screen.getByRole("status").textContent).toBe(
-    "Saved successfully. 1 record returned; each can open its exact revision directly.",
+    "Saved successfully. 1 record returned. Each can open its exact revision directly.",
   );
   await user.type(screen.getByLabelText("Keyword search"), "Atomic");
   await user.click(screen.getByRole("button", { name: "Search" }));
@@ -332,9 +332,14 @@ test("a saved record opens its exact revision through the existing reader", asyn
   await waitFor(() => expect(document.activeElement).toBe(openSaved));
 });
 
-test.each(["forbidden", "network"])(
-  "a failed %s saved-record read clears returned bodies but keeps the write outcome",
-  async (code) => {
+test.each([
+  ["en", "forbidden"],
+  ["en", "network"],
+  ["zh", "forbidden"],
+  ["zh", "network"],
+] as const)(
+  "a failed saved-record read in %s (%s) clears returned bodies but keeps the write outcome",
+  async (language, code) => {
     const user = userEvent.setup();
     const { outcome: saved } = makeSaved(1);
     vi.mocked(desktopApi.remember).mockResolvedValue(saved);
@@ -342,32 +347,36 @@ test.each(["forbidden", "network"])(
     render(
       <MemoryWorkspace
         state={state}
-        language="en"
+        language={language}
         onState={vi.fn()}
         onDirty={vi.fn()}
       />,
     );
-    await user.type(screen.getByLabelText("Memory text"), "private body");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    const note = language === "en" ? "Memory text" : "记忆内容";
+    const save = language === "en" ? "Save" : "保存";
+    const open = language === "en" ? "Open saved record" : "打开保存的记录";
+    const openingHint =
+      language === "en"
+        ? "Each can open its exact revision directly."
+        : "每条都可以直接打开其精确版本。";
+    await user.type(screen.getByLabelText(note), "private body");
+    await user.click(screen.getByRole("button", { name: save }));
+    expect(screen.getByRole("status").textContent).toContain(openingHint);
     expect(screen.getAllByText("Atomic note 0").length).toBeGreaterThan(0);
-    await user.click(screen.getByRole("button", { name: "Open saved record" }));
+    await user.click(screen.getByRole("button", { name: open }));
     // The saved-record list no longer exposes the returned body after the
     // failed read, while the write outcome itself remains visible.
     expect(screen.getByRole("alert")).toBeTruthy();
     await waitFor(() => {
       expect(screen.queryAllByText("Atomic note 0")).toHaveLength(0);
-      expect(
-        screen.queryAllByRole("button", { name: "Open saved record" }),
-      ).toHaveLength(0);
+      expect(screen.queryAllByRole("button", { name: open })).toHaveLength(0);
     });
     // The save receipt keeps the real returned count; a failed read must not
     // rewrite it into a zero-record result.
-    expect(screen.getByRole("status").textContent).toContain(
-      "Saved successfully.",
-    );
-    expect(screen.getByRole("status").textContent).toContain("1 record");
-    expect(screen.getByRole("status").textContent).not.toContain(
-      "Server returned no memory",
+    expect(screen.getByRole("status").textContent).toBe(
+      language === "en"
+        ? "Saved successfully. 1 record returned."
+        : "保存成功。Server 返回 1 条记录。",
     );
   },
 );
@@ -459,6 +468,9 @@ test.each(["forbidden", "network"])(
       screen.queryAllByRole("button", { name: "Open saved record" }),
     ).toHaveLength(0);
     expect(screen.getByRole("status").textContent).toContain("1 record");
+    expect(screen.getByRole("status").textContent).not.toContain(
+      "Each can open",
+    );
     expect(
       (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
     ).toBe("");

@@ -211,6 +211,7 @@ export function NoteForm({
       {outcome?.record.status === "succeeded" && returnedCount !== null && (
         <p role="status">
           {returnedCount > 0 ? t.savedReturned(returnedCount) : t.noEntry}
+          {saved.length > 0 && <> {t.savedOpen}</>}
         </p>
       )}
       {saved.length > 0 && (
