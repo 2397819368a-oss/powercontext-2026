@@ -3,6 +3,8 @@
   "pages": [
     "index",
     "deploy-server",
+    "local-server-ops",
+    "managed-local-server",
     "connect-remote-server",
     "database-migrations",
     "artifact-processing-migration",
