@@ -269,6 +269,7 @@ unsupported 通过 `ServerResponseError.status_code`、`.code`、`.details` 检�
 摘要只帮助选择，不是证据。筛选后的空清单不能证明 Scope 为空，也不允许跳过 `prepare_context`。
 
 游标通过固定长度指纹绑定请求身份和筛选条件，长 Unicode 标签不会使返回的游标超出请求允许的 4,096 字符上限。
+指纹保留 Unicode 筛选值的原始形式，包括组合形式与分解形式之间的区别。
 游标格式升级前签发的游标会被拒绝，需要从第一页重新分页。
 
 每页默认 50 条，允许 1–100 条，超限明确报错。翻页时携带 `next_cursor`，保持 Scope、调用主体、类型和标签筛选一致。

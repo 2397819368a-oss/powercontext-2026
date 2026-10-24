@@ -290,7 +290,8 @@ full content. A description is a selection aid, not evidence. An empty filtered 
 permits skipping `prepare_context`.
 
 The cursor binds request identity and filters through a fixed-length fingerprint, so long Unicode tags do not
-expand the returned token beyond the accepted 4,096-character limit. Cursors issued before a cursor-format upgrade
+expand the returned token beyond the accepted 4,096-character limit. The fingerprint preserves exact Unicode filter
+values, including distinctions between composed and decomposed strings. Cursors issued before a cursor-format upgrade
 are rejected; restart pagination from the first page.
 
 The limit defaults to 50 and accepts 1–100; oversized requests fail explicitly. Copy `next_cursor` into the next

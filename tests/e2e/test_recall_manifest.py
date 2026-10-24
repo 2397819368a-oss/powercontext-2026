@@ -329,6 +329,40 @@ def test_invalid_supplied_description_is_rejected(tmp_path, description):
     asyncio.run(scenario())
 
 
+def test_manifest_cursor_rejects_a_different_unicode_kind(tmp_path):
+    async def scenario():
+        async with _server(tmp_path) as (_, client, _):
+            scope = await _scope(client)
+            kind = "café"
+            for number in range(2):
+                created = await client.post(
+                    f"/v1/scopes/{scope}/artifacts",
+                    json={"family": "atomic-memory", "content": {"kind": kind, "text": f"Rule {number}."}},
+                )
+                assert created.status_code == 201, created.text
+            request = {"scope_id": scope, "kind": kind, "limit": 1}
+            first = await client.post("/v1/recall/manifest", json=request)
+            assert first.status_code == 200, first.text
+            cursor = first.json()["next_cursor"]
+            assert cursor is not None
+            second = await client.post("/v1/recall/manifest", json={**request, "cursor": cursor})
+            assert second.status_code == 200, second.text
+            assert len(second.json()["items"]) == 1
+            assert second.json()["items"][0]["ref"] != first.json()["items"][0]["ref"]
+            assert second.json()["next_cursor"] is None
+            different_kind = "cafe\u0301"
+            empty = await client.post("/v1/recall/manifest", json={**request, "kind": different_kind})
+            assert empty.status_code == 200, empty.text
+            assert empty.json()["code"] == "empty_inventory"
+            rejected = await client.post(
+                "/v1/recall/manifest", json={**request, "kind": different_kind, "cursor": cursor}
+            )
+            assert rejected.status_code == 400, rejected.text
+            assert rejected.json()["error"]["code"] == "invalid_cursor"
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("long_tags", [False, True], ids=["short-tag", "max-unicode-tags"])
 def test_manifest_cursors_round_trip_with_maximum_filters(tmp_path, long_tags):
     from powercontext.http import RecallManifestRequest

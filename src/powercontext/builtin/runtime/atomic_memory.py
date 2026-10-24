@@ -25,6 +25,7 @@ from time import perf_counter
 from typing import cast
 from uuid import uuid4
 
+import rfc8785
 from sqlalchemy import Text, and_, func, or_, select
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -319,11 +320,12 @@ class ScopedAtomicMemory:
             AtomicMemoryContent(kind=kind, text="validation", description="validation")
         # Hash the complete binding so accepted Unicode filters cannot inflate the
         # signed cursor beyond the transport's 4096-character request limit.
+        # Preserve exact strings: the query does not apply Unicode normalization.
         bound = {
             "endpoint": "recall_manifest",
-            "version": 2,
+            "version": 3,
             "binding_hash": sha256(
-                canonical_json({
+                rfc8785.dumps({
                     "scope_id": self.scope_id,
                     "subject": self.application.security.subject(context),
                     "kind": kind,
