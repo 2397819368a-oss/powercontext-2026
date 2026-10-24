@@ -50,7 +50,7 @@ builtin = [
     "aiosqlite>=0.22,<1",
     "alembic>=1.16,<2",
     "apscheduler>=3.11,<4",
-    "filelock>=3.16,<4",
+    "filelock>=3.16,<5",
     "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
     "jieba==0.42.1",
