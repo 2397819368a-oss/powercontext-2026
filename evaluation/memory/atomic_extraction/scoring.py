@@ -25,6 +25,8 @@ _SECOND_PERSON = re.compile(r"\b(?:you|your|yours|yourself|yourselves)\b|你(?:�
 _IMPERATIVE_PREFIX = re.compile(
     r"^(?:(?:(?:for|in|on|during|after|before|when|whenever)\b[^,\r\n]{1,120},\s*)?"
     r"(?:(?:and|then)\s+|(?:然后|并且|并|再|同时)\s*)?"
+    r"(?:(?:以后|今后)(?![^,。\uFF0C\uFF01\uFF1F\uFF1B\r\n]{0,40}(?:偏好|决定|要求|约束|规则|希望))"
+    r"[^,。\uFF0C\uFF01\uFF1F\uFF1B\r\n]{0,40}?)?"
     r"(?:"
     r"(?:(?:always|never)\s+)?"
     r"(?:use(?!\s+(?:of|cases?)\b)|run(?!\s+time\b)|delete|remove|retry(?!\s+count\b)|inspect|upload|"
@@ -39,10 +41,17 @@ _IMPERATIVE_PREFIX = re.compile(
     flags=re.IGNORECASE,
 )
 _SENTENCE_BOUNDARY = re.compile(r"\A|(?<=[.!?;:—。\uFF01\uFF1F\uFF1B\n])")
-_IMPERATIVE_CLAUSE_BOUNDARY = re.compile(r"(?:,\s*(?:and|then)\s+|\uFF0C\s*)", flags=re.IGNORECASE)
+_IMPERATIVE_CLAUSE_BOUNDARY = re.compile(r"(?:,\s*(?:(?:and|then)\s+)?|\uFF0C\s*)", flags=re.IGNORECASE)
 _ATTRIBUTED_DIRECTIVE_SUFFIX = re.compile(
     r"(?:\b(?:preference|decision|constraint|rule)\s+(?:is\s+)?to|"
     r"\b(?:prefers?|decided?|requires?|wants?)\s+to)\s*$",
+    flags=re.IGNORECASE,
+)
+_ATTRIBUTED_DIRECTIVE_FINITE = re.compile(
+    r"\b(?:"
+    r"(?:preference|decision|constraint|rule)\s+(?:is\s+)?that|"
+    r"(?:prefers?|decided?|requires?|wants?)\s+that"
+    r")\b",
     flags=re.IGNORECASE,
 )
 _ATTRIBUTABLE_KINDS = frozenset({"preference", "decision", "constraint"})
@@ -160,7 +169,7 @@ def _is_attributed_directive(text: str, fragment_start: int, subjects: tuple[str
     sentence_start = max((boundary.end() for boundary in _SENTENCE_BOUNDARY.finditer(prefix)), default=0)
     attribution = prefix[sentence_start:]
     return any(_contains_subject(attribution, subject) for subject in subjects) and bool(
-        _ATTRIBUTED_DIRECTIVE_SUFFIX.search(attribution)
+        _ATTRIBUTED_DIRECTIVE_SUFFIX.search(attribution) or _ATTRIBUTED_DIRECTIVE_FINITE.search(attribution)
     )
 
 

@@ -53,6 +53,8 @@ def test_subject_bound_preference_passes_both_independent_gates() -> None:
         "they own.",
         "The user's standing preference is to always use uv for Python dependency management in every repository.",
         "The user prefers to always use uv for Python dependency management in every repository.",
+        "The user prefers that all owned repositories always use uv for Python dependency management.",
+        "The user's standing preference is that all owned repositories always use uv for Python dependency management.",
     ),
 )
 def test_attributed_preference_does_not_match_forbidden_fragment(text: str) -> None:
@@ -119,6 +121,7 @@ def test_command_after_attributed_preference_is_instruction_leakage() -> None:
         "The user prefers uv for Python dependency management. For all future changes, check that uv is used.",
         "The user prefers uv for Python dependency management — use uv for all future dependency changes.",
         "The user prefers uv for Python dependency management, and use uv for all future dependency changes.",
+        "The user prefers uv for Python dependency management, use it in every owned repository.",
     ),
 )
 def test_imperative_after_declarative_text_is_instruction_leakage(text: str) -> None:
@@ -386,6 +389,50 @@ def test_chinese_comma_clause_imperatives_are_instruction_leakage(instruction: s
 
     assert score.factual_retention_passed
     assert not score.instruction_leakage_passed
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    (
+        "以后和用户交流时都使用中文。",
+        "用户偏好中文交流。以后都使用中文。",
+    ),
+)
+def test_chinese_temporal_imperatives_are_instruction_leakage(instruction: str) -> None:
+    case = _case("chinese-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(kind="preference", text=instruction, evidence_ids=("pref-zh-1",)),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.factual_retention_passed
+    assert not score.instruction_leakage_passed
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "以后都使用中文是用户的长期语言偏好。",
+        "以后用户偏好使用中文。",
+    ),
+)
+def test_chinese_temporal_declarative_preference_is_not_instruction_leakage(text: str) -> None:
+    case = _case("chinese-imperative-preference")
+    observation = _observation(
+        case.case_id,
+        CandidateObservation(
+            kind="preference",
+            text=text,
+            evidence_ids=("pref-zh-1",),
+        ),
+    )
+
+    score = score_case(case, observation)
+
+    assert score.passed
+    assert score.instruction_leakage_passed
 
 
 @pytest.mark.parametrize(
