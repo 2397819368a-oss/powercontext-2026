@@ -354,10 +354,12 @@ test.each(["forbidden", "network"])(
     // The saved-record list no longer exposes the returned body after the
     // failed read, while the write outcome itself remains visible.
     expect(screen.getByRole("alert")).toBeTruthy();
-    expect(screen.queryAllByText("Atomic note 0")).toHaveLength(0);
-    expect(
-      screen.queryByRole("button", { name: "Open saved record" }),
-    ).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryAllByText("Atomic note 0")).toHaveLength(0);
+      expect(
+        screen.queryAllByRole("button", { name: "Open saved record" }),
+      ).toHaveLength(0);
+    });
     // The save receipt keeps the real returned count; a failed read must not
     // rewrite it into a zero-record result.
     expect(screen.getByRole("status").textContent).toContain(
@@ -369,6 +371,40 @@ test.each(["forbidden", "network"])(
     );
   },
 );
+
+test("closing a saved reader after another save restores focus within the workspace", async () => {
+  const user = userEvent.setup();
+  vi.mocked(desktopApi.remember).mockResolvedValue(makeSaved(1).outcome);
+  vi.mocked(desktopApi.state).mockResolvedValue(state);
+  vi.mocked(desktopApi.atomicEntry).mockResolvedValue({
+    artifact,
+    kind: "note",
+    text: "First saved body",
+    source_refs: [],
+  });
+  render(
+    <MemoryWorkspace
+      state={state}
+      language="en"
+      onState={vi.fn()}
+      onDirty={vi.fn()}
+    />,
+  );
+  await user.type(screen.getByLabelText("Memory text"), "first note");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  const trigger = screen.getByRole("button", { name: "Open saved record" });
+  await user.click(trigger);
+  await screen.findByRole("heading", { name: "Memory details" });
+  await user.type(screen.getByLabelText("Memory text"), "second note");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(trigger.isConnected).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Close reader" }));
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      screen.getByLabelText("Keyword search"),
+    ),
+  );
+});
 
 test("unknown save retains the draft, names its original target, and does not replay automatically", async () => {
   const user = userEvent.setup();
@@ -384,7 +420,58 @@ test("unknown save retains the draft, names its original target, and does not re
     (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
   ).toBe("preserve me");
   expect(desktopApi.remember).toHaveBeenCalledTimes(1);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(confirm).toHaveBeenCalled();
+  expect(desktopApi.remember).toHaveBeenCalledTimes(1);
 });
+test.each(["forbidden", "network"])(
+  "a save completing after a %s search failure keeps its receipt without restoring private bodies",
+  async (code) => {
+    const user = userEvent.setup();
+    let finish!: (value: WriteOutcome) => void;
+    vi.mocked(desktopApi.remember).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.mocked(desktopApi.search).mockRejectedValueOnce({ code });
+    vi.mocked(desktopApi.state).mockResolvedValue(state);
+    render(
+      <MemoryWorkspace
+        state={state}
+        language="en"
+        onState={vi.fn()}
+        onDirty={vi.fn()}
+      />,
+    );
+    await user.type(screen.getByLabelText("Memory text"), "private body");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.type(screen.getByLabelText("Keyword search"), "private");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    await act(async () => {
+      finish(makeSaved(1).outcome);
+    });
+    expect(screen.queryAllByText("Atomic note 0")).toHaveLength(0);
+    expect(
+      screen.queryAllByRole("button", { name: "Open saved record" }),
+    ).toHaveLength(0);
+    expect(screen.getByRole("status").textContent).toContain("1 record");
+    expect(
+      (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
+    ).toBe("");
+    // A later explicit save starts after invalidation and can show fresh content.
+    vi.mocked(desktopApi.remember).mockResolvedValueOnce(makeSaved(1).outcome);
+    await user.type(screen.getByLabelText("Memory text"), "fresh submission");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(
+      await screen.findByRole("button", { name: "Open saved record" }),
+    ).toBeTruthy();
+    expect(screen.getAllByText("Atomic note 0").length).toBeGreaterThan(0);
+  },
+);
 test("search opens only the exact reference and renders hostile text literally", async () => {
   const user = userEvent.setup();
   vi.mocked(desktopApi.search).mockResolvedValue({
@@ -593,7 +680,7 @@ test.each(["scope", "page"])(
     }
     await user.type(screen.getByLabelText("记忆内容"), "draft B");
     await act(async () => {
-      finish(outcome("succeeded"));
+      finish(makeSaved(2).outcome);
     });
     confirm.mockClear().mockReturnValue(false);
     await user.click(screen.getByRole("button", { name: "总览" }));
@@ -601,5 +688,9 @@ test.each(["scope", "page"])(
     expect(
       (screen.getByLabelText("记忆内容") as HTMLTextAreaElement).value,
     ).toBe("draft B");
+    expect(screen.queryAllByText("Atomic note 0")).toHaveLength(0);
+    expect(
+      screen.queryAllByRole("button", { name: "打开保存的记录" }),
+    ).toHaveLength(0);
   },
 );

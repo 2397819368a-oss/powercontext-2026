@@ -67,6 +67,8 @@ export function NoteForm({
   const lifetime = useRef(0);
   const generation = useRef(active?.generation);
   generation.current = active?.generation;
+  const contentInvalidation = useRef(invalidateSaved);
+  contentInvalidation.current = invalidateSaved;
   const enabled = !!active?.scope && active.report.compatibilityVerified;
   const bytes = textBytes(text);
   useEffect(() => {
@@ -101,6 +103,7 @@ export function NoteForm({
       return;
     const original = active.generation;
     const ticket = lifetime.current;
+    const contentTicket = contentInvalidation.current;
     const isCurrent = () =>
       ticket === lifetime.current && generation.current === original;
     submitting.current = true;
@@ -117,7 +120,9 @@ export function NoteForm({
           // Zero, one, or multiple returned records: represent each honestly.
           const records = result.result?.records ?? [];
           setReturnedCount(records.length);
-          setSaved(records);
+          // A read failure may have hidden private results while this write
+          // was in flight. Keep its receipt without restoring invalidated bodies.
+          if (contentTicket === contentInvalidation.current) setSaved(records);
           setText("");
           onDirty(false);
         }
@@ -246,6 +251,7 @@ export function MemoryWorkspace(props: Props) {
   const t = memoryMessages[language];
   const active = state?.active;
   const readButton = useRef<HTMLButtonElement | null>(null);
+  const queryInput = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<MemorySearchHit[] | null>(null);
   const [entry, setEntry] = useState<AtomicMemoryDetail | null>(null);
@@ -373,6 +379,7 @@ export function MemoryWorkspace(props: Props) {
         <div className="search-row">
           <span className="search-input">
             <input
+              ref={queryInput}
               aria-label={t.query}
               disabled={!enabled}
               value={query}
@@ -478,7 +485,13 @@ export function MemoryWorkspace(props: Props) {
             onClose={() => {
               setEntry(null);
               setSavedRead(false);
-              requestAnimationFrame(() => readButton.current?.focus());
+              requestAnimationFrame(() => {
+                // Another save can replace the button that opened this reader.
+                const target = readButton.current?.isConnected
+                  ? readButton.current
+                  : queryInput.current;
+                target?.focus();
+              });
             }}
           />
         )}
