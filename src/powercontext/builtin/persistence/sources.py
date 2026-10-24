@@ -119,7 +119,7 @@ class SourceRepository:
         await _lock_journal_head(connection, scope_id)
         existing = await self._find_row(connection, scope_id, ref)
         if existing is not None:
-            stored = self._decode_row(existing)
+            stored = self.decode_source(existing)
             # A trusted acknowledgement may replay a pre-provenance receipt.
             # Upgrade only its server-owned attestation, never its content or position.
             if (
@@ -161,7 +161,7 @@ class SourceRepository:
             existing = await self._find_row(connection, scope_id, ref)
             if existing is None:
                 raise
-            stored = self._decode_row(existing)
+            stored = self.decode_source(existing)
             if stored.value != source:
                 raise StoredPayloadConflictError("source", (scope_id, ref)) from None
             return stored, False
@@ -186,7 +186,7 @@ class SourceRepository:
         row = await self._find_row(connection, scope_id, ref)
         if row is None:
             raise RepositoryNotFoundError("source", (scope_id, ref))
-        return self._decode_row(row)
+        return self.decode_source(row)
 
     async def get_many(
         self,
@@ -223,7 +223,7 @@ class SourceRepository:
         decoded: dict[tuple[str, str], StoredSource] = {}
         for row in rows:
             try:
-                stored = self._decode_row(row)
+                stored = self.decode_source(row)
             except RepositoryNotFoundError:
                 ref = SourceRef(source_type=str(row["source_type"]), source_id=str(row["source_id"]))
                 raise RepositoryNotFoundError("source", (scope_id, ref)) from None
@@ -291,7 +291,7 @@ class SourceRepository:
             statement = statement.limit(limit)
         async with connection.stream(statement.execution_options(yield_per=1)) as result:
             async for row in result.mappings():
-                yield self._decode_row(row)
+                yield self.decode_source(row)
 
     async def list_window(
         self,
@@ -324,7 +324,7 @@ class SourceRepository:
             .mappings()
             .all()
         )
-        return tuple(self._decode_row(row) for row in rows)
+        return tuple(self.decode_source(row) for row in rows)
 
     async def journal_position(self, connection: AsyncConnection, scope_id: str, /) -> int:
         """Return the current high watermark for one scope."""
@@ -370,7 +370,9 @@ class SourceRepository:
             .one_or_none()
         )
 
-    def _decode_row(self, row: Mapping[Any, Any]) -> StoredSource:
+    def decode_source(self, row: Mapping[Any, Any], /) -> StoredSource:
+        """Decode and validate one stored Source using the registered adapter contract."""
+
         source_type = str(row["source_type"])
         source_id = str(row["source_id"])
         payload = stored_bytes(row["payload"], column="payload")

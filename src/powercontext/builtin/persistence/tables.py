@@ -32,7 +32,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.mysql import BINARY, MEDIUMBLOB, MEDIUMTEXT, VARCHAR
+from sqlalchemy.dialects.mysql import BINARY, DATETIME, MEDIUMBLOB, MEDIUMTEXT, VARCHAR
 
 from powercontext.limits import (
     MAX_ARTIFACT_FAMILY_LENGTH,
@@ -197,7 +197,7 @@ ARTIFACTS_TABLE = Table(
     Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
     Column("revision", Integer, primary_key=True),
     Column("content", _canonical_payload_type(), nullable=False),
-    Column("created_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True).with_variant(DATETIME(fsp=6), "mysql"), nullable=True),
     Column("created_by", String(MAX_ARTIFACT_REVISION_ACTOR_LENGTH), nullable=True),
     Column("restored_from_revision", Integer, nullable=True),
     Column("rollback_reason", String(1024), nullable=True),
@@ -450,6 +450,27 @@ CANDIDATE_HEADS_TABLE = Table(
     ),
 )
 
+PORTABLE_RESTORE_RECEIPTS_TABLE = Table(
+    "pc_portable_restore_receipts",
+    SHARED_METADATA,
+    Column("bundle_id", identity_string(36), primary_key=True),
+    Column("format_version", Integer, nullable=False),
+    Column("total_digest", identity_string(71), nullable=False),
+    Column("record_count", BigInteger, nullable=False),
+    Column("status", identity_string(32), nullable=False),
+    Column("inserted", BigInteger, nullable=False),
+    Column("already_present", BigInteger, nullable=False),
+    Column("projections_ready", Boolean, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "status IN ('authoritative_restored', 'ready')",
+        name="ck_pc_portable_restore_receipts_status",
+    ),
+    CheckConstraint("record_count >= 0", name="ck_pc_portable_restore_receipts_record_count"),
+    CheckConstraint("inserted >= 0", name="ck_pc_portable_restore_receipts_inserted"),
+    CheckConstraint("already_present >= 0", name="ck_pc_portable_restore_receipts_existing"),
+)
+
 PROFILE_POLICIES_TABLE = Table(
     "pc_profile_policies",
     SHARED_METADATA,
@@ -458,7 +479,7 @@ PROFILE_POLICIES_TABLE = Table(
     Column("activation_mode", identity_string(32), nullable=False),
     Column("pending_candidate_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
     Column("version", BigInteger, nullable=False),
-    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True).with_variant(DATETIME(fsp=6), "mysql"), nullable=False),
     ForeignKeyConstraint(("scope_id",), ("pc_scopes.scope_id",), ondelete="CASCADE"),
     ForeignKeyConstraint(
         ("scope_id", "pending_candidate_id"),
@@ -637,8 +658,60 @@ TOPIC_MEMORY_WORK_BUDGETS_TABLE = Table(
     Column("requests", BigInteger, nullable=False),
     Column("tokens", BigInteger, nullable=False),
     Column("failure_code", String(64), nullable=False),
+    Column("attempt_source_through", BigInteger, nullable=True),
+    Column("started_at", DateTime(timezone=False), nullable=True),
+    Column("finished_at", DateTime(timezone=False), nullable=True),
+    Column("supervisor_group", identity_string(64), nullable=True),
+    Column("supervisor_generation", BigInteger, nullable=True),
+    Column("holder_id", identity_string(36), nullable=True),
+    Column("last_error_code", String(64), nullable=True),
     CheckConstraint("source_after >= 0 AND source_through > source_after", name="ck_pc_topic_budget_window"),
     CheckConstraint("attempts > 0 AND requests >= 0 AND tokens >= 0", name="ck_pc_topic_budget_usage"),
+    CheckConstraint(
+        "attempt_source_through IS NULL OR "
+        "(attempt_source_through > source_after AND attempt_source_through <= source_through)",
+        name="ck_pc_topic_budget_attempt_range",
+    ),
+)
+
+
+TOPIC_MEMORY_WORK_BLOCKS_TABLE = Table(
+    "pc_topic_memory_work_blocks",
+    SHARED_METADATA,
+    Column("block_id", identity_string(36), primary_key=True),
+    Column("attempt_id", identity_string(36), nullable=False),
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), nullable=False),
+    Column("binding_name", identity_string(MAX_BINDING_NAME_LENGTH), nullable=False),
+    Column("source_after", BigInteger, nullable=False),
+    Column("source_through", BigInteger, nullable=True),
+    Column("budget_source_through", BigInteger, nullable=True),
+    Column("legacy_source_through", BigInteger, nullable=True),
+    Column("target_source_through", BigInteger, nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("requests", BigInteger, nullable=False),
+    Column("tokens", BigInteger, nullable=False),
+    Column("last_error_code", String(64), nullable=True),
+    Column("error_code", String(64), nullable=False),
+    Column("blocked_at", DateTime(timezone=False), nullable=False),
+    Column("retried_at", DateTime(timezone=False), nullable=True),
+    Column("retry_request_generation", BigInteger, nullable=True),
+    CheckConstraint(
+        "source_after >= 0 AND target_source_through > source_after "
+        "AND (source_through IS NULL OR (source_through > source_after AND source_through <= target_source_through)) "
+        "AND (budget_source_through IS NULL OR "
+        "(budget_source_through > source_after AND budget_source_through <= target_source_through)) "
+        "AND (source_through IS NULL OR budget_source_through IS NULL OR source_through <= budget_source_through) "
+        "AND (legacy_source_through IS NULL OR "
+        "(legacy_source_through > source_after AND legacy_source_through <= target_source_through))",
+        name="ck_pc_topic_block_window",
+    ),
+    CheckConstraint("attempts > 0 AND requests >= 0 AND tokens >= 0", name="ck_pc_topic_block_usage"),
+    CheckConstraint(
+        "(retried_at IS NULL AND retry_request_generation IS NULL) OR "
+        "(retried_at IS NOT NULL AND retry_request_generation IS NOT NULL AND retry_request_generation > 0)",
+        name="ck_pc_topic_block_acceptance",
+    ),
+    UniqueConstraint("scope_id", "binding_name", "source_after", "attempt_id", name="uq_pc_topic_block_identity"),
 )
 
 
@@ -649,7 +722,7 @@ TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE = Table(
     Column("family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), primary_key=True),
     Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
     Column("revision", Integer, primary_key=True),
-    Column("published_at", DateTime(timezone=False), nullable=False),
+    Column("published_at", DateTime(timezone=False).with_variant(DATETIME(fsp=6), "mysql"), nullable=False),
     ForeignKeyConstraint(
         ("scope_id", "family", "artifact_id", "revision"),
         (
@@ -995,12 +1068,14 @@ SHARED_TABLES = (
     ARTIFACT_PUBLICATIONS_TABLE,
     CANDIDATE_VERSIONS_TABLE,
     CANDIDATE_HEADS_TABLE,
+    PORTABLE_RESTORE_RECEIPTS_TABLE,
     PROFILE_POLICIES_TABLE,
     SOURCE_CURSORS_TABLE,
     MEMORY_SOURCE_WINDOWS_TABLE,
     ARTIFACT_PROCESSING_LEASES_TABLE,
     ARTIFACT_PROCESSING_BINDING_STATES_TABLE,
     TOPIC_MEMORY_WORK_BUDGETS_TABLE,
+    TOPIC_MEMORY_WORK_BLOCKS_TABLE,
     ARTIFACT_PROCESSING_PENDING_TABLE,
     ARTIFACT_PROCESSING_AUTO_WAVE_TARGETS_TABLE,
     ARTIFACT_PROCESSING_SEQUENCES_TABLE,
@@ -1109,7 +1184,7 @@ ARTIFACT_TAGS_TABLE = Table(
     Column("tag_key_hash", LargeBinary(32).with_variant(BINARY(32), "mysql"), primary_key=True),
     Column("tag_key", identity_string(128), nullable=False),
     Column("tag", String(64), nullable=False),
-    Column("assigned_at", DateTime(timezone=True), nullable=False),
+    Column("assigned_at", DateTime(timezone=True).with_variant(DATETIME(fsp=6), "mysql"), nullable=False),
     ForeignKeyConstraint(
         ("scope_id", "family", "artifact_id"),
         ("pc_artifact_heads.scope_id", "pc_artifact_heads.family", "pc_artifact_heads.artifact_id"),

@@ -30,7 +30,12 @@ from powercontext.builtin.artifacts.experience import Experience
 from powercontext.builtin.artifacts.handoff import Handoff
 from powercontext.builtin.artifacts.skill import Skill
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
-from powercontext.builtin.persistence.experience_index import ExperienceIndex, NoExperienceIndex
+from powercontext.builtin.persistence.experience_index import (
+    ExperienceIndex,
+    NoExperienceIndex,
+    experience_search_hits,
+    skill_search_hits,
+)
 from powercontext.builtin.persistence.family_management import (
     ExperienceManagementWriter,
     FamilyManagementWriterRegistry,
@@ -463,14 +468,14 @@ def test_source_list_stops_decoding_when_the_response_budget_is_full(monkeypatch
                 await records.create_source("scope-a", "content", f"{index}:" + "x" * 1_100_000)
 
             decoded = 0
-            original_decode = sources._decode_row
+            original_decode = sources.decode_source
 
             def counting_decode(row):
                 nonlocal decoded
                 decoded += 1
                 return original_decode(row)
 
-            monkeypatch.setattr(sources, "_decode_row", counting_decode)
+            monkeypatch.setattr(sources, "decode_source", counting_decode)
             first = await records.list_sources("scope-a", limit=8, cursor=None, caller="user:one")
 
             assert len(first.items) == 3
@@ -740,8 +745,10 @@ def test_experience_and_skill_writers_update_owned_search_projections() -> None:
             )
 
             async with profile.database.transaction() as connection:
-                experience_hits = await index.search(connection, "scope-a", "rollback", 10)
-                skill_hits = await index.search_skills(connection, "scope-a", "matrix", 10)
+                experience_rows = await index.search(connection, "scope-a", "experience", "rollback", 10)
+                skill_rows = await index.search(connection, "scope-a", "skill", "matrix", 10)
+                experience_hits = experience_search_hits(experience_rows, "rollback", 10, "scope-a")
+                skill_hits = skill_search_hits(skill_rows, "matrix", 10)
                 package_count = await connection.scalar(select(func.count()).select_from(SKILL_PACKAGES_TABLE))
             assert [hit.artifact_ref for hit in experience_hits.hits] == [
                 ArtifactRef(

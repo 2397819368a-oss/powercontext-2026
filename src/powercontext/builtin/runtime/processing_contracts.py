@@ -110,6 +110,7 @@ class ArtifactProcessingWorkerCompletion:
     held_count: int = 0
     hold_codes: tuple[str, ...] = ()
     model_usage: ArtifactProcessingModelUsageDelta | None = None
+    noop: bool = False
 
 
 class ArtifactProcessingWorkerHandle(Protocol):
@@ -148,6 +149,8 @@ def processing_error_code(exception_type: type[BaseException] | str, error_code:
         "worker_crash",
         "invalid_worker_result",
         "missing_durable_acknowledgement",
+        "invalid_topic_placeholder",
+        "invalid_topic_coordination_content",
     }:
         return error_code
     return "processing_failed"

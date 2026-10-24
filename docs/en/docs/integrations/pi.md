@@ -149,3 +149,7 @@ changing these variables.
 
 Failure diagnostics are silent by default because Pi's TUI renders on stdout with cursor positioning, so
 anything written to stderr lands inside the input bar; set `POWERCONTEXT_PI_DIAGNOSTICS` to see them.
+
+## Automatic input privacy
+
+See [Automatic prompt privacy](index.md#automatic-prompt-privacy) for this host's capture default, disable control, credential recognition limits and independent read-only query handling. Recognized inputs are skipped for capture; accepted Source content and event identity are not rewritten.

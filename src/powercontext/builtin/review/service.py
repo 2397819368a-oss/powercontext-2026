@@ -94,6 +94,7 @@ ReviewedProposal: TypeAlias = (
 ReviewedArtifact: TypeAlias = Experience | Skill
 ReviewedDraft: TypeAlias = ExperienceDraft | SkillDraft
 ReviewedCandidate: TypeAlias = Candidate[ReviewedProposal]
+CandidateCommitHook = Callable[[AsyncConnection, Candidate[Any]], Awaitable[None]]
 
 
 class ReviewService:
@@ -160,6 +161,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> Candidate[ExperienceContent]:
         """Persist a human or integration supplied Experience proposal."""
 
@@ -171,6 +173,7 @@ class ReviewService:
             target=target,
             reason=reason,
             candidate_id=candidate_id,
+            on_commit=on_commit,
         )
         return _experience_candidate(candidate)
 
@@ -184,6 +187,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> Candidate[SkillContent]:
         """Persist a human or integration supplied managed Skill proposal."""
 
@@ -203,6 +207,7 @@ class ReviewService:
                 target=target,
                 reason=reason,
                 candidate_id=candidate_id,
+                on_commit=on_commit,
             )
         return _skill_candidate(candidate)
 
@@ -310,6 +315,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> ReviewedCandidate:
         canonical_sources = _unique_sources(sources)
         canonical_artifacts = _unique_artifacts(artifacts)
@@ -324,6 +330,7 @@ class ReviewService:
                 target=target,
                 reason=reason,
                 candidate_id=candidate_id,
+                on_commit=on_commit,
             )
         return _reviewed_candidate(candidate)
 
@@ -339,6 +346,7 @@ class ReviewService:
         target: ArtifactRef | None,
         reason: str | None,
         candidate_id: str | None = None,
+        on_commit: CandidateCommitHook | None = None,
     ) -> ReviewedCandidate:
         sources = await self._validate_evidence(
             connection,
@@ -361,6 +369,8 @@ class ReviewService:
             target=target,
             reason=reason,
         )
+        if on_commit is not None:
+            await on_commit(connection, candidate)
         return _reviewed_candidate(candidate)
 
     async def candidate_page(self, request, *, metadata_only=False, connection=None):
@@ -394,7 +404,7 @@ class ReviewService:
                 )
             ).mappings()
             return tuple(
-                self._candidates._decode_row({
+                self._candidates.decode_candidate({
                     **row,
                     "status": "pending",
                     "result_family": None,
@@ -601,6 +611,8 @@ class ReviewService:
             async with self._connection() as connection:
                 current = await self._candidates.get(connection, self._scope_id, candidate_id, current=True)
                 await self._authorize_decision("approve", current)
+                if current.status is CandidateStatus.REJECTED:
+                    raise CandidateTerminalError(candidate_id, current.status) from None
                 if current.status is CandidateStatus.APPROVED and current.version == expected_version:
                     return _reviewed_candidate(current)
             raise
@@ -616,6 +628,8 @@ class ReviewService:
         async with self._connection() as connection:
             current = await self._candidates.get(connection, self._scope_id, candidate_id)
         await self._authorize_decision("approve", current)
+        if current.status is CandidateStatus.REJECTED:
+            raise CandidateTerminalError(candidate_id, current.status)
         if current.status is CandidateStatus.APPROVED:
             if current.version != expected_version:
                 raise CandidateConflictError(candidate_id, expected_version, current.version)
@@ -630,6 +644,8 @@ class ReviewService:
             return await self._approve_prompt_dream(candidate_id, expected_version)
         async with self._connection() as connection:
             current = await self._candidates.get(connection, self._scope_id, candidate_id)
+            if current.status is CandidateStatus.REJECTED:
+                raise CandidateTerminalError(candidate_id, current.status)
             if current.family == "profile":
                 return _reviewed_candidate(await decide_profile(self, connection, candidate_id, expected_version))
             if current.version != expected_version:
@@ -825,6 +841,8 @@ class ReviewService:
     async def _approve_prompt_dream(self, candidate_id: str, expected_version: int) -> ReviewedCandidate:
         async with self._connection() as connection:
             preview = await self._candidates.get(connection, self._scope_id, candidate_id)
+            if preview.status is CandidateStatus.REJECTED:
+                raise CandidateTerminalError(candidate_id, preview.status)
             if preview.target is None:
                 raise InvalidCandidateError("target", "Dream Prompt requires an existing target")
             current = await self._artifacts.latest(
@@ -861,6 +879,8 @@ class ReviewService:
             raise InvalidCandidateError("family", "Memory Dream writer is unavailable")
         async with self._connection() as connection:
             preview = _reviewed_candidate(await self._candidates.get(connection, self._scope_id, candidate_id))
+            if preview.status is CandidateStatus.REJECTED:
+                raise CandidateTerminalError(candidate_id, preview.status)
             if preview.version != expected_version:
                 raise CandidateConflictError(candidate_id, expected_version, preview.version)
             if not isinstance(preview.proposal, AtomicMemoryContent) or preview.target is None:
@@ -909,6 +929,8 @@ class ReviewService:
             raise InvalidCandidateError("family", "Topic Memory Dream writer is unavailable")
         async with self._connection() as connection:
             preview = _reviewed_candidate(await self._candidates.get(connection, self._scope_id, candidate_id))
+        if preview.status is CandidateStatus.REJECTED:
+            raise CandidateTerminalError(candidate_id, preview.status)
         if preview.version != expected_version:
             raise CandidateConflictError(candidate_id, expected_version, preview.version)
         if not isinstance(preview.proposal, TopicMemoryContent) or preview.target is None:
@@ -953,6 +975,8 @@ class ReviewService:
             raise InvalidCandidateError("family", "Handoff Dream writer is unavailable")
         async with self._connection() as connection:
             preview = _reviewed_candidate(await self._candidates.get(connection, self._scope_id, candidate_id))
+            if preview.status is CandidateStatus.REJECTED:
+                raise CandidateTerminalError(candidate_id, preview.status)
             if preview.target is None:
                 raise InvalidCandidateError("target", "Handoff Dream requires an existing target")
             current = await self._artifacts.latest(

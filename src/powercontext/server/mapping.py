@@ -343,8 +343,6 @@ from powercontext.sources import SourceRef
 def artifact_search_response(outcome: ArtifactSearchOutcome, /, *, include_scores: bool) -> SearchArtifactsResponse:
     """Serialize actual Artifact content while retaining the Family's final match order."""
 
-    if outcome.artifacts is None:
-        raise ValueError("public Artifact search requires complete Artifacts")  # noqa: TRY003
     results: list[dict[str, Any]] = []
     for match, artifact in zip(outcome.matches, outcome.artifacts, strict=True):
         item: dict[str, Any] = {
@@ -891,12 +889,17 @@ def topic_memory_response(value: PublishedTopicMemory) -> TopicMemoryArtifact:
 
 
 def prepared_context_response(value: PreparedContext) -> TransportPreparedContext:
-    return TransportPreparedContext.model_validate({
+    payload: dict[str, object] = {
         "schema": PreparedContextSchema(value.schema_version),
         "status": PreparedContextStatus(value.status),
         "content": value.content,
         "content_bytes": value.content_bytes,
-    })
+    }
+    if value.reason is not None:
+        # Named on purpose rather than dumped: the four fields above are what every Host validates,
+        # so this key appears only on a preparation that asked for it with ``explain``.
+        payload["reason"] = value.reason
+    return TransportPreparedContext.model_validate(payload)
 
 
 def bootstrap_context_response(value: RuntimeBootstrapContext) -> TransportBootstrapContext:

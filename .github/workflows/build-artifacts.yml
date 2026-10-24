@@ -379,7 +379,15 @@ jobs:
             --no-index \
             --find-links "$BUNDLE_ROOT/wheelhouse" \
             "$cli_wheel[cli]"
-          build/cli-smoke-venv/bin/powercontext skill remote-sync --help
+          if [ -f scripts/ci_role_smoke.py ]; then
+            build/cli-smoke-venv/bin/python -I scripts/ci_role_smoke.py cli
+          else
+            # Requested historical refs may predate the role smoke harness.
+            build/cli-smoke-venv/bin/powercontext skill remote-sync --help
+          fi
+          if [ -f src/powercontext/cli/archive.py ]; then
+            build/cli-smoke-venv/bin/powercontext archive --help
+          fi
 
           plugin_root="$BUNDLE_ROOT/integrations/plugins/powercontext"
           (

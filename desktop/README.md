@@ -1,6 +1,6 @@
 # PowerContext Desktop preview
 
-Internal Windows preview for [#1654](https://github.com/oceanbase/powercontext/issues/1654), following RFC #1455. It provides a packaged Tauri 2 shell with Home, Connections, My memories, Chinese/English settings, semantic light/dark/system themes and honest disconnected states. Connection profiles, explicit activation, identity/readiness checks, exact Scope selection and local diagnostics are implemented. Shared note saving, bounded FTS search and exact-version reading are implemented; native workflow qualification remains open.
+Internal Windows and macOS preview for [#1654](https://github.com/oceanbase/powercontext/issues/1654), following RFC #1455. It provides a packaged Tauri 2 shell with Home, Connections, My memories, Chinese/English settings, semantic light/dark/system themes and honest disconnected states. Connection profiles, explicit activation, identity/readiness checks, exact Scope selection and local diagnostics are implemented. Shared note saving, bounded FTS search and exact-version reading are implemented; release qualification remains open.
 
 See [中文说明](README.zh.md), [security boundary](SECURITY.md), and [validation guide](VALIDATION.md). This is not a supported or signed release, and does not close #1654 or #1428.
 
@@ -16,7 +16,9 @@ Repeated launches activate the existing window for this channel. Profile storage
 
 ## Build on Windows
 
-Use Windows 11 x64, Visual Studio C++ Build Tools with a Windows SDK, Node **24.14.1**, pnpm **11.13.1**, Rust **1.95.0 MSVC**, and WebView2. `desktop/.mise.toml`, `rust-toolchain.toml`, `pnpm-lock.yaml` and `src-tauri/Cargo.lock` pin the tools and dependencies independently of Python and the website.
+Use Windows 11 x64, Visual Studio C++ Build Tools with a Windows SDK, Node **24.14.1**, pnpm **11.13.1**, Rust **1.95.0 MSVC**, **JDK 11 or newer with `java` available on `PATH`**, and WebView2. `desktop/.mise.toml`, `rust-toolchain.toml`, `pnpm-lock.yaml` and `src-tauri/Cargo.lock` pin the tools and dependencies independently of Python and the website.
+
+The OpenAPI Generator used by `generate` and `generate:check` runs on Java. On the first run, `openapi-generator-cli` may download the pinned generator JAR from Maven Central, so the first generation or drift check requires network access. Subsequent runs can reuse the downloaded JAR.
 
 Some machines default to Rust's GNU host. In PowerShell, explicitly select the pinned MSVC host for this process:
 
@@ -65,7 +67,7 @@ A successful save that returns no memory record is reported as an operation succ
 
 ## Contracts and resources
 
-`pnpm --dir desktop generate` derives TypeScript schemas and the reviewed ten-operation manifest from `openapi/powercontext.yaml`; `generate:check` detects drift, including a normalized contract SHA-256. Typed Rust adapters consume that generated manifest and generated wire schemas. No public route is independently handwritten in the application. The manifest is not an IPC permission grant.
+`pnpm --dir desktop generate` derives TypeScript schemas, the reviewed ten-operation manifest, and the Rust wire models from `openapi/powercontext.yaml`; `generate:check` detects drift, including a normalized contract SHA-256. The OpenAPI Generator CLI version is pinned in `desktop/openapitools.json`, and the limited Rust customization lives in `desktop/scripts/openapi-generator/rust/`. Generated `src-tauri/src/transport/wire.rs` must not be edited by hand: after changing the contract or generator template, run `pnpm --dir desktop generate`, then run `pnpm --dir desktop generate:check` in CI. Typed Rust adapters consume that generated manifest and generated wire schemas. No public route is independently handwritten in the application. The manifest is not an IPC permission grant.
 
 `cargo run --locked --manifest-path desktop/src-tauri/Cargo.toml --example export_ipc` derives the TypeScript IPC request/receipt/error types from Rust. `ipc:check` verifies them. IPC exposes typed connection, Scope, memory and diagnostic operations to the main window only; no generic fetch, shell, file, database or secret-read command is granted.
 
@@ -117,4 +119,43 @@ Installed boundary checks exercise an 8192-byte Unicode note, reject over-budget
 
 After upgrading from an earlier preview, open Connections and select your saved connection. Profiles matching the bundled API contract appear under “Available for this Desktop build”; compare their tested Server builds with your deployment before selecting one, saving, checking and explicitly using the connection again. New connections start with no compatibility selection.
 
-Historical profiles appear as disabled records. A saved incompatible or unavailable selection remains visible with an explanation until explicitly replaced; it is never silently upgraded. This build currently has no product qualification record matching its bundled contract, so business operations remain unavailable in ordinary builds. The independently qualified `ci-fixtures` build is for disposable acceptance tests. Historical qualification evidence and remaining requirements are documented in the [validation guide](VALIDATION.md).
+Historical profiles appear as disabled records. A saved incompatible or unavailable selection remains visible with an explanation until explicitly replaced; it is never silently upgraded. For the qualified current Server sources, explicitly choose `sqlite-atomic-d9a78567-v1` and check the connection before selecting a Scope; that record's contract digest matches this build's bundled contract, while `sqlite-atomic-caf2a35a-v1`, `sqlite-atomic-683e2db0-v1` and `sqlite-atomic-cab054db-v1` qualify their corresponding Server source deployments and do not match it. The recorded Server source and wheel identities must match the deployment you intend to use. The independently qualified `ci-fixtures` build is for disposable acceptance tests. Historical qualification evidence and remaining requirements are documented in the [validation guide](VALIDATION.md).
+
+## Build on macOS
+
+Use macOS 12 or later, Xcode Command Line Tools (`xcode-select --install`), Node **24.14.1**,
+pnpm **11.13.1**, Rust **1.95.0**, and **JDK 11 or newer with `java` available on `PATH`**.
+Build on the target architecture (Apple Silicon or Intel).
+
+`generate:check`, included in `lint` and `build`, runs the Java OpenAPI Generator. The first run
+may download its pinned JAR from Maven Central and requires network access; later runs can reuse it.
+
+```sh
+cd desktop
+pnpm install --frozen-lockfile
+pnpm desktop:dev
+# Or build the app bundle and disk image:
+pnpm desktop:build
+```
+
+The app is in `src-tauri/target/release/bundle/macos/`; the installer is in
+`src-tauri/target/release/bundle/dmg/`. Open the DMG and drag the app to Applications.
+Launch **PowerContext Desktop Preview**. An independent Server is required for memory operations.
+Persistent Bearer credentials use macOS Keychain; session-only storage remains an explicit option.
+Removing the app does not remove Server data or Keychain credentials. Remove saved connection profiles
+in the app first if their credentials must also be deleted.
+
+Builds are unsigned internal previews. Developer ID signing, notarization, clean-machine Gatekeeper,
+accessibility, actual IME input and installed-app Keychain prompts require separate qualification.
+The macOS CI jobs test Apple Silicon and Intel builds; their existence is not evidence of a passed run.
+
+macOS local diagnostics read `diagnostic-cli.json` under
+`~/Library/Application Support/com.powercontext.desktop.preview/`. Register an absolute executable
+named `powercontext`, its SHA-256 digest, and `source: "explicit_local_installation"`, using the same
+JSON contract as Windows. A renderer cannot supply the executable or arguments. The native adapter
+executes a private read-only copy of the verified launcher. Use a self-contained executable or a
+launcher with an absolute interpreter path; launchers that locate dependencies relative to themselves
+are unsuitable. The CLI must not depend on a shell profile or an interactive terminal.
+Diagnostics keep the existing output limits and deadlines and terminate their private process group
+on completion, timeout and cancellation. Before normal application exit, Desktop rejects new diagnostics,
+cancels active work and waits for process-group cleanup and launcher reaping. The app does not install or manage a LaunchAgent.
