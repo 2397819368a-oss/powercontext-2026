@@ -428,7 +428,11 @@ class AtomicMemorySourceWindowProcessor:
             key = workset.add(
                 AtomicMemoryWorkingItem(
                     key=f"candidate:{ordinal}",
-                    content=AtomicMemoryContent(kind=candidate.kind, text=candidate.text),
+                    content=AtomicMemoryContent(
+                        kind=candidate.kind,
+                        text=candidate.text,
+                        description=candidate.description,
+                    ),
                     evidence=selected,
                     sources=tuple(item.source_ref for item in selected),
                     changed=True,
@@ -533,7 +537,9 @@ class AtomicMemorySourceWindowProcessor:
                         or record.artifact.content.text != hit.text
                     ):
                         _conflict("Related memory changed before comparison")
-                    content = AtomicMemoryContent(kind=hit.kind, text=hit.text)
+
+                    content = record.artifact.content.without_creation()
+
                     supported = AtomicMemoryArtifactEvidence(
                         evidence_id=f"artifact:{record.ref.artifact_id}@{record.ref.revision}",
                         artifact_ref=record.ref,

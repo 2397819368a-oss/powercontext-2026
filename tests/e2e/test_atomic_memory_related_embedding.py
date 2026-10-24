@@ -77,7 +77,12 @@ class _Extractor:
         return GenerationResult(
             output=AtomicMemoryExtractionOutput(
                 candidates=tuple(
-                    AtomicMemoryCandidate(kind="fact", text=text, evidence_ids=(evidence.evidence_id,))
+                    AtomicMemoryCandidate(
+                        kind="fact",
+                        text=text,
+                        evidence_ids=(evidence.evidence_id,),
+                        description="Fixture memory summary",
+                    )
                     for evidence in request.evidence
                     if (text := memory_source_text(evidence)) is not None
                 )
@@ -103,7 +108,9 @@ class _Reconciler:
                 action="revise" if request.related else "create",
                 compared_ids=compared,
                 target_ids=(request.related[0].item_id,) if request.related else (),
-                content=AtomicMemoryReconciliationContent(kind="fact", text=request.proposal.text),
+                content=AtomicMemoryReconciliationContent(
+                    kind="fact", text=request.proposal.text, description="Fixture memory summary"
+                ),
                 evidence_ids=request.proposal.evidence_ids,
                 reason="Retain the preference and its supplied Source evidence.",
             )
@@ -172,7 +179,9 @@ class _RecordingCreateReconciler:
             output=AtomicMemoryReconciliationOutput(
                 action="create",
                 compared_ids=tuple(item.item_id for item in request.related),
-                content=AtomicMemoryReconciliationContent(kind="fact", text=request.proposal.text),
+                content=AtomicMemoryReconciliationContent(
+                    kind="fact", text=request.proposal.text, description="Fixture memory summary"
+                ),
                 evidence_ids=request.proposal.evidence_ids,
                 reason="Retain the independent Source fact after comparing the permitted owned memories.",
             )
@@ -233,17 +242,24 @@ def test_source_flush_compares_all_permitted_owned_matches_with_a_custom_provide
             # Exceed both a comparison batch and ordinary search's default topK.
             owned = await contexts.records.create_atomic_memories(
                 "project",
-                tuple({"kind": "fact", "text": f"Permitted owned rollout fact {number}."} for number in range(23)),
+                tuple(
+                    {
+                        "kind": "fact",
+                        "text": f"Permitted owned rollout fact {number}.",
+                        "description": "Fixture memory summary",
+                    }
+                    for number in range(23)
+                ),
                 execution_context=execution,
             )
             (denied,) = await contexts.records.create_atomic_memories(
                 "project",
-                ({"kind": "fact", "text": "DENIED_OWNED_MATCH_SENTINEL"},),
+                ({"kind": "fact", "text": "DENIED_OWNED_MATCH_SENTINEL", "description": "Fixture memory summary"},),
                 execution_context=execution,
             )
             await contexts.records.create_atomic_memories(
                 "project",
-                ({"kind": "fact", "text": "FOREIGN_OWNER_MATCH_SENTINEL"},),
+                ({"kind": "fact", "text": "FOREIGN_OWNER_MATCH_SENTINEL", "description": "Fixture memory summary"},),
                 execution_context=foreign,
             )
             await context.triggers.flush(limit=100)
@@ -300,7 +316,7 @@ def test_source_flush_propagates_custom_artifact_authority_unavailable_without_a
             execution, provider = await _configured_flush_context(contexts, owner)
             (original,) = await contexts.records.create_atomic_memories(
                 "project",
-                ({"kind": "fact", "text": ORIGINAL},),
+                ({"kind": "fact", "text": ORIGINAL, "description": "Fixture memory summary"},),
                 execution_context=execution,
             )
             await context.triggers.flush(limit=100)
