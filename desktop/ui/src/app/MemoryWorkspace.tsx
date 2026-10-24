@@ -23,7 +23,8 @@ import type {
   WriteOutcome,
 } from "../generated/ipc";
 import { desktopApi } from "../shared/ipc";
-import { connectionError } from "./connection-messages";
+import { connectionError, operationRestriction } from "./connection-messages";
+import { operationSupported } from "./context";
 import { memoryMessages } from "./memory-messages";
 import { messages, type Language } from "./messages";
 import { PageFeedback, ErrorFeedback } from "./PageFeedback";
@@ -62,7 +63,9 @@ export function NoteForm({
   const generation = useRef(active?.generation);
   generation.current = active?.generation;
   const enabled =
-    !contextPending && !!active?.scope && active.report.compatibilityVerified;
+    !contextPending &&
+    !!active?.scope &&
+    operationSupported(active.report, "remember_memory");
   const bytes = textBytes(text);
   useEffect(() => {
     setText("");
@@ -163,6 +166,8 @@ export function NoteForm({
           </>
         ) : contextPending ? (
           messages[language].contextUpdating
+        ) : active?.scope ? (
+          operationRestriction(active.report, "remember_memory", language)
         ) : (
           t.noScope
         )}
@@ -227,6 +232,10 @@ export function MemoryWorkspace(props: Props) {
   current.current = active?.generation;
   const enabled =
     !contextPending && !!active?.scope && active.report.compatibilityVerified;
+  const searchEnabled =
+    enabled && operationSupported(active?.report, "search_memory");
+  const readEnabled =
+    enabled && operationSupported(active?.report, "get_artifact_revision");
   function clearRead() {
     failedReference.current = undefined;
     sequence.current++;
@@ -256,7 +265,7 @@ export function MemoryWorkspace(props: Props) {
     };
   }, [active?.generation]);
   async function read(reference?: ArtifactReference) {
-    if (!enabled || !active?.scope) return;
+    if (!(reference ? readEnabled : searchEnabled) || !active?.scope) return;
     const generation = active.generation;
     const ticket = ++sequence.current;
     failedReference.current = reference;
@@ -391,7 +400,7 @@ export function MemoryWorkspace(props: Props) {
           <span className="search-input">
             <input
               aria-label={t.query}
-              disabled={!enabled}
+              disabled={!searchEnabled}
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
@@ -402,7 +411,7 @@ export function MemoryWorkspace(props: Props) {
               <button
                 className="clear-query"
                 aria-label={t.clearQuery}
-                disabled={!enabled}
+                disabled={!searchEnabled}
                 onClick={() => {
                   setQuery("");
                   cancel();
@@ -414,7 +423,10 @@ export function MemoryWorkspace(props: Props) {
           </span>
           <button
             disabled={
-              !enabled || !!busy || !query.trim() || textBytes(query) > 8192
+              !searchEnabled ||
+              !!busy ||
+              !query.trim() ||
+              textBytes(query) > 8192
             }
             onClick={() => void read()}
           >
@@ -422,8 +434,14 @@ export function MemoryWorkspace(props: Props) {
           </button>
         </div>
         <p className="small search-meta">{t.searchSummary}</p>
-        {!enabled && (
-          <p>{contextPending ? common.contextUpdating : t.noScope}</p>
+        {!searchEnabled && (
+          <p>
+            {contextPending
+              ? common.contextUpdating
+              : active?.scope
+                ? operationRestriction(active.report, "search_memory", language)
+                : t.noScope}
+          </p>
         )}
         {busy && (
           <PageFeedback
@@ -440,7 +458,7 @@ export function MemoryWorkspace(props: Props) {
             error={error}
             language={language}
             action={
-              enabled && (
+              (failedReference.current ? readEnabled : searchEnabled) && (
                 <button
                   disabled={!!busy}
                   onClick={() => void read(failedReference.current)}
@@ -494,7 +512,7 @@ export function MemoryWorkspace(props: Props) {
                             <span className="badge">{t.hitVector}</span>
                           )}
                         <button
-                          disabled={!enabled || !!busy}
+                          disabled={!readEnabled || !!busy}
                           aria-pressed={selected === key}
                           onClick={(event) => {
                             readButton.current = event.currentTarget;
@@ -513,6 +531,16 @@ export function MemoryWorkspace(props: Props) {
             </ul>
           )}
           <p className="note-line">{t.browseNote}</p>
+          {active?.scope && !contextPending && !readEnabled && (
+            <p>
+              {t.read}:{" "}
+              {operationRestriction(
+                active.report,
+                "get_artifact_revision",
+                language,
+              )}
+            </p>
+          )}
         </section>
         {entry && (
           <section className="card stack reader" aria-label={t.detail}>
