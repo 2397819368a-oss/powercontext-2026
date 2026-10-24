@@ -26,6 +26,7 @@ import settingsIcon from "../assets/settings.svg";
 
 import { TopBar } from "./TopBar";
 import { Overview } from "./Overview";
+import { Statistics } from "./Statistics";
 import { MemoryWorkspace } from "./MemoryWorkspace";
 import { Diagnostics } from "./Diagnostics";
 import { Connections } from "./Connections";
@@ -194,13 +195,21 @@ export function App() {
             </div>
           )}
           {page === "home" && (
-            <Overview
-              state={desktop}
-              language={language}
-              onNavigate={navigate}
-              refreshing={refreshing}
-              onRefresh={() => void refresh()}
-            />
+            <div className="stack">
+              <Overview
+                state={desktop}
+                language={language}
+                onNavigate={navigate}
+                refreshing={refreshing}
+                onRefresh={() => void refresh()}
+              />
+              <Statistics
+                key={`statistics-${desktop?.active?.generation ?? "none"}`}
+                state={desktop}
+                language={language}
+                onState={receiveState}
+              />
+            </div>
           )}
           {page === "memories" && (
             <MemoryWorkspace

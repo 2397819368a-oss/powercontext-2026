@@ -5,6 +5,32 @@ description: "Exact-Scope native statistics, isolation and qualification."
 
 # Desktop Scope statistics
 
+## Inventory and usage view
+
+Overview contains the self-contained **Current-Scope inventory and usage** view.
+Activate a qualified connection, select an exact Scope, choose a UTC usage period
+and press **Load statistics**. Loading is explicit; opening the view does not
+silently restore a connection or issue a statistics request. The shared shell's
+Observation container can mount the same `Statistics` component with the current
+state, language and state-refresh callback.
+
+The view displays the Server's `as_of`, exact returned Scope coverage and
+inclusive UTC dates. Inventory is a current snapshot. Model request/input/output
+token counts, purpose breakdowns and daily rows retain returned zero and null
+values; null tokens display **Unknown**. The page does not fill missing rows or
+infer complete provider reporting from recorded calls. Recall coverage includes
+preparation, ready and comparable counts, estimator identity/version, baseline,
+recalled tokens and signed reduction. These are estimates, not billing savings
+or answer-quality measurements.
+
+Every chart has an equivalent table with captions and row/column headers. Tables
+and charts have keyboard-focusable scroll regions for narrow layouts. Labels are
+available in English and Chinese. Changing connection, Scope or period clears
+the old view and invalidates late success/error responses. A statistics failure
+does not disable independent Memory actions.
+
+## Native boundary
+
 Desktop consumes `POST /v1/stats` through the native `get_stats` command. The
 renderer supplies only the active generation and `today`, `7d` or `30d`; native
 code obtains the current Scope and constructs an exact, single-Scope selection.
