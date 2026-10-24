@@ -101,11 +101,14 @@ async def _scope_with_memory(runtime: BuiltinRuntime, key: str) -> str:
     return created.scope_id
 
 
-def _request() -> PrepareContextRequest:
+def _request(*, explain: bool = True) -> PrepareContextRequest:
+    """A Hook's request asks for content only; these scenarios also ask why a channel was lost."""
+
     return PrepareContextRequest.model_validate({
         "query": _QUERY,
         "max_bytes": 8000,
         "assembly": {"sections": [{"family": "memory", "limit": 8}]},
+        "explain": explain,
     })
 
 
@@ -144,20 +147,31 @@ def test_an_expired_budget_keeps_lexical_recall_and_reports_the_fallback(
     assert prepared.status == "ready"
     assert _MEMORY in (prepared.content or "")
     assert embedding.query_completed is False
+    # The status alone cannot tell this apart from "nothing matched": the reason can.
+    assert prepared.reason == "inference_timeout"
     (record,) = _fallbacks(caplog)
     _assert_fallback_record(record, "inference_timeout")
 
 
 @pytest.mark.parametrize(
-    ("error", "error_code"),
+    ("error", "expected"),
     [
         (InferenceUnavailableError("embed"), "inference_unavailable"),
         (InferenceTimeoutError("embed", 1.0), "inference_timeout"),
     ],
 )
 def test_a_failing_provider_keeps_lexical_recall_and_classifies_the_failure(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, error: Exception, error_code: str
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+    expected: str,
 ) -> None:
+    """One classification, one spelling: the log ``error_code`` and the response ``reason`` agree.
+
+    RFC 1435 names this vocabulary ``inference_*``, and the fallback event already used it, so the
+    response reuses it instead of restating the same cause in the channel's terms.
+    """
+
     async def scenario() -> Any:
         async with _runtime(tmp_path / "failing.db", 5.0, _FailingQueryEmbedding(error)) as runtime:
             scope_id = await _scope_with_memory(runtime, "failing")
@@ -167,8 +181,9 @@ def test_a_failing_provider_keeps_lexical_recall_and_classifies_the_failure(
 
     assert prepared.status == "ready"
     assert _MEMORY in (prepared.content or "")
+    assert prepared.reason == expected
     (record,) = _fallbacks(caplog)
-    _assert_fallback_record(record, error_code)
+    _assert_fallback_record(record, expected)
 
 
 def test_a_sufficient_budget_waits_for_the_query_embedding(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -183,4 +198,48 @@ def test_a_sufficient_budget_waits_for_the_query_embedding(tmp_path: Path, caplo
 
     assert prepared.status == "ready"
     assert embedding.query_completed is True
+    assert prepared.reason is None
     assert _fallbacks(caplog) == []
+
+
+def test_a_preparation_that_did_not_ask_says_nothing_about_the_lost_channel(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``reason`` is opt-in: the envelope a Host injects keeps the four fields it validates.
+
+    The cause is still logged, so an operator keeps the signal on a Host that never opts in.
+    """
+
+    async def scenario() -> Any:
+        async with _runtime(tmp_path / "unexplained.db", 0.05, _SlowQueryEmbedding(delay=0.5)) as runtime:
+            scope_id = await _scope_with_memory(runtime, "unexplained")
+            return await runtime.context.for_scope(scope_id).prepare(_request(explain=False))
+
+    prepared = asyncio.run(scenario())
+
+    assert prepared.status == "ready"
+    assert _MEMORY in (prepared.content or "")
+    assert prepared.reason is None
+    (record,) = _fallbacks(caplog)
+    _assert_fallback_record(record, "inference_timeout")
+
+
+def test_a_deployment_without_an_embedding_model_is_not_reported_as_degraded(tmp_path: Path) -> None:
+    """Lexical-only is a deployment choice, not a lost channel.
+
+    Filling ``reason`` here would make every preparation on a keyword-only install look
+    broken, which is exactly the signal this field exists to give.
+    """
+
+    async def scenario() -> Any:
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'lexical.db'}"))
+        async with open_builtin_runtime(
+            config, scheduler_path=tmp_path.with_suffix(".scheduler.db"), embedding_model=None
+        ) as runtime:
+            scope_id = await _scope_with_memory(runtime, "lexical")
+            return await runtime.context.for_scope(scope_id).prepare(_request())
+
+    prepared = asyncio.run(scenario())
+
+    assert prepared.status == "ready"
+    assert prepared.reason is None

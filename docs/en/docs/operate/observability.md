@@ -338,3 +338,11 @@ still fail an explicitly configured Server at startup, while child telemetry set
 OTLP tests use an actual local protobuf HTTP receiver, not a production trace database. To validate storage and backend
 queries, follow the Phoenix/Langfuse instructions or the chosen backend's deployment procedure. Metrics dashboards,
 trace storage, log shipping and alert delivery are separate deployment capabilities.
+
+## Topic generation rejection codes
+
+Topic processing may report `invalid_topic_placeholder` for recognizable numbered placeholder bodies or
+`invalid_topic_coordination_content` for identity-coordination-only bodies. These content-free diagnostic codes
+identify recoverable generation rejection, not successful NOOP. Retries use the existing durable Window budget;
+exhaustion retains the pending frontier. Existing worker events and correlation fields carry the diagnostic code.
+Source text, generated bodies and provider responses must not be added to operational logs.

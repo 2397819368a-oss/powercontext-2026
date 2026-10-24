@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import Connection, MetaData, Table, inspect
+from sqlalchemy import Connection, MetaData, Table, inspect, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.schema import CreateTable
@@ -75,3 +75,33 @@ def _create_mysql_tables(connection: Connection, tables: Sequence[Table]) -> Non
                         for item in actual
                     ):
                         raise
+
+
+async def ensure_portable_timestamp_precision(connection: AsyncConnection, tables: Sequence[Table]) -> None:
+    """Explicit runtime schema upgrade preserving portable microsecond timestamps."""
+
+    if connection.dialect.name != "mysql":
+        return
+
+    portable_columns = {
+        "pc_artifacts": "created_at",
+        "pc_profile_policies": "updated_at",
+        "pc_topic_memory_revision_publications": "published_at",
+        "pc_artifact_tags": "assigned_at",
+    }
+    for table in tables:
+        column = portable_columns.get(table.name)
+        if column is None:
+            continue
+        precision = await connection.scalar(
+            text(
+                "SELECT DATETIME_PRECISION FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name AND COLUMN_NAME = :column_name"
+            ),
+            {"table_name": table.name, "column_name": column},
+        )
+        if precision is not None and int(precision) < 6:
+            nullability = "NULL" if table.c[column].nullable else "NOT NULL"
+            await connection.exec_driver_sql(
+                f"ALTER TABLE `{table.name}` MODIFY COLUMN `{column}` DATETIME(6) {nullability}"
+            )

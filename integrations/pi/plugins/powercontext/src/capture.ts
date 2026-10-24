@@ -72,7 +72,7 @@ export async function captureUserPrompt(input: CaptureInput): Promise<number | u
   if (
     !input.config.capturePrompts
     || Buffer.byteLength(input.prompt, 'utf8') > MAX_SOURCE_BYTES
-    || containsSecret(input.prompt)
+    || containsSecret(input.prompt, input.config.authorization)
   ) {
     return undefined
   }

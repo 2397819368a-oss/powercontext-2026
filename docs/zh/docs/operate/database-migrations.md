@@ -14,6 +14,8 @@ description: 了解数据库迁移命令、备份策略、服务启停及当前�
 
 输出中的 `ready` 仅表示当前迁移 bundle 已通过结构和数据验证；`readiness_scope=registered_bundle`、`server_ready=false` 明确区分它与完整 Server、索引、旧任务及集群可用。不要以此替代生产升级或完整业务库初始化。普通业务启动的全面版本门禁和完整历史基线尚未纳管。已通过 OceanBase AI 4.6.3 的 ODP 入口完成隔离四表验收，覆盖固定维护主机互斥、DDL 提交后中断的显式确认恢复、数据保留与重复执行。这不代表完整 Server 升级、崩溃后远端 DDL 自动判定或完整 Fork 恢复已通过验收。
 
+MySQL 兼容后端的结构反射支持 CHECK 表达式中的二元 `+`、`-`、`*`、`/`、`%`、一元正负号及嵌套括号，并保留算术、比较和布尔运算的优先级。未支持的 CHECK 运算符或函数仍被拒绝，错误会标明反射的表名、约束名及未支持的语法，避免将合法分组误报为括号不匹配。表达式解析成功不代表历史结构已登记，也不会绕过迁移或数据完整性检查。
+
 原有 `server processing-migrate` 保留，请按[迁移 Artifact 处理状态](artifact-processing-migration.md)使用。它尚未自动转发到统一入口。服务部署参考[部署 Server](deploy-server.md)。
 
 ## Topic Memory 恢复 bundle

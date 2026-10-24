@@ -50,6 +50,10 @@ tauri-plugin-single-instance = "=2.4.2"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
 keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+libc = "=0.2.189"
+
 [dev-dependencies]
 tauri = { version = "=2.11.0", features = ["test"] }
 rcgen = "=0.14.8"

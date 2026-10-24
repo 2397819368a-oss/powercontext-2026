@@ -27,6 +27,12 @@ through an ODP endpoint on OceanBase AI Database 4.6.3, covering coordinator exc
 committed DDL, data preservation, and repeat execution. This does not establish complete Server readiness, automatic
 detection of unfinished remote DDL after a crash, or full Fork restoration acceptance.
 
+MySQL-compatible schema reflection supports arithmetic CHECK expressions with binary `+`, `-`, `*`, `/`, `%`,
+unary signs, and nested grouping, preserving arithmetic, comparison, and boolean precedence. Unsupported CHECK
+operators/functions remain rejected; their errors identify the reflected table, named constraint, and unsupported
+construct instead of misreporting balanced parentheses. Parsing an expression does not register a historical layout
+or bypass migration/data-integrity checks.
+
 The existing `server processing-migrate` remains available. Follow
 [Migrate Artifact processing state](artifact-processing-migration.md); it does not yet forward to the unified entry point.
 See [Deploy the Server](deploy-server.md) for service deployment.

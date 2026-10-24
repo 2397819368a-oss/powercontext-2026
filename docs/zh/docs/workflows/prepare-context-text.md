@@ -47,9 +47,20 @@ mv "$tmp_context" context.md
 `--header "$POWERCONTEXT_AUTH_HEADER"`。`status: "empty"` 是成功的空结果，会生成空文件；HTTP 4xx/5xx 或响应结构错误
 会保留原有文件并返回非零退出码。
 
-HTTP 外层仍然是 `schema`、`status`、
-`content`、`content_bytes` 四个字段。直接写出或注入 `content` 即可：它已经包含历史证据提示、章节标题、按字面
-展示的正文、精确引用和截断标记。空结果为 `status: "empty"`、`content: null`、`content_bytes: 0`。
+HTTP 外层是 `schema`、`status`、`content`、`content_bytes` 四个字段。直接写出或注入 `content` 即可：它已经包含
+历史证据提示、章节标题、按字面展示的正文、精确引用和截断标记。空结果为 `status: "empty"`、`content: null`、
+`content_bytes: 0`。
+
+请求里加 `"explain": true`，就能额外知道本次准备是否丢了一条本来会用的召回通道：此时响应会带 `reason`，
+`inference_timeout` 表示 `recall_embedding_timeout_seconds` 预算耗尽，`inference_unavailable` 表示 provider 报错。
+这两个值是 RFC 1435 给 `SearchGroup.fallback_reason` 的四个拼写里属于推理失败的那两个，也与 fallback 日志用的词表
+完全一致，因此接口与日志不会对同一个原因给出两种说法。另外两个不是漏了：`none` 由字段缺席表达，
+`reused_fts_fallback` 不属于这一层的原因——后继轮复用失败轮的纯关键词结果，其成因仍由那一轮的 `inference_*`
+值表达，且优先级更高。
+没有丢通道时该字段不出现，不询问的请求更是完全没有这个键，所以 Host 校验的那四个字段永远不会变。它标记的是
+「某条通道丢了」，不是「结果为空」；纯关键词部署从不请求向量，因此永远不会出现。同一个事件也会以
+`memory.search.embedding_fallback` 或 `topic_memory.search.embedding_fallback` 写进服务端日志，所以即使 Host
+从不 opt-in，运维也拿得到这个信号，且日志与 `reason` 都不含查询文本。
 
 Python Client 的等价调用：
 

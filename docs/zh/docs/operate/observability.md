@@ -306,3 +306,11 @@ Child export/shutdown 是 best-effort，shutdown 最多等待 1 秒；强制终�
 
 OTLP 测试使用真实本地 protobuf HTTP receiver，不提供 production trace database。存储和 backend query 验证请按
 Phoenix/Langfuse 或所选 backend 的部署文档执行。Metrics dashboard、trace storage、log shipping 和 alert delivery 属于独立部署能力。
+
+## Topic 生成拒绝码
+
+Topic 处理可通过 `invalid_topic_placeholder` 标识可识别的编号占位正文，
+或通过 `invalid_topic_coordination_content` 标识纯身份协调正文。
+这些不含内容的诊断码表示可恢复的生成拒绝，不表示成功 NOOP。
+重试消耗现有 Window 持久化预算；耗尽后保留待处理前沿。诊断码由现有 Worker 事件及关联字段承载。
+不得将 Source 文本、生成正文或服务商响应写入运维日志。
