@@ -25,18 +25,31 @@ import type {
 import { desktopApi } from "../shared/ipc";
 import { connectionError } from "./connection-messages";
 import { memoryMessages } from "./memory-messages";
-import type { Language } from "./messages";
+import { messages, type Language } from "./messages";
+import { PageFeedback, ErrorFeedback } from "./PageFeedback";
+import { useConfirmation } from "./useConfirmation";
 import memoryIcon from "../assets/memory.svg";
 type Props = {
   state: DesktopState | null;
   language: Language;
   onState: (state: DesktopState) => void;
   onDirty: (dirty: boolean) => void;
+  onManageConnections?: () => void;
+  onOpenScopes?: (trigger: HTMLElement) => void;
+  onOpenLocalServer?: () => void;
+  contextPending?: boolean;
 };
 export const textBytes = (value: string) =>
   new TextEncoder().encode(value).length;
-export function NoteForm({ state, language, onState, onDirty }: Props) {
+export function NoteForm({
+  state,
+  language,
+  onState,
+  onDirty,
+  contextPending = false,
+}: Props) {
   const t = memoryMessages[language];
+  const { confirm, confirmation } = useConfirmation(language);
   const active = state?.active;
   const profile = state?.profiles.find((p) => p.id === active?.connectionId);
   const [text, setText] = useState("");
@@ -48,7 +61,8 @@ export function NoteForm({ state, language, onState, onDirty }: Props) {
   const lifetime = useRef(0);
   const generation = useRef(active?.generation);
   generation.current = active?.generation;
-  const enabled = !!active?.scope && active.report.compatibilityVerified;
+  const enabled =
+    !contextPending && !!active?.scope && active.report.compatibilityVerified;
   const bytes = textBytes(text);
   useEffect(() => {
     setText("");
@@ -62,19 +76,21 @@ export function NoteForm({ state, language, onState, onDirty }: Props) {
     };
   }, [active?.generation]);
   async function save() {
-    if (!active?.scope || submitting.current || composing.current) return;
+    if (!enabled || !active?.scope || submitting.current || composing.current)
+      return;
     if (!text.trim() || bytes > 8192) {
       setError({ code: "invalid_input" });
       return;
     }
+    const original = active.generation;
+    const ticket = lifetime.current;
     if (
       (outcome?.record.status === "unknown" ||
         state?.lastWrite?.status === "unknown") &&
-      !window.confirm(t.retry)
+      !(await confirm(t.retry))
     )
       return;
-    const original = active.generation;
-    const ticket = lifetime.current;
+    if (ticket !== lifetime.current || generation.current !== original) return;
     const isCurrent = () =>
       ticket === lifetime.current && generation.current === original;
     submitting.current = true;
@@ -107,6 +123,7 @@ export function NoteForm({ state, language, onState, onDirty }: Props) {
   }
   return (
     <section className="card stack">
+      {confirmation}
       <h2>{t.saveOne}</h2>
       <div className="save-row">
         <label>
@@ -144,32 +161,55 @@ export function NoteForm({ state, language, onState, onDirty }: Props) {
             </strong>{" "}
             <code>{active?.scope?.scope_id}</code>
           </>
+        ) : contextPending ? (
+          messages[language].contextUpdating
         ) : (
           t.noScope
         )}
       </p>
-      {bytes > 8192 && <p role="alert">{t.bytesError}</p>}
-      {error != null && (
-        <p role="alert">
-          {t.failed} {connectionError(error, language)}
-        </p>
+      {busy && <PageFeedback compact kind="loading" title={t.saving} />}
+      {bytes > 8192 && (
+        <PageFeedback compact kind="error" title={t.bytesError} />
       )}
-      {outcome && (
-        <p role={outcome.record.status === "succeeded" ? "status" : "alert"}>
-          {outcome.record.status === "succeeded"
-            ? outcome.result?.records.length
-              ? t.success
-              : t.noEntry
-            : outcome.record.status === "unknown"
-              ? t.unknown
-              : `${t.failed} ${connectionError(outcome.record.error, language)}`}
-        </p>
+      {error != null && (
+        <ErrorFeedback error={error} language={language} title={t.failed} />
+      )}
+      {outcome?.record.status === "failed" ? (
+        <ErrorFeedback
+          error={outcome.record.error}
+          language={language}
+          title={t.failed}
+        />
+      ) : (
+        outcome && (
+          <PageFeedback
+            compact
+            kind={
+              outcome.record.status === "succeeded"
+                ? "success"
+                : outcome.record.status === "unknown"
+                  ? "warning"
+                  : "error"
+            }
+            title={
+              outcome.record.status === "succeeded"
+                ? outcome.result?.records.length
+                  ? t.success
+                  : t.noEntry
+                : outcome.record.status === "unknown"
+                  ? t.unknown
+                  : `${t.failed} ${connectionError(outcome.record.error, language)}`
+            }
+          />
+        )
       )}
     </section>
   );
 }
 export function MemoryWorkspace(props: Props) {
-  const { state, language, onState, onDirty } = props;
+  const { state, language, onState, onDirty, contextPending = false } = props;
+  const common = messages[language];
+  const failedReference = useRef<ArtifactReference | undefined>(undefined);
   const t = memoryMessages[language];
   const active = state?.active;
   const readerHeading = useRef<HTMLHeadingElement>(null);
@@ -185,8 +225,10 @@ export function MemoryWorkspace(props: Props) {
   const pendingCancel = useRef(Promise.resolve());
   const current = useRef(active?.generation);
   current.current = active?.generation;
-  const enabled = !!active?.scope && active.report.compatibilityVerified;
+  const enabled =
+    !contextPending && !!active?.scope && active.report.compatibilityVerified;
   function clearRead() {
+    failedReference.current = undefined;
     sequence.current++;
     setHits(null);
     setEntry(null);
@@ -214,9 +256,10 @@ export function MemoryWorkspace(props: Props) {
     };
   }, [active?.generation]);
   async function read(reference?: ArtifactReference) {
-    if (!active?.scope) return;
+    if (!enabled || !active?.scope) return;
     const generation = active.generation;
     const ticket = ++sequence.current;
+    failedReference.current = reference;
     setError(null);
     setEntry(null);
     setCopied("");
@@ -270,6 +313,51 @@ export function MemoryWorkspace(props: Props) {
   const record = state?.lastWrite;
   return (
     <div className="stack memory-workspace">
+      {state && !enabled && !contextPending && (
+        <PageFeedback
+          kind="unavailable"
+          title={
+            !active
+              ? common.noActiveTitle
+              : !active.report.compatibilityVerified
+                ? common.compatibilityNeeded
+                : common.chooseScopeTitle
+          }
+          action={
+            !active ? (
+              <>
+                {props.onOpenLocalServer && (
+                  <button onClick={props.onOpenLocalServer}>
+                    {common.setUpLocally}
+                  </button>
+                )}
+                {props.onManageConnections && (
+                  <button onClick={props.onManageConnections}>
+                    {common.connectExisting}
+                  </button>
+                )}
+              </>
+            ) : !active.report.compatibilityVerified ? (
+              props.onManageConnections && (
+                <button onClick={props.onManageConnections}>
+                  {common.chooseConnection}
+                </button>
+              )
+            ) : (
+              props.onOpenScopes && (
+                <button
+                  onClick={(event) => props.onOpenScopes?.(event.currentTarget)}
+                >
+                  {common.chooseScopeTitle}
+                </button>
+              )
+            )
+          }
+        >
+          {!active && <p>{common.startPathsHint}</p>}
+        </PageFeedback>
+      )}
+
       {record &&
         (record.status === "unknown" ||
           record.status === "pending" ||
@@ -295,6 +383,7 @@ export function MemoryWorkspace(props: Props) {
         language={language}
         onState={onState}
         onDirty={onDirty}
+        contextPending={contextPending}
       />
       <section className="card stack">
         <h2>{t.query}</h2>
@@ -333,10 +422,34 @@ export function MemoryWorkspace(props: Props) {
           </button>
         </div>
         <p className="small search-meta">{t.searchSummary}</p>
-        {!enabled && <p>{t.noScope}</p>}
-        {textBytes(query) > 8192 && <p role="alert">{t.inputError}</p>}
+        {!enabled && (
+          <p>{contextPending ? common.contextUpdating : t.noScope}</p>
+        )}
+        {busy && (
+          <PageFeedback
+            compact
+            kind="loading"
+            title={busy === "search" ? t.searching : t.loading}
+          />
+        )}
+        {textBytes(query) > 8192 && (
+          <PageFeedback compact kind="error" title={t.inputError} />
+        )}
         {error != null && (
-          <p role="alert">{connectionError(error, language)}</p>
+          <ErrorFeedback
+            error={error}
+            language={language}
+            action={
+              enabled && (
+                <button
+                  disabled={!!busy}
+                  onClick={() => void read(failedReference.current)}
+                >
+                  {common.retryRead}
+                </button>
+              )
+            }
+          />
         )}
       </section>
       <div className="memory-grid">
@@ -344,8 +457,12 @@ export function MemoryWorkspace(props: Props) {
           <div className="card-heading">
             <h2>{t.results}</h2>
           </div>
-          {hits === null && !busy && error == null && <p>{t.start}</p>}
-          {hits?.length === 0 && <p>{t.none}</p>}
+          {hits === null && !busy && error == null && (
+            <PageFeedback compact kind="empty" title={t.start} />
+          )}
+          {hits?.length === 0 && (
+            <PageFeedback compact kind="empty" title={t.none} />
+          )}
           {hits?.length === 10 && <p>{t.limit}</p>}
           {hits && (
             <p className="small">
@@ -377,7 +494,7 @@ export function MemoryWorkspace(props: Props) {
                             <span className="badge">{t.hitVector}</span>
                           )}
                         <button
-                          disabled={!!busy}
+                          disabled={!enabled || !!busy}
                           aria-pressed={selected === key}
                           onClick={(event) => {
                             readButton.current = event.currentTarget;
@@ -466,7 +583,7 @@ export function MemoryWorkspace(props: Props) {
                   ))}
                 </ul>
               ) : (
-                <p>{t.noSources}</p>
+                <PageFeedback compact kind="empty" title={t.noSources} />
               )}
             </details>
             <p className="note-line">{t.agentScopeNote}</p>

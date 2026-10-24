@@ -7,6 +7,9 @@ description: "精确范围的原生统计、隔离与兼容资格。"
 
 ## 存量与用量视图
 
+统计需要显式选择 `sqlite-stats-1da99747-v1` 配置；独立验证的
+`sqlite-atomic-1da99747-v1` 配置仅覆盖 Memory 操作。
+
 总览包含独立的“当前范围的存量与用量”视图。启用已验证兼容的连接、选择精确
 范围及 UTC 周期后，点击“加载统计”。加载是显式操作；打开视图不会自动恢复
 连接或发起统计请求。共享布局的 Observation 容器可以使用相同的 `Statistics`
@@ -42,7 +45,7 @@ Rust `export_ipc` example 生成。原生的精确选择投影复用具体生成
 保留可空估算器并禁止扩大 selection。不改变 Server API 或历史资格记录。
 
 已验证的 Server、合同、wheel 标识和实际验证边界见
-[资格记录](../../../desktop/VALIDATION.md#current-scope-statistics-qualification)。
+[资格记录](https://github.com/oceanbase/powercontext/blob/master/desktop/VALIDATION.md#current-scope-statistics-qualification)。
 模拟测试验证本地处理；构建 wheel 的独立夹具另行验证实际 SQLite 协议行为。
 记录另行列明已执行的 macOS ARM64 打包调试应用流程，以及仍待验证的 Windows
 安装界面、Intel、输入法和屏幕阅读器 gate。Windows 安装流程将页面表格与独立的

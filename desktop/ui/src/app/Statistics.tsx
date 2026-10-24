@@ -29,6 +29,7 @@ type Props = {
   state: DesktopState | null;
   language: Language;
   onState: (state: DesktopState) => void;
+  contextPending?: boolean;
 };
 type Cell = string | number | null;
 const operations = ["generation", "embedding"] as const;
@@ -43,12 +44,18 @@ const recallFields = [
 ] as const;
 
 /** Load statistics explicitly, using the native generation to isolate private results. */
-export function Statistics({ state, language, onState }: Props) {
+export function Statistics({
+  state,
+  language,
+  onState,
+  contextPending = false,
+}: Props) {
   const t = statisticsMessages[language];
   const titleId = useId();
   const generation = state?.active?.generation;
   const active = state?.active;
   const enabled =
+    !contextPending &&
     !!active?.scope &&
     active.report.compatibilityVerified &&
     active.report.supportedOperations.includes("get_stats");
@@ -79,7 +86,7 @@ export function Statistics({ state, language, onState }: Props) {
           .catch(() => {});
       }
     };
-  }, [generation]);
+  }, [generation, enabled]);
   function changePeriod(next: StatsPeriod) {
     sequence.current++;
     running.current = false;

@@ -29,6 +29,7 @@ import {
   MemoryWorkspace,
   textBytes,
 } from "../src/app/MemoryWorkspace";
+import { answerConfirmation } from "./confirmation";
 import { App } from "../src/app/App";
 import { Overview } from "../src/app/Overview";
 import { desktopApi } from "../src/shared/ipc";
@@ -95,7 +96,7 @@ const artifact: ArtifactReference = {
   artifact_id: "atomic-a",
   revision: 7,
 };
-function outcome(status: "succeeded" | "unknown"): WriteOutcome {
+function outcome(status: "succeeded" | "unknown" | "failed"): WriteOutcome {
   return {
     record: {
       operationId: "operation-a",
@@ -245,6 +246,53 @@ test("UTF-8 overflow and IME composition cannot accidentally submit", async () =
   await user.click(screen.getByRole("button", { name: "Save" }));
   expect(desktopApi.remember).not.toHaveBeenCalled();
 });
+test.each(["en", "zh"] as const)(
+  "a failed save outcome explains permission recovery and retains its draft (%s)",
+  async (language) => {
+    const user = userEvent.setup();
+    const failed = outcome("failed");
+    failed.record.error = {
+      code: "forbidden",
+      requestId: null,
+      dispatched: true,
+    };
+    vi.mocked(desktopApi.state).mockResolvedValue(state);
+    vi.mocked(desktopApi.remember).mockResolvedValue(failed);
+    const onDirty = vi.fn();
+    render(
+      <NoteForm
+        state={state}
+        language={language}
+        onState={vi.fn()}
+        onDirty={onDirty}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    await user.type(input, "preserve denied draft");
+    onDirty.mockClear();
+    await user.click(
+      screen.getByRole("button", { name: language === "zh" ? "保存" : "Save" }),
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain(
+      language === "zh"
+        ? "当前身份无权执行此操作"
+        : "This identity cannot perform this operation",
+    );
+    expect(alert.textContent).toContain(
+      language === "zh"
+        ? "申请此操作所需的权限"
+        : "Request permission for this operation",
+    );
+    expect(alert.textContent).toContain(
+      language === "zh" ? "精确 Scope" : "exact Scope",
+    );
+    expect((input as HTMLTextAreaElement).value).toBe("preserve denied draft");
+    expect(onDirty).not.toHaveBeenCalledWith(false);
+    expect(desktopApi.remember).toHaveBeenCalledTimes(1);
+  },
+);
+
 test("unknown save retains the draft and does not replay automatically", async () => {
   const user = userEvent.setup();
   form();
@@ -256,6 +304,16 @@ test("unknown save retains the draft and does not replay automatically", async (
     (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
   ).toBe("preserve me");
   expect(desktopApi.remember).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await answerConfirmation(user, false);
+  expect(desktopApi.remember).toHaveBeenCalledTimes(1);
+  expect(
+    (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
+  ).toBe("preserve me");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await answerConfirmation(user, true);
+  expect(desktopApi.remember).toHaveBeenCalledTimes(2);
 });
 test("search opens only the exact reference and renders hostile text literally", async () => {
   const user = userEvent.setup();
@@ -423,7 +481,7 @@ test.each(["scope", "page"])(
         }),
     );
     vi.mocked(desktopApi.state).mockResolvedValue(state);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
     render(<App />);
     await user.click(screen.getByRole("button", { name: "记忆" }));
     await waitFor(() =>
@@ -449,8 +507,10 @@ test.each(["scope", "page"])(
       await user.click(screen.getByRole("button", { name: /Test scope/ }));
       await user.click(screen.getByRole("button", { name: "查找范围" }));
       await user.click(screen.getByRole("button", { name: "Scope B" }));
+      await answerConfirmation(user, true);
     } else {
       await user.click(screen.getByRole("button", { name: "总览" }));
+      await answerConfirmation(user, true);
       await waitFor(() =>
         expect(document.activeElement).toBe(
           screen.getByRole("heading", { level: 1, name: "总览" }),
@@ -467,11 +527,42 @@ test.each(["scope", "page"])(
     await act(async () => {
       finish(outcome("succeeded"));
     });
-    confirm.mockClear().mockReturnValue(false);
     await user.click(screen.getByRole("button", { name: "总览" }));
-    expect(confirm).toHaveBeenCalled();
+    await answerConfirmation(user, false);
     expect(
       (screen.getByLabelText("记忆内容") as HTMLTextAreaElement).value,
     ).toBe("draft B");
   },
 );
+
+test("confirming an unknown write after the Scope changes cannot submit the old draft", async () => {
+  const user = userEvent.setup();
+  const previous = { ...state, lastWrite: outcome("unknown").record };
+  const props = { language: "en" as const, onState: vi.fn(), onDirty: vi.fn() };
+  const { rerender } = render(<NoteForm {...props} state={previous} />);
+  await user.type(screen.getByLabelText("Memory text"), "old Scope draft");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(screen.getByRole("alertdialog").textContent).toContain(
+    "may create a duplicate",
+  );
+  expect(desktopApi.remember).not.toHaveBeenCalled();
+  rerender(
+    <NoteForm
+      {...props}
+      state={{
+        ...state,
+        generation: 2,
+        active: {
+          ...state.active!,
+          generation: 2,
+          scope: { ...scope, scope_id: "scope-b" },
+        },
+      }}
+    />,
+  );
+  await answerConfirmation(user, true);
+  expect(desktopApi.remember).not.toHaveBeenCalled();
+  expect(
+    (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
+  ).toBe("");
+});

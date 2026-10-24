@@ -8,7 +8,8 @@ description: "Exact-Scope native statistics, isolation and qualification."
 ## Inventory and usage view
 
 Overview contains the self-contained **Current-Scope inventory and usage** view.
-Activate a qualified connection, select an exact Scope, choose a UTC usage period
+Explicitly select the statistics-qualified `sqlite-stats-1da99747-v1` profile,
+activate the connection, select an exact Scope, choose a UTC usage period
 and press **Load statistics**. Loading is explicit; opening the view does not
 silently restore a connection or issue a statistics request. The shared shell's
 Observation container can mount the same `Statistics` component with the current
@@ -54,7 +55,7 @@ example. The native exact-selection projection reuses concrete generated field
 types while preserving the nullable estimator and prohibiting broader selections.
 Neither Server APIs nor historical qualification records are changed.
 
-See [the qualification record](../../../desktop/VALIDATION.md#current-scope-statistics-qualification)
+See [the qualification record](https://github.com/oceanbase/powercontext/blob/master/desktop/VALIDATION.md#current-scope-statistics-qualification)
 for the tested Server/contract/wheel identities and actual validation limits.
 Synthetic tests establish local handling; the built-wheel harness separately
 establishes the observed SQLite protocol behavior. The record also distinguishes

@@ -145,6 +145,28 @@ test("statistics require an exact Scope and operation qualification without fabr
   expect(desktopApi.stats).not.toHaveBeenCalled();
 });
 
+test("a pending context transition hides statistics and discards its late response", async () => {
+  const user = userEvent.setup();
+  let finish!: (value: ExactScopeStatistics) => void;
+  vi.mocked(desktopApi.stats).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const view = render(<Statistics {...props} />);
+  await user.click(screen.getByRole("button", { name: "Load statistics" }));
+  view.rerender(<Statistics {...props} contextPending />);
+  expect(screen.queryByRole("button", { name: "Load statistics" })).toBeNull();
+  expect(screen.queryByRole("table")).toBeNull();
+  // Even a failed transition that leaves the original generation must not
+  // revive a response started before that transition.
+  view.rerender(<Statistics {...props} />);
+  await act(async () => finish(statistics()));
+  expect(screen.queryByRole("table")).toBeNull();
+  expect(screen.getByText(/not been loaded/)).toBeTruthy();
+});
+
 test.each(["en", "zh"] as const)(
   "empty inventory preserves real zeros, UTC dates and chart tables in %s",
   async (language) => {
