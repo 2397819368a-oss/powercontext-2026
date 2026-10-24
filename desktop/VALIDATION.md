@@ -28,6 +28,38 @@ The real Server harness covers SQLite with anonymous loopback, static Bearer, HT
 
 Selecting a compatibility profile does not attest the remote binary identity. Existing `sqlite-1.1.1-v1` / `sqlite-63f918b7-v1` / `sqlite-ab43e3a7-v1` / `sqlite-f1089f4e-v1` / `sqlite-6e237568-v1` / `sqlite-legacy-58f7f4f6-v1` selections require explicitly choosing an available matching profile and rechecking the connection. Desktop reads memories only through Atomic Memory references, so Servers that answer only with Memory entry citations are not qualified. CLI diagnostics separately verify the registered executable path and digest, then validate the diagnostic response schema. The observed version is optional report information; a registration does not require a version.
 
+### Current-Scope statistics qualification
+
+`sqlite-stats-1da99747-v1` records Server commit
+`1da997476651c2850ff7141e2b7cd512d0152a90`, contract digest
+`5878999ce9e239d6642e4da858074b281ed465629432c578b3584eec47cbce6c`, and wheel
+`powercontext-1.4.1.dev139+g1da997476.d20261024-py3-none-any.whl` with SHA-256
+`4eda168954bb5950aa4f0bbc0d534b2b2bdb15ff43f97de7df279963c46c70a8`.
+All 457 Python runtime files in that wheel match the checkout's runtime sources;
+their sorted `path sha256` manifest, newline terminated, hashes to
+`49fe8325db1955ee250c3a76a8efad3d87fc393dc1007a95817524f38ded41ad`.
+The Desktop adapter and harness had local changes during this run; the Server
+runtime, OpenAPI contract and dependency lock matched the recorded commit.
+
+On macOS 26.7 ARM64, Python 3.12.13 and Rust 1.95.0, the native `ConnectionManager`
+and `ServerApi` passed the isolated built-wheel harness in anonymous loopback,
+Bearer loopback, HTTPS with explicit CA/base path, and enforced-provider modes.
+The eleven recorded operations include `get_stats`. Statistics checks exercise
+the exact Scope, genuine empty inventory, `today`/`7d`/`30d` UTC periods,
+persisted Memory inventory, no-model zero usage, and same-Principal permission
+revocation without selection fallback. Partial provider usage is explicitly
+seeded through the real Runtime recorder: two generation requests, unknown input
+tokens and nine output tokens survive persistence, aggregation and native parsing.
+This seeded input does not establish that an actual model provider emitted it.
+
+Synthetic native tests separately cover cancellation, changed Scope, independent
+Memory cancellation, response bounds, and invalid response selection/period.
+The harness reports are generated under `.artifacts/`; reproduce them with
+`fixture_qualification.py`, the `server_probe` example and `real_server.py`.
+These results qualify the observed Server protocol; they do not establish the
+statistics page's installed Windows/Intel/macOS UI, IME, accessibility, signing
+or release acceptance.
+
 ### Current Server protocol qualification
 
 #### Server d9a78567 protocol qualification

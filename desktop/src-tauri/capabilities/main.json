@@ -12,6 +12,8 @@
     "allow-search-memory",
     "allow-atomic-memory-entry",
     "allow-cancel-memory-reads",
+    "allow-get-stats",
+    "allow-cancel-stats-reads",
     "allow-desktop-state",
     "allow-save-profile",
     "allow-remove-profile",

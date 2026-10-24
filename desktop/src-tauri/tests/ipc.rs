@@ -172,12 +172,15 @@ fn memory_commands_reject_untrusted_callers_before_accessing_the_connection() {
             commands::remember_memory,
             commands::search_memory,
             commands::atomic_memory_entry,
-            commands::cancel_memory_reads
+            commands::cancel_memory_reads,
+            commands::get_stats,
+            commands::cancel_stats_reads
         ])
         .build(test_context())
         .unwrap();
     let args = serde_json::json!({
         "generation": 0,
+        "period": "today",
         "text": "synthetic permission test",
         "query": "synthetic",
         "artifact": {"family":"atomic-memory", "artifact_id":"test", "revision":1}
@@ -187,6 +190,8 @@ fn memory_commands_reject_untrusted_callers_before_accessing_the_connection() {
         "search_memory",
         "atomic_memory_entry",
         "cancel_memory_reads",
+        "get_stats",
+        "cancel_stats_reads",
     ] {
         for (label, origin) in [
             ("main", LOCAL_ORIGIN),
