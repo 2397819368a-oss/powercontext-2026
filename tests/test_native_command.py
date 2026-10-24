@@ -25,11 +25,44 @@ from typing import Any
 
 import pytest
 
+from powercontext.service.adapters.systemd import SystemdUserAdapter
 from powercontext.service.controller import ServiceController
 from powercontext.service.environment import ProtectedEnvironmentFileError, write_protected_file
-from powercontext.service.model import ServiceError
+from powercontext.service.model import ManagerOwnershipState, ManagerRegistration, ManagerState, ServiceError
 from powercontext.service.native_command import native_process_exited, observe_native_commands, run_native_command
 from tests.test_service import FakeAdapter
+
+
+@pytest.mark.parametrize("operation", ["reload", "enable", "disable", "start", "restart", "stop"])
+def test_systemd_mutations_record_native_process_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+):
+    adapter = SystemdUserAdapter(config_home=tmp_path)
+    controller = ServiceController(FakeAdapter(tmp_path))
+    monkeypatch.setattr(adapter, "loaded_registration", lambda: ManagerRegistration(ManagerOwnershipState.OWNED))
+    monkeypatch.setattr(adapter, "manager_state", lambda: ManagerState.ACTIVE)
+    # The native manager is simulated, but its mutation runs in a real child.
+    popen = subprocess.Popen
+
+    def native_child(command, *args, **kwargs):
+        if command[:2] == ["systemctl", "--user"]:
+            command = [sys.executable, "-c", "pass"]
+        return popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", native_child)
+    events = []
+
+    def observe(event):
+        assert controller.operation_snapshot()["native_command"] == {"format_version": 1, **event}
+        events.append(event)
+
+    with controller.mutation(), observe_native_commands(observe):
+        if operation in {"start", "restart"}:
+            adapter.start(reload_definition=operation == "restart")
+        else:
+            getattr(adapter, operation)()
+    assert [event["phase"] for event in events] == ["dispatching", "running", "completed"]
+    assert native_process_exited(events[1]["pid"])
 
 
 def test_observed_native_process_output_and_confirmed_exit() -> None:
@@ -171,13 +204,18 @@ def test_service_evidence_is_durable_before_ops_observes_the_command(tmp_path: P
 
 
 @pytest.mark.parametrize("lose_pid_checkpoint", [False, True])
-def test_parent_death_does_not_prove_native_child_exit(tmp_path: Path, lose_pid_checkpoint: bool) -> None:
+@pytest.mark.parametrize("entrypoint", ["runner", "systemd"])
+def test_parent_death_does_not_prove_native_child_exit(
+    tmp_path: Path, lose_pid_checkpoint: bool, entrypoint: str
+) -> None:
     record = tmp_path / "native.json"
     ready = tmp_path / "ready"
     release = tmp_path / "release"
     script = """import json, os, sys, time
 from pathlib import Path
 from powercontext.service.native_command import observe_native_commands, run_native_command
+from powercontext.service.adapters.systemd import SystemdUserAdapter
+import subprocess
 record, ready, release = map(Path, sys.argv[1:4])
 def observe(event):
     if sys.argv[4] == 'lost' and event['phase'] == 'running':
@@ -195,8 +233,19 @@ deadline = time.monotonic() + 30
 while not Path(sys.argv[2]).exists() and time.monotonic() < deadline:
     time.sleep(0.05)
 '''
+command = [sys.argv[5], '-c', child, str(ready), str(release)]
+if sys.argv[6] == 'systemd':
+    popen = subprocess.Popen
+    def systemctl(arguments, *args, **kwargs):
+        if arguments == ['systemctl', '--user', 'daemon-reload']:
+            arguments = command
+        return popen(arguments, *args, **kwargs)
+    subprocess.Popen = systemctl
 with observe_native_commands(observe):
-    run_native_command([sys.argv[5], '-c', child, str(ready), str(release)], timeout=40)
+    if sys.argv[6] == 'systemd':
+        SystemdUserAdapter(config_home=record.parent).reload()
+    else:
+        run_native_command(command, timeout=40)
 """
     parent = subprocess.Popen(
         [
@@ -208,6 +257,7 @@ with observe_native_commands(observe):
             str(release),
             "lost" if lose_pid_checkpoint else "saved",
             getattr(sys, "_base_executable", sys.executable),
+            entrypoint,
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
