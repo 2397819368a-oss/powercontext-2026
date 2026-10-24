@@ -455,6 +455,29 @@ def _scheduled_access_runners(
         context = AccessAuditContext(transport="background", operation="incubate_experience_candidates")
         await access.bootstrap_static_scope(principal, scope_id, context=context)
         await access.require(principal, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(scope_id), context=context)
+
+        async def on_commit(connection, candidates):
+            bound = access.with_connection(connection)
+            for candidate in candidates:
+                await bound.attest_candidate_owner(
+                    scope_id=scope_id,
+                    candidate_id=candidate.candidate_id,
+                    family="experience",
+                    proposed_owner=principal,
+                    target=None
+                    if candidate.target is None
+                    else ResourceRef.artifact(
+                        scope_id,
+                        family=candidate.target.family,
+                        artifact_id=candidate.target.artifact_id,
+                    ),
+                    idempotency_key=f"background-candidate-owner:{scope_id}:{candidate.candidate_id}",
+                )
+
+        if runtime.owner_write_database is not None and access.supports_write_transaction(
+            runtime.owner_write_database.engine
+        ):
+            return await runtime.experience.for_scope(scope_id).incubate(on_commit=on_commit)
         result = await runtime.experience.for_scope(scope_id).incubate()
         for candidate_id in result.candidate_ids:
             await access.attest_candidate_owner(

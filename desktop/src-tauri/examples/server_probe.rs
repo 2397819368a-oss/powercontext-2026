@@ -20,7 +20,7 @@ use powercontext_desktop::{
         profiles::ProfileRepository,
         session::{CompatibilityProfile, ConnectionManager, WriteStatus},
     },
-    credentials::{Secret, WindowsVault},
+    credentials::{NativeVault, Secret},
     error::SafeError,
     transport::{Endpoint, ServerApi, wire::ArtifactReference},
 };
@@ -46,6 +46,8 @@ async fn main() {
         let dir = std::path::Path::new(&args[2]);
         let mut ca = CertificateParams::new(vec![]).unwrap();
         ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        // Python 3.13+ verifies fixture chains with OpenSSL's strict X.509 rules.
+        ca.use_authority_key_identifier_extension = true;
         ca.distinguished_name
             .push(rcgen::DnType::CommonName, "Desktop test CA");
         ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
@@ -55,6 +57,7 @@ async fn main() {
         let mut leaf =
             CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
         leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        leaf.use_authority_key_identifier_extension = true;
         let key = KeyPair::generate().unwrap();
         let cert = leaf.signed_by(&key, &issuer).unwrap();
         std::fs::write(dir.join("ca.pem"), ca_cert.pem()).unwrap();
@@ -126,7 +129,7 @@ async fn main() {
     let manager = ConnectionManager::with_compatibility(
         ProfileRepository::open(
             temporary.path().join("profiles.json"),
-            std::sync::Arc::new(WindowsVault),
+            std::sync::Arc::new(NativeVault),
         )
         .unwrap(),
         vec![fixture.compatibility_profile.clone()],
@@ -397,12 +400,19 @@ async fn verify_scope_pages(
     let first = manager.scopes(generation, &title, None).await.unwrap();
     assert_eq!(first.items.len(), 50);
     let second = manager
-        .scopes(generation, &title, first.next_cursor.as_deref())
+        .scopes(
+            generation,
+            &title,
+            first
+                .next_cursor
+                .as_ref()
+                .and_then(|cursor| cursor.as_deref()),
+        )
         .await
         .unwrap();
     assert!(first.next_cursor.is_some());
     assert_eq!(second.items.len(), 1);
-    assert!(second.next_cursor.is_none());
+    assert!(second.next_cursor.flatten().is_none());
     let found: std::collections::BTreeSet<_> = first
         .items
         .iter()

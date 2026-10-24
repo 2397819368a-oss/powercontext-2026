@@ -47,6 +47,8 @@ Server role 为 `all`（API 与 supervisor）、`api` 或 `background`，child p
 常用 outcome 为 `success`、`failure`、`cancelled` 和 `noop`。Admission block 使用 `blocked`，不记为 success 或 failure。
 Worker 遇到持久处理阻塞时，以 `WARNING` 级别输出 `artifact_processing.worker.blocked`，
 outcome 和 error_category 均为 `blocked`，并保留阻塞的诊断代码和 stage。
+Topic 阻塞的 `source_after` 和已知的 `source_through` 表示 Source journal 位置。准确选择终点未知时，阻塞日志
+省略 `source_through`，仍保留尝试、请求和 token 计数。
 Worker control result 还可以是 `cursor_conflict`、
 `head_conflict` 或 `leadership_lost`。`artifact_processing.worker.returned` 表示 child 返回了结果；
 `artifact_processing.worker.acknowledged` 表示 supervisor 验证了 durable acknowledgement。
@@ -304,3 +306,11 @@ Child export/shutdown 是 best-effort，shutdown 最多等待 1 秒；强制终�
 
 OTLP 测试使用真实本地 protobuf HTTP receiver，不提供 production trace database。存储和 backend query 验证请按
 Phoenix/Langfuse 或所选 backend 的部署文档执行。Metrics dashboard、trace storage、log shipping 和 alert delivery 属于独立部署能力。
+
+## Topic 生成拒绝码
+
+Topic 处理可通过 `invalid_topic_placeholder` 标识可识别的编号占位正文，
+或通过 `invalid_topic_coordination_content` 标识纯身份协调正文。
+这些不含内容的诊断码表示可恢复的生成拒绝，不表示成功 NOOP。
+重试消耗现有 Window 持久化预算；耗尽后保留待处理前沿。诊断码由现有 Worker 事件及关联字段承载。
+不得将 Source 文本、生成正文或服务商响应写入运维日志。

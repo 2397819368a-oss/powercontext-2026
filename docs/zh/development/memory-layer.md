@@ -12,6 +12,9 @@ identity、revision、状态、tag 和访问关系。`builtin` extra 包含完�
 uv add "powercontext[builtin]"
 ```
 
+仅安装此 extra 即可在进程内初始化 Runtime、写入和读取数据。使用 Server 的可选 Casbin 鉴权 provider 时，
+请安装 `server` extra。
+
 SQLite 是默认选择。`open_builtin_runtime()` 持有所选 database profile，并为两种 database 返回同一个
 `BuiltinRuntime` interface：
 

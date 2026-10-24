@@ -858,6 +858,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/topic-memory/processing/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect Topic Memory processing and its current terminal block
+         * @description Return the current Cursor, Source head, retained target and durable blocked-window diagnostics. An active final attempt remains pending because it may still finish. Legacy blocks receive their first observation timestamp; an unavailable historical error code is null. This operation never grants new processing allowance.
+         */
+        post: operations["get_topic_memory_processing_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/topic-memory/processing/blocks/get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get a retained Topic Memory processing block
+         * @description Return one exact block, including its original diagnostics and any accepted retry, after recovery.
+         */
+        post: operations["get_topic_memory_processing_block"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/topic-memory/processing/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly retry one observed Topic Memory block
+         * @description Require scope.admin and the exact block_id returned by status. Atomically retain the block's failure and usage evidence, grant one fresh bounded allowance and request asynchronous processing without advancing the Cursor or discarding the target or Sources. Repeating a block_id returns its original acceptance and cannot reset a later attempt. An unretried block that no longer owns the frontier returns topic_memory_block_conflict. Ordinary flushes, status reads, restarts and model changes never reset allowance.
+         */
+        post: operations["retry_topic_memory_processing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/topic-memory/search": {
         parameters: {
             query?: never;
@@ -3475,6 +3535,8 @@ export interface components {
             status: components["schemas"]["PreparedContextStatus"];
             content: string | null;
             content_bytes: number;
+            /** @description Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields. The values are the two inference failures among RFC 1435's four `SearchGroup.fallback_reason` spellings, so a later Receipt reuses them instead of restating the cause. `none` travels as absence, and `reused_fts_fallback` is not a cause here: a later round reusing a failed round's keyword-only outcome is still explained by that round's `inference_*` value, which outranks it. */
+            reason?: components["schemas"]["PreparedContextReason"] | null;
         };
         BootstrapContextItem: {
             kind: components["schemas"]["BootstrapContextItemKind"];
@@ -3872,15 +3934,65 @@ export interface components {
              */
             remaining_work: boolean;
             /**
-             * @description Compatibility field; Atomic Memory processing always returns zero.
+             * @description Indicator that the write gate held this window: 0 for no HOLD, 1 for HOLD, regardless of how many Sources the window contains. A held window is consumed: current_cursor advances past those Sources and the Runtime does not retry them, so a caller that needs the content re-captures it.
              * @default 0
              */
             held_count: number;
             /**
-             * @description Compatibility field; Atomic Memory processing always returns an empty array.
+             * @description Gate rejection codes reported for this window; empty unless held_count is 1.
              * @default []
              */
             hold_codes: string[];
+        };
+        TopicMemoryProcessingStatusRequest: {
+            scope_id: string;
+        };
+        GetTopicMemoryProcessingBlockRequest: {
+            scope_id: string;
+            block_id: string;
+        };
+        RetryTopicMemoryProcessingRequest: {
+            scope_id: string;
+            block_id: string;
+        };
+        TopicMemoryProcessingBlock: {
+            block_id: string;
+            attempt_id: string;
+            scope_id: string;
+            binding_name: string;
+            source_after: number;
+            /** @description Exact selected Source end; null when historical selection is unknown. */
+            source_through: number | null;
+            /** @description Cumulative coverage of the original allowance; null only for imported blocks without that allowance. */
+            budget_source_through: number | null;
+            /** @description Original ambiguous range of an imported attempts-table block; neither exact selection nor cumulative coverage. */
+            legacy_source_through: number | null;
+            target_source_through: number;
+            attempts: number;
+            requests: number;
+            tokens: number;
+            error_code: string;
+            last_error_code: string | null;
+            /** Format: date-time */
+            blocked_at: string;
+            /** Format: date-time */
+            retried_at: string | null;
+            retry_request_generation: number | null;
+        };
+        /** @enum {string} */
+        TopicMemoryProcessingState: "idle" | "pending" | "blocked";
+        /** @enum {string} */
+        TopicMemoryProcessingRetryStatus: "accepted";
+        TopicMemoryProcessingStatus: {
+            state: components["schemas"]["TopicMemoryProcessingState"];
+            source_cursor: number;
+            source_head: number;
+            target_source_through: number | null;
+            block: components["schemas"]["TopicMemoryProcessingBlock"] | null;
+        };
+        RetryTopicMemoryProcessingResponse: {
+            status: components["schemas"]["TopicMemoryProcessingRetryStatus"];
+            block: components["schemas"]["TopicMemoryProcessingBlock"];
         };
         FlushTopicMemoryRequest: {
             scope_id: string;
@@ -4177,6 +4289,11 @@ export interface components {
              * @default false
              */
             include_code: boolean;
+            /**
+             * @description Opt into reporting which retrieval channel this preparation lost, as `reason` on the response. Off by default, because a response a Host injects keeps its four fields.
+             * @default false
+             */
+            explain: boolean;
             assembly?: components["schemas"]["ContextAssembly"];
             /** @description Optional exact receipt for the last successfully injected bootstrap package. Only fully delivered Atomic Memory revisions from an injected same-Scope receipt are removed before candidate limiting and sufficiency assessment; Artifacts whose bootstrap bodies were truncated remain eligible. */
             bootstrap_receipt_id?: string;
@@ -4779,6 +4896,8 @@ export interface components {
         BootstrapContextItemKind: "atomic-memory" | "handoff";
         /** @enum {string} */
         BootstrapReceiptState: "pending" | "injected" | "skipped" | "failed";
+        /** @enum {string} */
+        PreparedContextReason: "inference_timeout" | "inference_unavailable";
         /** @enum {string} */
         BootstrapSkipReason: "disabled" | "no_eligible_context" | "already_delivered" | "preparation_failed";
         /** @enum {string} */
@@ -6705,6 +6824,99 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    get_topic_memory_processing_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TopicMemoryProcessingStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Current durable processing state. */
+            200: {
+                headers: {
+                    "X-PowerContext-Request-ID": components["headers"]["RequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicMemoryProcessingStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    get_topic_memory_processing_block: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GetTopicMemoryProcessingBlockRequest"];
+            };
+        };
+        responses: {
+            /** @description The exact retained block. */
+            200: {
+                headers: {
+                    "X-PowerContext-Request-ID": components["headers"]["RequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicMemoryProcessingBlock"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["InvalidRequest"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    retry_topic_memory_processing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetryTopicMemoryProcessingRequest"];
+            };
+        };
+        responses: {
+            /** @description One retry was durably accepted, including duplicate acceptance. */
+            200: {
+                headers: {
+                    "X-PowerContext-Request-ID": components["headers"]["RequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryTopicMemoryProcessingResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["InvalidRequest"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Unavailable"];

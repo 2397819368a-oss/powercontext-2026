@@ -50,6 +50,8 @@ Child logging alone does not establish cross-process trace propagation.
 Common outcomes are `success`, `failure`, `cancelled`, and `noop`; admission blocks use `blocked` rather than success or failure.
 If a worker encounters a durable processing block, `artifact_processing.worker.blocked` is emitted at `WARNING`
 with outcome and error category `blocked`, preserving the block's diagnostic code and stage.
+Topic block `source_after` and known `source_through` are Source journal positions. When the exact selected end is
+unknown, block logs omit `source_through`; attempt/request/token counters remain available.
 Worker control results can also be `cursor_conflict`,
 `head_conflict`, or `leadership_lost`. A `artifact_processing.worker.returned` event describes the child's result;
 `artifact_processing.worker.acknowledged` indicates that the supervisor verified durable acknowledgement. A child
@@ -336,3 +338,11 @@ still fail an explicitly configured Server at startup, while child telemetry set
 OTLP tests use an actual local protobuf HTTP receiver, not a production trace database. To validate storage and backend
 queries, follow the Phoenix/Langfuse instructions or the chosen backend's deployment procedure. Metrics dashboards,
 trace storage, log shipping and alert delivery are separate deployment capabilities.
+
+## Topic generation rejection codes
+
+Topic processing may report `invalid_topic_placeholder` for recognizable numbered placeholder bodies or
+`invalid_topic_coordination_content` for identity-coordination-only bodies. These content-free diagnostic codes
+identify recoverable generation rejection, not successful NOOP. Retries use the existing durable Window budget;
+exhaustion retains the pending frontier. Existing worker events and correlation fields carry the diagnostic code.
+Source text, generated bodies and provider responses must not be added to operational logs.

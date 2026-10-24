@@ -29,6 +29,7 @@ import {
   MemoryWorkspace,
   textBytes,
 } from "../src/app/MemoryWorkspace";
+import { answerConfirmation } from "./confirmation";
 import { App } from "../src/app/App";
 import { Overview } from "../src/app/Overview";
 import { desktopApi } from "../src/shared/ipc";
@@ -95,7 +96,7 @@ const artifact: ArtifactReference = {
   artifact_id: "atomic-a",
   revision: 7,
 };
-function outcome(status: "succeeded" | "unknown"): WriteOutcome {
+function outcome(status: "succeeded" | "unknown" | "failed"): WriteOutcome {
   return {
     record: {
       operationId: "operation-a",
@@ -363,7 +364,8 @@ test.each([
     await user.click(screen.getByRole("button", { name: save }));
     expect(screen.getByRole("status").textContent).toContain(openingHint);
     expect(screen.getAllByText("Atomic note 0").length).toBeGreaterThan(0);
-    await user.click(screen.getByRole("button", { name: open }));
+    screen.getByRole("button", { name: open }).focus();
+    await user.keyboard("{Enter}");
     // The saved-record list no longer exposes the returned body after the
     // failed read, while the write outcome itself remains visible.
     expect(screen.getByRole("alert")).toBeTruthy();
@@ -371,6 +373,11 @@ test.each([
       expect(screen.queryAllByText("Atomic note 0")).toHaveLength(0);
       expect(screen.queryAllByRole("button", { name: open })).toHaveLength(0);
     });
+    expect(document.activeElement).toBe(
+      screen.getByLabelText(
+        language === "en" ? "Keyword search" : "关键词搜索",
+      ),
+    );
     // The save receipt keeps the real returned count; a failed read must not
     // rewrite it into a zero-record result.
     expect(screen.getByRole("status").textContent).toBe(
@@ -378,6 +385,44 @@ test.each([
         ? "Saved successfully. 1 record returned."
         : "保存成功。Server 返回 1 条记录。",
     );
+  },
+);
+
+test.each(["forbidden", "network"])(
+  "a failed saved-record read does not steal focus moved during the request (%s)",
+  async (code) => {
+    const user = userEvent.setup();
+    let fail!: (error: unknown) => void;
+    vi.mocked(desktopApi.remember).mockResolvedValue(makeSaved(1).outcome);
+    vi.mocked(desktopApi.state).mockResolvedValue(state);
+    vi.mocked(desktopApi.atomicEntry).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    render(
+      <MemoryWorkspace
+        state={state}
+        language="en"
+        onState={vi.fn()}
+        onDirty={vi.fn()}
+      />,
+    );
+    const note = screen.getByLabelText("Memory text");
+    await user.type(note, "private body");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    screen.getByRole("button", { name: "Open saved record" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(note);
+    await act(async () => fail({ code }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Open saved record" }),
+      ).toBeNull(),
+    );
+    expect(document.activeElement).toBe(note);
+    expect(screen.queryAllByText("Atomic note 0")).toHaveLength(0);
   },
 );
 
@@ -415,6 +460,55 @@ test("closing a saved reader after another save restores focus within the worksp
   );
 });
 
+test.each(["en", "zh"] as const)(
+  "a failed save outcome explains permission recovery and retains its draft (%s)",
+  async (language) => {
+    const user = userEvent.setup();
+    const failed = outcome("failed");
+    failed.record.error = {
+      code: "forbidden",
+      requestId: null,
+      dispatched: true,
+    };
+    vi.mocked(desktopApi.state).mockResolvedValue(state);
+    vi.mocked(desktopApi.remember).mockResolvedValue(failed);
+    const onDirty = vi.fn();
+    render(
+      <NoteForm
+        onReadSaved={vi.fn()}
+        invalidateSaved={0}
+        state={state}
+        language={language}
+        onState={vi.fn()}
+        onDirty={onDirty}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    await user.type(input, "preserve denied draft");
+    onDirty.mockClear();
+    await user.click(
+      screen.getByRole("button", { name: language === "zh" ? "保存" : "Save" }),
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain(
+      language === "zh"
+        ? "当前身份无权执行此操作"
+        : "This identity cannot perform this operation",
+    );
+    expect(alert.textContent).toContain(
+      language === "zh"
+        ? "申请此操作所需的权限"
+        : "Request permission for this operation",
+    );
+    expect(alert.textContent).toContain(
+      language === "zh" ? "精确 Scope" : "exact Scope",
+    );
+    expect((input as HTMLTextAreaElement).value).toBe("preserve denied draft");
+    expect(onDirty).not.toHaveBeenCalledWith(false);
+    expect(desktopApi.remember).toHaveBeenCalledTimes(1);
+  },
+);
+
 test("unknown save retains the draft, names its original target, and does not replay automatically", async () => {
   const user = userEvent.setup();
   form();
@@ -429,10 +523,16 @@ test("unknown save retains the draft, names its original target, and does not re
     (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
   ).toBe("preserve me");
   expect(desktopApi.remember).toHaveBeenCalledTimes(1);
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
   await user.click(screen.getByRole("button", { name: "Save" }));
-  expect(confirm).toHaveBeenCalled();
+  await answerConfirmation(user, false);
   expect(desktopApi.remember).toHaveBeenCalledTimes(1);
+  expect(
+    (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
+  ).toBe("preserve me");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await answerConfirmation(user, true);
+  expect(desktopApi.remember).toHaveBeenCalledTimes(2);
 });
 test.each(["forbidden", "network"])(
   "a save completing after a %s search failure keeps its receipt without restoring private bodies",
@@ -650,7 +750,7 @@ test.each(["scope", "page"])(
         }),
     );
     vi.mocked(desktopApi.state).mockResolvedValue(state);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
     render(<App />);
     await user.click(screen.getByRole("button", { name: "记忆" }));
     await waitFor(() =>
@@ -676,8 +776,10 @@ test.each(["scope", "page"])(
       await user.click(screen.getByRole("button", { name: /Test scope/ }));
       await user.click(screen.getByRole("button", { name: "查找范围" }));
       await user.click(screen.getByRole("button", { name: "Scope B" }));
+      await answerConfirmation(user, true);
     } else {
       await user.click(screen.getByRole("button", { name: "总览" }));
+      await answerConfirmation(user, true);
       await waitFor(() =>
         expect(document.activeElement).toBe(
           screen.getByRole("heading", { level: 1, name: "总览" }),
@@ -694,9 +796,8 @@ test.each(["scope", "page"])(
     await act(async () => {
       finish(makeSaved(2).outcome);
     });
-    confirm.mockClear().mockReturnValue(false);
     await user.click(screen.getByRole("button", { name: "总览" }));
-    expect(confirm).toHaveBeenCalled();
+    await answerConfirmation(user, false);
     expect(
       (screen.getByLabelText("记忆内容") as HTMLTextAreaElement).value,
     ).toBe("draft B");
@@ -706,3 +807,41 @@ test.each(["scope", "page"])(
     ).toHaveLength(0);
   },
 );
+
+test("confirming an unknown write after the Scope changes cannot submit the old draft", async () => {
+  const user = userEvent.setup();
+  const previous = { ...state, lastWrite: outcome("unknown").record };
+  const props = {
+    language: "en" as const,
+    onState: vi.fn(),
+    onDirty: vi.fn(),
+    onReadSaved: vi.fn(),
+    invalidateSaved: 0,
+  };
+  const { rerender } = render(<NoteForm {...props} state={previous} />);
+  await user.type(screen.getByLabelText("Memory text"), "old Scope draft");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(screen.getByRole("alertdialog").textContent).toContain(
+    "may create a duplicate",
+  );
+  expect(desktopApi.remember).not.toHaveBeenCalled();
+  rerender(
+    <NoteForm
+      {...props}
+      state={{
+        ...state,
+        generation: 2,
+        active: {
+          ...state.active!,
+          generation: 2,
+          scope: { ...scope, scope_id: "scope-b" },
+        },
+      }}
+    />,
+  );
+  await answerConfirmation(user, true);
+  expect(desktopApi.remember).not.toHaveBeenCalled();
+  expect(
+    (screen.getByLabelText("Memory text") as HTMLTextAreaElement).value,
+  ).toBe("");
+});
