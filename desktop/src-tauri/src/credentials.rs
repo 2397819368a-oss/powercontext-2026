@@ -20,7 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use ts_rs::TS;
 use zeroize::Zeroizing;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const SERVICE: &str = "com.powercontext.desktop.preview";
 pub struct Secret(Zeroizing<String>);
 impl Secret {
@@ -66,15 +66,15 @@ pub trait Vault: Send + Sync {
     fn delete(&self, id: &CredentialId) -> Result<(), SafeError>;
 }
 
-pub struct WindowsVault;
-#[cfg(windows)]
-impl WindowsVault {
+pub struct NativeVault;
+#[cfg(any(windows, target_os = "macos"))]
+impl NativeVault {
     fn entry(id: &CredentialId) -> Result<keyring::Entry, SafeError> {
         keyring::Entry::new(SERVICE, &id.0).map_err(|_| SafeError::CredentialUnavailable)
     }
 }
-#[cfg(windows)]
-impl Vault for WindowsVault {
+#[cfg(any(windows, target_os = "macos"))]
+impl Vault for NativeVault {
     fn put(&self, id: &CredentialId, secret: &Secret) -> Result<(), SafeError> {
         Self::entry(id)?
             .set_password(secret.expose())
@@ -94,8 +94,8 @@ impl Vault for WindowsVault {
         }
     }
 }
-#[cfg(not(windows))]
-impl Vault for WindowsVault {
+#[cfg(not(any(windows, target_os = "macos")))]
+impl Vault for NativeVault {
     fn put(&self, _: &CredentialId, _: &Secret) -> Result<(), SafeError> {
         Err(SafeError::CredentialUnavailable)
     }

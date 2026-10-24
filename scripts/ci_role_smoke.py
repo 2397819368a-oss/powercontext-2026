@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Check installed role behavior; run with the isolated wheel environment's Python -I."""
+"""Check installed roles, including the CLI's builtin dependency for offline archives, using Python -I."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def _check_cli(root: Path, extras: set[str]) -> None:
     environment: dict[str, str] = {**os.environ, "POWERCONTEXT_HOME": str(root / "home"), "NO_COLOR": "1"}
     environment.pop("PYTHONPATH", None)
     environment.pop("PYTHONHOME", None)
-    commands = [(), ("config",), ("setup",), ("doctor",), ("skill", "remote-sync")]
+    commands = [(), ("config",), ("setup",), ("doctor",), ("skill", "remote-sync"), ("archive",)]
     if extras & {"builtin", "server"}:
         commands.append(("code",))
     if "server" in extras:
@@ -101,6 +101,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("extras", choices=("builtin", "cli", "builtin,cli", "server,cli"))
     extras = set(parser.parse_args().extras.split(","))
+    if "cli" in extras:
+        extras.add("builtin")
     with tempfile.TemporaryDirectory(prefix="powercontext-role-") as temporary:
         root = Path(temporary)
         if extras & {"builtin", "server"}:

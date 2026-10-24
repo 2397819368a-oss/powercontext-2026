@@ -3004,6 +3004,11 @@ class BootstrapReceiptState(StrEnum):
     FAILED = "failed"
 
 
+class PreparedContextReason(StrEnum):
+    INFERENCE_TIMEOUT = "inference_timeout"
+    INFERENCE_UNAVAILABLE = "inference_unavailable"
+
+
 class BootstrapSkipReason(StrEnum):
     DISABLED = "disabled"
     NO_ELIGIBLE_CONTEXT = "no_eligible_context"
@@ -4152,6 +4157,12 @@ class PreparedContext(BaseModel):
     status: PreparedContextStatus
     content: Annotated[StrictStr | None, Field(...)]
     content_bytes: Annotated[StrictInt, Field(ge=0)]
+    reason: Annotated[
+        PreparedContextReason | None,
+        Field(
+            description="Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields. The values are the two inference failures among RFC 1435's four `SearchGroup.fallback_reason` spellings, so a later Receipt reuses them instead of restating the cause. `none` travels as absence, and `reused_fts_fallback` is not a cause here: a later round reusing a failed round's keyword-only outcome is still explained by that round's `inference_*` value, which outranks it."
+        ),
+    ] = None
 
 
 class BootstrapContextItem(BaseModel):
@@ -4912,6 +4923,12 @@ class PrepareContextRequest(BaseModel):
     include_code: Annotated[
         StrictBool,
         Field(description="Opt into current-Scope native code evidence. No index is built during preparation."),
+    ] = False
+    explain: Annotated[
+        StrictBool,
+        Field(
+            description="Opt into reporting which retrieval channel this preparation lost, as `reason` on the response. Off by default, because a response a Host injects keeps its four fields."
+        ),
     ] = False
     assembly: ContextAssembly | None = None
     bootstrap_receipt_id: Annotated[

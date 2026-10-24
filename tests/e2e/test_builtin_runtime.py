@@ -205,6 +205,17 @@ def test_working_note_capture_does_not_promote_into_memory() -> None:
                             metadata={field: field_value},
                         )
                     )
+            with pytest.raises(InvalidRuntimeRequestError) as naive_expiry:
+                await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                    CaptureWorkingNote(
+                        source_id="naive-expiry",
+                        content="The expiry has no time zone.",
+                        session_id="session-1",
+                        note_kind=WorkingNoteKind.VALIDATION,
+                        expires_at=datetime(2099, 1, 1),  # noqa: DTZ001 - naive on purpose
+                    )
+                )
+            assert naive_expiry.value.code == "working-note-expiry-timezone"
             captured = await runtime.sources.for_scope(scope.scope_id).capture_working_note(
                 CaptureWorkingNote(
                     source_id="note-1",
@@ -243,7 +254,7 @@ def test_working_note_capture_does_not_promote_into_memory() -> None:
                             expires_at=datetime(2099, 1, 1, 8, tzinfo=UTC),
                         )
                     )
-                with pytest.raises(InvalidRuntimeRequestError):
+                with pytest.raises(InvalidRuntimeRequestError) as past_expiry:
                     await runtime.sources.for_scope(scope.scope_id).capture_working_note(
                         CaptureWorkingNote(
                             source_id="never-accepted",
@@ -253,6 +264,7 @@ def test_working_note_capture_does_not_promote_into_memory() -> None:
                             expires_at=datetime(2099, 1, 1, 8, tzinfo=UTC),
                         )
                     )
+                assert past_expiry.value.code == "working-note-expiry-past"
 
             assert runtime.atomic_memory is not None
             flushed = await runtime.atomic_memory.for_scope(scope.scope_id).flush()

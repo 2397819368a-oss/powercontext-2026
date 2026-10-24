@@ -351,6 +351,17 @@ def test_working_note_http_and_sdk_capture_stays_out_of_memory(tmp_path: Path) -
                         expires_at=datetime.now(UTC) - timedelta(days=1),
                     )
                 )
+            naive_expiry = await transport.post(
+                "/v1/sources/working-notes",
+                json={
+                    "scope_id": scope.scope_id,
+                    "source_id": "note-naive-expiry",
+                    "content": "The expiry has no time zone.",
+                    "session_id": "session-1",
+                    "note_kind": "validation",
+                    "expires_at": "2000-01-01T00:00:00",
+                },
+            )
             flushed = await client.flush_memory(FlushMemoryRequest(scope_id=scope.scope_id))
             entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
 
@@ -363,6 +374,12 @@ def test_working_note_http_and_sdk_capture_stays_out_of_memory(tmp_path: Path) -
         assert captured.position == flushed.current_cursor
         assert expired.value.status_code == 422
         assert expired.value.code == "invalid_request"
+        assert expired.value.details == {"field": "expires_at", "reason": "not_in_future"}
+        assert naive_expiry.status_code == 422
+        naive_details = naive_expiry.json()["error"]["details"]["errors"]
+        assert [(entry["loc"], entry["type"]) for entry in naive_details] == [
+            (["body", "expires_at"], "timezone_aware"),
+        ]
         assert flushed.memory is None
         assert entries.entries == []
 

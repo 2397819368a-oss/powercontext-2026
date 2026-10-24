@@ -149,6 +149,8 @@ def processing_error_code(exception_type: type[BaseException] | str, error_code:
         "worker_crash",
         "invalid_worker_result",
         "missing_durable_acknowledgement",
+        "invalid_topic_placeholder",
+        "invalid_topic_coordination_content",
     }:
         return error_code
     return "processing_failed"

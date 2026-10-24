@@ -145,3 +145,7 @@ Pi 会拒绝包含凭据、query 或 fragment 的 base URL。召回、采集和�
 
 失败诊断默认不输出：Pi 的 TUI 通过光标定位在 stdout 上渲染，写到 stderr 的内容会落在输入栏里；需要查看时请设置
 `POWERCONTEXT_PI_DIAGNOSTICS`。
+
+## 自动输入隐私
+
+本宿主的捕获默认值、关闭方式、凭据识别局限及独立只读查询行为见[自动 prompt 隐私策略](index.md#自动-prompt-隐私策略)。识别到凭据的输入会跳过捕获，已接受的 Source 正文和事件身份不被改写。

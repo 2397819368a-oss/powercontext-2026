@@ -331,6 +331,7 @@ describe('PowerContextPlugin', () => {
       { message: incoming.info, parts: incoming.parts } as any,
     )
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('sk-1234567890')
   })
 
   it('resolves automatic scope and capture cwd per OpenCode session', async () => {

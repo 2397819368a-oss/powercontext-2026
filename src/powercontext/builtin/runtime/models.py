@@ -60,6 +60,7 @@ from powercontext.sources import ConnectorBinding, SourceObservation, SourceRef
 
 PreparedContextSchema: TypeAlias = Literal["powercontext.prepared-context.v1"]
 PreparedContextStatus: TypeAlias = Literal["ready", "empty"]
+PreparedContextReason: TypeAlias = Literal["inference_timeout", "inference_unavailable"]
 ReviewedProposal: TypeAlias = (
     ExperienceContent
     | SkillContent
@@ -330,6 +331,9 @@ class PrepareContextRequest(_PreparedContextModel):
     assembly: ContextAssembly | None = None
     bootstrap_receipt_id: Annotated[str, Field(min_length=1, max_length=64)] | None = None
     include_code: bool = Field(default=False, strict=True)
+    #: Opt into ``reason`` on the response. Off by default: a preparation a Host injects has to keep
+    #: the four fields its validator knows, and a lost channel is not part of the injected content.
+    explain: bool = Field(default=False, strict=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -360,6 +364,10 @@ class PreparedContext(_PreparedContextModel):
     status: PreparedContextStatus
     content: str | None
     content_bytes: Annotated[int, Field(ge=0)]
+    #: Why a retrieval channel was lost, mirroring ``BootstrapContext.reason``. Filled only when the
+    #: request asked with ``explain``: a Host injects ``content`` and validates the four fields it
+    #: knows, so an unrequested reason would break every Host for a fact none of them reads.
+    reason: PreparedContextReason | None = None
 
     @model_validator(mode="after")
     def validate_content(self) -> PreparedContext:
