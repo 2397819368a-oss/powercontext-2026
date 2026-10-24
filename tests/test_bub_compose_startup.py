@@ -32,7 +32,9 @@ def _run(tmp_path, monkeypatch, *, vector=False, code=False, failed_action=""):
     events = tmp_path / "events.jsonl"
     # Substitute only process boundaries: execute the real shell launcher and
     # its inline maintenance program without Docker or a database service.
-    executable = f"#!{sys.executable}\n" + r"""
+    executable = (
+        f"#!{sys.executable}\n"
+        + r"""
 import json
 import os
 import subprocess
@@ -64,6 +66,7 @@ else:
         assert args[args.index("--plan-id") + 1] == "reviewed-plan"
     print(json.dumps({"plan_id": "reviewed-plan", "state": "ready", "server_ready": True}))
 """
+    )
     for name in ("docker", "powercontext"):
         path = commands / name
         path.write_text(executable, encoding="utf-8")
@@ -75,7 +78,9 @@ else:
     monkeypatch.setenv("POWERCONTEXT_E2E_DATABASE", "oceanbase")
     monkeypatch.setenv("POWERCONTEXT_E2E_OUTPUT", str(tmp_path / "output"))
     monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_KIND", "oceanbase")
-    monkeypatch.setenv("POWERCONTEXT_SERVER_DATABASE_URL", "mysql+aoceanbase://test@database.invalid:2881/test?charset=utf8mb4")
+    monkeypatch.setenv(
+        "POWERCONTEXT_SERVER_DATABASE_URL", "mysql+aoceanbase://test@database.invalid:2881/test?charset=utf8mb4"
+    )
     monkeypatch.setenv("POWERCONTEXT_SERVER_CODE", json.dumps({"enabled": code}))
     monkeypatch.setenv("BUB_TEST_EVENTS", str(events))
     monkeypatch.setenv("BUB_TEST_FAILED_ACTION", failed_action)

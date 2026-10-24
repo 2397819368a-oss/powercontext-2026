@@ -98,8 +98,10 @@
               },
               "projections_ready": {
                 "type": [
-                  "bool",
-                  []
+                  "tinyint",
+                  [
+                    "1"
+                  ]
                 ],
                 "nullable": false,
                 "default": null,
