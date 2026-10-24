@@ -183,10 +183,6 @@ class AtomicMemoryIndex(Protocol):
 
     async def validate_current(self, connection: AsyncConnection, /) -> None: ...
 
-    async def replace(
-        self, connection: AsyncConnection, scope_id: str, projection: AtomicMemoryProjection, /
-    ) -> None: ...
-
     async def replace_many(
         self, connection: AsyncConnection, scope_id: str, projections: Sequence[AtomicMemoryProjection], /
     ) -> None: ...
@@ -219,6 +215,8 @@ class AtomicMemoryProjectionPublisher:
         *,
         embedding_model: EmbeddingModel | None = None,
     ) -> None:
+        if not callable(getattr(index, "replace_many", None)):
+            raise AtomicMemoryIndexError("publication", "Atomic Memory index must publish complete projection sets")
         self.index = index
         self._embedding_model = embedding_model
 
@@ -282,7 +280,7 @@ class AtomicMemoryProjectionPublisher:
             await self.remove(connection, scope_id, artifact.artifact_id)
             return
         tags = await load_atomic_memory_tags(connection, scope_id, artifact.artifact_id)
-        await self.index.replace(connection, scope_id, self._projection(record, prepared, tags))
+        await self.index.replace_many(connection, scope_id, (self._projection(record, prepared, tags),))
 
     async def publish_many(
         self,
@@ -290,7 +288,7 @@ class AtomicMemoryProjectionPublisher:
         scope_id: str,
         records: Sequence[tuple[Any, PreparedAtomicMemoryProjection]],
     ) -> None:
-        """Publish independent, newly created and untagged revisions in one SQL execution."""
+        """Publish independent, newly created and untagged revisions in one transaction."""
         await self.index.replace_many(
             connection,
             scope_id,
@@ -601,9 +599,6 @@ class RelationalAtomicMemoryIndex:
                 "Atomic Memory uses an obsolete development projection schema. Stop writers and run "
                 "powercontext server atomic-memory-rebuild-projection --maintenance-confirmed.",
             )
-
-    async def replace(self, connection: AsyncConnection, scope_id: str, projection: AtomicMemoryProjection, /) -> None:
-        await self.replace_many(connection, scope_id, (projection,))
 
     async def replace_many(
         self, connection: AsyncConnection, scope_id: str, projections: Sequence[AtomicMemoryProjection], /

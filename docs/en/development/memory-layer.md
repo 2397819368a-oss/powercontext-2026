@@ -56,8 +56,8 @@ collides or a dependency changes, the window does not publish partial results or
 call returns the created memories with their current content, state, and lineage; each returned memory remains subject
 to its own read authorization.
 
-Custom Topic Memory indexes must support publication of a complete set of prepared projections. An index that lacks
-this capability is rejected before publication writes.
+Custom Atomic and Topic Memory indexes must support publication of a complete set of prepared projections. An index
+that lacks this capability is rejected before publication writes.
 
 The built-in extraction and reconciliation instructions preserve each fact's supporting Source language. Chinese
 facts stay in Chinese and English facts stay in English, including when they share a processing window. Mixed-language
