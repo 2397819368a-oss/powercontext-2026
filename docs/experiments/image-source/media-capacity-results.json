@@ -1,0 +1,664 @@
+{
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.5",
+    "sqlite": "3.50.4"
+  },
+  "method": "Real PNG capture and durable SQLite commit; historical BLOBs are integrity-only synthetic storage fixtures.",
+  "limitations": [
+    "Deduplicated history runs exclude new BLOB insertion; new_blob_admission separately measures eight real large PNGs, not provider/host execution.",
+    "Lock hold is time from completed first-lock call through returned commit; wait includes that lock call's SQL.",
+    "Query plans and logical aggregate input cardinalities do not measure physical disk I/O or exact VM row visits.",
+    "Both modes use the production startup ledger integrity scan; no two-table startup claim is made."
+  ],
+  "datasets": [
+    {
+      "requested_payload_bytes": 0,
+      "counts": {
+        "assets": 8,
+        "requests": 896,
+        "payload_bytes": 600
+      },
+      "runs": [
+        {
+          "mode": "ledger",
+          "concurrency": 1,
+          "accepted": 128,
+          "rejected": 8,
+          "batch_failures": {},
+          "sequential_repairs_outside_measurement": 0,
+          "failed_latency_ms": null,
+          "logical_aggregate_inputs": {
+            "asset_sum": 8,
+            "active_total": [
+              896,
+              1024
+            ],
+            "active_scope": [
+              112,
+              128
+            ]
+          },
+          "rejection_codes": [
+            "media_queue_full"
+          ],
+          "final_request_rows": 1024,
+          "final_active_requests": 1024,
+          "admission_batch_ms": 4515.749,
+          "restart_with_ledger_reconciliation_ms": 460.003,
+          "recovery": {
+            "assets": 8,
+            "requests": 896,
+            "retained_bytes": 600
+          },
+          "accepted_metrics": {
+            "latency_ms": {
+              "p50": 35.972,
+              "p95": 40.038,
+              "max": 51.035
+            },
+            "lock_wait_ms": {
+              "p50": 3.8,
+              "p95": 4.294,
+              "max": 4.466
+            },
+            "lock_hold_ms": {
+              "p50": 30.738,
+              "p95": 34.659,
+              "max": 45.967
+            },
+            "sql_statements": {
+              "p50": 25.0,
+              "p95": 25,
+              "max": 25
+            }
+          },
+          "rejected_latency_ms": {
+            "p50": 11.219,
+            "p95": 11.473,
+            "max": 11.526
+          },
+          "aggregate_query_plans": {
+            "asset_sum": [
+              "SCAN pc_media_assets"
+            ],
+            "active_total": [
+              "SCAN pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active"
+            ],
+            "active_scope": [
+              "SEARCH pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active (scope_id=?)"
+            ]
+          }
+        },
+        {
+          "mode": "ledger",
+          "concurrency": 8,
+          "accepted": 128,
+          "rejected": 8,
+          "batch_failures": {},
+          "sequential_repairs_outside_measurement": 0,
+          "failed_latency_ms": null,
+          "logical_aggregate_inputs": {
+            "asset_sum": 8,
+            "active_total": [
+              896,
+              1024
+            ],
+            "active_scope": [
+              112,
+              128
+            ]
+          },
+          "rejection_codes": [
+            "media_queue_full"
+          ],
+          "final_request_rows": 1024,
+          "final_active_requests": 1024,
+          "admission_batch_ms": 4581.133,
+          "restart_with_ledger_reconciliation_ms": 426.85,
+          "recovery": {
+            "assets": 8,
+            "requests": 896,
+            "retained_bytes": 600
+          },
+          "accepted_metrics": {
+            "latency_ms": {
+              "p50": 33.016,
+              "p95": 1442.921,
+              "max": 4576.338
+            },
+            "lock_wait_ms": {
+              "p50": 3.506,
+              "p95": 1407.406,
+              "max": 4521.198
+            },
+            "lock_hold_ms": {
+              "p50": 27.604,
+              "p95": 32.863,
+              "max": 56.76
+            },
+            "sql_statements": {
+              "p50": 25.0,
+              "p95": 25,
+              "max": 25
+            }
+          },
+          "rejected_latency_ms": {
+            "p50": 82.766,
+            "p95": 122.26,
+            "max": 154.494
+          },
+          "aggregate_query_plans": {
+            "asset_sum": [
+              "SCAN pc_media_assets"
+            ],
+            "active_total": [
+              "SCAN pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active"
+            ],
+            "active_scope": [
+              "SEARCH pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active (scope_id=?)"
+            ]
+          }
+        },
+        {
+          "mode": "aggregates",
+          "concurrency": 1,
+          "accepted": 128,
+          "rejected": 8,
+          "batch_failures": {},
+          "sequential_repairs_outside_measurement": 0,
+          "failed_latency_ms": null,
+          "logical_aggregate_inputs": {
+            "asset_sum": 8,
+            "active_total": [
+              896,
+              1024
+            ],
+            "active_scope": [
+              112,
+              128
+            ]
+          },
+          "rejection_codes": [
+            "media_queue_full"
+          ],
+          "final_request_rows": 1024,
+          "final_active_requests": 1024,
+          "admission_batch_ms": 3487.96,
+          "restart_with_ledger_reconciliation_ms": 477.765,
+          "recovery": {
+            "assets": 8,
+            "requests": 896,
+            "retained_bytes": 600
+          },
+          "accepted_metrics": {
+            "latency_ms": {
+              "p50": 26.932,
+              "p95": 30.936,
+              "max": 45.03
+            },
+            "lock_wait_ms": {
+              "p50": 0.888,
+              "p95": 1.117,
+              "max": 1.637
+            },
+            "lock_hold_ms": {
+              "p50": 24.827,
+              "p95": 28.732,
+              "max": 42.981
+            },
+            "sql_statements": {
+              "p50": 21.0,
+              "p95": 21,
+              "max": 21
+            }
+          },
+          "rejected_latency_ms": {
+            "p50": 8.442,
+            "p95": 9.02,
+            "max": 9.271
+          },
+          "aggregate_query_plans": {
+            "asset_sum": [
+              "SCAN pc_media_assets"
+            ],
+            "active_total": [
+              "SCAN pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active"
+            ],
+            "active_scope": [
+              "SEARCH pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active (scope_id=?)"
+            ]
+          }
+        },
+        {
+          "mode": "aggregates",
+          "concurrency": 8,
+          "accepted": 128,
+          "rejected": 8,
+          "batch_failures": {},
+          "sequential_repairs_outside_measurement": 0,
+          "failed_latency_ms": null,
+          "logical_aggregate_inputs": {
+            "asset_sum": 8,
+            "active_total": [
+              896,
+              1024
+            ],
+            "active_scope": [
+              112,
+              128
+            ]
+          },
+          "rejection_codes": [
+            "media_queue_full"
+          ],
+          "final_request_rows": 1024,
+          "final_active_requests": 1024,
+          "admission_batch_ms": 4071.555,
+          "restart_with_ledger_reconciliation_ms": 432.953,
+          "recovery": {
+            "assets": 8,
+            "requests": 896,
+            "retained_bytes": 600
+          },
+          "accepted_metrics": {
+            "latency_ms": {
+              "p50": 27.876,
+              "p95": 884.926,
+              "max": 3957.96
+            },
+            "lock_wait_ms": {
+              "p50": 0.921,
+              "p95": 858.282,
+              "max": 3904.949
+            },
+            "lock_hold_ms": {
+              "p50": 25.11,
+              "p95": 31.264,
+              "max": 58.818
+            },
+            "sql_statements": {
+              "p50": 21.0,
+              "p95": 21,
+              "max": 21
+            }
+          },
+          "rejected_latency_ms": {
+            "p50": 79.885,
+            "p95": 133.423,
+            "max": 167.134
+          },
+          "aggregate_query_plans": {
+            "asset_sum": [
+              "SCAN pc_media_assets"
+            ],
+            "active_total": [
+              "SCAN pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active"
+            ],
+            "active_scope": [
+              "SEARCH pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active (scope_id=?)"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "requested_payload_bytes": 1073741824,
+      "counts": {
+        "assets": 131080,
+        "requests": 896,
+        "payload_bytes": 1073741824
+      },
+      "runs": [
+        {
+          "mode": "ledger",
+          "concurrency": 1,
+          "accepted": 128,
+          "rejected": 8,
+          "batch_failures": {},
+          "sequential_repairs_outside_measurement": 0,
+          "failed_latency_ms": null,
+          "logical_aggregate_inputs": {
+            "asset_sum": 131080,
+            "active_total": [
+              896,
+              1024
+            ],
+            "active_scope": [
+              112,
+              128
+            ]
+          },
+          "rejection_codes": [
+            "media_queue_full"
+          ],
+          "final_request_rows": 1024,
+          "final_active_requests": 1024,
+          "admission_batch_ms": 3858.41,
+          "restart_with_ledger_reconciliation_ms": 10847.662,
+          "recovery": {
+            "assets": 131080,
+            "requests": 896,
+            "retained_bytes": 1073741824
+          },
+          "accepted_metrics": {
+            "latency_ms": {
+              "p50": 29.898,
+              "p95": 32.971,
+              "max": 50.875
+            },
+            "lock_wait_ms": {
+              "p50": 3.081,
+              "p95": 3.464,
+              "max": 3.53
+            },
+            "lock_hold_ms": {
+              "p50": 25.537,
+              "p95": 28.695,
+              "max": 46.575
+            },
+            "sql_statements": {
+              "p50": 25.0,
+              "p95": 25,
+              "max": 25
+            }
+          },
+          "rejected_latency_ms": {
+            "p50": 10.907,
+            "p95": 12.372,
+            "max": 13.699
+          },
+          "aggregate_query_plans": {
+            "asset_sum": [
+              "SCAN pc_media_assets"
+            ],
+            "active_total": [
+              "SCAN pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active"
+            ],
+            "active_scope": [
+              "SEARCH pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active (scope_id=?)"
+            ]
+          }
+        },
+        {
+          "mode": "ledger",
+          "concurrency": 8,
+          "accepted": 128,
+          "rejected": 8,
+          "batch_failures": {},
+          "sequential_repairs_outside_measurement": 0,
+          "failed_latency_ms": null,
+          "logical_aggregate_inputs": {
+            "asset_sum": 131080,
+            "active_total": [
+              896,
+              1024
+            ],
+            "active_scope": [
+              112,
+              128
+            ]
+          },
+          "rejection_codes": [
+            "media_queue_full"
+          ],
+          "final_request_rows": 1024,
+          "final_active_requests": 1024,
+          "admission_batch_ms": 4046.47,
+          "restart_with_ledger_reconciliation_ms": 10326.662,
+          "recovery": {
+            "assets": 131080,
+            "requests": 896,
+            "retained_bytes": 1073741824
+          },
+          "accepted_metrics": {
+            "latency_ms": {
+              "p50": 29.909,
+              "p95": 1382.179,
+              "max": 3733.583
+            },
+            "lock_wait_ms": {
+              "p50": 3.177,
+              "p95": 1327.093,
+              "max": 3688.913
+            },
+            "lock_hold_ms": {
+              "p50": 25.178,
+              "p95": 29.017,
+              "max": 51.278
+            },
+            "sql_statements": {
+              "p50": 25.0,
+              "p95": 25,
+              "max": 25
+            }
+          },
+          "rejected_latency_ms": {
+            "p50": 81.319,
+            "p95": 151.883,
+            "max": 182.379
+          },
+          "aggregate_query_plans": {
+            "asset_sum": [
+              "SCAN pc_media_assets"
+            ],
+            "active_total": [
+              "SCAN pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active"
+            ],
+            "active_scope": [
+              "SEARCH pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active (scope_id=?)"
+            ]
+          }
+        },
+        {
+          "mode": "aggregates",
+          "concurrency": 1,
+          "accepted": 128,
+          "rejected": 8,
+          "batch_failures": {},
+          "sequential_repairs_outside_measurement": 0,
+          "failed_latency_ms": null,
+          "logical_aggregate_inputs": {
+            "asset_sum": 131080,
+            "active_total": [
+              896,
+              1024
+            ],
+            "active_scope": [
+              112,
+              128
+            ]
+          },
+          "rejection_codes": [
+            "media_queue_full"
+          ],
+          "final_request_rows": 1024,
+          "final_active_requests": 1024,
+          "admission_batch_ms": 15368.246,
+          "restart_with_ledger_reconciliation_ms": 10397.031,
+          "recovery": {
+            "assets": 131080,
+            "requests": 896,
+            "retained_bytes": 1073741824
+          },
+          "accepted_metrics": {
+            "latency_ms": {
+              "p50": 117.97,
+              "p95": 126.019,
+              "max": 291.016
+            },
+            "lock_wait_ms": {
+              "p50": 0.864,
+              "p95": 1.019,
+              "max": 1.44
+            },
+            "lock_hold_ms": {
+              "p50": 115.916,
+              "p95": 123.604,
+              "max": 288.902
+            },
+            "sql_statements": {
+              "p50": 21.0,
+              "p95": 21,
+              "max": 21
+            }
+          },
+          "rejected_latency_ms": {
+            "p50": 102.514,
+            "p95": 102.976,
+            "max": 103.772
+          },
+          "aggregate_query_plans": {
+            "asset_sum": [
+              "SCAN pc_media_assets"
+            ],
+            "active_total": [
+              "SCAN pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active"
+            ],
+            "active_scope": [
+              "SEARCH pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active (scope_id=?)"
+            ]
+          }
+        },
+        {
+          "mode": "aggregates",
+          "concurrency": 8,
+          "accepted": 115,
+          "rejected": 8,
+          "batch_failures": {
+            "database_locked": 13
+          },
+          "sequential_repairs_outside_measurement": 13,
+          "failed_latency_ms": {
+            "p50": 5482.62,
+            "p95": 5523.752,
+            "max": 5525.034
+          },
+          "logical_aggregate_inputs": {
+            "asset_sum": 131080,
+            "active_total": [
+              896,
+              1024
+            ],
+            "active_scope": [
+              112,
+              128
+            ]
+          },
+          "rejection_codes": [
+            "media_queue_full"
+          ],
+          "final_request_rows": 1024,
+          "final_active_requests": 1024,
+          "admission_batch_ms": 14196.325,
+          "restart_with_ledger_reconciliation_ms": 10525.85,
+          "recovery": {
+            "assets": 131080,
+            "requests": 896,
+            "retained_bytes": 1073741824
+          },
+          "accepted_metrics": {
+            "latency_ms": {
+              "p50": 119.069,
+              "p95": 2344.771,
+              "max": 4163.187
+            },
+            "lock_wait_ms": {
+              "p50": 0.867,
+              "p95": 2217.905,
+              "max": 4036.944
+            },
+            "lock_hold_ms": {
+              "p50": 117.027,
+              "p95": 124.207,
+              "max": 144.754
+            },
+            "sql_statements": {
+              "p50": 21,
+              "p95": 21,
+              "max": 21
+            }
+          },
+          "rejected_latency_ms": {
+            "p50": 583.944,
+            "p95": 867.713,
+            "max": 978.457
+          },
+          "aggregate_query_plans": {
+            "asset_sum": [
+              "SCAN pc_media_assets"
+            ],
+            "active_total": [
+              "SCAN pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active"
+            ],
+            "active_scope": [
+              "SEARCH pc_media_processing_requests USING COVERING INDEX uq_pc_media_request_active (scope_id=?)"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "new_blob_admission": [
+    {
+      "mode": "ledger",
+      "concurrency": 1,
+      "accepted": 8,
+      "png_dimensions": [
+        1536,
+        1536
+      ],
+      "payload_bytes": [
+        7088834,
+        7089540
+      ],
+      "metrics": {
+        "latency_ms": {
+          "p50": 181.487,
+          "p95": 191.449,
+          "max": 203.612
+        },
+        "lock_wait_ms": {
+          "p50": 3.596,
+          "p95": 3.65,
+          "max": 4.2
+        },
+        "lock_hold_ms": {
+          "p50": 83.824,
+          "p95": 94.315,
+          "max": 109.943
+        }
+      }
+    },
+    {
+      "mode": "ledger",
+      "concurrency": 4,
+      "accepted": 8,
+      "png_dimensions": [
+        1536,
+        1536
+      ],
+      "payload_bytes": [
+        7087299,
+        7089535
+      ],
+      "metrics": {
+        "latency_ms": {
+          "p50": 327.841,
+          "p95": 496.881,
+          "max": 1021.478
+        },
+        "lock_wait_ms": {
+          "p50": 25.803,
+          "p95": 157.963,
+          "max": 758.126
+        },
+        "lock_hold_ms": {
+          "p50": 110.463,
+          "p95": 128.391,
+          "max": 139.772
+        }
+      }
+    }
+  ]
+}

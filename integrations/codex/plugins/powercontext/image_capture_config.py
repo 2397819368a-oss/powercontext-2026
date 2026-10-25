@@ -171,13 +171,17 @@ def configure_capture(action: str, workspace: str, scope_id, settings) -> None:
         from scope_binding import _post_json
 
         readiness = _post_json(
-            "/v1/experimental/images/status",
-            {"scope_id": scope},
+            "/v1/capabilities",
+            {},
+            method="GET",
             settings=settings,
             deadline=monotonic() + 6,
         )
+        readiness = readiness.get("media")
+        if not isinstance(readiness, dict):
+            raise ValueError("image_server_not_ready")
         if not all(
-            readiness.get(key) is True for key in ("enabled", "available", "vision_configured", "worker_running")
+            readiness.get(key) is True for key in ("enabled", "available", "vision_configured", "processing_enabled")
         ) or readiness.get("error_code"):
             raise ValueError("image_server_not_ready")
         # Pin the setup choice as a server-owned workspace binding, including
@@ -230,11 +234,15 @@ def capture_status(workspace: str, settings) -> dict[str, Any]:
         try:
             scope = resolve_scope_id(workspace, session_id=None, settings=settings, deadline=monotonic() + 3)
             value["scope_id"] = scope
-            value["server_images"] = _post_json(
-                "/v1/experimental/images/status",
-                {"scope_id": scope},
-                settings=settings,
-                deadline=monotonic() + 3,
+            value["server_images"] = (
+                _post_json(
+                    "/v1/capabilities",
+                    {},
+                    method="GET",
+                    settings=settings,
+                    deadline=monotonic() + 3,
+                ).get("media")
+                or {}
             )
         except Exception:
             value["server_images"] = {"available": False, "error_code": "image_server_status_unavailable"}

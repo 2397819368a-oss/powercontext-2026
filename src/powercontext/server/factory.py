@@ -720,11 +720,19 @@ def _http_operations(app: FastAPI) -> dict[tuple[str, str], str]:
 async def _server_capabilities(runtime: BuiltinRuntime) -> Capabilities:
     capabilities = await runtime.capabilities()
     return Capabilities(
-        source_types=[CONTENT_SOURCE_NAME],
+        source_types=[
+            CONTENT_SOURCE_NAME,
+            "image.original",
+            "image.interpretation",
+            "experimental.image.original",
+            "experimental.image.analysis",
+        ],
+        media=None if runtime.images is None else runtime.images.diagnostics(),
         artifact_families=[
             "memory",
             "atomic-memory",
             "topic-memory",
+            "image-analysis",
             "experience",
             "skill",
             "handoff",

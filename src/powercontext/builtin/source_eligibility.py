@@ -18,7 +18,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from powercontext.builtin.images.models import ImageAnalysisSource, OriginalImageSource
+from powercontext.builtin.images.models import (
+    ImageAnalysisSource,
+    ImageInterpretationSource,
+    MediaImageOriginalSource,
+    OriginalImageSource,
+)
 from powercontext.builtin.sources import ContentSource
 from powercontext.sources import Source, SourceRef
 
@@ -48,8 +53,10 @@ class WorkingNoteUnavailableError(SourceNotEligibleError):
 def is_generation_eligible(source: Source, /) -> bool:
     """Return whether a hydrated Source may enter a model or Candidate."""
 
-    if isinstance(source, OriginalImageSource):
+    if isinstance(source, OriginalImageSource | MediaImageOriginalSource):
         return False
+    if isinstance(source, ImageInterpretationSource):
+        return source.readability != "unreadable"
     if isinstance(source, ImageAnalysisSource):
         return source.output.readability.value != "unreadable"
     if not isinstance(source, ContentSource):
@@ -72,9 +79,11 @@ def require_source_eligible(
 ) -> None:
     """Allow ordinary evidence, or a lineage-only Source at its exact bound target."""
 
-    if isinstance(source, OriginalImageSource) or (
-        isinstance(source, ImageAnalysisSource) and not is_generation_eligible(source)
-    ):
+    if isinstance(source, OriginalImageSource | MediaImageOriginalSource):
+        if target is not None and target.family == "image-analysis":
+            return
+        raise SourceNotEligibleError(source_ref)
+    if isinstance(source, ImageAnalysisSource | ImageInterpretationSource) and not is_generation_eligible(source):
         raise SourceNotEligibleError(source_ref)
     if not isinstance(source, ContentSource):
         return

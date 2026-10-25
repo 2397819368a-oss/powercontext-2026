@@ -18,7 +18,7 @@ limitations under the License.
 {% from 'components/pagination.html' import pagination %}
 {{ page_heading(t.images, t.images_subtitle) }}
 {% if image_status %}
-<p class="text-secondary">{{ t.images_enabled if image_status.enabled else t.images_disabled }} · {{ image_status.model_id or t.images_model_missing }}</p>
+<p class="text-secondary">{{ t.images_enabled if image_status.enabled else t.images_disabled }} · {{ t.images_model_missing if not image_status.vision_configured else "" }}</p>
 {% if image_status.error_code %}<p class="alert alert-warning" role="status">{{ image_status.error_code }}</p>{% endif %}
 {% endif %}
 <div class="row row-cards">
@@ -35,7 +35,7 @@ limitations under the License.
     </div>
   </div></article>
 {% else %}
-  <div class="col-12"><div class="empty"><p class="empty-title">{{ t.images_empty }}</p><p class="empty-subtitle">{{ t.images_empty_help if image_status and image_status.enabled and image_status.available and image_status.vision_configured and image_status.worker_running and not image_status.error_code else t.images_setup_help }}</p></div></div>
+  <div class="col-12"><div class="empty"><p class="empty-title">{{ t.images_empty }}</p><p class="empty-subtitle">{{ t.images_empty_help if image_status and image_status.enabled and image_status.available and image_status.vision_configured and not image_status.error_code else t.images_setup_help }}</p></div></div>
 {% endfor %}
 </div>
 {{ pagination(image_pager, t) }}

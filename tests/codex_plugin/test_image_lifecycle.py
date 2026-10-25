@@ -39,7 +39,9 @@ def test_setup_resolves_current_binding_and_last_disable_removes_lifecycle(image
     monkeypatch.setattr(
         scope,
         "_post_json",
-        lambda *args, **kwargs: dict.fromkeys(("enabled", "available", "vision_configured", "worker_running"), True),
+        lambda *args, **kwargs: {
+            "media": dict.fromkeys(("enabled", "available", "vision_configured", "processing_enabled"), True)
+        },
     )
     monkeypatch.setattr(service, "install", lambda: actions.append("install"))
     monkeypatch.setattr(service, "uninstall", lambda: actions.append("uninstall"))
@@ -199,7 +201,9 @@ def test_failed_setup_restores_existing_consent(image_capture_module, monkeypatc
     monkeypatch.setattr(
         scope,
         "_post_json",
-        lambda *args, **kwargs: dict.fromkeys(("enabled", "available", "vision_configured", "worker_running"), True),
+        lambda *args, **kwargs: {
+            "media": dict.fromkeys(("enabled", "available", "vision_configured", "processing_enabled"), True)
+        },
     )
 
     def failed_install():

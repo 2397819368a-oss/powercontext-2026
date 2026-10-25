@@ -29,7 +29,7 @@ def _environment(module, monkeypatch, tmp_path):
 
     def post(path, payload, **kwargs):
         requests.append(dict(payload))
-        return {"status": "accepted", "task_id": "it_" + str(len(requests)).zfill(64)}
+        return {"status": "accepted", "request_id": "mr_" + str(len(requests)).zfill(64)}
 
     monkeypatch.setattr(module, "_post_json", post)
     settings = module.CodexPluginSettings(capture_images=True, image_capture_budget_seconds=0.2)

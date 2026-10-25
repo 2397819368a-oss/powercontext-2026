@@ -24,7 +24,7 @@ from pydantic import ValidationError
 
 from powercontext.builtin.images.identity import canonical_image_digest, original_image_source_id
 from powercontext.builtin.images.models import OriginalImageSource
-from powercontext.http import ExperimentalCaptureImageRequest, ExperimentalImageParseOutput
+from powercontext.http import CaptureImageRequest, ExperimentalImageParseOutput
 
 CONTRACT = Path(__file__).resolve().parents[1] / "openapi" / "powercontext.yaml"
 
@@ -32,7 +32,7 @@ CONTRACT = Path(__file__).resolve().parents[1] / "openapi" / "powercontext.yaml"
 def test_image_transport_preserves_non_ascii_context_and_exact_bytes() -> None:
     # This protects transport serialization, not image-format acceptance.
     data = b"\x89PNG\r\n\x1a\n\x00\xff"
-    request = ExperimentalCaptureImageRequest.model_validate({
+    request = CaptureImageRequest.model_validate({
         "scope_id": "实验项目",
         "capture_key": "轮次 1",
         "media_type": "image/png",
@@ -41,7 +41,7 @@ def test_image_transport_preserves_non_ascii_context_and_exact_bytes() -> None:
         "context": {"text": "检查截图中的错误文字"},
     })
 
-    restored = ExperimentalCaptureImageRequest.model_validate_json(request.model_dump_json())
+    restored = CaptureImageRequest.model_validate_json(request.model_dump_json())
 
     assert restored == request
     assert base64.b64decode(restored.bytes_base64, validate=True) == data
@@ -71,11 +71,11 @@ def test_image_ingress_shape_rejects_unsupported_or_ambiguous_inputs(changes: di
     }
 
     with pytest.raises(ValidationError):
-        ExperimentalCaptureImageRequest.model_validate(payload | changes)
+        CaptureImageRequest.model_validate(payload | changes)
 
 
 def test_image_only_transport_does_not_require_a_text_prompt() -> None:
-    request = ExperimentalCaptureImageRequest.model_validate({
+    request = CaptureImageRequest.model_validate({
         "scope_id": "project",
         "capture_key": "image-only",
         "media_type": "image/jpeg",
@@ -161,15 +161,14 @@ def test_legacy_original_fingerprint_survives_new_optional_provenance() -> None:
 
 def test_implemented_image_operations_have_resolvable_scoped_contracts() -> None:
     contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
-    experiment = contract["x-powercontext-experimental-image-source"]
-    assert experiment["planned_paths"] == {}
+    experiment = contract["x-powercontext-media"]
     implemented = {
-        path: item for path, item in contract["paths"].items() if path.startswith("/v1/experimental/images/")
+        path: item for path, item in contract["paths"].items() if path.startswith(("/v1/images/", "/v1/media/"))
     }
 
     assert experiment["active"] is True
     assert experiment["contract_version"] == "1"
-    assert len(implemented) == 7
+    assert len(implemented) == 5
     ids = set()
     for item in implemented.values():
         operation = PathItem.model_validate(item).post

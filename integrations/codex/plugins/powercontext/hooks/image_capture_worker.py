@@ -77,9 +77,9 @@ def _read_jobs(outbox: Outbox, settings: CodexPluginSettings) -> bool:
 def _upload(row: dict[str, Any], settings: CodexPluginSettings) -> str:
     request = json.loads(row["request"])
     request["bytes_base64"] = base64.b64encode(row["bytes"]).decode("ascii")
-    response = _post_json("/v1/experimental/images/capture", request, settings=settings, deadline=monotonic() + 6)
-    task = response.get("task_id")
-    if response.get("status") != "accepted" or not isinstance(task, str) or not task.startswith("it_"):
+    response = _post_json("/v1/images/capture", request, settings=settings, deadline=monotonic() + 6)
+    task = response.get("request_id")
+    if response.get("status") != "accepted" or not isinstance(task, str) or not task.startswith("mr_"):
         raise ValueError("image_acceptance_invalid")
     return task
 

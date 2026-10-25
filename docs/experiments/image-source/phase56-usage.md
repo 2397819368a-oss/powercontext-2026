@@ -1,27 +1,16 @@
 ---
-title: 图片 Source 配置、采集与查看
-description: 普通安装向导、标准 Codex 接入、自动生命周期和图片材料入口。
+title: 图片采集授权与查看
+description: 正常 setup、宿主表示、持久 Outbox 和精确证据展示。
 ---
 
-# 图片 Source 配置、采集与查看
+# 图片采集授权与查看
 
-图片实验默认关闭。普通 config init 提供可选识图配置，setup codex 保存项目授权并管理客户端采集器。日常保持正常 Server 启动及 Codex 使用方式；源码安装、具体配置和验收命令见 [桌面验收指南](desktop-testing.md)，复杂图与答案见 [测试案例](complex-test-case.md)。
+普通向导默认关闭图片识别，并说明图片与上下文会发往哪个模型服务。解码依赖单独安装 `images` extra。正常 Codex setup 根据 `POWERCONTEXT_CODEX_CAPTURE_IMAGES` 持久管理当前项目、Scope 和 Server 目的地的授权与采集器生命周期，不要求手工运行图片脚本。Server 开关不等于读取宿主历史的许可。
 
-| 功能 | 当前行为 |
-| --- | --- |
-| 配置 | 单份 .env；独立 Vision 或显式复用支持图像输入的 OpenAI Chat generation |
-| 依赖 | 轻量解码库包含在常规 server extra；不安装模型权重、Torch 或 CUDA |
-| Codex 授权 | setup 授权当前项目，默认关闭；首次或变更 Hook 由用户信任 |
-| 客户端运行 | setup 管理启动项和监督进程；会话启动恢复、子采集器故障重启，关闭最后一个项目后停止 |
-| Scope | 捕获时使用真实会话／项目绑定；已暂存任务保留接收时的目标 |
-| 耐久接收 | 先保留图片字节、原图 Source 与任务，再异步识图 |
-| 解析 | 严格校验多模态输出，保存不可变解析 Source，保留原图和模型来源 |
-| Memory／Topic | 可读解析进入已有文字证据流程；不改变 families、调度或确认机制 |
-| Dashboard | 新增图片材料列表、缩略图、分页和状态，点开原图与解析；Memory 原始材料支持准确图片来源 |
-| 诊断 | doctor codex 检查授权、采集器、Scope 和图片服务；image probe 验证模型实际能力 |
+采集只跟随已授权项目和已提交消息，保留 host/session/turn、message、附件位置和实际表示。`host_image` 表示宿主提交的图片块，可能已经缩放，不能宣称是磁盘原文件。没有证据的版本、TUI 或附件形式不自动开放。关闭停止新收集；重新开启可投递已暂存且重新授权的材料，不补采关闭期间的历史。
 
-当前验证覆盖 CLI 0.141.0 exec 文件附件、真实桌面上传的既有材料、实际 MiniCPM-V 35B、普通生成和 embedding、后端搜索及浏览器回图。复杂测试图的本轮真实模型验证使用显式上传，不能用它替代新 GUI 拖图测试。新桌面会话对 Memory 的实际使用需要单独验收。
+客户端 Outbox 保留有界原字节及稳定接收键，投递前复核当前授权，调用 `/v1/images/capture`，仅在耐久回执后确认。内部旧 `task_id` checkpoint 列为兼容读取保留，新值保存 `request_id`；它不代表服务端仍存在图片专用 task API。旧已确认回执不重新发送。
 
-PNG/JPEG 每图最多 8 MiB、20 百万像素，边长不超过 16384；每轮最多四图。文件 SQLite 是当前图片后端。宿主记录采用精确版本准入，不扫描授权前或关闭期间历史。交互 CLI TUI、未知版本、其他 Agent、OceanBase／seekdb、PDF／视频和多模态向量检索不在当前自动适配范围。
+Dashboard 图片入口按 Scope 分页查询共享请求，通过原图 Source、精确 ArtifactRef 与资产接口组成展示。列表不批量加载 BLOB；缩略图与下载分别授权。Artifact 分享允许查看解释，不能借此读原图 Scope 或资产。HTML 文本转义，历史证据读取精确发布版本。
 
-关闭项目采集执行 powercontext setup codex --no-capture-images；源码安装加 --source ./integrations/codex。卸载插件前先撤销授权。已有 Source、资产和回执不会删除。历史分析引用保持原身份，重试和重解析按 [解析与记忆说明](phase34-usage.md) 创建新的任务，不覆盖旧证据。
+真实宿主验证需固定 Codex 版本、入口、图片表示、项目与 Scope，分别检查接收、解释、Memory、新会话实际召回。受控 Hook、直接脚本或 provider 测试不能替代真实 Desktop UI 及全新聊天验收。本实现的实际执行范围见 [验证说明](integration-review.md)。

@@ -10,33 +10,36 @@
 
 """Scoped HTTP image adapters and bounded pre-JSON transport."""
 
+import base64
 import json
+from functools import partial
 
 from fastapi import Request
+from pydantic import ValidationError
 from starlette._utils import get_route_path
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from powercontext.builtin.images.service import MAX_ENCODED_IMAGE_BYTES, ImageError, ImageService
-from powercontext.http import (
-    ExperimentalCaptureImageRequest,
-    ExperimentalCaptureImageResponse,
-    ExperimentalGetImageAssetRequest,
-    ExperimentalGetImageAssetResponse,
-    ExperimentalGetImageStatusRequest,
-    ExperimentalGetImageTaskRequest,
-    ExperimentalImageStatus,
-    ExperimentalImageTask,
-    ExperimentalImageTaskPage,
-    ExperimentalListImageTasksRequest,
-    ExperimentalReparseImageRequest,
-    ExperimentalRetryImageTaskRequest,
+from powercontext.builtin.images.application import ImageApplication
+from powercontext.builtin.images.validation import MAX_ENCODED_IMAGE_BYTES
+from powercontext.builtin.media.errors import MediaError
+from powercontext.builtin.media.models import ImageAnalysisRequest, ImageCaptureInput
+from powercontext.http._generated.models import (
+    CaptureImageRequest,
+    GetMediaAssetRequest,
+    GetMediaAssetResponse,
+    GetMediaRequestRequest,
+    ListMediaRequestsRequest,
+    MediaCaptureReceipt,
+    MediaProcessingRequest,
+    MediaRequestPage,
+    RequestImageAnalysisRequest,
 )
 from powercontext.server.authz import AccessAction, ResourceRef, access_control_for_mode
 from powercontext.server.context import access_audit_context, current_principal
 
 MAX_IMAGE_BODY_BYTES = 12 * 1024 * 1024
-CAPTURE_PATH = "/v1/experimental/images/capture"
+CAPTURE_PATH = "/v1/images/capture"
 
 
 def _encoded_budget_exceeded(body: bytearray) -> bool:
@@ -109,70 +112,78 @@ class ImageBodyLimitMiddleware:
         await self.app(scope, bounded_receive, send)
 
 
-def _images(request: Request) -> ImageService:
+def _images(request: Request) -> ImageApplication:
     service = getattr(request.app.state.application, "images", None)
-    if not isinstance(service, ImageService):
-        raise ImageError(503, "image_storage_unavailable")
+    if not isinstance(service, ImageApplication):
+        raise MediaError(503, "media_storage_unavailable")
     return service
 
 
-async def capture_image(
-    request: ExperimentalCaptureImageRequest, http_request: Request
-) -> ExperimentalCaptureImageResponse:
-    if request.context.source is not None:
-        if request.context.source.scope_id != request.scope_id:
-            raise ImageError(422, "image_context_scope_mismatch")
-        access = access_control_for_mode(http_request.app.state.access_control, mode=http_request.app.state.access_mode)
-        if access is not None:
-            await access.require(
-                current_principal(),
-                AccessAction.SCOPE_READ,
-                ResourceRef.scope(request.scope_id),
-                context=access_audit_context("experimental_capture_image"),
-            )
-    return await _images(http_request).capture(request)
-
-
-async def get_image_asset(
-    request: ExperimentalGetImageAssetRequest, http_request: Request
-) -> ExperimentalGetImageAssetResponse:
-    return await _images(http_request).get_asset(request.scope_id, request.asset_id)
-
-
-async def get_image_task(request: ExperimentalGetImageTaskRequest, http_request: Request) -> ExperimentalImageTask:
-    return await _images(http_request).get_task(
-        request.scope_id, request.task_id, analysis_source_id=request.analysis_source_id
-    )
-
-
-async def list_image_tasks(
-    request: ExperimentalListImageTasksRequest, http_request: Request
-) -> ExperimentalImageTaskPage:
-    return await _images(http_request).list_tasks(request)
-
-
-async def get_image_status(
-    request: ExperimentalGetImageStatusRequest, http_request: Request
-) -> ExperimentalImageStatus:
-    return await _images(http_request).status(request.scope_id)
-
-
-async def _require_image_read(request: Request, scope_id: str, operation: str) -> None:
+async def _authorize_write(connection, *, request, scope_id, original=None):
     access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
-    if access is not None:
-        await access.require(
-            current_principal(),
-            AccessAction.SCOPE_READ,
-            ResourceRef.scope(scope_id),
-            context=access_audit_context(operation),
-        )
+    if access is None:
+        return
+    bound = access.with_connection(connection)
+    principal = current_principal()
+    context = access_audit_context("image_write")
+    resource = ResourceRef.scope(scope_id)
+    await bound.require(principal, AccessAction.SCOPE_CONTRIBUTE, resource, context=context)
+    await bound.require(principal, AccessAction.SCOPE_READ, resource, context=context)
+    if original is not None:
+        head = await _images(request).analysis_head(connection, scope_id, original)
+        if head is not None:
+            await bound.require(
+                principal,
+                AccessAction.ARTIFACT_WRITE,
+                ResourceRef.artifact(scope_id, family="image-analysis", artifact_id=head.artifact_id),
+                context=context,
+            )
 
 
-async def retry_image_task(request: ExperimentalRetryImageTaskRequest, http_request: Request) -> ExperimentalImageTask:
-    await _require_image_read(http_request, request.scope_id, "experimental_retry_image_task")
-    return await _images(http_request).queue.retry(request)
+async def capture_image(request: CaptureImageRequest, http_request: Request):
+    try:
+        command = ImageCaptureInput.model_validate(request.model_dump(mode="json"))
+    except ValidationError as error:
+        raise MediaError(422, "image_invalid_input") from error
+    value = await _images(http_request).capture(
+        command, authorize_transaction=partial(_authorize_write, request=http_request, scope_id=command.scope_id)
+    )
+    return MediaCaptureReceipt.model_validate(value.model_dump(mode="json", by_alias=True))
 
 
-async def reparse_image(request: ExperimentalReparseImageRequest, http_request: Request) -> ExperimentalImageTask:
-    await _require_image_read(http_request, request.scope_id, "experimental_reparse_image")
-    return await _images(http_request).queue.reparse(request)
+async def get_media_asset(request: GetMediaAssetRequest, http_request: Request) -> GetMediaAssetResponse:
+    asset, data = await _images(http_request).get_asset(request.scope_id, request.asset_id)
+    return GetMediaAssetResponse.model_validate({
+        "asset": asset.model_dump(mode="json", by_alias=True),
+        "bytes_base64": base64.b64encode(data).decode("ascii"),
+    })
+
+
+async def get_media_request(request: GetMediaRequestRequest, http_request: Request):
+    value = await _images(http_request).get_request(request.scope_id, request.request_id)
+    return MediaProcessingRequest.model_validate(value.model_dump(mode="json", by_alias=True))
+
+
+async def list_media_requests(request: ListMediaRequestsRequest, http_request: Request):
+    value = await _images(http_request).list_requests(
+        request.scope_id,
+        processing_kind=request.processing_kind,
+        states=request.states or (),
+        limit=request.limit,
+        cursor=request.cursor,
+    )
+    return MediaRequestPage.model_validate(value.model_dump(mode="json", by_alias=True))
+
+
+async def request_image_analysis(request: RequestImageAnalysisRequest, http_request: Request):
+    try:
+        command = ImageAnalysisRequest.model_validate(request.model_dump(mode="json"))
+    except ValidationError as error:
+        raise MediaError(422, "image_invalid_preconditions") from error
+    value = await _images(http_request).request_analysis(
+        command,
+        authorize_transaction=partial(
+            _authorize_write, request=http_request, scope_id=command.scope_id, original=command.original
+        ),
+    )
+    return MediaProcessingRequest.model_validate(value.model_dump(mode="json", by_alias=True))

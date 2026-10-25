@@ -33,6 +33,7 @@ from pydantic import ValidationError
 
 from powercontext.server.dashboard.api import DashboardAPI, ReadError, segment
 from powercontext.server.dashboard.content import RECORDS, load_content, load_profile, load_record
+from powercontext.server.dashboard.images import image_evidence_view, image_request_view
 from powercontext.server.dashboard.markdown import handoff_markdown
 from powercontext.server.dashboard.navigation import (
     collection_return,
@@ -428,15 +429,12 @@ async def evidence(request: Request, source_id: str) -> HTMLResponse:
         ):
             # Association failures use the same HTML boundary as failed content reads.
             raise ReadError(404, "not_found")  # noqa: TRY301
-        if ctx["source_type"] == "experimental.image.analysis":
-            value = await api.read(
-                "/v1/experimental/images/task/get", {"scope_id": ctx["scope"], "analysis_source_id": source_id}
-            )
-            ctx["source"] = image_source_view(value, ctx["scope"])
+        value = await api.read(
+            f"/v1/scopes/{segment(ctx['scope'])}/sources/{segment(ctx['source_type'])}/{segment(source_id)}"
+        )
+        if ctx["source_type"] in {"image.original", "image.interpretation", "experimental.image.analysis"}:
+            ctx["source"] = image_source_view(await image_evidence_view(api, ctx["scope"], value), ctx["scope"])
         else:
-            value = await api.read(
-                f"/v1/scopes/{segment(ctx['scope'])}/sources/{segment(ctx['source_type'])}/{segment(source_id)}"
-            )
             ctx["source"] = source_view(value)
     except ReadError as error:
         if error.status == 401:
@@ -455,7 +453,7 @@ async def image_task(request: Request, task_id: str) -> HTMLResponse:
     try:
         descriptor = await default_scope(api, ctx)
         await scope_context(api, ctx, descriptor)
-        task = await api.read("/v1/experimental/images/task/get", {"scope_id": ctx["scope"], "task_id": task_id})
+        task = await image_request_view(api, ctx["scope"], task_id)
         ctx["source"] = image_source_view(task, ctx["scope"])
         ctx["source_id"] = ctx["source"]["source_id"]
     except ReadError as error:
@@ -513,12 +511,12 @@ async def image_asset(request: Request, asset_id: str) -> Response:
     headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Vary": "Cookie, Authorization"}
     try:
         value = await api.read(
-            "/v1/experimental/images/asset/get",
+            "/v1/media/assets/get",
             {"scope_id": request.query_params.get("scope", ""), "asset_id": asset_id},
         )
         data = base64.b64decode(value["bytes_base64"], validate=True)
         if (
-            len(data) != value["asset"]["byte_length"]
+            len(data) != value["asset"]["byte_size"]
             or "sha256:" + hashlib.sha256(data).hexdigest() != value["asset"]["digest"]
         ):
             raise ReadError(500, "image_asset_corrupt")  # noqa: TRY301 - verified download at the HTTP boundary

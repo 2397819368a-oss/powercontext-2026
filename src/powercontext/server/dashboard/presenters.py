@@ -113,4 +113,8 @@ def usage_view(usage: dict[str, Any], recall: dict[str, Any]) -> dict[str, Any]:
 
 def evidence_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Select retained text and image analysis materials for the evidence page."""
-    return [source for source in sources if source["source_type"] in {"content", "experimental.image.analysis"}]
+    return [
+        source
+        for source in sources
+        if source["source_type"] in {"content", "image.original", "image.interpretation", "experimental.image.analysis"}
+    ]

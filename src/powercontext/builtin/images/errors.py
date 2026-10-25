@@ -10,11 +10,8 @@
 
 """Content-free errors at the experimental image service boundary."""
 
+from powercontext.builtin.media.errors import MediaError
 
-class ImageError(RuntimeError):
-    """Stable domain failure mapped by the HTTP adapter without provider bodies."""
 
-    def __init__(self, status_code: int, code: str) -> None:
-        self.status_code = status_code
-        self.code = code
-        super().__init__(code)
+class ImageError(MediaError):
+    """Stable image validation failure mapped without provider bodies."""

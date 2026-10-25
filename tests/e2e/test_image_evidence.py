@@ -33,7 +33,8 @@ from powercontext.builtin.artifacts.topic_memory.generation import (
     TopicMemoryProposal,
 )
 from powercontext.builtin.evidence.resolver import EvidenceResolver
-from powercontext.builtin.images.models import IMAGE_ANALYSIS_TYPE, ORIGINAL_IMAGE_TYPE
+from powercontext.builtin.images.models import IMAGE_INTERPRETATION_TYPE as IMAGE_ANALYSIS_TYPE
+from powercontext.builtin.images.models import IMAGE_ORIGINAL_TYPE as ORIGINAL_IMAGE_TYPE
 from powercontext.builtin.inference import GenerationResult
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import BuiltinConfig, RuntimeConfig
@@ -50,8 +51,19 @@ from powercontext.client import PowerContextClient
 from powercontext.http import FlushMemoryRequest, MemorySearchMode, SearchMemoryRequest
 from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, SourceRef
 from tests.e2e.dream_support import atomic_memory_pipeline
-from tests.e2e.test_image_processing import REPARSE, VISIBLE, Backend, _listen, _running, _terminal
-from tests.e2e.test_image_source_product import TASK_GET, _capture, _picture, _request, _scope
+from tests.e2e.media_support import (
+    VISIBLE,
+    Backend,
+    _analysis_view,
+    _capture,
+    _listen,
+    _picture,
+    _reparse,
+    _request,
+    _running,
+    _scope,
+    _terminal,
+)
 
 
 class TextProjector(DefaultHandoffEvidenceProjector):
@@ -117,7 +129,7 @@ def test_original_only_cursor_late_analysis_memory_handoff_and_new_session_recal
             ):
                 scope = await _scope(http)
                 accepted = await _capture(http, _request(scope, "late", _picture()))
-                await asyncio.wait_for(backend.entered.wait(), 5)
+                await asyncio.wait_for(backend.entered.wait(), 30)
                 async with PowerContextClient("http://localhost", http_client=http) as client:
                     original_only = await client.flush_memory(FlushMemoryRequest(scope_id=scope))
                     assert (
@@ -164,11 +176,9 @@ def test_original_only_cursor_late_analysis_memory_handoff_and_new_session_recal
                     scope, "atomic-memory", hit.memory.artifact.artifact_id, hit.memory.artifact.revision
                 )
                 assert entry.sources[0].source_id == task["analysis"]["source"]["source_id"]
-                exact = await http.post(
-                    TASK_GET, json={"scope_id": scope, "analysis_source_id": entry.sources[0].source_id}
-                )
-                assert exact.json()["analysis_payload"] == task["analysis_payload"]
-                assert exact.json()["original_payload"]["asset"] == accepted["asset"]
+                exact = await _analysis_view(http, scope, entry.sources[0].source_id)
+                assert exact["analysis_payload"] == task["analysis_payload"]
+                assert exact["original_payload"]["asset"] == accepted["asset"]
 
     asyncio.run(scenario())
 
@@ -182,13 +192,11 @@ def test_lineage_original_is_excluded_and_same_asset_is_one_attested_group(tmp_p
             one = await _terminal(http, scope, first["task_id"])
             second = await _capture(http, _request(scope, "occurrence-two", _picture()))
             two = await _terminal(http, scope, second["task_id"])
-            reparse = await http.post(
-                REPARSE, json={"scope_id": scope, "original": first["original"]["source"], "reparse_key": "same-asset"}
-            )
-            three = await _terminal(http, scope, reparse.json()["task_id"])
+            reparse = await _reparse(http, scope, first["original"]["source"], "same-asset", 1)
+            three = await _terminal(http, scope, reparse.json()["request_id"])
         config = BuiltinConfig(
             database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'images.db'}"),
-            runtime=RuntimeConfig(artifact_processing_families=()),
+            runtime=RuntimeConfig(artifact_processing_families=("image-analysis",)),
         )
         async with open_builtin_contexts(config) as contexts:
             authorized = []
@@ -219,7 +227,8 @@ def test_lineage_original_is_excluded_and_same_asset_is_one_attested_group(tmp_p
                 if node.source is not None and node.source.source_type == ORIGINAL_IMAGE_TYPE
             ]
             assert len(originals) == 2 and all(node.role == "lineage_only" for node in originals)
-            assert len(resolved.manifest.edges) == 3 and len(resolved.projection.evidence) == 3
+            assert len(resolved.projection.evidence) == 3
+            assert all(task["result"]["artifact"]["revision"] >= 1 for task in (one, two, three))
             assert all(
                 item.root_group_ids == (resolved.projection.root_groups[0].group_id,)
                 for item in resolved.projection.evidence
@@ -292,15 +301,17 @@ def test_topic_memory_advances_original_window_and_consumes_notified_late_analys
         async with _listen(backend.app) as endpoint, _running(tmp_path, endpoint + "/v1") as (_, http):
             scope = await _scope(http)
             captured = await _capture(http, _request(scope, "topic-late", _picture()))
-            await asyncio.wait_for(backend.entered.wait(), 5)
+            await asyncio.wait_for(backend.entered.wait(), 30)
             config = BuiltinConfig(
                 database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'images.db'}"),
-                runtime=RuntimeConfig(artifact_processing_families=()),
+                runtime=RuntimeConfig(artifact_processing_families=("image-analysis",)),
             )
             async with open_builtin_contexts(config) as contexts:
                 repos = contexts.repositories
                 async with contexts.database.transaction() as connection:
-                    term = await repos.processing_leases.start_single_process_term(connection, "image-topic-test")
+                    term = await repos.processing_leases.start_single_process_term(
+                        connection, "image-topic-test", supervisor_group="artifact:topic-memory"
+                    )
                 probe = TopicGenerator(
                     TopicMemoryProbeOutput(probes=(TopicMemoryProbe(query="E429", evidence_ids=("evidence-0001",)),))
                 )

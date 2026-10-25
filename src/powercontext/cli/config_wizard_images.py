@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from sqlalchemy.engine import make_url
 
@@ -44,18 +43,9 @@ def collect_images(ui: WizardUI, values: dict[str, str]) -> dict[str, str | None
         return {SERVER + "IMAGES_ENABLED": "false", "POWERCONTEXT_CODEX_CAPTURE_IMAGES": "false"}
     if not url.database or url.database == ":memory:":
         raise ValueError("Image experiment requires a file SQLite database")  # noqa: TRY003
-    asset_default = str(Path(url.database).absolute().parent / "image-assets")
-    directory = (
-        Path(
-            ui.ask(
-                "Original image directory",
-                "原图保存目录",
-                default=values.get(SERVER + "IMAGES_ASSET_DIRECTORY", asset_default),
-                required=True,
-            )
-        )
-        .expanduser()
-        .absolute()
+    ui.say(
+        "Original bytes are retained in SQLite. Install powercontext[server,images]; an existing database needs the media migration.",
+        "原图字节保存在 SQLite。请安装 powercontext[server,images]；已有数据库需先执行 media 迁移。",
     )
     reuse = False
     if values.get(SERVER + "INFERENCE_GENERATION_MODEL", "").startswith("openai-chat:") and values.get(
@@ -91,14 +81,14 @@ def collect_images(ui: WizardUI, values: dict[str, str]) -> dict[str, str | None
         default=values.get("POWERCONTEXT_CODEX_CAPTURE_IMAGES") == "true",
     )
     ui.say(
-        f"Originals: {directory}. Vision: {model} at {endpoint}. No model request has been made. "
+        f"Originals are stored in SQLite. Vision: {model} at {endpoint}. No model request has been made. "
         "Codex setup manages the collector; review and trust new hooks once. Unknown host versions are rejected.",
-        f"原图：{directory}。Vision：{model}，地址 {endpoint}。尚未调用模型。Codex setup 会管理采集器，首次需审阅信任 "
+        f"原图保存在 SQLite。Vision：{model}，地址 {endpoint}。尚未调用模型。Codex setup 会管理采集器，首次需审阅信任 "
         "新的 Hooks；未知宿主版本明确拒绝。",
     )
     return {
         SERVER + "IMAGES_ENABLED": "true",
-        SERVER + "IMAGES_ASSET_DIRECTORY": str(directory),
+        SERVER + "IMAGES_ASSET_DIRECTORY": None,
         **connection,
         VISION + "TIMEOUT_SECONDS": values.get(VISION + "TIMEOUT_SECONDS", "120"),
         VISION + "MAX_ATTEMPTS": values.get(VISION + "MAX_ATTEMPTS", "3"),

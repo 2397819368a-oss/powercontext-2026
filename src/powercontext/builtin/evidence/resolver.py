@@ -31,6 +31,7 @@ from powercontext.builtin.artifacts.handoff.models import (
     HandoffArtifactCitation,
     HandoffSourceCitation,
 )
+from powercontext.builtin.artifacts.image_analysis import ImageAnalysis
 from powercontext.builtin.artifacts.profile.models import Profile
 from powercontext.builtin.artifacts.prompt.models import Prompt
 from powercontext.builtin.artifacts.skill import Skill
@@ -50,7 +51,13 @@ from powercontext.builtin.evidence.models import (
     reference_key,
 )
 from powercontext.builtin.images.identity import canonical_image_digest
-from powercontext.builtin.images.models import ImageAnalysisSource, OriginalImageSource
+from powercontext.builtin.images.models import (
+    ImageAnalysisSource,
+    ImageInterpretationSource,
+    MediaImageOriginalSource,
+    OriginalImageSource,
+    interpretation_snapshot,
+)
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.atomic_memory import AtomicMemoryStateRepository
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
@@ -343,6 +350,20 @@ class EvidenceResolver:
                 artifact.content.model_dump_json(),
                 (),
             )
+        if isinstance(artifact, ImageAnalysis):
+            if direct and artifact.content.output.readability.value == "unreadable":
+                raise EvidenceResolutionError("source_not_eligible")
+            return (
+                EvidenceNode(
+                    evidence_id=evidence_id(ref),
+                    kind="image_analysis",
+                    artifact=ref,
+                    digest=digest,
+                    role="derived" if direct else "lineage_only",
+                ),
+                interpretation_snapshot(artifact.content.output) if direct else "",
+                _lineage_children(artifact),
+            )
         if isinstance(artifact, Skill):
             return (
                 EvidenceNode(evidence_id=evidence_id(ref), kind="skill", artifact=ref, digest=digest, role="derived"),
@@ -458,9 +479,11 @@ class EvidenceResolver:
         *,
         direct: bool,
     ) -> tuple[EvidenceNode, str, tuple[EvidenceChild, ...]]:
+        exact_stored = None
         try:
             stored = await self.generation_sources.require_for_generation(connection, self.scope_id, (ref,))
-            source = stored[0].value
+            exact_stored = stored[0]
+            source = exact_stored.value
             eligible = True
         except SourceNotEligibleError as error:
             if direct:
@@ -479,23 +502,10 @@ class EvidenceResolver:
         children: tuple[EvidenceChild, ...] = ()
         if eligible:
             attested = None if self.root_identity is None else self.root_identity(ref, source)
-            if isinstance(source, ImageAnalysisSource):
-                if source.original.scope_id != self.scope_id:
+            if isinstance(source, ImageAnalysisSource | ImageInterpretationSource):
+                if exact_stored is None:
                     raise EvidenceResolutionError("evidence_unavailable")
-                original_ref = SourceRef.model_validate(source.original.source.model_dump(mode="json"))
-                if self.authorize is not None:
-                    await self.authorize(original_ref)
-                original = (await self.sources.get(connection, self.scope_id, original_ref)).value
-                if not isinstance(original, OriginalImageSource):
-                    raise EvidenceResolutionError("evidence_unavailable")
-                # An interpretation is a usable textual root, with an original
-                # lineage-only child. Reparse and duplicate occurrences share
-                # one attested independence group, determined by actual bytes.
-                attested = canonical_image_digest({
-                    "scope_id": self.scope_id,
-                    "image_asset_digest": original.asset.digest.root,
-                })
-                children = ((original_ref, None),)
+                attested, children = await self._image_root(connection, exact_stored, source)
             group_key = reference_key(ref) if attested is None else attested
             state.groups[identity] = ("root_" + content_digest(group_key.encode())[7:31], attested is not None)
         return (
@@ -509,6 +519,33 @@ class EvidenceResolver:
             body,
             children,
         )
+
+    async def _image_root(self, connection, stored, source):
+        if source.original.scope_id != self.scope_id:
+            raise EvidenceResolutionError("evidence_unavailable")
+        original_ref = SourceRef.model_validate(source.original.source.model_dump(mode="json"))
+        if self.authorize is not None:
+            await self.authorize(original_ref)
+        original = (await self.sources.get(connection, self.scope_id, original_ref)).value
+        if not isinstance(original, OriginalImageSource | MediaImageOriginalSource):
+            raise EvidenceResolutionError("evidence_unavailable")
+        children = ((original_ref, None),)
+        if isinstance(source, ImageInterpretationSource):
+            from powercontext.builtin.images.processing import validate_interpretation
+            from powercontext.builtin.media.errors import MediaError
+
+            if self.authorize is not None:
+                await self.authorize(source.result.artifact)
+            try:
+                await validate_interpretation(connection, stored, self.sources, self.artifacts)
+            except MediaError as error:
+                raise EvidenceResolutionError("evidence_unavailable") from error
+            children = (*children, (source.result.artifact, None))
+        asset_digest = (
+            original.asset.digest if isinstance(original, MediaImageOriginalSource) else original.asset.digest.root
+        )
+        attested = canonical_image_digest({"scope_id": self.scope_id, "image_asset_digest": asset_digest})
+        return attested, children
 
     @staticmethod
     def _groups(state: _Traversal) -> tuple[RootEvidenceGroup, ...]:

@@ -48,7 +48,7 @@ def test_opt_in_wizard_saves_separate_vision_connection_and_explicit_probe_instr
     result = CliRunner().invoke(
         app,
         ["init", "--language", "en", "--experimental-images", "--output", str(output)],
-        input=f"sqlite\n{tmp_path / 'data.db'}\nreuse\ny\n{tmp_path / 'assets'}\nhttps://vision.example.invalid/v1\nprivate-minicpm\ndeploy-one\n{secret}\ny\ny\n",
+        input=f"sqlite\n{tmp_path / 'data.db'}\nreuse\ny\nhttps://vision.example.invalid/v1\nprivate-minicpm\ndeploy-one\n{secret}\ny\ny\n",
     )
     assert result.exit_code == 0, result.output
     values = parse_environment(output.read_text())
@@ -71,7 +71,7 @@ def test_ordinary_wizard_offers_image_opt_in_without_experiment_flag(tmp_path):
         ["init", "--language", "en", "--output", str(output)],
         input=(
             f"sqlite\n{tmp_path / 'data.db'}\nlocal\nbase\nn\n\ncodex\ndefault\nnone\ny\n"
-            f"{tmp_path / 'assets'}\nhttps://vision.example.invalid/v1\nvision-test\nv1\nsynthetic-secret\ny\ny\n"
+            f"https://vision.example.invalid/v1\nvision-test\nv1\nsynthetic-secret\ny\ny\n"
         ),
     )
     assert result.exit_code == 0, result.output
@@ -92,7 +92,7 @@ def test_images_module_reuses_generation_without_extra_key_or_changing_processin
     result = CliRunner().invoke(
         app,
         ["init", "--language", "en", "--output", str(output)],
-        input=(f"sqlite\n{tmp_path / 'data.db'}\nedit\nimages\ny\n{tmp_path / 'assets'}\nreuse\ny\ndone\ny\n"),
+        input=(f"sqlite\n{tmp_path / 'data.db'}\nedit\nimages\ny\nreuse\ny\ndone\ny\n"),
     )
     assert result.exit_code == 0, result.output
     values = parse_environment(output.read_text())

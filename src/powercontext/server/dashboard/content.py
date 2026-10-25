@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import Request
 
 from powercontext.server.dashboard.api import DashboardAPI, ReadError, segment
+from powercontext.server.dashboard.images import image_request_item
 from powercontext.server.dashboard.markdown import profile_html
 from powercontext.server.dashboard.navigation import positive_revision
 from powercontext.server.dashboard.pagination import PAGE_SIZE, cursor_links, list_links, list_page
@@ -191,17 +192,17 @@ async def load_content(api: DashboardAPI, request: Request, ctx: dict[str, Any])
     elif page == "usage":
         await load_stats(api, ctx)
     elif page == "images":
-        ctx["image_status"] = await api.read("/v1/experimental/images/status", {"scope_id": ctx["scope"]})
-        if ctx["image_status"]["available"]:
+        ctx["image_status"] = (await api.read("/v1/capabilities")).get("media")
+        if ctx["image_status"] and ctx["image_status"]["available"]:
             result = await api.read(
-                "/v1/experimental/images/tasks/list",
+                "/v1/media/requests/list",
                 {
                     "scope_id": ctx["scope"],
                     "cursor": request.query_params.get("image_cursor"),
                     "limit": 12,
                 },
             )
-            ctx["data"]["images"] = result["items"]
+            ctx["data"]["images"] = [await image_request_item(api, ctx["scope"], item) for item in result["items"]]
             ctx["image_pager"] = cursor_links(request, ctx, "image", result["next_cursor"])
     else:
         await load_additional_page(api, request, ctx)

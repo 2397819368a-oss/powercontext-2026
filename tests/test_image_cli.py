@@ -21,7 +21,7 @@ from typer.testing import CliRunner
 
 import powercontext.client.cli as client_cli
 from powercontext.cli.app import create_cli
-from powercontext.http import ExperimentalImageStatus, ExperimentalImageTaskPage
+from powercontext.http import Capabilities, MediaRequestPage
 
 
 @pytest.mark.parametrize("command", ["status", "list"])
@@ -33,35 +33,66 @@ def test_image_inspection_prints_result_in_default_mode(command, monkeypatch):
         async def __aexit__(self, *args):
             return None
 
-        async def get_image_status(self, request):
-            return ExperimentalImageStatus.model_validate({
-                "enabled": True,
-                "available": True,
-                "vision_configured": True,
-                "vision_connection": "dedicated",
-                "model_id": "test-model",
-                "pending_count": 0,
-                "worker_running": True,
-                "error_code": None,
+        async def get_capabilities(self):
+            return Capabilities.model_validate({
+                "source_types": ["image.original"],
+                "artifact_families": ["image-analysis"],
+                "memory_extraction": False,
+                "handoff_generation": False,
+                "search_modes": [],
+                "context_versions": [],
+                "media": {
+                    "enabled": True,
+                    "available": True,
+                    "vision_configured": True,
+                    "processing_enabled": True,
+                    "profile_digest": "sha256:" + "1" * 64,
+                    "error_code": None,
+                },
             })
 
-        async def list_image_tasks(self, request):
-            return ExperimentalImageTaskPage(items=[], next_cursor=None)
+        async def list_media_requests(self, request):
+            return MediaRequestPage(items=[], next_cursor=None)
 
     monkeypatch.setattr(client_cli, "PowerContextClient", lambda *args, **kwargs: Client())
-    result = CliRunner().invoke(create_cli([]), ["image", command, "--scope-id", "test-scope"])
+    result = CliRunner().invoke(
+        create_cli([]), ["image", command] + (["--scope-id", "test-scope"] if command == "list" else [])
+    )
     assert result.exit_code == 0, result.output
-    value = json.loads(result.output)
-    assert value["model_id"] == "test-model" if command == "status" else value["items"] == []
+    if command == "status":
+        assert "Images:" in result.output and '"enabled":true' in result.output
+    else:
+        assert json.loads(result.output)["items"] == []
 
 
 @pytest.mark.parametrize(
     "arguments",
     [
-        ["task", "invalid"],
-        ["source", "invalid"],
-        ["retry", "invalid", "--retry-key", "retry"],
-        ["reparse", "original", "--reparse-key", "reparse", "--expected-profile-digest", "invalid"],
+        ["request", "invalid"],
+        [
+            "retry",
+            "invalid",
+            "--retry-key",
+            "retry",
+            "--original-source-id",
+            "original",
+            "--expected-state-version",
+            "1",
+            "--expected-artifact-revision",
+            "0",
+            "--expected-profile-digest",
+            "invalid",
+        ],
+        [
+            "reparse",
+            "original",
+            "--reparse-key",
+            "retry",
+            "--expected-artifact-revision",
+            "0",
+            "--expected-profile-digest",
+            "invalid",
+        ],
         ["download", "invalid", "--output", "unused.png"],
     ],
 )

@@ -148,7 +148,7 @@ from powercontext.builtin.evidence.resolver import (
     ScopedEvidenceAuthorizer,
     ScopedEvidenceBatchAuthorizer,
 )
-from powercontext.builtin.images.service import ImageService
+from powercontext.builtin.images.application import ImageApplication as ImageService
 from powercontext.builtin.inference import (
     EmbeddingModel,
 )
@@ -4069,20 +4069,6 @@ class BuiltinRuntime:
     async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         await self.close()
 
-    def start_image_worker(self, inference: object, role: str) -> None:
-        """Bind the optional worker to Runtime lifecycle and scoped usage accounting."""
-        if self.images is None or role == "api":
-            return
-
-        async def record_usage(scope_id: str, usage: InferenceUsage) -> None:
-            await self.statistics.for_scope(scope_id).record_model_usage(
-                ModelUsagePurpose.IMAGE_PARSING,
-                ModelUsageOperation.GENERATION,
-                usage,
-            )
-
-        self.images.start_worker(inference, record_usage)
-
     async def capabilities(self) -> RuntimeCapabilities:
         async with self._operation():
             return self._capabilities
@@ -4252,8 +4238,6 @@ class BuiltinRuntime:
             async with self._lifecycle:
                 self._closing = True
                 await self._lifecycle.wait_for(lambda: self._active_operations == 0)
-            if self.images is not None:
-                await self.images.aclose()
             if self.artifact_processing_supervisor is not None:
                 await self.artifact_processing_supervisor.close()
             async with self._processor_lock:

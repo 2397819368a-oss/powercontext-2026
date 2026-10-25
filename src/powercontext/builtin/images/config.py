@@ -20,12 +20,16 @@ from powercontext.http import ExperimentalImageParseProfile
 
 
 class ImageConfig(BaseModel):
-    """Budgets for an opt-in SQLite image store and single leased worker."""
+    """Budgets for opt-in SQLite media and the existing Supervisor image binding."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    asset_directory: Path | None = None
+    asset_directory: Path | None = Field(
+        default=None,
+        deprecated=True,
+        description="Legacy file-store setting; native media bytes are retained in SQLite.",
+    )
     worker_concurrency: int = Field(default=1, ge=1, le=1)
     max_pending_per_scope: int = Field(default=256, ge=1, le=256)
     max_pending_total: int = Field(default=1024, ge=1, le=1024)

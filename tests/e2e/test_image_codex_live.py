@@ -29,9 +29,8 @@ from powercontext.client import PowerContextClient
 from powercontext.http import FlushMemoryRequest, MemorySearchMode, SearchMemoryRequest
 from powercontext.server.configuration import server_settings_context
 from tests.e2e.dream_support import atomic_memory_pipeline
+from tests.e2e.media_support import ASSET_GET, Backend, _analysis_view, _listen, _running, _scope, _terminal
 from tests.e2e.test_image_evidence import MemoryGenerator
-from tests.e2e.test_image_processing import Backend, _listen, _running, _terminal
-from tests.e2e.test_image_source_product import ASSET_GET, TASK_GET, _scope
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -336,9 +335,8 @@ trust_level = "trusted"
                     )
                     ref = found.hits[0].memory.artifact
                     entry = await client.get_artifact_revision(scope, "atomic-memory", ref.artifact_id, ref.revision)
-                exact = await http.post(
-                    TASK_GET, json={"scope_id": scope, "analysis_source_id": entry.sources[0].source_id}
-                )
-                assert exact.json() == task
+                exact = await _analysis_view(http, scope, entry.sources[0].source_id)
+                assert exact["analysis_payload"] == task["analysis_payload"]
+                assert exact["original_payload"] == task["original_payload"]
 
     asyncio.run(scenario())

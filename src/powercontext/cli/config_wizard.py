@@ -1396,8 +1396,8 @@ def _next_steps(state: Wizard, output: Path, client_file: Path) -> str:
             "```",
             "",
             ui.text(
-                "The standard server installation includes the image decoder. Run the generated setup command from the workspace to authorize capture and manage the client collector. Review and trust new Codex hooks once, then use Codex normally. Check `powercontext doctor codex` and the Dashboard Images page. Unknown Codex versions fail closed; accepted record formats include CLI 0.141.0 exec and 0.162.0-alpha.2 / alpha.17.2 exec/Desktop engines. Verify actual attachment capture on your host.",
-                "标准 Server 安装已包含图片解码依赖。在需要采集的项目目录执行生成的 setup 命令，授权采集并自动管理客户端采集器；首次审阅信任新的 Codex Hooks，之后正常使用 Codex。通过 `powercontext doctor codex` 和 Dashboard 图片材料页检查状态。未知 Codex 版本明确拒绝；可识别的记录格式包括 CLI 0.141.0 exec 和 0.162.0-alpha.2／alpha.17.2 exec／Desktop 内核，仍需验证当前宿主的实际附件采集。",
+                "Install powercontext[server,images] for the image decoder. Existing SQLite deployments need the registered media migration. Run the generated setup command from the workspace to authorize capture and manage the client collector. Review and trust new Codex hooks once, then use Codex normally. Check `powercontext doctor codex` and the Dashboard Images page. Unknown Codex versions fail closed; accepted record formats include CLI 0.141.0 exec and 0.162.0-alpha.2 / alpha.17.2 exec/Desktop engines. Verify actual attachment capture on your host.",
+                "请安装 powercontext[server,images] 以启用图片解码；已有 SQLite 部署需先执行注册的 media 迁移。在需要采集的项目目录执行生成的 setup 命令，授权采集并自动管理客户端采集器；首次审阅信任新的 Codex Hooks，之后正常使用 Codex。通过 `powercontext doctor codex` 和 Dashboard 图片材料页检查状态。未知 Codex 版本明确拒绝；可识别的记录格式包括 CLI 0.141.0 exec 和 0.162.0-alpha.2／alpha.17.2 exec／Desktop 内核，仍需验证当前宿主的实际附件采集。",
             ),
             "",
         ]

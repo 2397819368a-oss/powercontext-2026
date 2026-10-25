@@ -348,7 +348,7 @@ def _submit_turn(
             raise CaptureError("image_capture_timeout")
         data, media_type = _original(name, submitted)
         response = _post_json(
-            "/v1/experimental/images/capture",
+            "/v1/images/capture",
             {
                 "scope_id": state["scope_id"],
                 "capture_key": "codex:" + _digest([payload["session_id"], payload["turn_id"]]),
@@ -366,9 +366,9 @@ def _submit_turn(
             settings=settings,
             deadline=deadline,
         )
-        if response.get("status") != "accepted" or not isinstance(response.get("task_id"), str):
+        if response.get("status") != "accepted" or not isinstance(response.get("request_id"), str):
             raise CaptureError("image_acceptance_invalid")
-        accepted.append({"index": index, "task_id": response["task_id"]})
+        accepted.append({"index": index, "task_id": response["request_id"]})
         _save(state_path, state)
     state["complete"] = True
     _save(state_path, state)

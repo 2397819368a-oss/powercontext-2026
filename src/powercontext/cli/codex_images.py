@@ -169,7 +169,7 @@ def image_diagnostic(plugin: dict[str, Any]):
         and server.get("enabled")
         and server.get("available")
         and server.get("vision_configured")
-        and server.get("worker_running")
+        and server.get("processing_enabled")
         and not server.get("error_code")
     )
     return Diagnostic(

@@ -58,6 +58,7 @@ from powercontext.http import (
     Capabilities,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
+    CaptureImageRequest,
     CaptureWorkingNoteRequest,
     ClearScopeBindingRequest,
     ClearScopeBindingResponse,
@@ -83,18 +84,6 @@ from powercontext.http import (
     EnrollRemoteSkillTargetRequest,
     ErrorResponse,
     ExperienceArtifact,
-    ExperimentalCaptureImageRequest,
-    ExperimentalCaptureImageResponse,
-    ExperimentalGetImageAssetRequest,
-    ExperimentalGetImageAssetResponse,
-    ExperimentalGetImageStatusRequest,
-    ExperimentalGetImageTaskRequest,
-    ExperimentalImageStatus,
-    ExperimentalImageTask,
-    ExperimentalImageTaskPage,
-    ExperimentalListImageTasksRequest,
-    ExperimentalReparseImageRequest,
-    ExperimentalRetryImageTaskRequest,
     ExternalSkillResolution,
     FinalizeHandoffRequest,
     FlushMemoryRequest,
@@ -111,6 +100,9 @@ from powercontext.http import (
     GetConnectorCheckpointRequest,
     GetExperienceRequest,
     GetHandoffReportRequest,
+    GetMediaAssetRequest,
+    GetMediaAssetResponse,
+    GetMediaRequestRequest,
     GetMemoryCapacityRequest,
     GetMemoryEntryRequest,
     GetSkillPackageRequest,
@@ -137,6 +129,7 @@ from powercontext.http import (
     ListExternalSkillsResponse,
     ListManagedSkillsRequest,
     ListManagedSkillsResponse,
+    ListMediaRequestsRequest,
     ListMemoryChangesRequest,
     ListMemoryChangesResponse,
     ListMemoryEntriesRequest,
@@ -145,6 +138,9 @@ from powercontext.http import (
     ListRemoteSkillTargetsResponse,
     ListScopesRequest,
     ListSourcesRequest,
+    MediaCaptureReceipt,
+    MediaProcessingRequest,
+    MediaRequestPage,
     MemoryCapacity,
     MemoryMutationResponse,
     PrepareContextRequest,
@@ -180,6 +176,7 @@ from powercontext.http import (
     RenameRemoteSkillTargetRequest,
     ReplaceAccessBindingRequest,
     ReplaceArtifactRequest,
+    RequestImageAnalysisRequest,
     ResolveExternalSkillRequest,
     ResolveScopeBindingRequest,
     ResolveScopeSelectionRequest,
@@ -239,6 +236,7 @@ from powercontext.http._generated.operations import (
     APPROVE_CANDIDATE,
     BIND_ARTIFACT_HANDLE,
     CAPTURE_CONTENT_SOURCE,
+    CAPTURE_IMAGE,
     CAPTURE_WORKING_NOTE,
     CHECK_ACCESS,
     CLEAR_SCOPE_BINDING,
@@ -256,13 +254,6 @@ from powercontext.http._generated.operations import (
     DOWNLOAD_REMOTE_SKILL_PACKAGE,
     DOWNLOAD_SKILL_PACKAGE,
     ENROLL_REMOTE_SKILL_TARGET,
-    EXPERIMENTAL_CAPTURE_IMAGE,
-    EXPERIMENTAL_GET_IMAGE_ASSET,
-    EXPERIMENTAL_GET_IMAGE_STATUS,
-    EXPERIMENTAL_GET_IMAGE_TASK,
-    EXPERIMENTAL_LIST_IMAGE_TASKS,
-    EXPERIMENTAL_REPARSE_IMAGE,
-    EXPERIMENTAL_RETRY_IMAGE_TASK,
     FINALIZE_HANDOFF,
     FLUSH_MEMORY,
     FLUSH_PROFILE,
@@ -283,6 +274,8 @@ from powercontext.http._generated.operations import (
     GET_EXPERIENCE,
     GET_HANDOFF_REPORT,
     GET_LIVENESS,
+    GET_MEDIA_ASSET,
+    GET_MEDIA_REQUEST,
     GET_MEMORY_CAPACITY,
     GET_MEMORY_ENTRY,
     GET_MEMORY_ENTRY_TAGS,
@@ -310,6 +303,7 @@ from powercontext.http._generated.operations import (
     LIST_DREAM_RUNS,
     LIST_EXTERNAL_SKILLS,
     LIST_MANAGED_SKILLS,
+    LIST_MEDIA_REQUESTS,
     LIST_MEMORY_CHANGES,
     LIST_MEMORY_ENTRIES,
     LIST_REMOTE_SKILL_TARGETS,
@@ -340,6 +334,7 @@ from powercontext.http._generated.operations import (
     REPLACE_ARTIFACT,
     REPLACE_ARTIFACT_TAGS,
     REPLACE_MEMORY_ENTRY_TAGS,
+    REQUEST_IMAGE_ANALYSIS,
     RESOLVE_ARTIFACT_HANDLE,
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
@@ -610,33 +605,25 @@ class PowerContextClient:
 
         return await self._request(CAPTURE_WORKING_NOTE, request)
 
-    async def capture_image(self, request: ExperimentalCaptureImageRequest) -> ExperimentalCaptureImageResponse:
-        """Durably save one original and pending parse intent; no inference waits."""
-        return await self._request(EXPERIMENTAL_CAPTURE_IMAGE, request)
+    async def capture_image(self, request: CaptureImageRequest) -> MediaCaptureReceipt:
+        """Capture exact bytes and a durable interpretation request."""
+        return await self._request(CAPTURE_IMAGE, request)
 
-    async def get_image_asset(self, request: ExperimentalGetImageAssetRequest) -> ExperimentalGetImageAssetResponse:
-        """Read exact original bytes within the authorized Scope."""
-        return await self._request(EXPERIMENTAL_GET_IMAGE_ASSET, request)
+    async def get_media_asset(self, request: GetMediaAssetRequest) -> GetMediaAssetResponse:
+        """Read exact retained bytes without invoking a model."""
+        return await self._request(GET_MEDIA_ASSET, request)
 
-    async def get_image_task(self, request: ExperimentalGetImageTaskRequest) -> ExperimentalImageTask:
-        """Read exact interpretation, original and bounded attempt history."""
-        return await self._request(EXPERIMENTAL_GET_IMAGE_TASK, request)
+    async def get_media_request(self, request: GetMediaRequestRequest) -> MediaProcessingRequest:
+        """Read a scoped processing request and exact result references."""
+        return await self._request(GET_MEDIA_REQUEST, request)
 
-    async def list_image_tasks(self, request: ExperimentalListImageTasksRequest) -> ExperimentalImageTaskPage:
-        """Read a bounded page of scoped image materials without calling a model."""
-        return await self._request(EXPERIMENTAL_LIST_IMAGE_TASKS, request)
+    async def list_media_requests(self, request: ListMediaRequestsRequest) -> MediaRequestPage:
+        """List scoped requests with bounded keyset pagination."""
+        return await self._request(LIST_MEDIA_REQUESTS, request)
 
-    async def get_image_status(self, request: ExperimentalGetImageStatusRequest) -> ExperimentalImageStatus:
-        """Inspect image processing readiness without a provider probe."""
-        return await self._request(EXPERIMENTAL_GET_IMAGE_STATUS, request)
-
-    async def retry_image_task(self, request: ExperimentalRetryImageTaskRequest) -> ExperimentalImageTask:
-        """Create an idempotent new task preserving the failed task's profile."""
-        return await self._request(EXPERIMENTAL_RETRY_IMAGE_TASK, request)
-
-    async def reparse_image(self, request: ExperimentalReparseImageRequest) -> ExperimentalImageTask:
-        """Create an idempotent new interpretation using the current Vision profile."""
-        return await self._request(EXPERIMENTAL_REPARSE_IMAGE, request)
+    async def request_image_analysis(self, request: RequestImageAnalysisRequest) -> MediaProcessingRequest:
+        """Retry a pinned profile or explicitly reparse with exact preconditions."""
+        return await self._request(REQUEST_IMAGE_ANALYSIS, request)
 
     async def get_access_principal(self) -> AccessMeResponse:
         """Return the authenticated Principal and enforceable Access capabilities."""

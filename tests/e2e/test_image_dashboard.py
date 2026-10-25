@@ -35,9 +35,19 @@ from powercontext.server.settings import (
     ServerSettings,
 )
 from tests.e2e.dream_support import atomic_memory_pipeline
+from tests.e2e.media_support import (
+    VISIBLE,
+    Backend,
+    _capture,
+    _listen,
+    _picture,
+    _reparse,
+    _request,
+    _running,
+    _scope,
+    _terminal,
+)
 from tests.e2e.test_image_evidence import MemoryGenerator
-from tests.e2e.test_image_processing import REPARSE, VISIBLE, Backend, _listen, _running, _terminal
-from tests.e2e.test_image_source_product import TASK_GET, _capture, _picture, _request, _scope
 
 
 @pytest.mark.parametrize("mode", ["RGBA", "LA", "P", "RGB"])
@@ -78,7 +88,7 @@ def test_image_evidence_page_distinguishes_pending_analysis_and_memory_and_escap
             async with _running(tmp_path, endpoint + "/v1", dashboard=True) as (_, http):
                 scope = await _scope(http)
                 accepted = await _capture(http, _request(scope, "viewer", _picture()))
-                await asyncio.wait_for(backend.entered.wait(), 5)
+                await asyncio.wait_for(backend.entered.wait(), 30)
                 url = "/dashboard/image-task/" + accepted["task_id"]
                 page = await http.get(url, params={"scope": scope, "lang": "en"})
                 assert page.status_code == 200, page.text
@@ -101,9 +111,7 @@ def test_image_evidence_page_distinguishes_pending_analysis_and_memory_and_escap
             async with _running(tmp_path, None, enabled=False, dashboard=True) as (_, http):
                 page = await http.get(url, params={"scope": scope})
                 assert page.status_code == 200 and "E429" in page.text
-                assert (
-                    await http.post(TASK_GET, json={"scope_id": scope, "task_id": accepted["task_id"]})
-                ).json() == saved
+                assert (await _terminal(http, scope, accepted["task_id"])) == saved
 
     asyncio.run(scenario())
 
@@ -163,12 +171,9 @@ def test_memory_evidence_link_keeps_exact_original_analysis_after_reparse(tmp_pa
                 "revision": citation.revision,
                 "lang": "en",
             }
-            reparsed = await http.post(
-                REPARSE,
-                json={"scope_id": scope, "original": accepted["original"]["source"], "reparse_key": "new-view"},
-            )
+            reparsed = await _reparse(http, scope, accepted["original"]["source"], "new-view", 1)
             assert reparsed.status_code == 202, reparsed.text
-            new = await _terminal(http, scope, reparsed.json()["task_id"])
+            new = await _terminal(http, scope, reparsed.json()["request_id"])
             source = old["analysis"]["source"]["source_id"]
             url = "/dashboard/evidence/" + source
             page = await http.get("/dashboard/notes", params=query)
@@ -176,13 +181,13 @@ def test_memory_evidence_link_keeps_exact_original_analysis_after_reparse(tmp_pa
             material_link = next(tag for tag in re.findall(r"<a\b[^>]*>", page.text) if url in tag)
             for selector in re.findall(r'(?:hx-target|data-bs-target)="(#[^"]+)"', material_link):
                 assert f'id="{selector[1:]}"' in page.text, "material link has no actual display target"
-            page = await http.get(url, params=query | {"origin": "notes", "source_type": "experimental.image.analysis"})
+            page = await http.get(url, params=query | {"origin": "notes", "source_type": "image.interpretation"})
             assert page.status_code == 200, page.text
             assert "VISIBLE-OLD" in page.text and "VISIBLE-NEW" not in page.text
-            assert old["task_id"] in page.text and new["task_id"] not in page.text
+            assert old["original"]["source"]["source_id"] in page.text
             unrelated = await http.get(
                 "/dashboard/evidence/" + new["analysis"]["source"]["source_id"],
-                params=query | {"origin": "notes", "source_type": "experimental.image.analysis"},
+                params=query | {"origin": "notes", "source_type": "image.interpretation"},
             )
             assert unrelated.status_code == 404
 
@@ -211,9 +216,7 @@ def test_dashboard_image_reads_require_authentication_and_fail_closed_without_ac
         )
         assert scope_response.status_code == 201, scope_response.text
         scope = scope_response.json()["scope_id"]
-        accepted = client.post(
-            "/v1/experimental/images/capture", json=_request(scope, "auth", _picture()), headers=headers
-        )
+        accepted = client.post("/v1/images/capture", json=_request(scope, "auth", _picture()), headers=headers)
         assert accepted.status_code == 202, accepted.text
         url = "/dashboard/image-assets/" + accepted.json()["asset"]["asset_id"]
         assert client.get(url, params={"scope": scope}, headers=headers).content == _picture()

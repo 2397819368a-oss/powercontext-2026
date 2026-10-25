@@ -14,7 +14,12 @@
 
 """Built-in Source components."""
 
-from powercontext.builtin.images.models import IMAGE_ANALYSIS_DEFINITION, ORIGINAL_IMAGE_DEFINITION
+from powercontext.builtin.images.models import (
+    IMAGE_ANALYSIS_DEFINITION,
+    IMAGE_INTERPRETATION_DEFINITION,
+    MEDIA_IMAGE_ORIGINAL_DEFINITION,
+    ORIGINAL_IMAGE_DEFINITION,
+)
 from powercontext.builtin.sources.content import (
     CONTENT_SOURCE_ADAPTER,
     CONTENT_SOURCE_DEFINITION,
@@ -70,6 +75,8 @@ BUILTIN_SOURCE_REGISTRY = SourceDefinitionRegistry((
     SKILL_USAGE_SOURCE_DEFINITION,
     ORIGINAL_IMAGE_DEFINITION,
     IMAGE_ANALYSIS_DEFINITION,
+    MEDIA_IMAGE_ORIGINAL_DEFINITION,
+    IMAGE_INTERPRETATION_DEFINITION,
 ))
 
 __all__ = [

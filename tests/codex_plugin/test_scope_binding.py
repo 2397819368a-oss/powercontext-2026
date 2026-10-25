@@ -32,8 +32,8 @@ def _operations_with_scope_mode(scope_mode: str) -> frozenset[str]:
         for value in vars(generated_operations).values()
         if isinstance(value, generated_operations.Operation)
         and value.scope_mode == scope_mode
-        # These experimental operations are HTTP-only, outside the MCP tool catalog.
-        and "experimental-images" not in value.tags
+        # Media operations are HTTP-only, outside the MCP tool catalog.
+        and not {"images", "media"}.intersection(value.tags)
     )
 
 
@@ -83,7 +83,7 @@ def test_pre_tool_hook_scope_modes_match_generated_openapi_metadata(bind_tools_m
     sorted(
         value.operation_id
         for value in vars(generated_operations).values()
-        if isinstance(value, generated_operations.Operation) and "experimental-images" in value.tags
+        if isinstance(value, generated_operations.Operation) and {"images", "media"}.intersection(value.tags)
     ),
 )
 def test_http_only_image_operations_are_not_fabricated_as_mcp_tools(

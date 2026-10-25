@@ -17,13 +17,11 @@
 // generated from openapi/powercontext.yaml; do not edit.
 
 export const OPERATIONS = {
-  experimental_retry_image_task: { method: 'POST', path: '/v1/experimental/images/task/retry', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [202], emptyStatuses: [] },
-  experimental_reparse_image: { method: 'POST', path: '/v1/experimental/images/reparse', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [202], emptyStatuses: [] },
-  experimental_capture_image: { method: 'POST', path: '/v1/experimental/images/capture', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [202], emptyStatuses: [] },
-  experimental_get_image_asset: { method: 'POST', path: '/v1/experimental/images/asset/get', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
-  experimental_list_image_tasks: { method: 'POST', path: '/v1/experimental/images/tasks/list', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
-  experimental_get_image_status: { method: 'POST', path: '/v1/experimental/images/status', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
-  experimental_get_image_task: { method: 'POST', path: '/v1/experimental/images/task/get', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  capture_image: { method: 'POST', path: '/v1/images/capture', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [202], emptyStatuses: [] },
+  get_media_asset: { method: 'POST', path: '/v1/media/assets/get', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  get_media_request: { method: 'POST', path: '/v1/media/requests/get', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  list_media_requests: { method: 'POST', path: '/v1/media/requests/list', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  request_image_analysis: { method: 'POST', path: '/v1/images/analysis/request', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [202], emptyStatuses: [] },
   list_atomic_memories: { method: 'POST', path: '/v1/atomic-memory/list', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
   search_atomic_memory: { method: 'POST', path: '/v1/atomic-memory/search', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
   merge_atomic_memories: { method: 'POST', path: '/v1/atomic-memory/merges', location: "body", scopeMode: 'current', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },

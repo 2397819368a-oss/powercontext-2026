@@ -51,7 +51,7 @@ def _setup(module, monkeypatch, tmp_path, *, version="0.162.0-alpha.2"):
 
     def post(route, request, **kwargs):
         requests.append(request)
-        return {"status": "accepted", "task_id": "it_" + str(len(requests)).zfill(64)}
+        return {"status": "accepted", "request_id": "mr_" + str(len(requests)).zfill(64)}
 
     monkeypatch.setattr(worker, "_post_json", post)
     monkeypatch.setattr(module, "resolve_scope_id", lambda *args, **kwargs: "scope")
@@ -125,7 +125,7 @@ def test_bytes_staged_before_upload_survive_transcript_loss_and_new_turn(image_c
     monkeypatch.setattr(
         worker,
         "_post_json",
-        lambda route, request, **kw: requests.append(request) or {"status": "accepted", "task_id": "it_" + "1" * 64},
+        lambda route, request, **kw: requests.append(request) or {"status": "accepted", "request_id": "mr_" + "1" * 64},
     )
     worker.drain(settings, wait_seconds=0)
     assert base64.b64decode(requests[0]["bytes_base64"]) == original

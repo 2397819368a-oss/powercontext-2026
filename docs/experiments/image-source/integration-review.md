@@ -1,62 +1,57 @@
 ---
-title: 图片功能整合审查与验收结论
-description: 图片实现范围、review 修复状态、RFC 架构差异及合并前待完成的验收。
+title: 图片证据验证与兼容范围
+description: RFC 1972 对齐后的行为测试、容量成本和外部验收边界。
 ---
 
-# 图片功能整合审查与验收结论
+# 图片证据验证与兼容范围
 
-本实现对应 [#1932](https://github.com/oceanbase/powercontext/issues/1932)，基于 upstream/master `558b8262d0f332a1eef8759faf3423fce5357155`。PR #1956 用于审查图片 Source 和 Codex 采集实现；架构对齐和完整真实验收尚未完成，不作为合并就绪结论。
+## 架构反馈对应实现
 
-## 当前实现
+[RFC #1972](https://github.com/oceanbase/powercontext/pull/1972) 已有审查认可记录，合并状态由该 RFC 的 GitHub 页面决定。本实现以其共享三表、解释 Artifact、既有 Supervisor 与原始证据顺序要求为依据，不把实现推送当作 RFC 合并或产品发布。
 
-图片默认关闭。普通配置向导与单份 .env 提供可选图片配置；可以明确复用支持多模态的 OpenAI Chat generation 连接，也可以独立配置 Vision endpoint。常规 server 安装包含轻量解码依赖。模型自动下载和托管未实现，连接已有本地 endpoint 与管理本地模型是不同能力。
-
-授权附件或显式 PNG/JPEG 上传先保存资产及原图 Source，再执行可恢复的视觉解析任务。解析成为不可变 Source，通过固定文字证据投影进入现有 Artifact 流程。重试、重新解析和历史回读保持精确身份，读取不重新识图。原图不会以 Base64 文字输入普通生成器。
-
-标准 setup codex 管理项目授权和客户端采集器，doctor codex 检查 Scope、连接及生命周期。Dashboard 提供图片列表、缩略图、任务状态、OCR 和原图；Atomic Memory revision 的 sources 可链接精确历史解析。首次插件启用和 Hook 信任仍由宿主要求。没有新增图片专用记忆确认机制，提取、协调、合并和既有写策略保持生效。首版限定文件 SQLite、静态 PNG/JPEG 和已验证的宿主表示。
-
-## 修复与审查状态
-
-主干集成保留 Atomic Memory、EvidenceChild、Dashboard 阅读页、Access 与 OpenAPI 契约。已有 HTTP 路径与 schema 保持原样；七个图片操作及 Python/JS/Desktop 类型由官方脚本生成。
-
-当前契约包含召回通道权重、score 约束、启动上下文、Working Note 和统一 Candidate。图片采集与 Codex 启动上下文共用正常会话入口，原图和不可读解析仍不能进入生成流程，Working Note 的资格限制保持生效。Dashboard 保留审核页、Scope 读取和历史版本，并支持 Memory 精确图片证据链接。Desktop 的操作摘要及类型由合并后的 OpenAPI 生成；Memory 延迟审计使用主干实现，MiniCPM 适配保留。
-
-- 补齐 Interrupt Hook 集成清单。
-- 按授权时间恢复停机期间的新会话，保留已经登记的读取游标。
-- 观察记录达到预算后继续投递已暂存 outbox，保持授权前隐私边界。
-- watcher 停止超时后终止并回收，避免监督进程因此退出；无效配置安全关闭采集。
-- 明确 Memory 协调动作的最终正文与身份要求，结构化生成拒绝空写并使用原有有限重试补全，不放宽来源和身份校验。
-- 暂存容量不足时保留读取位置，投递后自动续读；兼容仍在库中的旧容量错误记录，保留授权时期检查和未投递材料。
-- 在投递分页之前筛选项目授权，关闭项目的积压不会占据其他项目的投递页；每次发送前重新核对授权。
-
-2026-10-25 核对 GitHub 上的三条代码 review：容量压力保留读取游标并兼容旧错误状态；授权筛选发生在投递分页前，发送前再次检查；builtin extra 声明直接依赖 platformdirs，CI 保留 builtin 并加入 images 隔离安装。对应行为与实际 wheel 隔离安装的验证结果见实施记录。三条线程仍未关闭，本次核对没有代审查者标记解决。
-
-此前 Open Code Review 的外部执行和 delegate 补审范围分别记录于实施记录。此次范围是既有 review 和主干冲突涉及的行为，不是对整个 PR 的新一轮完整审查。
-
-## 架构反馈状态
-
-[RFC #1972](https://github.com/oceanbase/powercontext/pull/1972) 已提交，包含 Artifact 复用、存储职责及表结构比较，并有 2026-10-15 的批准记录；截至本次核对仍未合入。RFC 提议使用 `image-analysis` Artifact、确定性发布 Source，以及 `pc_media_assets`、`pc_media_processing_requests`、`pc_media_capacity` 三张共享媒体表。
-
-当前运行时仍把解析结果保存为不可变 Source，使用七张 `pc_experimental_image_*` 表。因此“先完成 RFC 设计审查、复用 Artifact、收敛新增表”的反馈尚未全部落实到实现。此次 rebase 保留已有身份、恢复和历史读取行为，架构调整需要单独实现并验证迁移及兼容策略。
-
-## 已验证内容及限制
-
-| 验证 | 实际结果 |
+| 反馈 | 实现与证据 |
 | --- | --- |
-| 2026-10-25 review 核对 | 采集投递与 Desktop watcher 37 项通过；Python 3.11、3.14 的 builtin/images 四组真实 wheel 隔离安装均通过 |
-| 2026-10-25 主干集成 | 图片、权限、Memory 协调、HTTP 资源限制及契约集合 257 项通过；唯一失败为 Windows 测试路径过长，该项使用短临时目录重跑通过。没有修改生产逻辑或断言 |
-| 2026-10-25 构建与检查 | Desktop lint、98 项 UI 测试和 build 通过；Python/JS/Desktop 生成检查、两份 lock 检查及 Linux 目标 ty 通过。原生 Windows ty 的 34 项诊断位于 PR 未改动的代码中，其他 pre-commit hooks 通过 |
+| 复用 Artifact 框架 | image-analysis Family 复用版本、head、lineage、精确读取与权限；原图 Source → 精确 Artifact → 确定性解释 Source → Memory |
+| 减少新增表 | 仅共享资产、请求、容量三表；BLOB 与 Source/回执/意图原子接收，没有图片私有版本表、文件资产或第二套租约 |
+| 复用调度 | 实际 ArtifactProcessingSupervisor 子进程与 loopback HTTP；Vision-only 配置、预算、429、明确失败、进程崩溃及晚到响应 |
+| 迟到事实 | 实际 SQLite/子进程解释，受控 Memory 模型；同窗与跨窗旧图片及 reparse 不覆盖更新文字，消费游标仍推进 |
+| 权限 | enforced HTTP：Scope 管理不隐含内容读取；Artifact 分享可读解释，但不能读取原图 Scope/资产/请求；禁止通用写入伪造图片 Source |
+| 迁移 | 已有文字库只读 plan、显式 apply、完整 SQLite 备份恢复，保持原 Source 身份/payload/journal；部分 schema 和计划变更拒绝 |
+| 兼容策略 | 旧七表／文件导入明确拒绝；实验 Definition 解码保留；逻辑归档 v1 含媒体提前拒绝，普通 Memory 排序元数据可复制 |
 
-当前真实模型可以抽取候选，但新主干的完整后台协调和发布尚未验收通过。Flash/Pro 曾返回无效输出；空正文问题的说明及结构化重试已修复，仍需验证真实后台产物与新会话实际引用。旧 Memory 机制的成功实验记录不能代替当前 Atomic Memory 验收。
+## 本地行为验证
 
-Windows 本地全库 ty 仍有既有 POSIX 原生扫描相关错误，Linux 目标检查通过；没有宣称本地 Windows 全库全部通过。已有 GitHub CI 通过不能替代真实图片、普通模型和新桌面会话的独立验收。
+环境为 Windows 11 AMD64、Python 3.14.5、SQLite 3.50.4。测试使用独立文件数据库、真实 HTTP 和真实 Supervisor spawn，不连接私有服务。
 
-## 合并前待完成
+- `tests/e2e/test_media_storage.py`：接收重放、资产去重、故障回滚、并发配额、活动请求替换、冻结迁移、SQLite 备份与损坏拒绝。
+- `tests/e2e/test_media_processing.py`：真实 child PID、HTTP 调用、OS 终止后的已花费未知尝试、租约恢复、429 三次预算、失败 retry 与旧 claim 失效。
+- `tests/e2e/test_media_http.py`：五个原生操作、PNG/JPEG、参数与体积准入、权限矩阵、Artifact 分享和同键回执。
+- `tests/e2e/test_media_memory_order.py` 与逐陈述单测：同窗/跨窗、重启、reparse、混合事实、未知依据、明确日期、逻辑复制及损坏锚点写入前拒绝。
+- 现有图片 Evidence、Dashboard、Codex、CLI、配置向导、Memory、归档和生成契约回归继续覆盖公共行为。实际执行结果与命令保存在 [实施记录](implementation-log.md)。
 
-- 当前 Atomic Memory 的真实后台发布、精确来源以及新桌面聊天的显式检索、自动召回和实际答案。
-- 数据库与图片资产配对备份的实际恢复，核查历史身份、字节、引用及索引。
-- 拖入、粘贴、JPEG、多图、中断、禁用/重开，以及最终完整 Open Code Review 与修复后复审。
-- 新提交的文档/CI 检查，以及 macOS/Linux 生命周期和长期资源/质量测试。
-- 对齐 RFC #1972 的解析 Artifact、共享媒体存储及 Memory 时间依据，确定现有实验记录的迁移和兼容策略；收敛公开命名与 PR 范围。managed-local 下载与运行另行实现。
+完整 SQLite backup 是媒体恢复路径；含媒体 Scope 不支持 portable bundle v1。这是明确的格式边界，不能把普通文字的逻辑复制测试描述成媒体导出验收。
 
-操作见 [桌面指南](desktop-testing.md)，素材与预期答案见 [复杂测试案例](complex-test-case.md)。私有连接、真实附件、数据库、探测脚本和完整日志位于被忽略的本地目录，不进入 PR。
+## 容量与锁成本
+
+可复现脚本为 `evaluation/media_capacity.py`，原始结果见 [media-capacity-results.json](media-capacity-results.json)。比较生产容量计数方案与同一 SQLite 写事务内 SUM/COUNT 聚合方案，均经过真实 PNG 接收和耐久提交。896 个活跃请求起步，128 个样本补至 1024 上限，再验证八个新请求拒绝；聚合比较中的锁超时仅在计时批次后顺序补齐，以核对相同容量边界。
+
+| 保留资产 | 方案 | 并发 | 接收 p95 ms | 已接受 / 测量批次 | 锁超时 |
+| --- | --- | --- | --- | --- | --- |
+| 8 个、600 B | 容量计数 | 1 | 40.038 | 128/128 | 0 |
+| 8 个、600 B | 聚合 | 1 | 30.936 | 128/128 | 0 |
+| 8 个、600 B | 容量计数 | 8 | 1442.921 | 128/128 | 0 |
+| 8 个、600 B | 聚合 | 8 | 884.926 | 128/128 | 0 |
+| 131080 个、1 GiB | 容量计数 | 1 | 32.971 | 128/128 | 0 |
+| 131080 个、1 GiB | 聚合 | 1 | 126.019 | 128/128 | 0 |
+| 131080 个、1 GiB | 容量计数 | 8 | 1382.179 | 128/128 | 0 |
+| 131080 个、1 GiB | 聚合 | 8 | 2344.771 | 115/128 | 13 |
+
+小数据上计数行有额外 SQL 开销；大量小资产时全表 SUM 扩大持锁时间。计数方案并未消除 SQLite 单写者竞争，八路时 p95 仍超过一秒。报告包含锁获取调用时间、从获取完成到提交返回的持锁下界、SQL 条数和 EXPLAIN；聚合逻辑输入为所有资产与当时活跃请求，不把它当作精确 VM 扫描行数或物理 I/O。
+
+两个方案均使用生产完整启动核对。1 GiB/131080 资产与 896 请求核对约 10.3–10.8 秒；这是 O(保留字节数 + 请求数) 的恢复成本，不是常数时间启动。批次按联合主键 seek，单批 BLOB 最多 16 MiB。历史压力 BLOB 只验证存储完整性，不是模型或解码 fixture。
+
+另行使用真实 1536×1536 随机 PNG，每张约 7.09 MB，测量八次新 BLOB 写入。顺序接收 p95 191.449 ms，持锁下界 p95 94.315 ms；四路接收 p95 496.881 ms，持锁下界 p95 128.391 ms。解码发生在写事务外。少量样本、Windows 本地文件系统与同时运行的回归测试限制这些测量，不据此承诺其他部署延迟。
+
+## 外部验收边界
+
+loopback provider 返回受控结构化内容，Memory 模型由测试注入；它们验证协议、顺序和事务，不评价外部视觉模型质量。真实子进程、OS 终止与实际 SQLite backup 已执行；外部生产服务、真实 Codex Desktop 拖图/粘贴、全新聊天自动召回和 macOS/Linux 采集器生命周期没有在本次实现中重新验收。历史探测材料不替代当前代码的验收。Desktop 原生协议资格绑定实际 wheel 和合同摘要，不推导图片 UI 资格。

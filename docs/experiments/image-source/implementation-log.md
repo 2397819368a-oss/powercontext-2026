@@ -5,6 +5,10 @@ description: 按阶段记录目标、实际变更、验证证据、限制和后�
 
 # 图片 Source 实验功能实施过程记录
 
+## 2026-10-25：RFC #1972 架构对齐实施
+
+目标阶段：依据 RFC #1972 `919d6b30b8c42bc83d38477b1379e08f09155b81` 完成共享媒体三表、image-analysis Artifact 与确定性解释发布、Supervisor 接入、Memory 逐陈述排序依据、五个公共操作、版本化迁移及兼容回读。用户明确授权实现、补齐迁移和测试，并更新 PR #1956。起点为 `9abb3628`，沿用独立 worktree 和临时数据；不操作现有服务或私有模型。实现与验证结果在本节补齐。
+
 ## 2026-10-25：PR #1956 rebase 与既有 review 核对
 
 本轮目标属于主干集成维护：将同一 PR rebase 到 `upstream/master 558b8262d0f332a1eef8759faf3423fce5357155`，解决冲突并核对 GitHub 已有 review。起点为 `85d0898fa6822e1c03b7fc8a2743481202667e9a`，备份分支为 `codex/backup-pr1956-85d0898f`。使用独立 worktree `pr1956-rebase-1025`、独立虚拟环境和临时测试数据库、资产，不操作现有服务或私有模型配置。
