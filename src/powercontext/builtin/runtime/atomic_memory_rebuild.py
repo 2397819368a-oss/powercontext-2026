@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from hashlib import sha256
 from time import perf_counter
 
@@ -236,6 +237,37 @@ async def _initialize_rebuild(connection: AsyncConnection, index: AtomicMemoryIn
         await index.reconfigure_vector_column(connection)
 
 
+async def rebuild_atomic_memory_current(
+    connection: AsyncConnection,
+    index: AtomicMemoryIndex,
+    *,
+    batch_size: int = 100,
+    guard: Callable[[], None] = lambda: None,
+) -> AtomicMemoryProjectionRebuildReport:
+    """Repair registered no-vector rows inside the maintenance owner's transaction.
+
+    The caller validates the existing schema, owns backup/recovery and commits
+    only after full Server validation. No initialization or external I/O occurs.
+    """
+    if index.capabilities.embedding_profile is not None:
+        raise AtomicMemoryIndexError("embedding-profile", "Registered repair requires a no-vector profile")
+    await _require_authority(connection)
+    artifacts = ArtifactRepository((AtomicMemory,))
+    publisher = AtomicMemoryProjectionPublisher(index)
+    after = None
+    while batch := await _identity_batch(connection, after, batch_size):
+        guard()
+        for scope_id, artifact_id in batch:
+            record = await _record(connection, artifacts, scope_id, artifact_id)
+            if record.state.state is AtomicMemoryStateValue.ACTIVE:
+                await publisher.publish(connection, scope_id, record, await publisher.prepare(record.artifact.content))
+            else:
+                await publisher.remove(connection, scope_id, artifact_id)
+            after = scope_id, artifact_id
+    await connection.execute(index.table.delete().where(_obsolete_current(index)))
+    return await verify_atomic_memory_current(connection, index, batch_size=batch_size)
+
+
 async def rebuild_atomic_memory_projection(
     database: AsyncDatabase,
     index: AtomicMemoryIndex,
@@ -325,4 +357,9 @@ async def rebuild_atomic_memory_projection(
     )
 
 
-__all__ = ["AtomicMemoryProjectionRebuildReport", "rebuild_atomic_memory_projection", "verify_atomic_memory_current"]
+__all__ = [
+    "AtomicMemoryProjectionRebuildReport",
+    "rebuild_atomic_memory_current",
+    "rebuild_atomic_memory_projection",
+    "verify_atomic_memory_current",
+]

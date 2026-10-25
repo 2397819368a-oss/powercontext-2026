@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sqlite3
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeVar
 
-from sqlalchemy import Connection
+from sqlalchemy import Connection, create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -33,6 +36,7 @@ from powercontext.builtin.persistence.oceanbase import OceanBaseConfig
 from powercontext.builtin.persistence.oceanbase import profile as oceanbase_profile
 from powercontext.builtin.persistence.seekdb import SeekDBConfig
 from powercontext.builtin.persistence.seekdb import profile as seekdb_profile
+from powercontext.builtin.persistence.sqlite import SQLiteConfig
 
 from .locking import local_migration_lock
 from .models import MigrationError, digest
@@ -61,7 +65,7 @@ class MaintenanceConnections:
 
     def __init__(
         self,
-        config: SeekDBConfig | OceanBaseConfig,
+        config: SQLiteConfig | SeekDBConfig | OceanBaseConfig,
         *,
         evidence_directory: Path | None = None,
         lock_coordination: Literal["single-host"] | None = None,
@@ -73,6 +77,8 @@ class MaintenanceConnections:
         self.acknowledge_previous_run = acknowledge_previous_run
 
     def coordination(self, identity: BackendIdentity) -> dict[str, str]:
+        if isinstance(self.config, SQLiteConfig):
+            return {"mode": "database-file"}
         if isinstance(self.config, SeekDBConfig):
             return {"mode": "engine-directory", "directory": str(self.config.path.expanduser().resolve())}
         coordination = {
@@ -92,6 +98,8 @@ class MaintenanceConnections:
         *,
         writable: bool = False,
     ) -> _T:
+        if isinstance(self.config, SQLiteConfig):
+            return self._sqlite(operation, self.config, writable=writable)
         if isinstance(self.config, SeekDBConfig):
             path = self.config.path.expanduser().resolve()
             identity = BackendIdentity(
@@ -114,6 +122,45 @@ class MaintenanceConnections:
                 initial_inode = _directory_inode(path) if path.exists() else None
                 return asyncio.run(self._seekdb(operation, self.config, path, identity, initial_inode))
         return asyncio.run(self._oceanbase(operation, self.config, writable=writable))
+
+    @staticmethod
+    def _sqlite(
+        operation: Callable[[Connection | None, BackendIdentity, Callable[[], None]], _T],
+        config: SQLiteConfig,
+        *,
+        writable: bool,
+    ) -> _T:
+        url = make_url(config.url)
+        if (
+            not config.is_persistent
+            or url.query
+            or not url.database
+            or url.username
+            or url.password
+            or url.host
+            or url.port
+        ):
+            raise MigrationError("unsupported_target", "Maintenance requires a regular persistent SQLite file URL.")
+        target = Path(url.database).absolute().resolve()
+        identity = BackendIdentity("sqlite", digest({"kind": "sqlite", "path": str(target)}), target.name)
+        if not target.exists():
+            return operation(None, identity, lambda: None)
+        if not target.is_file() or target.stat().st_nlink != 1:
+            raise MigrationError("unsupported_target", "Use a regular SQLite file without hard-link aliases.")
+        with local_migration_lock(target) if writable else nullcontext():
+            uri = target.as_uri() + ("?mode=rw" if writable else "?mode=ro")
+            engine = create_engine(
+                "sqlite://", creator=lambda: sqlite3.connect(uri, uri=True, isolation_level=None, timeout=0)
+            )
+            try:
+                with engine.connect() as connection:
+                    connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                    if not writable:
+                        connection.exec_driver_sql("PRAGMA query_only=ON")
+                    connection.exec_driver_sql("BEGIN IMMEDIATE" if writable else "BEGIN")
+                    return operation(connection, identity, lambda: None)
+            finally:
+                engine.dispose()
 
     async def _seekdb(
         self,
