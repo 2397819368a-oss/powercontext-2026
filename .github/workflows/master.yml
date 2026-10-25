@@ -146,6 +146,31 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/role-venv/bin/python" sqlalchemy fastapi
           "$RUNNER_TEMP/role-venv/bin/python" -I scripts/ci_role_smoke.py cli
 
+  docs-tests:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.suites || '{}').docs_tests) }}
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.12"
+
+      - name: Test documentation contracts
+        run: |
+          uv run --locked python -m pytest -q -ra \
+            tests/test_release_version.py \
+            tests/test_full_capability_docs.py \
+            tests/test_integration_guidance_evaluation.py \
+            tests/test_docs_remote_access_contract.py \
+            tests/e2e/test_mcp_full_profile.py
+
   worker-observability:
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -298,6 +323,7 @@ jobs:
             tests/builtin/persistence/test_database_backup_providers.py \
             tests/builtin/persistence/test_database_migration_connections.py \
             tests/e2e/test_topic_memory_recovery_migration.py \
+            tests/builtin/persistence/test_mysql_migration_checks.py \
             tests/builtin/persistence/test_mysql_migration_schema.py -k seekdb \
             2>&1 | tee seekdb-migrations.log
           uv run --locked --extra seekdb pytest --collect-only -q --color=no \
@@ -427,6 +453,27 @@ jobs:
           tests/builtin/test_native_code_multilanguage.py
           tests/e2e/test_native_code_multilanguage.py
 
+      - name: Verify Codex resolves and launches cmd shims on Windows
+        run: >-
+          uv run --locked --no-sync pytest -q
+          tests/test_system_cli.py::test_codex_json_runner_launches_the_resolved_cmd_shim
+          tests/test_system_cli.py::test_codex_mcp_list_runner_launches_the_resolved_cmd_shim
+          tests/test_system_cli.py::test_codex_diagnostics_run_through_the_resolved_cmd_shim
+          tests/test_system_cli.py::test_codex_runners_report_non_utf8_cmd_errors
+          tests/test_system_cli.py::test_codex_runners_preserve_json_output
+          tests/test_system_cli.py::test_codex_runners_report_a_missing_executable
+          tests/test_system_cli.py::test_codex_batch_install_rejects_unsafe_input_before_launch
+          tests/test_system_cli.py::test_codex_batch_alias_with_trailing_space_still_rejects_unsafe_arguments
+          tests/test_system_cli.py::test_codex_runners_prefer_path_over_the_current_directory
+          tests/test_system_cli.py::test_codex_runners_honor_an_explicit_dot_path_entry
+          tests/test_system_cli.py::test_codex_path_executable_prefers_earlier_pathext_entries
+          tests/test_system_cli.py::test_codex_path_executable_treats_an_empty_path_value_as_no_search
+          tests/test_system_cli.py::test_codex_path_executable_resolves_empty_path_entries_in_the_working_directory
+          tests/test_system_cli.py::test_codex_batch_install_preserves_supported_input
+          tests/test_system_cli.py::test_codex_batch_install_rejects_unsafe_returned_marketplace
+          tests/test_system_cli.py::test_codex_batch_runners_reject_unsafe_executable_path
+          tests/test_system_cli.py::test_codex_native_executable_preserves_arguments
+
       - name: Verify managed guidance and exact rollback bytes on Windows
         run: >-
           uv run --locked --no-sync pytest -q
@@ -440,6 +487,13 @@ jobs:
         shell: pwsh
         run: |
           Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 0
+
+      - name: Verify portable archive restoration and SQLite URI targets on Windows
+        run: >-
+          uv run --locked --no-sync pytest -q
+          tests/builtin/portability/test_bundle.py
+          tests/test_archive_cli.py
+          tests/e2e/test_portable_archive.py
 
       # Keep pytest's default temporary root: a short --basetemp would hide
       # regressions in the nested checkout fixtures covered by issue #1501.

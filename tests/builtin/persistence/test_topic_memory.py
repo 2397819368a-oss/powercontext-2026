@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import struct
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -102,6 +103,17 @@ class _SwitchableIndex:
         /,
     ) -> None:
         await self.delegate.replace(connection, scope_id, topic_ref, projection)
+        if self.fail_replace:
+            raise RuntimeError("injected projection failure")  # noqa: TRY003
+
+    async def replace_many(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        items: Sequence[tuple[ArtifactRef, TopicMemoryProjection]],
+        /,
+    ) -> None:
+        await self.delegate.replace_many(connection, scope_id, items)
         if self.fail_replace:
             raise RuntimeError("injected projection failure")  # noqa: TRY003
 
@@ -227,6 +239,15 @@ def test_topic_search_deployment_weights_change_results_and_request_fusion_repla
             _scope_id: str,
             _topic_ref: ArtifactRef,
             _projection: TopicMemoryProjection,
+            /,
+        ) -> None:
+            pass
+
+        async def replace_many(
+            self,
+            _connection: AsyncConnection,
+            _scope_id: str,
+            _items: Sequence[tuple[ArtifactRef, TopicMemoryProjection]],
             /,
         ) -> None:
             pass
@@ -2097,7 +2118,7 @@ def test_sqlite_vector_probe_rejects_a_detail_channel_dimension_mismatch() -> No
 
 
 def test_sqlite_topic_publication_without_returning_survives_revision_rollback_and_reopen(tmp_path: Path) -> None:
-    """Simulate the pre-3.35 SQL restriction without substituting the storage backend."""
+    """Publish and retrieve revisions when the driver does not use RETURNING."""
 
     def reject_returning(_connection, _cursor, statement, _parameters, _context, _executemany):
         if "RETURNING" in statement.upper():
@@ -2167,7 +2188,7 @@ def test_sqlite_topic_publication_without_returning_survives_revision_rollback_a
                 assert current.topic.content == revised
                 assert current.is_current
                 for scope_id, expected in (("scope-a", second.topic.as_ref()), ("scope-b", first.topic.as_ref())):
-                    for mode in ("vector", "hybrid"):
+                    for mode in ("fts", "vector", "hybrid"):
                         result = await repository.search(
                             connection,
                             scope_id,
@@ -2178,7 +2199,10 @@ def test_sqlite_topic_publication_without_returning_survives_revision_rollback_a
                             embedding_profile=embedding_profile,
                         )
                         assert tuple(hit.artifact_ref for hit in result.hits) == (expected,)
-                        assert {"topic_vector", "detail_vector"} <= set(result.hits[0].matched_by)
+                        if mode in {"fts", "hybrid"}:
+                            assert {"topic_fts", "detail_fts"} <= set(result.hits[0].matched_by)
+                        if mode in {"vector", "hybrid"}:
+                            assert {"topic_vector", "detail_vector"} <= set(result.hits[0].matched_by)
 
     asyncio.run(scenario())
 

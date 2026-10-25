@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -477,6 +477,21 @@ class OwnerCommit:
             scope_id, candidate_id, family, _identity(proposed_owner), target, idempotency_key
         )
         return await self.recovery._stage(self.connection, _CandidateIntent(attestation))
+
+    async def attest_candidate_owners(self, attestations: Sequence[CandidateOwnerAttestation]) -> tuple[str, ...]:
+        operations = []
+        for item in attestations:
+            operations.append(
+                await self.attest_candidate_owner(
+                    scope_id=item.scope_id,
+                    candidate_id=item.candidate_id,
+                    family=item.family,
+                    proposed_owner=item.proposed_owner,
+                    target=item.target,
+                    idempotency_key=item.idempotency_key,
+                )
+            )
+        return tuple(operations)
 
 
 def _idempotent_audit(access: AccessControlService) -> IdempotentAccessAuditStore:

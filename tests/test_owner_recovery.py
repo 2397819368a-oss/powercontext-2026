@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 
 import pytest
@@ -28,6 +28,7 @@ from powercontext.server.authz import (
     AccessAuditContext,
     AccessConflictError,
     AccessUnavailableError,
+    CandidateOwnerAttestation,
     PrincipalRef,
     ResourceRef,
 )
@@ -226,6 +227,37 @@ def test_candidate_recovery_retains_exact_existing_target(tmp_path):
             assert attestation is not None
             assert attestation.target == RESOURCE and attestation.proposed_owner == ALICE
             assert await access.artifact_owner(RESOURCE) is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_candidate_batch_recovery_preserves_the_domain_transaction_and_proposers(tmp_path, rollback):
+    attestations = (
+        CandidateOwnerAttestation("scope", "new", "profile", ALICE, None, "new-owner"),
+        CandidateOwnerAttestation("scope", "update", "profile", BOB, RESOURCE, "update-owner"),
+    )
+
+    async def scenario():
+        async with _stores(tmp_path) as (database, access, recovery):
+            with pytest.raises(RuntimeError, match="domain failed") if rollback else nullcontext():
+                async with database.transaction() as connection:
+                    await connection.execute(insert(OBJECTS).values(identity="batch"))
+                    await recovery.for_transaction(connection).attest_candidate_owners(attestations)
+                    if rollback:
+                        raise RuntimeError(DOMAIN_FAILURE)
+            assert await access.candidate_owner("scope", "new") is None
+            assert await access.candidate_owner("scope", "update") is None
+        async with _stores(tmp_path) as (database, access, recovery):
+            pending = await recovery.pending()
+            assert len(pending) == (0 if rollback else 2)
+            async with database.transaction() as connection:
+                assert len((await connection.execute(select(OBJECTS))).all()) == (0 if rollback else 1)
+            for item in pending:
+                await recovery.replay(item.operation_id)
+            for expected in attestations:
+                assert await access.candidate_owner("scope", expected.candidate_id) == (None if rollback else expected)
+            assert await recovery.pending() == ()
 
     asyncio.run(scenario())
 

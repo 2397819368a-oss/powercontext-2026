@@ -3535,6 +3535,8 @@ export interface components {
             status: components["schemas"]["PreparedContextStatus"];
             content: string | null;
             content_bytes: number;
+            /** @description Why this preparation lost a retrieval channel it would otherwise have used. Absent unless the request asked with `explain` and a channel was lost, so a response a Host injects keeps its four fields. The values are the two inference failures among RFC 1435's four `SearchGroup.fallback_reason` spellings, so a later Receipt reuses them instead of restating the cause. `none` travels as absence, and `reused_fts_fallback` is not a cause here: a later round reusing a failed round's keyword-only outcome is still explained by that round's `inference_*` value, which outranks it. */
+            reason?: components["schemas"]["PreparedContextReason"] | null;
         };
         BootstrapContextItem: {
             kind: components["schemas"]["BootstrapContextItemKind"];
@@ -3932,12 +3934,12 @@ export interface components {
              */
             remaining_work: boolean;
             /**
-             * @description Compatibility field; Atomic Memory processing always returns zero.
+             * @description Indicator that the write gate held this window: 0 for no HOLD, 1 for HOLD, regardless of how many Sources the window contains. A held window is consumed: current_cursor advances past those Sources and the Runtime does not retry them, so a caller that needs the content re-captures it.
              * @default 0
              */
             held_count: number;
             /**
-             * @description Compatibility field; Atomic Memory processing always returns an empty array.
+             * @description Gate rejection codes reported for this window; empty unless held_count is 1.
              * @default []
              */
             hold_codes: string[];
@@ -4287,6 +4289,11 @@ export interface components {
              * @default false
              */
             include_code: boolean;
+            /**
+             * @description Opt into reporting which retrieval channel this preparation lost, as `reason` on the response. Off by default, because a response a Host injects keeps its four fields.
+             * @default false
+             */
+            explain: boolean;
             assembly?: components["schemas"]["ContextAssembly"];
             /** @description Optional exact receipt for the last successfully injected bootstrap package. Only fully delivered Atomic Memory revisions from an injected same-Scope receipt are removed before candidate limiting and sufficiency assessment; Artifacts whose bootstrap bodies were truncated remain eligible. */
             bootstrap_receipt_id?: string;
@@ -4889,6 +4896,8 @@ export interface components {
         BootstrapContextItemKind: "atomic-memory" | "handoff";
         /** @enum {string} */
         BootstrapReceiptState: "pending" | "injected" | "skipped" | "failed";
+        /** @enum {string} */
+        PreparedContextReason: "inference_timeout" | "inference_unavailable";
         /** @enum {string} */
         BootstrapSkipReason: "disabled" | "no_eligible_context" | "already_delivered" | "preparation_failed";
         /** @enum {string} */

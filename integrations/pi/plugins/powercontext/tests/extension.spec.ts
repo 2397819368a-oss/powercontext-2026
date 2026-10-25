@@ -438,6 +438,7 @@ describe('PowerContext Pi extension', () => {
     })).resolves.toEqual({ systemPrompt: `Base instructions\n\n${GUIDANCE}` })
 
     expect(fetch.mock.calls.some(([url]) => url === 'http://127.0.0.1:8000/v1/sources/content')).toBe(false)
+    expect(JSON.stringify(fetch.mock.calls)).not.toContain('sk-live-secret')
   })
 
   it('does not persist a prompt containing a conventional password assignment', async () => {

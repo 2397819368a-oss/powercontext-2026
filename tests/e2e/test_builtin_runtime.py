@@ -63,6 +63,54 @@ class _ContentCandidatePipeline:
         )
 
 
+def test_scoped_source_capture_many_keeps_order_and_replay_identity() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Batch capture", summary="Stable ordered input", idempotency_key="batch-capture")
+            )
+            sources = runtime.sources.for_scope(scope.scope_id)
+            values = (
+                CaptureSource(source_id="first", content="First fact", metadata={}),
+                CaptureSource(source_id="second", content="Second fact", metadata={}),
+                CaptureSource(source_id="third", content="Third fact", metadata={}),
+            )
+            receipts = await sources.capture_many(values)
+            assert tuple(receipt.sequence for receipt in receipts) == (1, 2, 3)
+            assert await sources.capture_many(values) == receipts
+            with pytest.raises(SourceConflictError):
+                await sources.capture_many((
+                    values[0],
+                    CaptureSource(source_id="second", content="Changed", metadata={}),
+                ))
+            assert (
+                await sources.capture(CaptureSource(source_id="fourth", content="Fourth fact", metadata={}))
+            ).sequence == 4
+
+    asyncio.run(scenario())
+
+
+def test_atomic_memory_create_many_returns_exact_current_records() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+            assert runtime.scopes is not None
+            assert runtime.atomic_memory is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Memory batch", summary="Complete returned records", idempotency_key="memory-batch")
+            )
+            memories = runtime.atomic_memory.for_scope(scope.scope_id)
+            contents = tuple(AtomicMemoryContent(kind="fact", text=f"Fact {index}") for index in range(3))
+            created = await memories.create(contents)
+            assert tuple(record.artifact.content for record in created.records) == contents
+            assert tuple(record.artifact.revision for record in created.records) == (1, 1, 1)
+            assert all(len(record.artifact.lineage.sources) == 1 for record in created.records)
+            for record in created.records:
+                assert await memories.get(record.artifact.artifact_id) == record
+
+    asyncio.run(scenario())
+
+
 def test_builtin_runtime_rejects_unregistered_scope_without_persisting_data(tmp_path) -> None:
     async def scenario() -> None:
         database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
@@ -200,6 +248,17 @@ def test_working_note_capture_does_not_promote_into_memory() -> None:
                             metadata={field: field_value},
                         )
                     )
+            with pytest.raises(InvalidRuntimeRequestError) as naive_expiry:
+                await runtime.sources.for_scope(scope.scope_id).capture_working_note(
+                    CaptureWorkingNote(
+                        source_id="naive-expiry",
+                        content="The expiry has no time zone.",
+                        session_id="session-1",
+                        note_kind=WorkingNoteKind.VALIDATION,
+                        expires_at=datetime(2099, 1, 1),  # noqa: DTZ001 - naive on purpose
+                    )
+                )
+            assert naive_expiry.value.code == "working-note-expiry-timezone"
             captured = await runtime.sources.for_scope(scope.scope_id).capture_working_note(
                 CaptureWorkingNote(
                     source_id="note-1",
@@ -238,7 +297,7 @@ def test_working_note_capture_does_not_promote_into_memory() -> None:
                             expires_at=datetime(2099, 1, 1, 8, tzinfo=UTC),
                         )
                     )
-                with pytest.raises(InvalidRuntimeRequestError):
+                with pytest.raises(InvalidRuntimeRequestError) as past_expiry:
                     await runtime.sources.for_scope(scope.scope_id).capture_working_note(
                         CaptureWorkingNote(
                             source_id="never-accepted",
@@ -248,6 +307,7 @@ def test_working_note_capture_does_not_promote_into_memory() -> None:
                             expires_at=datetime(2099, 1, 1, 8, tzinfo=UTC),
                         )
                     )
+                assert past_expiry.value.code == "working-note-expiry-past"
 
             assert runtime.atomic_memory is not None
             flushed = await runtime.atomic_memory.for_scope(scope.scope_id).flush()

@@ -220,7 +220,7 @@ no collection revision, entry_version_id or MemoryCitation.
 | `entries/list` | Returns the Scope's `entries: AtomicMemoryRecord[]` and `next_cursor`; `include_inactive=true` includes all four states |
 | `search` | Runs `fts` as `text` mode and keeps `auto/vector/hybrid` and tag_filter; each hit's `memory` is an AtomicMemoryRecord |
 | `remember` with omitted or null `expected_revision` | Creates independent memories; returns `changed` and `records: AtomicMemoryRecord[]` |
-| `flush` | Runs Atomic Source processing, keeping the existing consumption progress, status and counts; `memory` is null, held_count is 0 and hold_codes is empty |
+| `flush` | Runs Atomic Source processing; `memory` is null. A write-gate HOLD prevents Memory writes but consumes the Source window and advances its cursor. `held_count` is 0 or 1; `hold_codes` reports the rejection codes. A held window is not automatically retried. |
 
 The following legacy operations are rejected before execution and never read legacy storage:
 
