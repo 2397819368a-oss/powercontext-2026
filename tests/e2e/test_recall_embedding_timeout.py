@@ -205,12 +205,15 @@ def test_a_failing_provider_keeps_lexical_recall_and_classifies_the_failure(
     _assert_fallback_record(record, expected)
 
 
-def test_one_budget_bounds_the_embedding_waits_of_a_preparation_across_scopes(tmp_path: Path) -> None:
+def test_one_budget_bounds_the_embedding_waits_of_a_preparation_across_scopes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """The budget is the preparation's, not each search's.
 
     A preparation searches its Scope and every context reference. If each search waited a full budget, a slow
     provider would hold a three-Scope preparation for three budgets, past the one-second Hook request of some hosts,
-    and the Host would drop the context entirely instead of keeping the lexical matches.
+    and the Host would drop the context entirely instead of keeping the lexical matches. Once the first search has
+    spent the budget, the later ones do not call the provider, so the fallback event counts only the real timeout.
     """
 
     budget = 0.2
@@ -239,7 +242,11 @@ def test_one_budget_bounds_the_embedding_waits_of_a_preparation_across_scopes(tm
     assert prepared.status == "ready"
     assert _MEMORY in (prepared.content or "")
     assert prepared.reason == "inference_timeout"
-    assert sum(embedding.waits) < budget * 1.5
+    # This is the external inference-attempt budget for one request.
+    assert len(embedding.waits) == 1
+    assert embedding.waits[0] < budget * 1.5
+    (record,) = _fallbacks(caplog)
+    _assert_fallback_record(record, "inference_timeout")
 
 
 def test_a_sufficient_budget_waits_for_the_query_embedding(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
