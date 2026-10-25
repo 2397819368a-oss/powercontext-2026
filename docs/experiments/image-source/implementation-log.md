@@ -5,6 +5,23 @@ description: 按阶段记录目标、实际变更、验证证据、限制和后�
 
 # 图片 Source 实验功能实施过程记录
 
+## 2026-10-25：PR #1956 rebase 与既有 review 核对
+
+本轮目标属于主干集成维护：将同一 PR rebase 到 `upstream/master 558b8262d0f332a1eef8759faf3423fce5357155`，解决冲突并核对 GitHub 已有 review。起点为 `85d0898fa6822e1c03b7fc8a2743481202667e9a`，备份分支为 `codex/backup-pr1956-85d0898f`。使用独立 worktree `pr1956-rebase-1025`、独立虚拟环境和临时测试数据库、资产，不操作现有服务或私有模型配置。
+
+- 执行 `git rebase --rebase-merges upstream/master`，保留合并拓扑和 16 个功能/修复提交的原始身份，重建主干集成 merge 和 Desktop 资格记录提交。共处理 13 个冲突文件，保留双语 Codex 图片与输入隐私说明、Memory 完整正文及身份校验、Server 请求标识与图片错误边界，以及两侧的权限和协议回归。
+- Python、JS 和 Desktop 契约由官方脚本重新生成；最终 OpenAPI 与原 PR 完全相同，摘要仍为 `f86ca993b9e39e75948a83a4a038c0eaa2aadf6e0d14c60b37fcc9be83e2dfcb`。保留历史 Desktop 资格记录；已有资格不代表对当前二进制或真实图片宿主的新增验收。两份 uv 锁文件使用与 CI 一致的 uv 0.10.12 生成，保留主干依赖更新。
+- 三条代码 review 均已有行为修复：容量压力保持 watching 和原游标，兼容旧 image_outbox_full 错误；投递前按授权筛选再分页，发送前重查授权；builtin 直接声明 platformdirs，CI 同时覆盖 builtin/images。没有代审查者关闭线程。
+- `python -m pytest -q tests/codex_plugin/test_image_delivery.py tests/codex_plugin/test_image_desktop_watch.py`：37 passed，包含容量自动恢复、显式重试、旧错误游标、跨项目投递和重新授权隐私边界。
+- `uv build --wheel --out-dir .powercontext/role-wheel` 后，在四个新环境分别安装该 wheel 的 builtin/images extra，使用 Python 3.11、3.14 执行 `python -I scripts/ci_role_smoke.py <extra>`：四组全部通过，包括运行时打开、Memory 写入、关闭、重开及搜索。未借用开发依赖。
+- 使用 `python -m pytest -n 2 -q --basetemp .powercontext/t-integrate` 检查图片 E2E、采集/生命周期、Access、Memory 协调及重试、HTTP 资源限制、MiniCPM、ZCode 协议和 API/JS/Desktop/图片契约：257 passed、1 failed。失败位于孤立资产恢复用例的重命名，目标路径超过 Windows 常规路径限制；以 `--basetemp D:/t/pc1956-20261025-orphan` 单独重跑该项，1 passed。没有改动实现、预算或断言。权限并发回归另行执行，2 passed；与集成集合重叠。
+- `pnpm --dir desktop lint`、`test`、`build` 通过，98 项 UI 测试通过。工具为 Node 22.23.2、pnpm 11.13.1、Java 21；项目声明的 Node 24.14.1 engine 提示保留，不声称使用了该固定版本。
+- Python/JS 生成 `--check`、Desktop 官方生成检查、两个 `uv lock --locked`、integration guidance/capability 文档检查及 `ty check --python-platform linux` 通过。完整 `prek run -a` 中 JSON 格式 hook 规范化换行后复跑通过；原生 Windows ty 报告 34 项诊断，涉及 PR 未改动的 POSIX 原生索引、CLI 和测试代码。其余 hooks 通过；不把 Linux 目标结果当作原生 Windows 全库类型通过。
+
+架构反馈尚未全部完成：RFC #1972 已提交且有批准记录，但尚未合入；RFC 使用 image-analysis Artifact 和三张共享媒体表，当前实现仍使用解析 Source 和七张实验表。整合审查报告明确记录这些差异。此次使用 Open Code Review delegate 筛选/规则检查与 review 对应的五个文件，并检查冲突和相关调用路径；其余 70 个默认可审查文件不属于此次既有反馈核对范围，不宣称完成新一轮全 PR 审查。
+
+本轮没有新增真实 Codex Desktop 上传、模型调用、新会话召回、配对恢复或原生 macOS/Linux 生命周期验收。下一步是按 RFC 确定实现与迁移方案，并完成这些真实验收。以原 head 的精确 lease 更新同一 PR；不执行合并，不沿用旧 head 的 GitHub CI 结果。
+
 ## 2026-10-23：CI 修复与主干冲突处理
 
 本轮属于集成维护：检查 `40e5b7e9` 的 GitHub Actions 失败，合入当前主干 `c535d816`，处理契约生成文件、依赖锁及双语文档冲突，完成相关验证后更新同一 PR。沿用隔离 worktree 和测试数据；不操作真实宿主或私有模型服务。
