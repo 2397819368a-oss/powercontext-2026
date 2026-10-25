@@ -1,0 +1,31 @@
+{
+  "format": 2,
+  "target_version": "1.4.0",
+  "mode": "upgrade-required",
+  "schema_review": {
+    "persistence_sha256": "ca3b475f2d0c883e19291a8d8b1dadbe50f93ebd93aad550a9112a3497737927",
+    "rationale": "Full Server upgrades from 1.3.0 are mandatory on SQLite, embedded seekDB and OceanBase. Acceptance must fail until the migration integration tracked in #2154 is complete."
+  },
+  "cases": [],
+  "automatic_sources": {
+    "strategy": "fixed-version",
+    "source_version": "1.3.0",
+    "profiles": [
+      {
+        "backend": "sqlite",
+        "configuration": "full-server-no-vector",
+        "suite": "tests/release_upgrades/test_full_server.py"
+      },
+      {
+        "backend": "seekdb",
+        "configuration": "full-server-no-vector",
+        "suite": "tests/release_upgrades/test_full_server.py"
+      },
+      {
+        "backend": "oceanbase",
+        "configuration": "full-server-no-vector",
+        "suite": "tests/release_upgrades/test_full_server.py"
+      }
+    ]
+  }
+}
