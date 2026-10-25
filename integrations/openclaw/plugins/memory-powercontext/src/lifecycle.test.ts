@@ -268,6 +268,102 @@ describe("PowerContext lifecycle", () => {
     expect(harness.warnings).toEqual([]);
   });
 
+  it("does not leave a replayed acknowledged Source pending at closing", async () => {
+    const harness = createLifecycleHarness();
+    const context = {
+      agentId: "main",
+      sessionId: "session-replayed-ack",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+    const event = {
+      success: true,
+      runId: "replayed-run",
+      messages: [{ role: "user", content: "same source" }],
+    };
+
+    await harness.hooks.get("agent_end")!(event, context);
+    await harness.hooks.get("gateway_stop")!({}, {});
+    expect(harness.flushScopes).toEqual(["scp_default"]);
+
+    await harness.hooks.get("agent_end")!(event, context);
+    await harness.hooks.get("gateway_stop")!({}, {});
+
+    expect(harness.flushScopes).toEqual(["scp_default"]);
+    expect(harness.warnings).toEqual([]);
+  });
+
+  it("does not flush a replayed before-compaction target twice", async () => {
+    const harness = createLifecycleHarness();
+    const beforeCompaction = harness.hooks.get("before_compaction")!;
+    const context = {
+      agentId: "main",
+      sessionId: "session-replayed-checkpoint",
+      sessionKey: "agent:main:telegram:direct:user-1",
+    };
+    const event = { messages: [{ role: "user", content: "same source" }] };
+
+    await beforeCompaction(event, context);
+    await beforeCompaction(event, context);
+
+    expect(harness.flushScopes).toEqual(["scp_default"]);
+    expect(harness.warnings).toEqual([]);
+  });
+
+  it.each(["session_end", "gateway_stop"] as const)(
+    "does not reflush a confirmed %s target when a newer position is pending",
+    async (boundary) => {
+      const harness = createLifecycleHarness();
+      const context = {
+        agentId: "main",
+        sessionId: `session-target-pending-${boundary}`,
+        sessionKey: "agent:main:telegram:direct:user-1",
+      };
+      let releaseCapabilities: (() => void) | undefined;
+      let capabilitiesStarted: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => { capabilitiesStarted = resolve; });
+      const blocked = new Promise<void>((resolve) => { releaseCapabilities = resolve; });
+      let capabilityCalls = 0;
+      harness.setCapabilitiesHandler(async () => {
+        capabilityCalls += 1;
+        if (capabilityCalls === 1) {
+          capabilitiesStarted?.();
+          await blocked;
+        }
+        return { memory_extraction: true };
+      });
+      let flushCalls = 0;
+      harness.setFlushHandler(() => {
+        flushCalls += 1;
+        return flushProgress(flushCalls === 1 ? 1 : 2);
+      });
+
+      const beforeCompaction = harness.hooks.get("before_compaction")!(
+        { messages: [{ role: "user", content: "first source" }] },
+        context,
+      ) as Promise<void>;
+      await started;
+      const closing = boundary === "session_end"
+        ? harness.hooks.get("session_end")!(
+          { sessionId: context.sessionId, messageCount: 1 },
+          context,
+        ) as Promise<void>
+        : harness.hooks.get("gateway_stop")!({}, {}) as Promise<void>;
+      await harness.hooks.get("agent_end")!(
+        { success: true, runId: "later-source", messages: [{ role: "user", content: "later source" }] },
+        context,
+      );
+      releaseCapabilities?.();
+      await Promise.all([beforeCompaction, closing]);
+
+      expect(harness.flushScopes).toEqual(["scp_default"]);
+      expect(harness.warnings).toEqual([]);
+
+      await harness.hooks.get("gateway_stop")!({}, {});
+      expect(harness.flushScopes).toEqual(["scp_default", "scp_default"]);
+      expect(harness.warnings).toEqual([]);
+    },
+  );
+
   it.each(["session_end", "gateway_stop"])(
     "shares the flush call budget across all pending Scopes at %s",
     async (lifecycleEvent) => {

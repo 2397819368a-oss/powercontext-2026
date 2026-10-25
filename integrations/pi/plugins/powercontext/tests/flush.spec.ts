@@ -90,6 +90,21 @@ describe('pending Source flusher', () => {
     expect(client.request).toHaveBeenCalledTimes(vector.expected.flush_calls)
   })
 
+  it('clears a replayed position already covered by the confirmed cursor', async () => {
+    const client = clientWith(progress(1))
+    const flusher = createPendingSourceFlusher(
+      client,
+      resolveConfig({ POWERCONTEXT_PI_FLUSH_MAX_CALLS: '1' }),
+    )
+    flusher.record('scope-a', 1)
+
+    await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
+    flusher.record('scope-a', 1)
+
+    await expect(flusher.flush('session_shutdown')).resolves.toEqual({ acknowledged: true, pendingScopes: 0 })
+    expect(client.request).toHaveBeenCalledTimes(1)
+  })
+
   it('does not acknowledge any malformed 2xx cursor vector', async () => {
     const vector = conformanceCase('malformed_acknowledgement')
     for (const variant of vector.input.invalid_cursor_variants as string[]) {

@@ -129,6 +129,14 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
   const sessionScopes = new Map<string, Set<string>>();
   const pendingPositions = new Map<string, number>();
   const confirmedCursors = new Map<string, number>();
+  const clearConfirmedPending = (scopeId: string): boolean => {
+    const pending = pendingPositions.get(scopeId);
+    if (pending === undefined || (confirmedCursors.get(scopeId) ?? -1) < pending) {
+      return false;
+    }
+    pendingPositions.delete(scopeId);
+    return true;
+  };
   const reportDeadline = (
     event: string,
     lifecycleEvent: string,
@@ -314,7 +322,12 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
       },
     }, params.signal);
     const position = sourcePosition(response);
-    pendingPositions.set(scopeId, Math.max(pendingPositions.get(scopeId) ?? 0, position));
+    const target = Math.max(pendingPositions.get(scopeId) ?? 0, position);
+    if ((confirmedCursors.get(scopeId) ?? -1) >= target) {
+      pendingPositions.delete(scopeId);
+    } else {
+      pendingPositions.set(scopeId, target);
+    }
     return position;
   };
 
@@ -342,10 +355,7 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         acknowledged ||= progress.currentCursor >= targetPosition;
         if (acknowledged) {
           onAcknowledged?.();
-          const pending = pendingPositions.get(scopeId);
-          if (pending !== undefined && observedCursor >= pending) {
-            pendingPositions.delete(scopeId);
-          }
+          clearConfirmedPending(scopeId);
         }
         if (acknowledged && !progress.remainingWork) {
           break;
@@ -502,6 +512,11 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     let targetAcknowledged = (confirmedCursors.get(scopeId) ?? -1) >= targetPosition;
     await enqueueFlush(async () => {
       const budget = { remaining: deps.getConfig().flushMaxCalls };
+      if ((confirmedCursors.get(scopeId) ?? -1) >= targetPosition) {
+        targetAcknowledged = true;
+        clearConfirmedPending(scopeId);
+        return;
+      }
       const currentTarget = pendingPositions.get(scopeId);
       if (currentTarget === undefined) {
         targetAcknowledged = (confirmedCursors.get(scopeId) ?? -1) >= targetPosition;
@@ -578,15 +593,16 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
     const signal = createClosingSignal();
     await enqueueFlush(async () => {
       const budget = { remaining: deps.getConfig().flushMaxCalls };
-      const pendingScopes = [...targets.keys()].filter((scopeId) => pendingPositions.has(scopeId));
       for (const [scopeId, targetPosition] of targets) {
-        if (
-          !pendingPositions.has(scopeId)
-          || (confirmedCursors.get(scopeId) ?? -1) >= targetPosition
-        ) {
+        if ((confirmedCursors.get(scopeId) ?? -1) >= targetPosition) {
           acknowledgedTargets.add(scopeId);
         }
+        clearConfirmedPending(scopeId);
       }
+      const pendingScopes = [...targets.keys()].filter((scopeId) => (
+        pendingPositions.has(scopeId)
+        && (confirmedCursors.get(scopeId) ?? -1) < targets.get(scopeId)!
+      ));
       if (!pendingScopes.length) {
         return;
       }
@@ -600,6 +616,11 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
           }
           const targetPosition = targets.get(scopeId)!;
           if ((confirmedCursors.get(scopeId) ?? -1) >= targetPosition) {
+            acknowledgedTargets.add(scopeId);
+            clearConfirmedPending(scopeId);
+            continue;
+          }
+          if (!pendingPositions.has(scopeId)) {
             acknowledgedTargets.add(scopeId);
             continue;
           }
@@ -656,10 +677,12 @@ export function registerPowerContextLifecycle(api: OpenClawPluginApi, deps: Life
         }
         for (const [scopeId, targetPosition] of targets) {
           if (budget.remaining === 0) break;
-          if (
-            !pendingPositions.has(scopeId)
-            || (confirmedCursors.get(scopeId) ?? -1) >= targetPosition
-          ) {
+          if ((confirmedCursors.get(scopeId) ?? -1) >= targetPosition) {
+            acknowledgedTargets.add(scopeId);
+            clearConfirmedPending(scopeId);
+            continue;
+          }
+          if (!pendingPositions.has(scopeId)) {
             acknowledgedTargets.add(scopeId);
             continue;
           }

@@ -149,7 +149,12 @@ export function createPendingSourceFlusher(
     let acknowledged = true
     let remainingCalls = config.flushMaxCalls
     for (const [scopeId, position] of targets) {
-      if (!pending.has(scopeId) || (confirmedCursors.get(scopeId) ?? -1) >= position) {
+      const confirmedCursor = confirmedCursors.get(scopeId) ?? -1
+      const currentPosition = pending.get(scopeId)
+      if (currentPosition !== undefined && confirmedCursor >= currentPosition) {
+        pending.delete(scopeId)
+      }
+      if (currentPosition === undefined || confirmedCursor >= position) {
         acknowledgedTargets.add(scopeId)
         continue
       }
@@ -171,8 +176,8 @@ export function createPendingSourceFlusher(
           scopeAcknowledged ||= progress.currentCursor >= position
           if (scopeAcknowledged) {
             acknowledgedTargets.add(scopeId)
-            const current = pending.get(scopeId)
-            if (current !== undefined && observedCursor >= current) {
+            const currentPosition = pending.get(scopeId)
+            if (currentPosition !== undefined && observedCursor >= currentPosition) {
               pending.delete(scopeId)
             }
           }
@@ -211,7 +216,12 @@ export function createPendingSourceFlusher(
   return {
     record(scopeId, position) {
       const current = pending.get(scopeId)
-      pending.set(scopeId, Math.max(current ?? 0, position))
+      const target = Math.max(current ?? 0, position)
+      if ((confirmedCursors.get(scopeId) ?? -1) >= target) {
+        pending.delete(scopeId)
+      } else {
+        pending.set(scopeId, target)
+      }
     },
     flush(lifecycleEvent, signal) {
       const targets = new Map(pending)
