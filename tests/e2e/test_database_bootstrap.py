@@ -74,16 +74,14 @@ async def assert_record(profile, name: str) -> None:
         assert (await connection.exec_driver_sql("SELECT DATABASE()")).scalar_one() == name
 
 
-_STALL_SIGNATURES = ("Timeout (0:", "TimeoutError:")
 _MAXIMUM_REPORTED_OUTPUT = 6000
 
 
 def run_seekdb_scenario(directory: Path, filename: str) -> None:
-    """Run one embedded-engine scenario, retrying once past a known engine stall.
+    """Retry once only when the child exceeds the process deadline.
 
-    A stall blocks the child inside a native call, so an in-process timeout cannot
-    recover it; a fresh directory and a new engine instance can. Only a stall is
-    retried: any other failure is reported immediately.
+    A native stall can prevent in-process cancellation, so retry with a fresh
+    engine instance. Completed failures remain fatal even after diagnostic dumps.
     """
     scenario = Path(__file__).resolve().parents[1] / "fixtures" / filename
     reported: list[str] = []
@@ -113,9 +111,18 @@ def run_seekdb_scenario(directory: Path, filename: str) -> None:
         if not failed and not stalled:
             return
         reported.append(f"attempt {attempt}:\n{_bounded_output(output)}")
-        if attempt == 2 or not (stalled or any(signature in output for signature in _STALL_SIGNATURES)):
+        if attempt == 2 or not stalled:
             break
     pytest.fail(f"{filename} failed after {len(reported)} attempt(s)\n" + "\n".join(reported))
+
+
+def test_seekdb_scenario_runner_does_not_retry_completed_assertion_failure(tmp_path: Path) -> None:
+    scenario = tmp_path / "assertion_after_diagnostic.py"
+    scenario.write_text('print("Timeout (0: diagnostic dump", flush=True)\nraise AssertionError("contract failed")\n')
+
+    with pytest.raises(pytest.fail.Exception, match="AssertionError: contract failed"):
+        run_seekdb_scenario(tmp_path, str(scenario))
+    assert not (tmp_path / "attempt-2").exists()
 
 
 def _bounded_output(output: str) -> str:

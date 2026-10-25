@@ -156,8 +156,8 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
                 )
             self._agent = Agent(
                 model if self._limits.allow_continuations else _CompleteResponseModel(model),
-                output_type=PromptedOutput(output_type),
                 deps_type=input_type,
+                output_type=PromptedOutput(output_type),
                 instructions=instructions,
                 model_settings=bounded_settings,
                 retries=self._limits.max_requests - 1,

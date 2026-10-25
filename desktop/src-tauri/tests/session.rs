@@ -280,14 +280,15 @@ async fn historical_qualification_cannot_authorize_the_current_contract() {
     let contract: serde_json::Value =
         serde_json::from_str(include_str!("../src/transport/operations.json")).unwrap();
     let state = manager.state().unwrap();
-    assert!(
-        state
-            .compatibility_profiles
-            .iter()
-            .all(|profile| Some(profile.contract_sha256.as_str())
-                != contract["contractSha256"].as_str())
+    let historical = state
+        .compatibility_profiles
+        .iter()
+        .find(|profile| profile.id == "sqlite-atomic-d9a78567-v1")
+        .unwrap();
+    assert_ne!(
+        Some(historical.contract_sha256.as_str()),
+        contract["contractSha256"].as_str()
     );
-    let historical = state.compatibility_profiles.last().unwrap();
     let state = manager
         .save_profile(
             serde_json::from_value(serde_json::json!({
@@ -314,13 +315,37 @@ async fn historical_qualification_cannot_authorize_the_current_contract() {
 }
 
 #[tokio::test]
-async fn explicit_fixture_qualification_allows_scope_browsing() {
+async fn bundled_qualification_allows_explicit_scope_browsing() {
     let server = fixture().await;
     let dir = tempfile::tempdir().unwrap();
-    let manager = manager(&dir);
-    let id = add(&manager, "Explicitly qualified fixture", &server.endpoint);
-    assert!(manager.state().unwrap().active.is_none());
-    let state = manager.check(&id, true).await.unwrap();
+    let manager = ConnectionManager::new(
+        ProfileRepository::open(dir.path().join("profiles.json"), Arc::new(NativeVault)).unwrap(),
+    );
+    let contract: serde_json::Value =
+        serde_json::from_str(include_str!("../src/transport/operations.json")).unwrap();
+    let state = manager.state().unwrap();
+    let qualification = state
+        .compatibility_profiles
+        .iter()
+        .find(|profile| {
+            Some(profile.contract_sha256.as_str()) == contract["contractSha256"].as_str()
+        })
+        .expect("the bundled contract has a qualified Server record");
+    let state = manager
+        .save_profile(
+            serde_json::from_value(serde_json::json!({
+                "id":null,"revision":null,"name":"Explicit qualified Server","endpoint":server.endpoint,
+                "authentication":"unauthenticated_loopback","caPem":null,
+                "compatibility":qualification.id,"keepCredential":false,"credential":null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(
+        state.active.is_none(),
+        "saving a profile must not activate it"
+    );
+    let state = manager.check(&state.profiles[0].id, true).await.unwrap();
     let active = state.active.unwrap();
     assert!(active.report.compatibility_verified);
     server.release.notify_one();
