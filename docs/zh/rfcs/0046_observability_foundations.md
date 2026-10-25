@@ -144,6 +144,8 @@ outcome 的含义保持一致。
 
 ## Logging boundary
 
+> 实现补充：Server 支持使用标准库 logging 提供可选文件输出、按大小轮替和 gzip 归档，macOS/Windows 个人服务默认启用。配置见[文件日志](../docs/operate/observability.md#文件输出轮替与压缩)。
+
 Server logging 覆盖：
 
 - startup、readiness change 和 shutdown；
