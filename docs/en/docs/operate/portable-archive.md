@@ -250,6 +250,9 @@ Nullable unique keys retain SQL null semantics. Dry-run results are not cached f
 checks the current target again, and write-time conflicts still roll back the transaction. Publication-chain
 and combined-tag-set checks run after the record checks.
 
+Target-check progress is reported after each completed batch, even when its processed count skips a
+1,000-record reporting threshold. Records whose target tables are absent retain periodic per-record reporting.
+
 For the representative archive containing one Scope, one journal head, and N small Sources, the compatibility
 query budget against initialized tables is `ceil(N / 100) + 2`: 3, 12, and 52 statements for 100, 1,000, and
 5,000 Sources. Missing tables require no record compatibility queries. Schema introspection, local dependency

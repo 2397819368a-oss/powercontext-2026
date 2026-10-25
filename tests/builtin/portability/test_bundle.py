@@ -25,6 +25,7 @@ import tracemalloc
 import zipfile
 from dataclasses import replace
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 
@@ -165,6 +166,31 @@ def test_validation_batches_target_queries_without_changing_classification(
                     await service.restore(archive)
                 async with target.database.transaction() as connection:
                     assert len((await connection.execute(select(SOURCES_TABLE))).all()) == count // 2
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("state", ["absent", "empty", "identical"])
+def test_validation_reports_intermediate_target_progress(tmp_path: Path, state: str) -> None:
+    async def scenario() -> None:
+        count = 2_000
+        archive = await _source_archive(tmp_path, count)
+        tables = () if state == "absent" else BUILTIN_TABLES
+        async with SQLiteProfile.open(SQLiteConfig(), tables=tables) as target:
+            service = PortableBundleService(target.database, source_decoder=_SOURCES.decode_source)
+            if state == "identical":
+                await service.restore(archive)
+            progress = []
+            validation = await service.validate(archive, progress=progress.append)
+            assert validation.compatible
+            target_progress = [event for event in progress if event.phase == "target"]
+            assert target_progress[0].processed == 1
+            assert target_progress[-1].processed == count + 2
+            assert all(event.total == count + 2 for event in target_progress)
+            # Batches can cross reporting thresholds without landing on them.
+            assert all(
+                0 < current.processed - previous.processed <= 1_000 for previous, current in pairwise(target_progress)
+            )
 
     asyncio.run(scenario())
 

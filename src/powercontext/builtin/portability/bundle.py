@@ -787,7 +787,7 @@ class PortableBundleService:
                     already_present += present
                     conflicts += different
                     processed += len(lookups)
-                    _report_progress(progress, "target", processed, total)
+                    _report_progress(progress, "target", processed, total, force=True)
                 pending.clear()
 
             for record in _iter_records(source):
@@ -2626,8 +2626,10 @@ def _report_progress(
     phase: Literal["export", "inspect", "validate", "target", "restore", "projections"],
     processed: int,
     total: int | None,
+    *,
+    force: bool = False,
 ) -> None:
-    if observer is not None and (processed in {0, 1, total} or processed % 1_000 == 0):
+    if observer is not None and (force or processed in {0, 1, total} or processed % 1_000 == 0):
         observer(BundleProgress(phase=phase, processed=processed, total=total))
 
 
