@@ -22,13 +22,40 @@ cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
 
 ## Compatibility scope
 
-[compatibility.json](src-tauri/src/connections/compatibility.json) preserves the recorded Server sources, normalized OpenAPI contract digests and qualification-wheel digests for the profiles below. The current contract is qualified by `sqlite-atomic-ec32d953-v1`; ordinary builds require explicitly selecting it and checking the connection before business operations become available. Earlier records qualify their corresponding Server source deployments and do not match this bundled contract. Historical records are disabled in the selector, and saved unavailable selections remain visible until explicitly replaced. CI builds have their own artifact identities and do not change product qualification.
+[compatibility.json](src-tauri/src/connections/compatibility.json) preserves the recorded Server sources, normalized OpenAPI contract digests and qualification-wheel digests for the profiles below. The current contract is qualified by `sqlite-atomic-4894785a-v1`; ordinary builds require explicitly selecting it and checking the connection before business operations become available. Earlier records qualify their corresponding Server source deployments and do not match this bundled contract. Historical records are disabled in the selector, and saved unavailable selections remain visible until explicitly replaced. CI builds have their own artifact identities and do not change product qualification.
 
 The real Server harness covers SQLite with anonymous loopback, static Bearer, HTTPS with explicit CA/base path, and injected-provider/enforced access. It exercises save/search/exact reads, identity changes, binding revocation, ambiguous writes without replay and Scope pagination. Installed UI checks cover repeated launches preserving the existing editor, late committed-save responses preserving a new Scope draft, explicit connection/Scope selection, clipboard copies, connection isolation, draft cancellation, byte limits and independent Server survival after Desktop exit.
 
 Selecting a compatibility profile does not attest the remote binary identity. Existing `sqlite-1.1.1-v1` / `sqlite-63f918b7-v1` / `sqlite-ab43e3a7-v1` / `sqlite-f1089f4e-v1` / `sqlite-6e237568-v1` / `sqlite-legacy-58f7f4f6-v1` selections require explicitly choosing an available matching profile and rechecking the connection. Desktop reads memories only through Atomic Memory references, so Servers that answer only with Memory entry citations are not qualified. CLI diagnostics separately verify the registered executable path and digest, then validate the diagnostic response schema. The observed version is optional report information; a registration does not require a version.
 
 ### Current Server protocol qualification
+
+#### Server 4894785a protocol qualification
+
+`sqlite-atomic-4894785a-v1` identifies Server sources at
+`4894785a6efd65d1f0ce89e4f2af3250ab2a7ae7` and normalized OpenAPI digest
+`6551eda05dbcafdafd2810fe20c8a5a33d377eb041bf6d8e47eb756bf7038dd4`.
+The qualification wheel is `powercontext-1.4.1.dev194+g4894785a6-py3-none-any.whl`,
+SHA-256 `90e72fcb9a9672dc0d3663a735ba471ef858a9561baa0547063e47b5ea714387`.
+All 578 packaged runtime files match that commit after CRLF/LF normalization;
+the contract, project configuration and lock were also compared with the recorded commit.
+The sorted wheel runtime source-manifest digest is
+`7a1922be7317e98cd1bd15f98e30bea5f6616ccd56487bd90d5879c0e6ab002f`
+(one `wheel/path sha256` entry per line with a final newline, hashing actual wheel bytes).
+
+On Windows 11 AMD64, Python 3.14.5 and Rust 1.95.0, the unmodified native `server_probe`
+and real-Server harness passed against the isolated wheel and SQLite in all four modes:
+anonymous loopback, static Bearer, HTTPS with explicit CA/base path, and injected-provider/enforced access.
+The ten recorded operations cover Scope pagination, Atomic Memory save/search/exact revision reads,
+identity changes, same-identity revocation, committed writes with lost responses without replay,
+and independent Server survival after client exit. The product's locked native dependencies were used.
+
+Reproduce by building the wheel at the recorded commit, running
+`fixture_qualification.py --server-commit 4894785a6efd65d1f0ce89e4f2af3250ab2a7ae7`,
+building the native `server_probe`, and running `desktop/tests/real_server.py`.
+This qualifies the ordinary Desktop protocol with the shared-media contract additions;
+it does not qualify image UI, a production binary, installed packages, native macOS behavior,
+credential-store workflows, signing or release readiness. Earlier qualification identities remain unchanged.
 
 #### Server ec32d953 protocol qualification
 

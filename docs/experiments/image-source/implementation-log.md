@@ -7,7 +7,37 @@ description: 按阶段记录目标、实际变更、验证证据、限制和后�
 
 ## 2026-10-25：RFC #1972 架构对齐实施
 
-目标阶段：依据 RFC #1972 `919d6b30b8c42bc83d38477b1379e08f09155b81` 完成共享媒体三表、image-analysis Artifact 与确定性解释发布、Supervisor 接入、Memory 逐陈述排序依据、五个公共操作、版本化迁移及兼容回读。用户明确授权实现、补齐迁移和测试，并更新 PR #1956。起点为 `9abb3628`，沿用独立 worktree 和临时数据；不操作现有服务或私有模型。实现与验证结果在本节补齐。
+目标阶段：依据 RFC #1972 `919d6b30b8c42bc83d38477b1379e08f09155b81` 完成共享媒体三表、image-analysis Artifact 与确定性解释发布、Supervisor 接入、Memory 逐陈述排序依据、五个公共操作、版本化迁移及兼容回读。用户明确授权实现、补齐迁移和测试，并更新 PR #1956。起点为 `9abb3628`，沿用独立 worktree 和临时数据；不操作现有服务或私有模型。
+
+### 实现与兼容
+
+- 原图改为 image.original Source；解释由 image-analysis Artifact 拥有，按精确版本发布确定性 image.interpretation Source。删除原七表／文件资产和独立 worker 实现，保留 experimental Definition 的历史解码。
+- 仅新增 pc_media_assets、pc_media_processing_requests、pc_media_capacity，共享 BLOB、固定输入与首次回执、类型化进度、claim 和派生计数。接收与结果发布分别为完整 SQLite 事务；活跃 kind/Scope 覆盖索引避免调度扫描终态历史。
+- 处理复用 ArtifactProcessingSupervisor、fencing 和独立 family 预算；Vision-only 子进程可工作。重试固定旧 profile；reparse 固定当前 profile，校验精确结果版本、配置摘要和被替换请求 state_version。未知尝试占预算，晚到失效 claim 不发布。
+- Memory 消费位置与原始事实锚点分开，保存精确 kind/text 绑定的逐陈述证据、日期及适用条件。抽取和协调均选择有界支持 ID；旧/未知冲突保留当前身份，独立事实可以前进。已有记录仅对授权、单一精确文本来源恢复依据；缺失保持未知，损坏明确失败。
+- media bundle 使用共享维护锁、只读 plan、精确计划接受、SQLite BackupProvider 和冻结 DDL。旧文字记录不改身份、payload 或 journal；七表／文件导入明确拒绝，尚不提供转换器。原生完整 SQLite 备份包含媒体；逻辑归档 v1 对媒体提前拒绝，普通 Memory 支持排序元数据复制。
+- 五个原生操作替换七个实验操作，通用 Source/Artifact/capabilities 承担读取。CLI、Dashboard 和 Codex Outbox 统一新回执；图片解码留在可选 images extra，双语配置及迁移文档同步。
+- 主干从 558b8262 更新到 6b976859。保留原分支合并拓扑并合入新主干，不丢弃此前冲突解决；新主干跳过无关候选协调时，初次 Memory 也保留陈述支持和精确图片 Artifact lineage。
+
+### 执行验证
+
+- Memory、归档、权限、图片 Evidence/Dashboard、存储及 HTTP 扩大集合：362 passed、66 skipped。同步主干和补充首次陈述支持后，Atomic Memory 与迟到证据／独立事实集合：108 passed、3 skipped；集合重叠，不累加。
+- 固定提交 checkout 中 `tests/e2e/test_media_processing.py`：5 passed，159.89 秒。实际 Supervisor spawn、HTTP、OS 终止、未知尝试恢复、429 预算、显式失败 retry、旧响应失效均执行。一次运行被本轮同步文件的中间状态干扰而导入旧模块，已在固定 checkout 完整重跑，不把该运行算作行为缺陷或通过证据。
+- API/JS/Desktop/图片生成契约：70 passed。授权、通用 records、HTTP 准入和 integration manifest：103 passed、4 skipped。最终活跃索引／冻结 schema 后的存储及迁移集合：11 passed。
+- Codex、图片 CLI、向导及 archive CLI：393 passed、6 skipped；两项严格 deadline 用例分开执行，固定 checkout 为 2 passed。并行负载下曾出现 1 秒阈值和 Stop 外层超时波动；没有更改原断言或生产逻辑。单独计时观察实际 body 超时约 0.302 秒。
+- wheel `powercontext-1.4.1.dev194+g4894785a6-py3-none-any.whl` 在六个独立环境验证：Python 3.11/3.14 的 builtin、images、server+cli。均执行 `python -I scripts/ci_role_smoke.py` 并通过；两个全新 Server 环境额外确认没有 Pillow，仍可导入和运行。
+- 该 wheel 的 578 个运行时文件与 4894785a6efd65d1f0ce89e4f2af3250ab2a7ae7 逐个核对一致（统一换行符后比较），原生 Desktop 客户端对四种真实 SQLite Server 模式全部通过。新产品资格 sqlite-atomic-4894785a-v1 绑定实际源码、合同和 wheel 摘要；原 bundled qualification 回归通过。详见 desktop/VALIDATION.md；后续活跃请求索引不改变该 HTTP 合同。
+- Desktop lint、98 项 UI 测试和 production build 通过；DSH 官方 build 与 427 passed、1 skipped 通过。网站 lint、测试及生产构建完成，验证 980 个公开页面和内部链接。Node 为 22.23.2，保留 Desktop 声明 24.14.1 的 engine 提示。
+- Python/JS 官方生成检查、Desktop 官方生成、根与 e2e/bub uv 0.10.12 lock 检查、integration manifest 文档检查、Linux 目标 ty 和非类型 prek 通过。Windows 原生 ty 仍为 34 项既有诊断，不声称全平台类型检查通过。
+
+### 容量测量和复审
+
+`evaluation/media_capacity.py` 在最终 schema 上比较容量计数与事务内 SUM/COUNT，包含 1 GiB/131080 个资产、896 起步至 1024 活跃请求、1/8 路并发和队列上限。八路聚合比较出现 13 次 SQLite 锁超时；完整报告同时记录启动核对、SQL 计划、锁时间、新的约 7 MB PNG BLOB 写入及并行文档构建限制。数字以 media-capacity-results.json 与 integration-review.md 为准，不声明通用性能保证。
+
+使用 Open Code Review delegate preview/rule 对本轮实现差异逐文件复审，并按 REVIEW.md 检查端到端写入、授权、恢复、历史读取和消费。生成契约通过官方检查，新增活跃索引问题已修复并复测；审查清单与规则保存在忽略目录 .powercontext/ocr-1972-*。这是本轮架构变更范围的审查，不冒充重新审阅所有未变动的早期采集实现。
+
+外部视觉模型质量、真实 Codex Desktop 拖图／粘贴、全新聊天自动召回和原生 macOS/Linux 采集器没有重新验收。推送同一 PR 后以新 head CI 为准；不执行合并。
+
 
 ## 2026-10-25：PR #1956 rebase 与既有 review 核对
 

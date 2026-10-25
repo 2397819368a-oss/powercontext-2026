@@ -334,7 +334,7 @@ Codex 的环境中；Windows setup 会把鉴权写入用户环境，但 Desktop 
 
 ## 可选图片材料
 
-图片能力默认关闭，在普通配置向导中启用。支持文件 SQLite、PNG/JPEG；服务后台识图后保存不可变解析 Source，再由已有 Memory／Topic 处理决定是否提取记忆。图片模型可以独立配置，也可以显式复用支持图片输入的 OpenAI Chat 生成连接；不能使用 Codex 聊天订阅代替模型配置。
+图片能力默认关闭，在普通配置向导中启用。支持文件 SQLite、PNG/JPEG；后台识图后发布 image-analysis Artifact 精确版本及确定性的 image.interpretation Source，再由已有 Memory／Topic 处理决定是否提取记忆。解码需安装可选 `images` extra；原字节以 SQLite BLOB 保存。已有数据库需显式 media 迁移，旧七表／文件导入在写入前拒绝。图片模型可以独立配置，也可以显式复用支持图片输入的 OpenAI Chat 生成连接；不能使用 Codex 聊天订阅代替模型配置。
 
 Server 正常启动后执行常规 `powercontext setup codex`，setup 会保存当前项目授权并自动管理客户端采集器；无须另开采集脚本。用 `powercontext doctor codex` 检查当前 Scope、采集器和图片服务。首次或 Hook 定义改变时，在 Codex 审阅信任新 Hooks。
 

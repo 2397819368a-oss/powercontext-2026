@@ -268,6 +268,16 @@ async def measure(path, scopes, mode, concurrency, samples):  # noqa: C901 - mea
             name: [row[3] for row in db.execute("EXPLAIN QUERY PLAN " + sql, parameters)]
             for name, sql, parameters in [
                 ("asset_sum", "SELECT SUM(byte_size) FROM pc_media_assets", ()),
+                (
+                    "pending_scopes",
+                    "SELECT DISTINCT scope_id FROM pc_media_processing_requests WHERE processing_kind='image.interpretation' AND active_key='active' ORDER BY scope_id LIMIT 16",
+                    (),
+                ),
+                (
+                    "scope_active",
+                    "SELECT MIN(due_at) FROM pc_media_processing_requests WHERE processing_kind='image.interpretation' AND active_key='active' AND scope_id=? AND state!='running'",
+                    (scopes[0],),
+                ),
                 ("active_total", "SELECT COUNT(*) FROM pc_media_processing_requests WHERE active_key='active'", ()),
                 (
                     "active_scope",

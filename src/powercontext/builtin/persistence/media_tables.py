@@ -105,6 +105,15 @@ Index(
     MEDIA_REQUESTS.c.created_at,
     MEDIA_REQUESTS.c.request_id,
 )
+Index(
+    "ix_pc_media_active_scope",
+    MEDIA_REQUESTS.c.processing_kind,
+    MEDIA_REQUESTS.c.active_key,
+    MEDIA_REQUESTS.c.scope_id,
+    MEDIA_REQUESTS.c.state,
+    MEDIA_REQUESTS.c.due_at,
+    MEDIA_REQUESTS.c.claim_until,
+)
 MEDIA_CAPACITY = Table(
     "pc_media_capacity",
     METADATA,

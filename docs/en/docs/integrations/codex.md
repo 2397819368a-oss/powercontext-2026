@@ -377,7 +377,7 @@ Codex. Windows setup writes authorization to the user environment, but Desktop m
 
 ## Optional image materials
 
-Images are off by default and available in the ordinary configuration wizard. The experiment supports file SQLite and PNG/JPEG. Background Vision saves an immutable analysis Source; existing Memory and Topic processing decides what to extract. Configure a separate Vision connection or explicitly reuse an image-capable OpenAI Chat generation connection. The Codex chat subscription is a separate connection.
+Images are off by default and available in the ordinary configuration wizard. The experiment supports file SQLite and PNG/JPEG. Background Vision publishes an image-analysis Artifact revision and a deterministic image.interpretation Source; existing Memory and Topic processing decides what to extract. Install the optional `images` extra for decoding. Original bytes are SQLite BLOBs; existing databases need the explicit media migration, and legacy seven-table/file imports are rejected before writes. Configure a separate Vision connection or explicitly reuse an image-capable OpenAI Chat generation connection. The Codex chat subscription is a separate connection.
 
 Start Server normally, then run `powercontext setup codex`. Setup records consent for this workspace and manages the client collector automatically. No separate collector command is needed. Check Scope, collector and Server status with `powercontext doctor codex`. Trust new or changed hooks in Codex when requested.
 
