@@ -53,7 +53,6 @@ from powercontext.builtin.inference.pydantic_ai import PydanticAIEmbeddingModel
 from powercontext.builtin.persistence.atomic_memory_evidence import AtomicMemoryEvidenceRepository
 from powercontext.builtin.persistence.atomic_memory_index import (
     AtomicMemoryIndexCapabilities,
-    AtomicMemoryProjection,
     AtomicMemorySearchChannels,
     AtomicMemorySearchRequest,
 )
@@ -255,7 +254,7 @@ class _VectorMemoryIndex:
     async def validate_current(self, connection: AsyncConnection, /):
         pass
 
-    async def replace(self, connection: AsyncConnection, scope_id: str, projection: AtomicMemoryProjection, /):
+    async def replace_many(self, connection: AsyncConnection, scope_id: str, projections, /):
         pass
 
     async def delete(self, connection: AsyncConnection, scope_id: str, artifact_id: str, /):
@@ -269,8 +268,8 @@ class _VectorMemoryIndex:
     async def probe_recoverable(self, connection, scope_id, request, floor, /):
         return False
 
-    async def enumerate_related(self, connection: AsyncConnection, scope_id: str, request, /):
-        return ()
+    async def enumerate_related_with_heads(self, connection: AsyncConnection, scope_id: str, request, /):
+        return (), {}
 
     async def refresh_tags(self, connection: AsyncConnection, scope_id: str, artifact_id: str, tag_keys, /):
         pass

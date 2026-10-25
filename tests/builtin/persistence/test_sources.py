@@ -37,7 +37,7 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import SHARED_TABLES, SOURCES_TABLE
 from powercontext.builtin.runtime import SubmitSourceObservation
 from powercontext.builtin.runtime.relational import RelationalContexts
-from powercontext.builtin.sources.content import CONTENT_SOURCE_ADAPTER, ContentSource
+from powercontext.builtin.sources import CONTENT_SOURCE_ADAPTER, ContentCapture, ContentSource
 from powercontext.sources import (
     AdapterSourceDefinition,
     MemoryEvidenceDeclaration,
@@ -128,6 +128,64 @@ def test_two_source_adapters_share_one_repository_and_journal() -> None:
                 loaded = await repositories.sources.get(connection, "scope-a", first.ref)
                 assert type(loaded.value) is CommitSource
                 assert loaded.value == commit
+
+    asyncio.run(scenario())
+
+
+def test_source_batch_upgrades_receipt_without_new_journal_position() -> None:
+    async def scenario() -> None:
+        source = await CONTENT_SOURCE_ADAPTER.resolve(
+            ContentCapture(source_id="receipt", content="Verified handoff", metadata={})
+        )
+        attested = source.model_copy(update={"handoff_receipt": True})
+        repository = SourceRepository((CONTENT_SOURCE_ADAPTER,))
+        async with (
+            SQLiteProfile.open(SQLiteConfig(), tables=SHARED_TABLES) as profile,
+            profile.database.transaction() as connection,
+        ):
+            results = await repository.add_many_with_status(connection, "scope", (source, attested, attested))
+            assert [created for _, created in results] == [True, False, False]
+            assert [item.journal_position for item, _ in results] == [1, 1, 1]
+            stored = await repository.get(connection, "scope", results[0][0].ref)
+            assert stored.value == attested
+            assert await repository.journal_position(connection, "scope") == 1
+
+    asyncio.run(scenario())
+
+
+def test_source_batch_binds_each_new_identity_and_preserves_replayed_evidence() -> None:
+    class BatchSource(SerializationAliasSource):
+        body: str
+
+    async def scenario() -> None:
+        declaration = MemoryEvidenceDeclaration(authority="repository_attested", verification="verified")
+        registry = SourceDefinitionRegistry((
+            AdapterSourceDefinition(SerializationAliasAdapter(BatchSource), version="2", memory_evidence=declaration),
+        ))
+        repository = SourceRepository(registry)
+        first = await registry.resolve(SerializationAliasInput(source_id="first", body="First retained text."))
+        second = await registry.resolve(SerializationAliasInput(source_id="second", body="Second retained text."))
+        async with SQLiteProfile.open(SQLiteConfig(), tables=SHARED_TABLES) as profile:
+            async with profile.database.transaction() as connection:
+                results = await repository.add_many_with_status(connection, "scope", (first, first, second))
+                assert [created for _, created in results] == [True, False, True]
+                assert [stored.journal_position for stored, _ in results] == [1, 1, 2]
+                refs = (results[0][0].ref, results[2][0].ref)
+                evidence = await repository.historical_evidence(connection, "scope", refs)
+                assert [item.declaration for item in evidence] == [declaration, declaration]
+                assert await repository.journal_position(connection, "scope") == 2
+
+            neutral = SourceRepository(
+                SourceDefinitionRegistry((
+                    AdapterSourceDefinition(SerializationAliasAdapter(BatchSource), version="2"),
+                ))
+            )
+            async with profile.database.transaction() as connection:
+                replayed = await neutral.add_many_with_status(connection, "scope", (second, first, second))
+                assert [created for _, created in replayed] == [False, False, False]
+                assert [stored.journal_position for stored, _ in replayed] == [2, 1, 2]
+                assert await neutral.historical_evidence(connection, "scope", refs) == evidence
+                assert await neutral.journal_position(connection, "scope") == 2
 
     asyncio.run(scenario())
 
