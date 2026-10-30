@@ -35,6 +35,7 @@ import hashlib
 import io
 import math
 import re
+from functools import lru_cache
 from typing import Any
 from urllib.parse import quote
 
@@ -50,6 +51,10 @@ PDF_PAGE_SOURCE_NAME = "pdf-page"
 #: Characters treated as the page heading. A 10-K repeats "Table of Contents"
 #: first, then the real heading, so the window has to be wide enough for both.
 _HEADING_CHARS = 220
+
+#: Length of the token-count cache. One 10-K needs a few thousand entries, so
+#: this covers a full document generously and still bounds memory.
+_TOKEN_CACHE_SIZE = 4096
 
 _BM25_K1 = 1.2
 _BM25_B = 0.75
@@ -303,24 +308,74 @@ async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[Any,
                 page_number = int(sources[0].source_id.rsplit(":", 1)[1])
             except (IndexError, ValueError):
                 page_number = 0
-        pool[key] = _Candidate(text=text, citation=record.citation, page_number=page_number)
+        pool[key] = _Candidate(
+            text=text,
+            citation=record.citation,
+            page_number=page_number,
+            document_id=_document_of(text),
+        )
 
     if not pool:
         return ()
 
-    ranked = _rank(question, terms, tuple(pool.values()), hints)
+    everything = tuple(pool.values())
+    named = _named_documents(everything, terms)
+    # Ranking only the named documents keeps their pages from crowding each
+    # other out, and also sharpens the inverse document frequencies: rarity
+    # measured against the other company's filing was never the rarity that
+    # mattered. With nothing named -- one document, or a question that does not
+    # say which company it wants -- every stored page stays a candidate.
+    candidates = tuple(c for c in everything if c.document_id in named) if named else everything
+
+    ranked = _rank(question, terms, candidates, hints)
     return tuple(candidate.citation for candidate in ranked[:limit])
 
 
 class _Candidate:
     """One stored page awaiting re-ranking."""
 
-    __slots__ = ("citation", "text", "page_number")
+    __slots__ = ("citation", "document_id", "text", "page_number")
 
-    def __init__(self, text: str, citation: Any, page_number: int = 0) -> None:
+    def __init__(self, text: str, citation: Any, page_number: int = 0, document_id: str = "") -> None:
         self.text = text
         self.citation = citation
         self.page_number = page_number
+        self.document_id = document_id
+
+
+def _document_of(text: str) -> str:
+    """Return the document a stored page belongs to.
+
+    The projection puts the document id on the first line, so the text alone
+    says which filing a page came from without another lookup.
+    """
+
+    head, _, _ = text.partition("\n")
+    return head.strip()
+
+
+def _named_documents(pool: Iterable[_Candidate], terms: tuple[str, ...]) -> frozenset[str]:
+    """Return the documents a question names.
+
+    One scope can hold several filings, and their pages compete for the same
+    twenty places. A question almost always names the company it is about
+    ("Does Boeing have an improving gross margin"), and the document id carries
+    that very word, so reading the name off the question turns a five-document
+    ranking back into a one-document ranking -- which is what the asker meant.
+    """
+
+    asked = set(terms)
+    named: set[str] = set()
+    for candidate in pool:
+        document_id = candidate.document_id
+        if not document_id:
+            continue
+        tokens = frozenset(
+            token for token in _TERM_PATTERN.findall(document_id.lower()) if not token.isdigit()
+        )
+        if tokens & asked:
+            named.add(document_id)
+    return frozenset(named)
 
 
 def _page_key(text: str) -> str:
@@ -455,6 +510,13 @@ _DESCRIPTIVE_CUES = frozenset(
     "strategy strategies who sell sells segments segment business businesses members".split()
 )
 
+#: A question carrying its own threshold ("more than 20%", "exceeds 3 times")
+#: is quantitative whatever it is nominally about.
+_THRESHOLD_PATTERN = re.compile(
+    r"\d\s*%|\bpercent\b|\bpercentage\b|\bmore than\b|\bless than\b|\bat least\b|"
+    r"\bexceed|\bibove\b|\bgreater than\b|\bhighest\b|\blargest\b|\bthreshold\b"
+)
+
 #: Instruction boilerplate FinanceBench-style questions append after the real
 #: question. These words appear on hundreds of pages and would only blur the
 #: term set, so they are stripped before ranking.
@@ -496,11 +558,22 @@ def _clean_question(question: str) -> tuple[str, frozenset[str]]:
 
 
 def _intent(terms: tuple[str, ...], question: str) -> str:
-    """Classify a question as answered by numbers or by description."""
+    """Classify a question as answered by numbers or by description.
+
+    Getting this wrong is more expensive than any weighting downstream: a
+    quantitative question filed as descriptive gets every page holding its
+    answer discounted for being full of figures.
+    """
 
     if set(terms) & _ANALYTICAL_CUES:
         return "analytical"
-    if "year-over-year" in question.lower() or "year over year" in question.lower():
+    lowered = question.lower()
+    if "year-over-year" in lowered or "year over year" in lowered:
+        return "analytical"
+    # A threshold turns any question into arithmetic: "categories representing
+    # more than 20% of revenue" is answered by the segment data table, however
+    # much it reads like a question about products.
+    if _THRESHOLD_PATTERN.search(lowered):
         return "analytical"
     return "descriptive"
 
@@ -529,21 +602,36 @@ _LINE_ITEMS: tuple[tuple[frozenset[str], tuple[str, ...]], ...] = (
 #: must beat a narrative page that merely *mentions* the ratio, because the
 #: annotation lives where the numbers are.
 _ANALYTICAL_STATEMENT_WEIGHT = 12.0
+#: The section that explains a movement is worth nearly as much to a question
+#: about that movement as the statement reporting it, and unlike a statement it
+#: is prose, so it does not win on figures alone and needs the explicit lift.
+_MDA_WEIGHT = 8.0
 #: Line-item phrase weight, per matched phrase, scaled by term rarity.
 _LINE_ITEM_WEIGHT = 1.5
 #: A narrative page is worth this much to a descriptive question; pages in the
 #: opening stretch (Item 1 Business, Item 1A Risk Factors) count double-ish.
-_DESCRIPTIVE_NARRATIVE_WEIGHT = 2.0
+_DESCRIPTIVE_NARRATIVE_WEIGHT = 4.0
 _FRONT_NARRATIVE_FACTOR = 1.5
 #: A question that names a statement gets its type boosted on top.
 _HINT_WEIGHT = 3.0
+#: How much a page made of figures is discounted when the question asks to be
+#: told something rather than shown a number. "Who are the customers" cannot be
+#: answered by a page that is 15% digits, however often the word occurs there:
+#: figure density is what makes a 10-K page a table rather than an explanation.
+_DIGIT_PENALTY = 20.0
 #: Segment-data tables answer "what does the company sell and to whom".
 _SEGMENT_WEIGHT = 2.0
 
-#: Statement headings as they appear at the top of a primary statement page.
+#: Section headings as they appear at the top of a primary statement page.
 _INCOME_HEAD = re.compile(r"consolidated statements? of (?:operations|income|earnings)")
 _BALANCE_HEAD = re.compile(r"consolidated balance sheets?")
 _CASHFLOW_HEAD = re.compile(r"consolidated statements? of cash flows?")
+#: Item 7 of every 10-K is Management's Discussion and Analysis, and that is
+#: where an answer about *why* a figure moved lives -- not in the statement
+#: itself, which states the figure and stays silent about the cause. Only the
+#: opening page of the section carries the heading; its continuations carry
+#: the running header instead, so a match here is the section's front door.
+_MDA_HEAD = re.compile(r"discussion\s+and\s+analysis")
 #: A table of contents repeats every heading; it carries many "item N." markers.
 _TOC_ITEM = re.compile(r"item \d+[a-z]?[\.\s]")
 #: Statement pages are dense with figures; a page that merely quotes one is not.
@@ -554,12 +642,14 @@ _HEAD_ZONE = 250
 _SEGMENT_HEAD = "segment"
 
 
-def _structure(text: str) -> tuple[frozenset[str], bool, bool]:
-    """Classify a page as (statement types, narrative, segment table).
+def _structure(text: str) -> tuple[frozenset[str], bool, bool, bool]:
+    """Classify a page as (statement types, narrative, segment table, MD&A).
 
     A primary statement is only claimed when its heading sits at the top of the
     page: the same words in a note or the table of contents are references, not
-    the statement itself.
+    the statement itself. ``narrative`` and MD&A are deliberately different
+    kinds of page: the former is prose with almost no figures, while MD&A is
+    prose *about* figures and therefore carries plenty of them.
     """
 
     flattened = " ".join(text.lower().split())
@@ -576,7 +666,8 @@ def _structure(text: str) -> tuple[frozenset[str], bool, bool]:
             statements.add("cashflow")
     narrative = not statements and numbers < 40 and len(flattened.split()) >= 250
     segment = not statements and _SEGMENT_HEAD in head and numbers >= 40
-    return frozenset(statements), narrative, segment
+    discussion = bool(_MDA_HEAD.search(head))
+    return frozenset(statements), narrative, segment, discussion
 
 
 def _line_item_score(terms: tuple[str, ...], flattened: str, inverse_frequency) -> float:
@@ -659,7 +750,7 @@ def _rank(
 
         score += _region_score(terms, flattened, counts)
 
-        statements, narrative, segment = _structure(candidate.text)
+        statements, narrative, segment, discussion = _structure(candidate.text)
         # A page claiming two statement types at once is the statements index,
         # not a statement, so only a single-type page earns the boost.
         if len(statements) == 1:
@@ -667,6 +758,10 @@ def _rank(
                 score += _ANALYTICAL_STATEMENT_WEIGHT
             if statements & hints:
                 score += _HINT_WEIGHT
+        if discussion:
+            # The discussion section explains movements; the statement that
+            # reports them is downstream of this page.
+            score += _MDA_WEIGHT
         if intent == "analytical":
             score += _line_item_score(terms, flattened, inverse_frequency)
         else:
@@ -675,6 +770,9 @@ def _rank(
                 score += _DESCRIPTIVE_NARRATIVE_WEIGHT * (_FRONT_NARRATIVE_FACTOR if front else 1.0)
             if segment:
                 score += _SEGMENT_WEIGHT
+            if _DIGIT_PENALTY:
+                ratio = len(_NUMERIC_PATTERN.findall(flattened)) / max(len(flattened), 1)
+                score /= 1.0 + _DIGIT_PENALTY * ratio
 
         # A page that covers more of the question beats a page that repeats one
         # common word: coverage is what the quality metric rewards.
@@ -704,7 +802,17 @@ def _stem(term: str) -> str:
     return term[:6]
 
 
+@lru_cache(maxsize=_TOKEN_CACHE_SIZE)
 def _token_counts(text: str) -> dict[str, int]:
+    """Return the stem counts of one text.
+
+    Tokenising is the single most expensive step here, and one turn answers
+    twenty-four questions against the same eleven hundred pages. Caching by
+    text turns repeated per-question scans into one, without anyone having to
+    hold state between calls. The mapping is returned read-only; nothing that
+    receives it writes to it.
+    """
+
     counts: dict[str, int] = {}
     for token in _TERM_PATTERN.findall(text.lower()):
         stem = _stem(token)
