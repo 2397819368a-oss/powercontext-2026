@@ -165,6 +165,7 @@ from powercontext.builtin.sources import (
     BUILTIN_SOURCE_REGISTRY,
     TEXT_EVIDENCE_PROJECTION_KEY,
 )
+from powercontext.builtin.triggers import SOURCE_WINDOW_TRIGGER_NAME
 from powercontext.errors import InvalidSourceProjectionError, SourceProjectionNotFoundError
 from powercontext.sources import Source, SourceDefinitionRegistry, SourceProjectionKey
 
@@ -800,6 +801,15 @@ def _validate_processing_registrations(configured: Sequence[ArtifactProcessingBi
             raise BuiltinConfigurationError("artifact-processing-families")
 
 
+def _count_thresholds(config: BuiltinConfig) -> dict[str, int | None]:
+    """Map each Family binding to its configured count threshold."""
+
+    return {
+        SOURCE_WINDOW_TRIGGER_NAME: config.runtime.memory_source_count_threshold,
+        TOPIC_MEMORY_SOURCE_WINDOW_BINDING: config.runtime.topic_memory_source_count_threshold,
+    }
+
+
 def _topic_memory_processing_available(
     config: BuiltinConfig,
     bindings: Sequence[ArtifactProcessingBinding],
@@ -846,6 +856,7 @@ async def _open_artifact_processing_supervisor(
                     lease_mode="oceanbase" if isinstance(config.database, OceanBaseConfig) else "single-process",
                     leases=contexts.repositories.processing_leases,
                     binding_states=contexts.repositories.processing_binding_states,
+                    count_thresholds=_count_thresholds(config),
                     tracing=tracing,
                 )
             )

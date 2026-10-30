@@ -493,6 +493,7 @@ class ScopedSourceApplication:
                             span.set_attributes({_MEMORY_CAPTURE_SOURCE_COUNT: 1})
             except BaseValueConflictError as error:
                 raise SourceConflictError("identity", error.identity) from None
+            self._runtime._wake_count_trigger()
             return SourceReceipt(
                 source_ref=SourceRef(source_type=record.source_type, source_id=record.source_id),
                 sequence=record.position,
@@ -509,6 +510,7 @@ class ScopedSourceApplication:
                 )
                 if span is not None:
                     span.set_attributes({_MEMORY_CAPTURE_SOURCE_COUNT: 1})
+            self._runtime._wake_count_trigger()
             return SourceReceipt(source_ref=context.sources.catalog.as_ref(source), sequence=sequence)
 
 
@@ -536,11 +538,13 @@ class ScopedRecordApplication:
         /,
     ) -> SourceRecord:
         async with self._runtime._scope_operation(self.scope_id), self._runtime._locked(self.scope_id):
-            return await self._runtime._records().create_source(
+            created = await self._runtime._records().create_source(
                 self.scope_id,
                 source_type,
                 content,
             )
+        self._runtime._wake_count_trigger()
+        return created
 
     async def get_source(self, source_type: str, source_id: str, /) -> SourceRecord:
         async with self._runtime._scope_operation(self.scope_id):
@@ -568,7 +572,11 @@ class ScopedRecordApplication:
         /,
     ) -> ArtifactCreated:
         async with self._runtime._scope_operation(self.scope_id), self._runtime._locked(self.scope_id):
-            return await self._runtime._records().create_artifact(self.scope_id, family, write)
+            created = await self._runtime._records().create_artifact(self.scope_id, family, write)
+        # A created Artifact also occupies a Journal position, so it can be the
+        # entry that brings a Scope up to its count threshold.
+        self._runtime._wake_count_trigger()
+        return created
 
     async def get_artifact(self, family: str, artifact_id: str, /) -> ArtifactRecord:
         async with self._runtime._scope_operation(self.scope_id):
@@ -3160,6 +3168,30 @@ class BuiltinRuntime:
 
     async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         await self.close()
+
+    def _wake_count_trigger(self) -> None:
+        """Announce a new Journal entry to the Families that admit by count.
+
+        A count threshold is evaluated by the Supervisor, so the write path has
+        to tell it that the Journal moved; otherwise the Supervisor would only
+        look again at its next scheduled window. Families without a threshold
+        are not woken, so the default configuration keeps its existing cost.
+        """
+
+        supervisors = self.artifact_processing_supervisor
+        if supervisors is None:
+            return
+        try:
+            for binding_name in supervisors.count_bindings:
+                supervisors.wake(binding_name)
+        except Exception as error:
+            log_safely(
+                logger,
+                logging.WARNING,
+                "Count-trigger supervisor wake failed after a Journal write",
+                exc_info=error,
+                extra={"event": "artifact_processing.count_wake_failed", "outcome": "written"},
+            )
 
     async def capabilities(self) -> RuntimeCapabilities:
         async with self._operation():

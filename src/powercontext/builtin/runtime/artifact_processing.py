@@ -24,7 +24,7 @@ import sys
 import time
 import traceback as traceback_module
 from collections import deque
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -58,6 +58,7 @@ from powercontext.builtin.persistence.supervision import (
     database_utc_now,
 )
 from powercontext.builtin.persistence.tables import ARTIFACT_PROCESSING_INTENTS_TABLE, ARTIFACT_PROCESSING_LEASES_TABLE
+from powercontext.builtin.runtime.count_trigger import pending_journal_counts
 from powercontext.builtin.runtime.processing_contracts import (
     ArtifactProcessingWorkAssignment,
     ArtifactProcessingWorkerCompletion,
@@ -395,6 +396,8 @@ class _FamilyState:
     scan_after: int = 0
     scan_generation: int = 0
     scan_in_progress: bool = False
+    counted_after: int = 0
+    counted_pending: bool = True
     reconcile_after: str | None = None
     reconcile_complete: bool = False
     notification_at_start: int = 0
@@ -431,6 +434,7 @@ class ArtifactProcessingSupervisor:
         retry_base_seconds: float = _RETRY_BASE_SECONDS,
         retry_cap_seconds: float = _RETRY_CAP_SECONDS,
         retry_jitter: Callable[[], float] | None = None,
+        count_thresholds: Mapping[str, int | None] | None = None,
         tracing: RuntimeTracing | None = None,
     ) -> None:
         for attribute in ("binding_name", "artifact_family", "config_prefix"):
@@ -443,6 +447,7 @@ class ArtifactProcessingSupervisor:
             raise ValueError("dedicated Supervisor must own exactly its named Family")  # noqa: TRY003
         self._database = database
         self._families = {binding.binding_name: _FamilyState(binding) for binding in bindings}
+        self._counted = _resolved_count_thresholds(count_thresholds, bindings)
         self._lease_mode = lease_mode
         self._supervisor_group = supervisor_group
         self._intents = intents or ArtifactProcessingIntentRepository()
@@ -509,11 +514,19 @@ class ArtifactProcessingSupervisor:
             self._task = asyncio.create_task(self._run(), name=f"artifact-supervisor-{self._supervisor_group}")
             await self._started.wait()
 
+    @property
+    def count_bindings(self) -> tuple[str, ...]:
+        """Report which bindings admit by count, so callers can wake only those."""
+
+        return tuple(self._counted)
+
     def wake(self, binding_name: str | None = None) -> None:
         self._notifications += 1
         for name, state in self._families.items():
             if binding_name is None or binding_name == name:
                 state.discovery_pending = True
+                if name in self._counted:
+                    state.counted_pending = True
         self._wake.set()
 
     async def close(self) -> None:
@@ -585,6 +598,11 @@ class ArtifactProcessingSupervisor:
             state.discovery_pending = True
             state.reconcile_complete = False
             state.reconcile_after = None
+            # A restart re-evaluates every count: input that never reached the
+            # threshold is still pending, and a reached threshold whose
+            # invocation failed still holds an unhandled request.
+            state.counted_after = 0
+            state.counted_pending = True
         if self._lease_mode == "oceanbase":
             self._renew_task = asyncio.create_task(self._renew(), name=f"artifact-lease-{self._supervisor_group}")
 
@@ -651,11 +669,13 @@ class ArtifactProcessingSupervisor:
         # Alternate discovery channels so explicit traffic cannot monopolize admission.
         state.automatic_next = not state.automatic_next
         if state.automatic_next:
+            await self._discover_counted(state)
             await self._discover_automatic(state)
             await self._discover_requested(state)
         else:
             await self._discover_requested(state)
             await self._discover_automatic(state)
+            await self._discover_counted(state)
 
     async def _discover_requested(self, state: _FamilyState) -> None:
         capacity = self._fresh_capacity(state)
@@ -697,6 +717,72 @@ class ArtifactProcessingSupervisor:
         else:
             state.discovery_pending = True
             state.next_discovery_at = asyncio.get_running_loop().time() + _DISCOVERY_PAGE_DELAY_SECONDS
+
+    async def _discover_counted(self, state: _FamilyState) -> None:
+        """Accept one invocation per Scope whose pending Journal entries reach the threshold.
+
+        This channel reads no Source bodies. It compares the Journal head against
+        the Family's own successful cursor, so the decision costs two indexed
+        reads per candidate and leaves the window a worker will read exactly as
+        the window limit defined it. A threshold of None keeps the time
+        condition as the only automatic trigger, which is the pre-existing
+        behaviour.
+        """
+
+        binding = state.binding
+        threshold = self._counted.get(binding.binding_name)
+        if threshold is None:
+            state.counted_pending = False
+            return
+        capacity = self._fresh_capacity(state)
+        if capacity <= 0 or not state.counted_pending:
+            return
+        counted_after = state.counted_after
+        page = min(capacity, _DISCOVERY_PAGE_SIZE)
+        admitted: list[str] = []
+        async with self._database.transaction() as connection:
+            await self._leases.require_fence(connection, self._require_current_fence())
+            rows = await self._intents.scan(
+                connection,
+                binding.binding_name,
+                after_sequence=counted_after,
+                limit=page,
+            )
+            candidates = tuple(
+                row
+                for row in rows
+                if row.scope_id not in state.queued
+                and row.scope_id not in state.running
+                and row.scope_id not in state.retries
+            )
+            counts = await pending_journal_counts(
+                connection, tuple(row.scope_id for row in candidates), binding.binding_name
+            )
+            eligible = {
+                row.scope_id
+                for row in candidates
+                # An outstanding request already covers this input. Accepting a
+                # second one would add a generation that reads no new entry, and
+                # a failure retries under the generation it already holds.
+                if row.requested_generation <= row.handled_generation
+                and counts.get(row.scope_id, 0) >= threshold
+            }
+            for row in rows:
+                counted_after = row.pending_sequence
+                if row.scope_id not in eligible:
+                    continue
+                await self._intents.request(connection, row.scope_id, binding.binding_name)
+                admitted.append(row.scope_id)
+        if len(rows) < page:
+            # A completed pass found every registered Scope, none of them over
+            # the threshold. Re-arm only on the next wake, which is what a new
+            # Journal entry, a completed invocation, or a restart publishes.
+            state.counted_after = 0
+            state.counted_pending = False
+        else:
+            state.counted_after = counted_after
+        for scope in admitted:
+            self._enqueue(state, scope)
 
     async def _discover_automatic(self, state: _FamilyState) -> None:  # noqa: C901 - bounded admission state
         binding = state.binding
@@ -1059,6 +1145,8 @@ class ArtifactProcessingSupervisor:
             state.retries.clear()
             state.requested_after = state.scan_after = state.scan_generation = 0
             state.scan_in_progress = False
+            state.counted_after = 0
+            state.counted_pending = True
             state.discovery_pending = True
 
     async def _reap_unconfirmed_exits(self) -> None:
@@ -1093,6 +1181,8 @@ class ArtifactProcessingSupervisor:
                 continue
             if state.next_schedule_at is not None:
                 deadlines.append(state.next_schedule_at)
+            if state.counted_pending and state.binding.binding_name in self._counted:
+                deadlines.append(max(now, state.next_discovery_at))
             if state.discovery_pending or state.scan_in_progress or not state.reconcile_complete or state.degraded:
                 deadlines.append(max(now, state.next_discovery_at))
         return None if not deadlines else max(0.001, min(deadlines) - now)
@@ -1132,6 +1222,25 @@ class ArtifactProcessingSupervisor:
                 else type(error).__name__,
             },
         )
+
+
+def _resolved_count_thresholds(
+    thresholds: Mapping[str, int | None] | None, bindings: Sequence[ArtifactProcessingBinding]
+) -> dict[str, int]:
+    """Keep only the configured thresholds that belong to a supervised binding."""
+
+    if not thresholds:
+        return {}
+    supervised = {binding.binding_name for binding in bindings}
+    resolved: dict[str, int] = {}
+    for binding_name, threshold in thresholds.items():
+        if threshold is None:
+            continue
+        if type(threshold) is not int or threshold < 1:
+            raise ValueError("count thresholds must be positive integers")  # noqa: TRY003
+        if binding_name in supervised:
+            resolved[binding_name] = threshold
+    return resolved
 
 
 def _schedule_deadline(
@@ -1174,6 +1283,12 @@ class ArtifactProcessingSupervisors:
 
     def __init__(self, supervisors: Sequence[ArtifactProcessingSupervisor]) -> None:
         self.supervisors = tuple(supervisors)
+
+    @property
+    def count_bindings(self) -> tuple[str, ...]:
+        """Report every binding that admits by count, across all supervisors."""
+
+        return tuple(name for item in self.supervisors for name in item.count_bindings)
 
     @property
     def status(self) -> ArtifactProcessingSupervisorStatus:

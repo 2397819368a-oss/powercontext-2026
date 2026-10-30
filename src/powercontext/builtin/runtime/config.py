@@ -135,6 +135,28 @@ class RuntimeConfig(BaseModel):
             raise ValueError("Worker quota must be a positive integer")  # noqa: TRY003, TRY004 - Pydantic validation
         return value
 
+    @field_validator(
+        "memory_source_count_threshold",
+        "topic_memory_source_count_threshold",
+        mode="before",
+    )
+    @classmethod
+    def reject_non_positive_count_threshold(cls, value: Any) -> Any:
+        """Accept only None or a strict positive integer.
+
+        Pydantic's lax mode would turn True into 1, 1.0 into 1, and "3" into 3.
+        A threshold the caller did not spell as an integer is a configuration
+        mistake rather than a value to repair: admitting it would start native
+        processing at a count nobody asked for, and a zero or negative value
+        would either never trigger or trigger on every entry.
+        """
+
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("source count thresholds must be a positive integer or None")  # noqa: TRY003
+        return value
+
     scope_cache_size: int = Field(default=DEFAULT_SCOPE_CACHE_SIZE, ge=1)
     source_window_limit: int = Field(default=100, ge=1)
     context_assembly_max_entries: int = Field(default=8, ge=1)
@@ -202,6 +224,10 @@ class RuntimeConfig(BaseModel):
     schedule_seconds: float | None = Field(default=None, gt=0)
     memory_schedule_seconds: float | None = Field(default=None, gt=0)
     experience_schedule_seconds: float | None = Field(default=None, gt=0)
+    # Count admission: None keeps the time condition alone. A configured value must be a strict
+    # positive integer; see reject_non_positive_count_threshold for why the type is checked by hand.
+    memory_source_count_threshold: int | None = None
+    topic_memory_source_count_threshold: int | None = None
     dream_enabled: bool = True
     dream_max_pending_per_scope: int = Field(default=32, ge=1, le=1000)
     generation_concurrency: int = Field(default=4, ge=1, le=64)
