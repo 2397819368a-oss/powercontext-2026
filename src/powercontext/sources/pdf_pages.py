@@ -47,15 +47,6 @@ from powercontext.sources.projections import TEXT_EVIDENCE_PROJECTION_KEY, TextE
 
 PDF_PAGE_SOURCE_NAME = "pdf-page"
 
-#: Candidate pages kept per recall query. One page is one Memory entry, so this
-#: also caps how many entries one query can contribute to the pool.
-_POOL_LIMIT = 80
-#: Ceiling on recall queries per question, so a long question cannot turn into
-#: dozens of backend round trips.
-_MAX_QUERIES = 14
-#: Single-term recall queries, in question order. Past this many the marginal
-#: candidates are dominated by function words already removed above.
-_MAX_TERM_QUERIES = 8
 #: Characters treated as the page heading. A 10-K repeats "Table of Contents"
 #: first, then the real heading, so the window has to be wide enough for both.
 _HEADING_CHARS = 220
@@ -265,22 +256,25 @@ PDF_PAGE_SOURCE_DEFINITION = AdapterSourceDefinition(
 async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[Any, ...]:
     """Return up to ``limit`` distinct page citations for one natural-language question.
 
-    Retrieval is split into two deliberately separate stages, because the backend
-    alone cannot answer a FinanceBench question well:
+    Retrieval has two stages, and the first one is deliberately not lexical:
 
-    * **Recall.** The lexical admission floor demands a *share* of the query
-      terms, so a twelve-word question is only retrievable from pages that
-      already carry three of those words. The page holding the answer often
-      carries one. Asking the same store several one- and two-word questions
-      drops the floor to a single term and lets those pages into the pool.
-    * **Ranking.** The pool is then ordered here, with term rarity estimated over
-      the pool itself, a bonus for question terms that appear in the page
-      heading, and a bonus for adjacency. Nothing is invented: every citation
-      still comes from a stored page, and the caller resolves it back through
-      ``memory.get``.
+    * **Recall is enumeration.** ``memory.list()`` returns every stored page of
+      the scope, so a page whose answer shares *no* word with the question --
+      a bank's income statement answering a "gross margin" question -- is still
+      a candidate. A lexical floor cannot find what it cannot spell, and a
+      500-page report is small enough that ranking the whole corpus in memory
+      is trivially cheap. Every citation still comes from a stored page and the
+      caller resolves it back through ``memory.get``.
+    * **Ranking is evidence plus structure.** BM25 with corpus-relative rarity
+      orders pages that share vocabulary with the question; on top of that sit
+      *report-structure* priors that hold for any 10-K: primary financial
+      statements are where ratio and margin questions are answered, narrative
+      pages up front are where business-description answers live, and a
+      question that names a statement ("details shown in the cash flow
+      statement") is telling us where to look.
 
     Distinctness is enforced on the page text, because one captured page is one
-    Source and therefore one entry.
+    Source and therefore one entry, while blank pages share one identical text.
     """
 
     if not isinstance(question, str) or not question.strip():
@@ -288,51 +282,53 @@ async def search_pdf_pages(memory, question: str, limit: int = 10) -> tuple[Any,
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         return ()
 
-    terms = _question_terms(question)
+    cleaned, hints = _clean_question(question)
+    terms = _question_terms(cleaned)
     if not terms:
         return ()
 
-    from powercontext.builtin.artifacts.memory.models import MemoryCitation
-    from powercontext.builtin.runtime import SearchMemoryRequest
+    listing = await memory.list()
+    records = getattr(listing, "entries", ()) or ()
 
     pool: dict[str, _Candidate] = {}
-    for query in _recall_queries(question, terms):
-        page = await memory.search(SearchMemoryRequest(query=query, limit=_POOL_LIMIT, mode="fts"))
-        for hit in page.hits:
-            key = _page_key(hit.text)
-            if key not in pool:
-                pool[key] = _Candidate(
-                    text=hit.text,
-                    citation=MemoryCitation(
-                        memory_ref=hit.memory_ref,
-                        entry_id=hit.entry_id,
-                        entry_version_id=hit.entry_version_id,
-                    ),
-                )
+    for record in records:
+        text = record.entry.text
+        key = _page_key(text)
+        if key in pool:
+            continue
+        page_number = 0
+        sources = getattr(record.entry, "sources", ()) or ()
+        if sources:
+            try:
+                page_number = int(sources[0].source_id.rsplit(":", 1)[1])
+            except (IndexError, ValueError):
+                page_number = 0
+        pool[key] = _Candidate(text=text, citation=record.citation, page_number=page_number)
 
     if not pool:
         return ()
 
-    ranked = _rank(question, terms, tuple(pool.values()))
+    ranked = _rank(question, terms, tuple(pool.values()), hints)
     return tuple(candidate.citation for candidate in ranked[:limit])
 
 
 class _Candidate:
-    """One retrieved page awaiting re-ranking."""
+    """One stored page awaiting re-ranking."""
 
-    __slots__ = ("citation", "text")
+    __slots__ = ("citation", "text", "page_number")
 
-    def __init__(self, text: str, citation: Any) -> None:
+    def __init__(self, text: str, citation: Any, page_number: int = 0) -> None:
         self.text = text
         self.citation = citation
+        self.page_number = page_number
 
 
 def _page_key(text: str) -> str:
-    """Return the identity of one retrieved page.
+    """Return the identity of one stored page.
 
-    The stored text is ``DOCUMENT_ID\\nPAGE_TEXT``, and one page is one Source, so
-    two hits sharing a text are the same page. Using the text keeps blank pages
-    from being counted twice.
+    The stored text is ``DOCUMENT_ID\nPAGE_TEXT``, and one page is one Source, so
+    two entries sharing a text are the same page. Using the text keeps blank
+    pages, which all read as just the document id, from being counted twice.
     """
 
     return text.strip()
@@ -355,38 +351,6 @@ def _question_terms(question: str) -> tuple[str, ...]:
         seen.add(term)
         ordered.append(term)
     return tuple(ordered)
-
-
-def _recall_queries(question: str, terms: tuple[str, ...]) -> tuple[str, ...]:
-    """Return the queries whose union forms the candidate pool.
-
-    Three families, each earning its place:
-
-    1. the question itself, which the backend ranks best when a page does carry
-       most of it;
-    2. one query per evidence term, which is what reaches a page that carries a
-       single decisive word such as ``geographies`` or ``restructuring``;
-    3. two-word windows from the question, which keep word order and therefore
-       find ``legal proceedings``-style phrases.
-
-    Queries that mention a financial statement also pull the statement pages
-    themselves: a question about EBITDA is answered by the income statement even
-    when that page never repeats the word "EBITDA".
-    """
-
-    queries: list[str] = [question]
-    queries.extend(terms[:_MAX_TERM_QUERIES])
-    for left, right in zip(terms, terms[1:]):
-        queries.append(f"{left} {right}")
-    for cue in _statement_cues(terms):
-        queries.append(cue)
-
-    unique: list[str] = []
-    for query in queries:
-        collapsed = " ".join(query.split())
-        if collapsed and collapsed not in unique:
-            unique.append(collapsed)
-    return tuple(unique[:_MAX_QUERIES])
 
 
 #: Statement headings that answer a question about a line item, with the
@@ -474,8 +438,174 @@ def _region_score(terms: tuple[str, ...], flattened: str, counts: dict[str, int]
     return _REGION_WEIGHT * min(found, 8)
 
 
-def _rank(question: str, terms: tuple[str, ...], pool: tuple[_Candidate, ...]) -> list[_Candidate]:
-    """Order the candidate pool, best evidence page first."""
+#: Words that turn a question into "compute something from the statements".
+_ANALYTICAL_CUES = frozenset(
+    "margin margins ratio ratios liquidity liquid leverage leveraged solvency turnover turns "
+    "dpo dso dio payable payables receivable receivables inventory inventories intensive "
+    "capex ebitda fcf cashflow cashflows conversion conversions tax taxes taxation debt debts "
+    "profitability profitable efficiency efficient roe roa coverage growth grow grew decline "
+    "declined declining improve improving improves health healthy profile times cushion burn "
+    "interest expenditure expenditures".split()
+)
+
+#: Words that turn a question into "describe this business".
+_DESCRIPTIVE_CUES = frozenset(
+    "customer customers product products service services geography geographies geographic "
+    "regions region brands brand competitors competitor suppliers supplier employees employee "
+    "strategy strategies who sell sells segments segment business businesses members".split()
+)
+
+#: Instruction boilerplate FinanceBench-style questions append after the real
+#: question. These words appear on hundreds of pages and would only blur the
+#: term set, so they are stripped before ranking.
+_BOILER = re.compile(
+    r"^(round (your )?answer|answer in|answer the|give a response|base your judgment|"
+    r"basing your judgment|address the question|respond to the|please utilize|"
+    r"by drawing conclusions|you are an?|we need to|we want to|please help us|"
+    r"calculate what was)",
+    re.IGNORECASE,
+)
+_PREFIX_CLAUSE = re.compile(r"^(basing your judgment[^,]*|here's the question:)\s*", re.IGNORECASE)
+
+#: A question that names a statement is telling us where the answer lives.
+_HINT_PATTERNS = (
+    (re.compile(r"statement of financial position|balance sheet"), "balance"),
+    (re.compile(r"cash flow statement|statement of cash flows"), "cashflow"),
+    (re.compile(r"income statement|p&l|profit and loss|statement of (?:income|operations)"), "income"),
+)
+
+
+def _clean_question(question: str) -> tuple[str, frozenset[str]]:
+    """Split a question into its evidence-bearing core and named statements.
+
+    "Round your answer to two decimal places." carries no evidence, but
+    "details shown in the cash flow statement" carries the strongest hint of
+    the whole question: the asker told us which statement to read.
+    """
+
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", question):
+        sentence = _PREFIX_CLAUSE.sub("", sentence.strip())
+        if not sentence:
+            continue
+        if _BOILER.match(sentence.lstrip().lower()) and "?" not in sentence:
+            continue
+        kept.append(sentence)
+    hints = frozenset(kind for pattern, kind in _HINT_PATTERNS if pattern.search(question.lower()))
+    return " ".join(kept) or question, hints
+
+
+def _intent(terms: tuple[str, ...], question: str) -> str:
+    """Classify a question as answered by numbers or by description."""
+
+    if set(terms) & _ANALYTICAL_CUES:
+        return "analytical"
+    if "year-over-year" in question.lower() or "year over year" in question.lower():
+        return "analytical"
+    return "descriptive"
+
+
+#: Question cues mapped to the line items where their answers are computed.
+#: This is accounting structure, not an answer key: a quick ratio is current
+#: assets over current liabilities on any 10-K on earth.
+_LINE_ITEMS: tuple[tuple[frozenset[str], tuple[str, ...]], ...] = (
+    (frozenset("gross margin margins".split()), ("gross profit", "gross margin")),
+    (frozenset("operating margin margins".split()), ("operating income", "operating profit", "operating margin", "income from operations")),
+    (frozenset("margin margins profitability profitable".split()), ("net income", "net earnings", "operating income", "gross profit")),
+    (frozenset("liquidity liquid quick ratio ratios current".split()), ("current assets", "current liabilities", "cash and cash equivalents", "working capital")),
+    (frozenset("leverage leveraged debt debts solvency".split()), ("total debt", "long term debt", "total liabilities", "short term borrowings", "notes payable")),
+    (frozenset("inventory inventories turnover turns".split()), ("inventories", "inventory", "cost of sales", "cost of goods sold", "cost of products sold", "cost of revenues")),
+    (frozenset("dpo payable payables".split()), ("accounts payable", "cost of sales", "cost of goods sold", "cost of products sold")),
+    (frozenset("dso receivable receivables".split()), ("accounts receivable", "trade receivables", "net sales", "net revenue")),
+    (frozenset("tax taxes taxation rate".split()), ("income taxes", "provision for income taxes", "income before income taxes", "earnings before provision for taxes")),
+    (frozenset("capex intensive capital".split()), ("capital expenditures", "property plant and equipment", "additions to property", "purchases of property")),
+    (frozenset("fcf cashflow cashflows conversion".split()), ("operating activities", "net cash provided by operating activities", "investing activities", "financing activities")),
+    (frozenset("ebitda".split()), ("operating income", "depreciation and amortization", "net income")),
+    (frozenset("interest coverage".split()), ("interest expense", "income before income taxes", "operating income")),
+    (frozenset("revenue revenues growth grow grew".split()), ("net sales", "net revenue", "total revenues", "revenue")),
+)
+
+#: A primary statement page is worth this much to an analytical question. It
+#: must beat a narrative page that merely *mentions* the ratio, because the
+#: annotation lives where the numbers are.
+_ANALYTICAL_STATEMENT_WEIGHT = 12.0
+#: Line-item phrase weight, per matched phrase, scaled by term rarity.
+_LINE_ITEM_WEIGHT = 1.5
+#: A narrative page is worth this much to a descriptive question; pages in the
+#: opening stretch (Item 1 Business, Item 1A Risk Factors) count double-ish.
+_DESCRIPTIVE_NARRATIVE_WEIGHT = 2.0
+_FRONT_NARRATIVE_FACTOR = 1.5
+#: A question that names a statement gets its type boosted on top.
+_HINT_WEIGHT = 3.0
+#: Segment-data tables answer "what does the company sell and to whom".
+_SEGMENT_WEIGHT = 2.0
+
+#: Statement headings as they appear at the top of a primary statement page.
+_INCOME_HEAD = re.compile(r"consolidated statements? of (?:operations|income|earnings)")
+_BALANCE_HEAD = re.compile(r"consolidated balance sheets?")
+_CASHFLOW_HEAD = re.compile(r"consolidated statements? of cash flows?")
+#: A table of contents repeats every heading; it carries many "item N." markers.
+_TOC_ITEM = re.compile(r"item \d+[a-z]?[\.\s]")
+#: Statement pages are dense with figures; a page that merely quotes one is not.
+_NUMERIC_PATTERN = re.compile(r"\d+")
+_NUMERIC_MIN = 60
+_TOC_ITEM_MIN = 6
+_HEAD_ZONE = 250
+_SEGMENT_HEAD = "segment"
+
+
+def _structure(text: str) -> tuple[frozenset[str], bool, bool]:
+    """Classify a page as (statement types, narrative, segment table).
+
+    A primary statement is only claimed when its heading sits at the top of the
+    page: the same words in a note or the table of contents are references, not
+    the statement itself.
+    """
+
+    flattened = " ".join(text.lower().split())
+    head = flattened[:_HEAD_ZONE]
+    numbers = len(_NUMERIC_PATTERN.findall(flattened))
+    toclike = len(_TOC_ITEM.findall(flattened)) >= _TOC_ITEM_MIN
+    statements: set[str] = set()
+    if not toclike and numbers >= _NUMERIC_MIN:
+        if _INCOME_HEAD.search(head):
+            statements.add("income")
+        if _BALANCE_HEAD.search(head):
+            statements.add("balance")
+        if _CASHFLOW_HEAD.search(head):
+            statements.add("cashflow")
+    narrative = not statements and numbers < 40 and len(flattened.split()) >= 250
+    segment = not statements and _SEGMENT_HEAD in head and numbers >= 40
+    return frozenset(statements), narrative, segment
+
+
+def _line_item_score(terms: tuple[str, ...], flattened: str, inverse_frequency) -> float:
+    """Score the line items a question implies against one page."""
+
+    present = set(terms)
+    total = 0.0
+    for cues, items in _LINE_ITEMS:
+        if not (present & cues):
+            continue
+        for item in items:
+            if f" {item} " in flattened:
+                total += _LINE_ITEM_WEIGHT * sum(inverse_frequency(_stem(token)) for token in item.split())
+    return total
+
+
+def _rank(
+    question: str,
+    terms: tuple[str, ...],
+    pool: tuple[_Candidate, ...],
+    hints: frozenset[str],
+) -> list[_Candidate]:
+    """Order the candidate pool, best evidence page first.
+
+    BM25 answers "which page talks about this"; the structural priors answer
+    "which page would a reader open". Both are needed: a margin question is
+    answered by the income statement even when the statement never spells the
+    word "margin".
+    """
 
     documents = [_token_counts(candidate.text) for candidate in pool]
     total = len(documents)
@@ -492,6 +622,7 @@ def _rank(question: str, terms: tuple[str, ...], pool: tuple[_Candidate, ...]) -
     average_length = sum(sum(counts.values()) for counts in documents) / total or 1.0
     phrases = tuple(zip(terms, terms[1:]))
     cues = _statement_cues(terms)
+    intent = _intent(terms, question)
 
     scored: list[tuple[float, int, _Candidate]] = []
     for position, (candidate, counts) in enumerate(zip(pool, documents)):
@@ -527,6 +658,23 @@ def _rank(question: str, terms: tuple[str, ...], pool: tuple[_Candidate, ...]) -
             )
 
         score += _region_score(terms, flattened, counts)
+
+        statements, narrative, segment = _structure(candidate.text)
+        # A page claiming two statement types at once is the statements index,
+        # not a statement, so only a single-type page earns the boost.
+        if len(statements) == 1:
+            if intent == "analytical":
+                score += _ANALYTICAL_STATEMENT_WEIGHT
+            if statements & hints:
+                score += _HINT_WEIGHT
+        if intent == "analytical":
+            score += _line_item_score(terms, flattened, inverse_frequency)
+        else:
+            if narrative:
+                front = 0 < candidate.page_number <= max(1, int(0.15 * total))
+                score += _DESCRIPTIVE_NARRATIVE_WEIGHT * (_FRONT_NARRATIVE_FACTOR if front else 1.0)
+            if segment:
+                score += _SEGMENT_WEIGHT
 
         # A page that covers more of the question beats a page that repeats one
         # common word: coverage is what the quality metric rewards.
@@ -567,7 +715,7 @@ def _token_counts(text: str) -> dict[str, int]:
 #: Section markers that introduce the part of a page holding a topic. A 10-K
 #: page starts with the carry-over of the previous section, so the heading of
 #: interest ("Item 3. Legal Proceedings.") is often in the middle of the page.
-_SECTION_MARKER = re.compile(r"(?:item\s+\d+[a-z]?\.|note\s+\d+\s*[—-])", re.IGNORECASE)
+_SECTION_MARKER = re.compile(r"(?:item\s+\d+[a-z]?\.|note\s+\d+\s*[\u2014-])", re.IGNORECASE)
 
 
 def _heading_text(text: str) -> str:
