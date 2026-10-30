@@ -1180,6 +1180,49 @@ RECURRENCE_OBSERVATION_TABLE = Table(
 
 RECURRENCE_TABLES = (RECURRENCE_MATCH_TABLE, RECURRENCE_OBSERVATION_TABLE)
 
+# Source lifecycle: one dependency DAG per Scope. Nodes are registered once and
+# never re-bound, so the graph is append-only; only ``available`` and the Source
+# event columns ever change after registration.
+MAX_SOURCE_LIFECYCLE_NODE_ID_LENGTH = 128
+
+SOURCE_LIFECYCLE_NODES_TABLE = Table(
+    "pc_source_lifecycle_nodes",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("node_id", identity_string(MAX_SOURCE_LIFECYCLE_NODE_ID_LENGTH), primary_key=True),
+    Column("kind", identity_string(16), nullable=False),
+    Column("policy", identity_string(8)),
+    Column("available", Boolean, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("sequence", BigInteger, nullable=False),
+    Column("last_available", Boolean),
+    Column("last_reason", _entry_text_type()),
+    Column("reference", _canonical_payload_type(), nullable=False),
+    CheckConstraint("revision > 0", name="ck_pc_lifecycle_node_revision_positive"),
+    CheckConstraint("sequence >= 0", name="ck_pc_lifecycle_node_sequence_nonnegative"),
+    CheckConstraint(
+        "kind IN ('source', 'memory', 'topic')",
+        name="ck_pc_lifecycle_node_kind",
+    ),
+    CheckConstraint(
+        "(kind = 'source' AND policy IS NULL) OR (kind <> 'source' AND policy IN ('all', 'any'))",
+        name="ck_pc_lifecycle_node_policy",
+    ),
+)
+
+SOURCE_LIFECYCLE_EDGES_TABLE = Table(
+    "pc_source_lifecycle_edges",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("node_id", identity_string(MAX_SOURCE_LIFECYCLE_NODE_ID_LENGTH), primary_key=True),
+    Column("parent_node_id", identity_string(MAX_SOURCE_LIFECYCLE_NODE_ID_LENGTH), primary_key=True),
+    Column("position", Integer, nullable=False),
+    CheckConstraint("position >= 0", name="ck_pc_lifecycle_edge_position_nonnegative"),
+    Index("ix_pc_lifecycle_edges_parent", "scope_id", "parent_node_id"),
+)
+
+SOURCE_LIFECYCLE_TABLES = (SOURCE_LIFECYCLE_NODES_TABLE, SOURCE_LIFECYCLE_EDGES_TABLE)
+
 BUILTIN_TABLES = (
     SCOPE_TABLES
     + SHARED_TABLES
@@ -1187,5 +1230,6 @@ BUILTIN_TABLES = (
     + MEMORY_TABLES
     + STATISTICS_TABLES
     + RECURRENCE_TABLES
+    + SOURCE_LIFECYCLE_TABLES
     + (ARTIFACT_TAGS_TABLE, DREAM_RUNS_TABLE, RECEIPT_MIGRATION_REVIEW_TABLE)
 )

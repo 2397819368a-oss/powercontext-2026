@@ -28,6 +28,7 @@ from powercontext.builtin.artifacts.memory.models import MemoryCitation, MemoryH
 from powercontext.builtin.artifacts.profile.models import Profile
 from powercontext.builtin.artifacts.topic_memory import TopicMemory, TopicMemorySearchHit
 from powercontext.builtin.runtime.errors import PreparedContextInvariantError
+from powercontext.builtin.runtime.evidence_selection import render_items, select
 from powercontext.builtin.runtime.models import PrepareContextRequest, PreparedContext
 from powercontext.builtin.runtime.prepared_code import (
     CodeEvidenceRef,
@@ -93,6 +94,20 @@ class PreparedContextOmissions:
 
 
 @dataclass(frozen=True)
+class EvidenceFragment:
+    """One literal slice of one Memory entry, with the address needed to check it.
+
+    ``text`` is always ``entry.text[start:end]``: the slice carries no paraphrase, so a
+    caller can re-read the cited entry version and land on the same characters.
+    """
+
+    address: MemoryEntryAddress
+    start: int
+    end: int
+    text: str
+
+
+@dataclass(frozen=True)
 class PreparedContextBuild:
     """Final public context and the exact origins selected to produce it.
 
@@ -106,6 +121,7 @@ class PreparedContextBuild:
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
     code_origins: tuple[CodeEvidenceRef, ...] = ()
+    fragments: tuple[EvidenceFragment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -228,6 +244,9 @@ class PreparedContextBuilder:
 
             return assemble_code(request, code_candidates, self.entry_limit, historical)
 
+        if request.evidence_selection:
+            return self._select_evidence_result(request, memory_candidates)
+
         if sum(len(candidates.hits) for candidates in memory_candidates) > self.memory_candidate_limit:
             raise PreparedContextInvariantError("memory-candidate-limit")
         if len(topic_memory_hits) > self.topic_memory_candidate_limit:
@@ -254,6 +273,78 @@ class PreparedContextBuilder:
             context=PreparedContext(status="ready", content=content, content_bytes=content_bytes),
             origins=origins,
             omissions=omissions,
+        )
+
+    def _select_evidence_result(
+        self,
+        request: PrepareContextRequest,
+        memory_candidates: Sequence[PreparedMemoryCandidates],
+    ) -> PreparedContextBuild:
+        """Select literal slices of the Memory candidates instead of whole entries.
+
+        Only Memory candidates take part: the mode answers "which characters of what was
+        recalled are worth the budget", and the other families carry structured bodies whose
+        slices would not be checkable against an entry version. Turning the flag off leaves
+        the ordinary path untouched, which is what keeps the previous behaviour compatible.
+        """
+
+        documents: list[tuple[str, dict[str, object], MemoryEntryAddress]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for candidates in memory_candidates:
+            if candidates.hits and candidates.memory_ref is None:
+                raise PreparedContextInvariantError("memory-ref-missing")
+            for hit in candidates.hits:
+                if hit.memory_ref != candidates.memory_ref:
+                    raise PreparedContextInvariantError("memory-ref-mismatch")
+                identity = (candidates.scope_id, hit.entry_id, hit.entry_version_id)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                if not hit.entry_id.strip() or not hit.entry_version_id.strip() or not hit.text.strip():
+                    continue
+                documents.append(
+                    (
+                        hit.text,
+                        {
+                            "scope_id": candidates.scope_id,
+                            "memory_ref": hit.memory_ref.model_dump(mode="json"),
+                            "entry_id": hit.entry_id,
+                            "entry_version_id": hit.entry_version_id,
+                        },
+                        MemoryEntryAddress(
+                            memory=ArtifactAddress(scope_id=candidates.scope_id, artifact=hit.memory_ref),
+                            entry_id=hit.entry_id,
+                            entry_version_id=hit.entry_version_id,
+                        ),
+                    )
+                )
+
+        items = select(
+            request.query,
+            [(text, citation) for text, citation, _ in documents],
+            request.max_bytes,
+        )
+        if not items:
+            return PreparedContextBuild(context=self.empty(), origins=())
+        content = render_items(items)
+        content_bytes = len(content.encode("utf-8"))
+        if content_bytes > request.max_bytes:
+            raise PreparedContextInvariantError("output-budget")
+        fragments = tuple(
+            EvidenceFragment(
+                address=documents[item.document_index][2],
+                start=item.start,
+                end=item.end,
+                text=item.text,
+            )
+            for item in items
+        )
+        return PreparedContextBuild(
+            context=PreparedContext(status="ready", content=content, content_bytes=content_bytes),
+            # Origin and fragment stay positionally aligned: the i-th origin is the address
+            # of the i-th slice, so a caller can pair them without a second lookup.
+            origins=tuple(fragment.address for fragment in fragments),
+            fragments=fragments,
         )
 
     def probe_budget(

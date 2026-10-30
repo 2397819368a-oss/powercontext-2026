@@ -139,6 +139,7 @@ from powercontext.builtin.inference import (
 from powercontext.builtin.inference.models import InferenceUsage
 from powercontext.builtin.inference.usage import bind_usage_reporter
 from powercontext.builtin.persistence.agent_skill_targets import RemoteAgentSkillTarget
+from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.artifact_governance import (
     ArtifactGovernance,
     ArtifactLifecycleState,
@@ -253,6 +254,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     build_recall_candidates,
     recall_effort,
 )
+from powercontext.builtin.runtime.source_lifecycle import SourceLifecycleApplication
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics, overview_selection
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -2723,7 +2725,25 @@ class ScopedTopicMemoryApplication:
                         "unit": "topic-memory",
                     },
                 )
-        return result
+        return await self._without_withdrawn(result)
+
+    async def _without_withdrawn(self, result: TopicMemorySearchResult, /) -> TopicMemorySearchResult:
+        """Drop Topics whose Source support was withdrawn.
+
+        Topic Memory is an Artifact with no availability column of its own, so
+        exclusion has to happen where every reader meets it. Both the scoped
+        search and Context assembly go through this method, which is what keeps
+        what a search returns and what a Context contains the same set.
+        """
+
+        lifecycle = self._runtime.lifecycle
+        if lifecycle is None or not result.hits:
+            return result
+        blocked = await lifecycle.unavailable_topic_ids(self.scope_id)
+        if not blocked:
+            return result
+        hits = tuple(hit for hit in result.hits if hit.artifact_ref.artifact_id not in blocked)
+        return result.model_copy(update={"hits": hits})
 
     async def _search_with_embedding(
         self,
@@ -3018,6 +3038,7 @@ class BuiltinRuntime:
         provider: PowerContextProvider[BuiltinSources, BuiltinArtifacts, BuiltinTriggers],
         capabilities: RuntimeCapabilities,
         code_service: CodeService | None = None,
+        database: AsyncDatabase | None = None,
         source_window_limit: int = 100,
         context_assembly_max_entries: int = 8,
         recall_sufficiency_policy: RecallSufficiencyPolicy | None = None,
@@ -3156,6 +3177,9 @@ class BuiltinRuntime:
         self.skill = SkillApplication(self)
         self.remote_skills = RemoteSkillApplication(self)
         self.statistics = StatisticsApplication(self)
+        # None only when a Runtime is assembled without a relational database;
+        # Topic Memory search then keeps its unfiltered behaviour.
+        self.lifecycle = None if database is None else SourceLifecycleApplication(self, database)
         self.handoff_report: HandoffReportApplication | None = None
         self.artifact_processing_supervisor: ArtifactProcessingSupervisors | None = None
         self.processor = None if scope_ids is None else ScheduledSourceProcessor(self, scope_ids)

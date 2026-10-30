@@ -585,6 +585,7 @@ async def open_builtin_runtime(
         runtime = await resources.enter_async_context(
             BuiltinRuntime(
                 code_service=await resources.enter_async_context(open_code_service(config.code, config.database)),
+                database=contexts.database,
                 provider=contexts,
                 capabilities=RuntimeCapabilities(
                     memory_extraction=contexts.memory_extraction,
