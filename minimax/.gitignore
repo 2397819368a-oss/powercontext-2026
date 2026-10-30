@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 本地库目录（seekdb 实例，可随时重建）
+var/
+
+# records/ 要提交：它是「技术使用记录」，评审按它核对三件事的参与情况
+# （minimax_runs / db_queries / state / patches）。
+# 只有每次运行前的中间态备份属于噪声，排除掉。
+records/patches/[0-9]*-*.py
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+
+# 本地密钥，绝不提交
+.env.local
+.env

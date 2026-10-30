@@ -1,0 +1,14 @@
+[
+  {
+    "task_id": "b479cf077f",
+    "artifact_id": "task:b479cf077f",
+    "revision": 1,
+    "stage": "context_ready"
+  },
+  {
+    "task_id": "b479cf077f",
+    "artifact_id": "task:b479cf077f",
+    "revision": 2,
+    "stage": "verified"
+  }
+]

@@ -1,0 +1,124 @@
+{
+  "task_id": "b479cf077f",
+  "task": "# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n",
+  "stages": [
+    "indexed:39",
+    "context_ready",
+    "patched",
+    "verified"
+  ],
+  "context_chars": 5963,
+  "source_count": 13,
+  "sources": [
+    {
+      "doc_path": "README.md",
+      "symbol": "当前状态",
+      "kind": "spec",
+      "start_line": 6,
+      "end_line": 11
+    },
+    {
+      "doc_path": "README.md",
+      "symbol": "运行测试",
+      "kind": "spec",
+      "start_line": 13,
+      "end_line": 24
+    },
+    {
+      "doc_path": "specs/EXP-001-expense-filter.md",
+      "symbol": "2. 筛选条件",
+      "kind": "spec",
+      "start_line": 12,
+      "end_line": 32
+    },
+    {
+      "doc_path": "specs/EXP-001-expense-filter.md",
+      "symbol": "3. 必须保持不变的行为",
+      "kind": "spec",
+      "start_line": 34,
+      "end_line": 42
+    },
+    {
+      "doc_path": "specs/EXP-002-report.md",
+      "symbol": "1. 定义",
+      "kind": "spec",
+      "start_line": 7,
+      "end_line": 9
+    },
+    {
+      "doc_path": "src/expense/filters.py",
+      "symbol": "filter_expenses",
+      "kind": "code",
+      "start_line": 19,
+      "end_line": 46
+    },
+    {
+      "doc_path": "src/expense/models.py",
+      "symbol": "Expense",
+      "kind": "code",
+      "start_line": 21,
+      "end_line": 40
+    },
+    {
+      "doc_path": "src/expense/service.py",
+      "symbol": "DepartmentMonthlyReport",
+      "kind": "code",
+      "start_line": 20,
+      "end_line": 26
+    },
+    {
+      "doc_path": "src/expense/service.py",
+      "symbol": "department_monthly_report",
+      "kind": "code",
+      "start_line": 37,
+      "end_line": 61
+    },
+    {
+      "doc_path": "tests/test_regression.py",
+      "symbol": "test_input_sequence_is_not_mutated",
+      "kind": "test",
+      "start_line": 40,
+      "end_line": 45
+    },
+    {
+      "doc_path": "tests/test_target.py",
+      "symbol": "test_filter_by_submitted_period",
+      "kind": "test",
+      "start_line": 32,
+      "end_line": 40
+    },
+    {
+      "doc_path": "tests/test_target.py",
+      "symbol": "test_combined_department_period_and_status",
+      "kind": "test",
+      "start_line": 43,
+      "end_line": 53
+    },
+    {
+      "doc_path": "tests/test_target.py",
+      "symbol": "test_department_monthly_report_scope",
+      "kind": "test",
+      "start_line": 57,
+      "end_line": 65
+    }
+  ],
+  "model": "MiniMax-M3.1-Flash",
+  "mock": false,
+  "state_backend": "powercontext",
+  "state_backend_error": "",
+  "patch_applied": true,
+  "patch_error": null,
+  "tests_before": {
+    "ok": false,
+    "exit_code": 1,
+    "summary": "5 failed, 5 passed in 0.14s",
+    "tail": "FAILED tests/test_target.py::test_filter_by_department - AssertionError: asse...\nFAILED tests/test_target.py::test_department_match_is_case_insensitive - Asse...\nFAILED tests/test_target.py::test_filter_by_submitted_period - AssertionError...\nFAILED tests/test_target.py::test_combined_department_period_and_status - Ass...\nFAILED tests/test_target.py::test_department_monthly_report_scope - Assertion...\n5 failed, 5 passed in 0.14s"
+  },
+  "tests_after": {
+    "ok": true,
+    "exit_code": 0,
+    "summary": "10 passed in 0.11s",
+    "tail": "10 passed in 0.11s"
+  },
+  "resumed_from": null
+}

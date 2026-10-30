@@ -1,0 +1,14 @@
+[project]
+name = "expense"
+version = "0.3.1"
+description = "报销单筛选与部门月度报表"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-p no:cacheprovider"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

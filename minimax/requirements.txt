@@ -1,0 +1,26 @@
+# 依赖（Python 3.11+）
+
+# seekdb 嵌入式客户端：工程资料的存储与全文检索
+# Linux / macOS 与 Windows 的 wheel 不同，pip 会按平台自动选择
+pylibseekdb==1.4.0.post2
+
+# 状态结构（Artifact / revision）用到的模型基元
+pydantic==2.14.1
+
+# 测试
+pytest==9.2.0
+
+# ---------------------------------------------------------------------------
+# 可选依赖
+# ---------------------------------------------------------------------------
+# PowerContext（任务状态读写的首选后端）：装了就走 powercontext 后端，
+# 没装也不影响运行 —— 会自动降级成等价的纯 Python 实现（见 sdd_context/state.py），
+# 降级与否会如实写进运行报告的「状态后端」一行。
+#
+# 注意：PowerContext 自身还依赖 rfc8785 等包，缺任意一个都会触发降级，
+# 而不会让整个项目 import 失败。
+# powercontext==1.4.1
+
+# 不再需要 openai：MiniMax 在模型下线、余额不足时仍返回 HTTP 200，
+# 真实错误藏在响应体的 base_resp.status_code 里，openai SDK 只看 HTTP 状态会
+# 把失败当成成功。现已改为直连原生接口自行解析，见 sdd_context/minimax_client.py。

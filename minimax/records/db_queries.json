@@ -1,0 +1,108 @@
+[
+  {
+    "at": "2026-10-30T23:30:33",
+    "query": "# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n",
+    "kind": "spec",
+    "limit": 4,
+    "sql": "SELECT chunk_id, doc_path, kind, symbol, start_line, end_line, body, MATCH(body) AGAINST('# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n') AS score FROM ctx_chunks WHERE MATCH(body) AGAINST('# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n') AND kind = 'spec' ORDER BY score DESC LIMIT 4",
+    "hits": [
+      {
+        "chunk_id": "a65a7614ed97",
+        "doc_path": "README.md",
+        "score": 26.133513
+      },
+      {
+        "chunk_id": "cffc9c083d71",
+        "doc_path": "specs/EXP-001-expense-filter.md",
+        "score": 21.168627
+      },
+      {
+        "chunk_id": "fe71f6ef14f3",
+        "doc_path": "specs/EXP-001-expense-filter.md",
+        "score": 11.029154
+      },
+      {
+        "chunk_id": "902556fcb85a",
+        "doc_path": "specs/EXP-002-report.md",
+        "score": 10.02588
+      }
+    ]
+  },
+  {
+    "at": "2026-10-30T23:30:33",
+    "query": "# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n",
+    "kind": "code",
+    "limit": 4,
+    "sql": "SELECT chunk_id, doc_path, kind, symbol, start_line, end_line, body, MATCH(body) AGAINST('# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n') AS score FROM ctx_chunks WHERE MATCH(body) AGAINST('# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n') AND kind = 'code' ORDER BY score DESC LIMIT 4",
+    "hits": [
+      {
+        "chunk_id": "91e5fe70ca9d",
+        "doc_path": "src/expense/filters.py",
+        "score": 7.668762
+      },
+      {
+        "chunk_id": "711c605dae7c",
+        "doc_path": "src/expense/service.py",
+        "score": 7.447211
+      },
+      {
+        "chunk_id": "661c4cf5c86e",
+        "doc_path": "src/expense/models.py",
+        "score": 4.859294
+      },
+      {
+        "chunk_id": "67bc6f997bee",
+        "doc_path": "src/expense/service.py",
+        "score": 4.598488
+      }
+    ]
+  },
+  {
+    "at": "2026-10-30T23:30:33",
+    "query": "# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n",
+    "kind": "test",
+    "limit": 4,
+    "sql": "SELECT chunk_id, doc_path, kind, symbol, start_line, end_line, body, MATCH(body) AGAINST('# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n') AS score FROM ctx_chunks WHERE MATCH(body) AGAINST('# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n') AND kind = 'test' ORDER BY score DESC LIMIT 4",
+    "hits": [
+      {
+        "chunk_id": "b5a89f6a0585",
+        "doc_path": "tests/test_target.py",
+        "score": 10.003175
+      },
+      {
+        "chunk_id": "cdd6b53c2f81",
+        "doc_path": "tests/test_regression.py",
+        "score": 8.430022
+      },
+      {
+        "chunk_id": "89c09b1ab42a",
+        "doc_path": "tests/test_target.py",
+        "score": 8.313423
+      },
+      {
+        "chunk_id": "a811b9a5ef1f",
+        "doc_path": "tests/test_target.py",
+        "score": 7.275771
+      }
+    ]
+  },
+  {
+    "at": "2026-10-30T23:30:33",
+    "query": "必须保持不变 回归 既有行为 不得",
+    "kind": "spec",
+    "limit": 2,
+    "sql": "SELECT chunk_id, doc_path, kind, symbol, start_line, end_line, body, MATCH(body) AGAINST('必须保持不变 回归 既有行为 不得') AS score FROM ctx_chunks WHERE MATCH(body) AGAINST('必须保持不变 回归 既有行为 不得') AND kind = 'spec' ORDER BY score DESC LIMIT 2",
+    "hits": [
+      {
+        "chunk_id": "cffc9c083d71",
+        "doc_path": "specs/EXP-001-expense-filter.md",
+        "score": 4.419117
+      },
+      {
+        "chunk_id": "e4e047995da8",
+        "doc_path": "README.md",
+        "score": 1.949475
+      }
+    ]
+  }
+]
