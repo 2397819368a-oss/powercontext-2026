@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>powercontext · 浏览器本地向量化 + seekdb 混合检索</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <h1>powercontext</h1>
+        <p class="sub">浏览器端本地向量化 · seekdb 库内混合检索（RRF）</p>
+      </div>
+      <div id="status" class="status">
+        <span class="chip chip-idle" id="chip-model">模型未加载</span>
+        <span class="chip chip-idle" id="chip-db">seekdb 未连接</span>
+      </div>
+    </header>
+
+    <!-- 后端/精度状态条：赛题要求 WebGPU 优先、降级必须标注，这块就是标注本身 -->
+    <section class="panel" id="runtime-panel">
+      <div class="runtime-grid">
+        <div class="rt-item">
+          <span class="rt-label">推理后端</span>
+          <strong id="rt-device">—</strong>
+        </div>
+        <div class="rt-item">
+          <span class="rt-label">精度</span>
+          <strong id="rt-dtype">—</strong>
+        </div>
+        <div class="rt-item">
+          <span class="rt-label">模型加载耗时</span>
+          <strong id="rt-load">—</strong>
+        </div>
+        <div class="rt-item">
+          <span class="rt-label">库内文档</span>
+          <strong id="rt-count">—</strong>
+        </div>
+      </div>
+      <div id="rt-warn" class="warn" hidden></div>
+    </section>
+
+    <div class="layout">
+      <!-- 左：建库 -->
+      <section class="panel">
+        <h2>1 · 建索引</h2>
+        <p class="hint">
+          文档在浏览器里逐条算向量，然后连同文本一起写入 seekdb。服务端不参与向量计算。
+        </p>
+        <div class="row">
+          <label class="lbl">推理后端</label>
+          <select id="sel-device">
+            <option value="auto">自动（WebGPU 优先，不可用降级 WASM）</option>
+            <option value="webgpu">强制 WebGPU（不支持则报错）</option>
+            <option value="wasm">强制 WASM</option>
+          </select>
+        </div>
+        <div class="row">
+          <label class="lbl">精度</label>
+          <select id="sel-dtype">
+            <option value="fp32">FP32</option>
+            <option value="fp16">FP16</option>
+            <option value="int8">INT8（量化）</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="btn-load" class="primary">加载模型</button>
+          <button id="btn-index" class="primary" disabled>写入示例文档</button>
+          <button id="btn-clear" disabled>清空</button>
+        </div>
+        <div class="sample">
+          <div class="lbl">示例库（<span id="sample-n">0</span> 条，可编辑）</div>
+          <textarea id="txt-docs" rows="9"></textarea>
+        </div>
+        <div id="log" class="log"></div>
+      </section>
+
+      <!-- 右：检索 -->
+      <section class="panel">
+        <h2>2 · 检索</h2>
+        <div class="row">
+          <input id="inp-query" class="grow" placeholder="输入查询，例如：混合检索怎么做的" />
+          <button id="btn-search" class="primary" disabled>检索</button>
+        </div>
+        <div class="row">
+          <label class="lbl">模式</label>
+          <select id="sel-mode">
+            <option value="hybrid">混合检索（seekdb 内 RRF 融合）</option>
+            <option value="vector">仅向量</option>
+            <option value="fulltext">仅全文（ik 分词）</option>
+          </select>
+          <label class="lbl">TopK</label>
+          <input id="inp-topk" type="number" value="5" min="1" max="20" class="num" />
+        </div>
+        <div id="meta" class="meta"></div>
+        <ol id="results" class="results"></ol>
+      </section>
+    </div>
+
+    <!-- 量化对比：体积 / 压缩比 / 质量，全部取真实数据 -->
+    <section class="panel">
+      <h2>3 · 量化评估</h2>
+      <p class="hint">
+        体积取 HuggingFace 仓库记录的真实字节数；质量用同一批文本在 FP32 与
+        目标精度下各自算一次向量，比较余弦相似度（越接近 1 越好）。
+      </p>
+      <div class="row">
+        <button id="btn-size">读取各精度体积</button>
+        <button id="btn-quality">跑质量对比（FP32 vs INT8）</button>
+      </div>
+      <table class="tbl" id="tbl-size" hidden>
+        <thead>
+          <tr><th>精度</th><th>权重文件</th><th>体积</th><th>相对 FP32 压缩比</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <table class="tbl" id="tbl-quality" hidden>
+        <thead><tr><th>文本</th><th>与 FP32 的余弦相似度</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

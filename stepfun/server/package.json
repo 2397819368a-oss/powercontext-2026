@@ -1,0 +1,21 @@
+{
+  "name": "powercontext-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "powercontext 服务端：本地 seekdb 实例 + 混合检索 API（接受浏览器端算好的向量）",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "smoke": "node src/smoke.mjs"
+  },
+  "dependencies": {
+    "@oceanbase/seekdb-node": "^1.4.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "mysql2": "^3.11.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
