@@ -3,8 +3,11 @@ dist/
 .env
 *.log
 
-# 离线模型权重（由 tools/fetch-model.mjs 生成，体积大，不入库）
+# 离线资源与验证产物（由脚本生成，体积大，不入库）
 web/public/models/
+web/public/ort/
+tools/cdp-out/
+tools/quant-result.*
 
 # seekdb 数据目录（体积大且是二进制，不要入库）
 data/

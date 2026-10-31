@@ -107,7 +107,7 @@
       </p>
       <div class="row">
         <button id="btn-size">读取各精度体积</button>
-        <button id="btn-quality">跑质量对比（FP32 vs INT8）</button>
+        <button id="btn-quality">跑质量对比（各精度 vs FP32）</button>
       </div>
       <table class="tbl" id="tbl-size" hidden>
         <thead>
@@ -116,7 +116,7 @@
         <tbody></tbody>
       </table>
       <table class="tbl" id="tbl-quality" hidden>
-        <thead><tr><th>文本</th><th>与 FP32 的余弦相似度</th></tr></thead>
+        <thead><tr id="tr-quality-head"><th>文本</th></tr></thead>
         <tbody></tbody>
       </table>
     </section>

@@ -10,7 +10,7 @@
  *  - 支持 fp32 / fp16 / int8 三种精度，用于量化对比。
  */
 
-import { pipeline, cos_sim, env } from "@xenova/transformers";
+import { pipeline, cos_sim, env } from "@huggingface/transformers";
 
 export const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
 export const DIM = 384;
@@ -29,22 +29,42 @@ if (MIRROR) {
 }
 
 /**
+ * ORT 的 wasm 二进制默认从 jsdelivr CDN 拉，离线环境会永远卡在"正在加载模型"。
+ * 这里指到本地静态目录；文件由 tools/sync-ort-wasm.mjs 从 node_modules 同步而来。
+ */
+if (env.backends?.onnx?.wasm) {
+  env.backends.onnx.wasm.wasmPaths = import.meta.env?.VITE_ORT_WASM_PATH || "/ort/";
+}
+
+/**
  * 本地离线模型优先。
  *
  * 为什么必须有这条：Transformer.js 默认要联网从 HF 拉权重，
  * 一旦身处离线环境（内网/比赛现场/墙）页面就永远卡在"加载模型"。
  * 把权重放进 web/public/models/ 后，这里的 allowLocalModels 会让它直接读本地文件，
  * 再也不需要外网。tools/fetch-model.mjs 就是用来准备这份离线权重的。
+ *
+ * 注意：v4 起浏览器环境里 allowLocalModels 默认是 false，必须显式打开。
  */
 env.localModelPath = import.meta.env?.VITE_LOCAL_MODEL_PATH || "/models/";
 env.allowLocalModels = true;
 env.allowRemoteModels = true; // 本地没有才回落到远程
 
-/** 三种精度：面向用户展示的名字 -> Transformers.js 的 dtype 取值 + 对应权重文件 */
+/**
+ * 三种精度：展示名 -> v4 的 dtype 取值（决定权重文件后缀）+ 实际文件名。
+ *
+ * **踩坑记录（重要）**：早期用的是 @xenova/transformers v2.17.2，它**不支持 `dtype` 选项**，
+ * 传进去被静默忽略，于是三个精度加载的都是同一个 model.onnx —— 表现为"量化对比跑得很顺、
+ * 平均相似度恰好 1.000000"，全是假数据。v4 的映射关系是：
+ *   fp32 -> (无后缀) -> onnx/model.onnx
+ *   fp16 -> _fp16     -> onnx/model_fp16.onnx
+ *   q8   -> _quantized-> onnx/model_quantized.onnx
+ * 见 node_modules/@huggingface/transformers/dist/transformers.web.js 的 DEFAULT_DTYPE_SUFFIX_MAPPING。
+ */
 export const DTYPES = {
-  fp32: { label: "FP32（原始）", dtype: "fp32", file: "onnx/model.onnx" },
-  fp16: { label: "FP16（半精度）", dtype: "fp16", file: "onnx/model_fp16.onnx" },
-  int8: { label: "INT8（量化）", dtype: "q8", file: "onnx/model_quantized.onnx" },
+  fp32: { label: "FP32（原始）", dtype: "fp32", modelFile: "model", file: "onnx/model.onnx" },
+  fp16: { label: "FP16（半精度）", dtype: "fp16", modelFile: "model_fp16", file: "onnx/model_fp16.onnx" },
+  int8: { label: "INT8（量化）", dtype: "q8", modelFile: "model_quantized", file: "onnx/model_quantized.onnx" },
 };
 
 /** 已加载的模型实例缓存：key = `${device}:${dtype}` */
@@ -108,7 +128,7 @@ export async function loadModel(dtypeKey = "fp32", devicePref = "auto", onProgre
     }
   }
 
-  const key = `${device}:${spec.dtype}`;
+  const key = `${device}:${dtypeKey}`;
   if (cache.has(key)) {
     session = { ...cache.get(key), loaded: true, loadMs: 0, degraded, degradedReason: reason };
     onProgress("复用已加载模型");
@@ -122,7 +142,7 @@ export async function loadModel(dtypeKey = "fp32", devicePref = "auto", onProgre
   try {
     extractor = await pipeline("feature-extraction", MODEL_ID, {
       device,
-      dtype: spec.dtype,
+      dtype: spec.dtype, // v4 起支持；会决定权重文件后缀，见 DTYPES 注释
     });
   } catch (e) {
     // 某些组合（例如 WebGPU + 量化）ORT 不支持，退回 fp32 + WASM 并如实上报
@@ -133,7 +153,7 @@ export async function loadModel(dtypeKey = "fp32", devicePref = "auto", onProgre
       reason = `${dtypeKey} 在 WebGPU 下不被支持：${e.message}`;
       extractor = await pipeline("feature-extraction", MODEL_ID, {
         device: "wasm",
-        dtype: "fp32",
+        dtype: DTYPES.fp32.dtype,
       });
     } else {
       throw e;
@@ -144,7 +164,7 @@ export async function loadModel(dtypeKey = "fp32", devicePref = "auto", onProgre
   session = {
     loaded: true,
     device,
-    dtype: key.split(":")[1],
+    dtype: dtypeKey,
     dtypeLabel: spec.label,
     loadMs,
     degraded,
@@ -202,35 +222,102 @@ export async function compareQuality(texts, refKey = "fp32", testKey = "int8", o
   const refSpec = DTYPES[refKey];
   const testSpec = DTYPES[testKey];
 
-  // 参考精度：始终跑在 WASM 上，保证两次对比的基线一致且可用
-  onProgress(`计算参考精度 ${refSpec.label} ...`);
-  await loadModel(refKey, "wasm", onProgress);
-  const refVecs = await embed(texts);
+  // 记住进场时的会话：对比要临时换 dtype，跑完必须换回来，
+  // 否则用户点了"质量对比"之后.topbar 显示的精度就悄悄变成被测的那个了。
+  const prev = { loaded: session.loaded, dtype: session.dtype, device: session.device };
 
-  onProgress(`计算待测精度 ${testSpec.label} ...`);
-  await loadModel(testKey, "wasm", onProgress);
-  const testVecs = await embed(texts);
+  try {
+    // 参考精度：始终跑在 WASM 上，保证两次对比的基线一致且可用
+    onProgress(`计算参考精度 ${refSpec.label} ...`);
+    await loadModel(refKey, "wasm", onProgress);
+    const refVecs = await embed(texts);
 
-  return texts.map((t, i) => ({
-    text: t,
-    sim: Number(similarity(refVecs[i], testVecs[i]).toFixed(6)),
-  }));
+    onProgress(`计算待测精度 ${testSpec.label} ...`);
+    await loadModel(testKey, "wasm", onProgress);
+    const testVecs = await embed(texts);
+
+    return texts.map((t, i) => ({
+      text: t,
+      sim: Number(similarity(refVecs[i], testVecs[i]).toFixed(6)),
+    }));
+  } finally {
+    if (prev.loaded) {
+      // session.dtype 现在直接就是 DTYPES 的 key
+      const prevKey = DTYPES[prev.dtype] ? prev.dtype : "fp32";
+      const prevDevice = prev.device === "webgpu" ? "webgpu" : "wasm";
+      try {
+        await loadModel(prevKey, prevDevice, () => {});
+      } catch (e) {
+        onProgress(`（提示）恢复到原精度 ${prev?.dtype} 失败：${e.message}`);
+      }
+    }
+  }
 }
 
 /**
- * 从 HuggingFace 读取各量化变体的真实文件体积。
- * 走 API 而不是 HEAD 请求：hf 的 resolve 接口对浏览器 HEAD 的 CORS 支持不稳定，
- * 而 /api/models 明确带 CORS 头。拿到的是仓库里记录的 size（字节）。
+ * 读取各量化变体的真实文件体积。
+ *
+ * 两条路径：
+ *  1. **本地优先** —— 权重已经躺在 web/public/models 下时，静态服务器会直接提供，
+ *     用 HEAD 读 Content-Length 即可，离线也能出数。这是比赛现场/内网的正确行为。
+ *  2. 远程兜底 —— 本地没有才问 HuggingFace。用 /api/models 而不是 HEAD：
+ *     HF 的 resolve 接口对浏览器 HEAD 的 CORS 支持不稳定，而 API 明确带 CORS 头。
+ *
+ * @returns {Promise<{sizes:Record<string,number>, source:"local"|"remote"}>}
  */
 export async function fetchModelSizes() {
+  const sizes = {};
+  const prefix = `${env.localModelPath.replace(/\/+$/, "")}/${MODEL_ID}/`;
+
+  // ---- 1. sizes.json：构建时固化下来的真实磁盘字节数（最可靠） ----
+  //      tools/record-model-sizes.mjs 生成。不能依赖 HTTP 的 Content-Length：
+  //      静态服务器开 gzip 时它给的是压缩后大小（实测 INT8 被报成 16.32MB，真实 21.96MB）。
+  try {
+    const res = await fetch(`${prefix}sizes.json`, { cache: "no-store" });
+    if (res.ok) {
+      const json = await res.json();
+      if (json?.files && Object.keys(json.files).length > 0) {
+        for (const [k, v] of Object.entries(json.files)) sizes[k] = v;
+        return { sizes, source: "local-sizes.json" };
+      }
+    }
+  } catch {
+    /* 没有 sizes.json，继续走下面的兜底 */
+  }
+
+  // ---- 2. 本地静态资源：HEAD 读 Content-Length，不行再用 Range 取总长 ----
+  await Promise.all(
+    Object.values(DTYPES).map(async (spec) => {
+      const url = `${prefix}${spec.file}`;
+      try {
+        let res = await fetch(url, { method: "HEAD" });
+        let len = res.ok ? res.headers.get("content-length") : null;
+        if (!len) {
+          res = await fetch(url, { headers: { Range: "bytes=0-0" } });
+          const cr = res.headers.get("content-range");
+          if (cr) {
+            const m = /\/(\d+)$/.exec(cr.trim());
+            if (m) len = m[1];
+          } else if (res.ok) {
+            len = res.headers.get("content-length");
+          }
+        }
+        if (len) sizes[spec.file] = Number(len);
+      } catch {
+        // 本地没有这个文件，交给下面的远程分支
+      }
+    })
+  );
+  if (Object.keys(sizes).length > 0) return { sizes, source: "local-http" };
+
+  // ---- 2. 远程兜底 ----
   const host = MIRROR || "https://huggingface.co";
   const url = `${host}/api/models/${MODEL_ID}/tree/main/onnx`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`读取模型文件列表失败: HTTP ${res.status}`);
   const json = await res.json();
-  const map = {};
   for (const item of json) {
-    if (item.type === "file") map[`onnx/${item.path}`] = item.size ?? item.lfs?.size ?? 0;
+    if (item.type === "file") sizes[`onnx/${item.path}`] = item.size ?? item.lfs?.size ?? 0;
   }
-  return map;
+  return { sizes, source: "remote" };
 }

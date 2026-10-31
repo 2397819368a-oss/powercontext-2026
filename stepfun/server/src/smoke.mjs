@@ -15,6 +15,16 @@ process.env.EMBED_DIM = process.env.EMBED_DIM || "8";
 process.env.SEEKDB_DATA_DIR =
   process.env.SEEKDB_DATA_DIR || "C:/powercontext-data/seekdb-smoke.db";
 
+// 自检之前先清掉这个目录。
+// 为什么必须有这一步：切换 EMBED_DIM 重跑时，库里残留的旧维度表会让写入直接报
+// "inconsistent dimension"（这是有意加的防御，防止静默维度漂移），
+// 于是自检从第二次起就必然失败。自检要从零验证，所以每次跑都应该是干净的环境。
+// 只删【自检自己的】目录，绝不碰正式服务的数据目录。
+{
+  const fs = await import("node:fs");
+  fs.rmSync(process.env.SEEKDB_DATA_DIR, { recursive: true, force: true });
+}
+
 const DIM = Number(process.env.EMBED_DIM);
 
 const db = await import("./db.mjs");

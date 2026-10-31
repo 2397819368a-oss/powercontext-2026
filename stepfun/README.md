@@ -34,13 +34,19 @@ npm run dev               # http://127.0.0.1:5173
 # 3) 打开页面 → 点「加载模型」→「写入示例文档」→ 输入查询 →「检索」
 ```
 
-> **首次会自动下载约 25~90MB 模型权重**（视所选精度）。若所在环境访问 HuggingFace 困难，
-> 可以先把权重抓到本地实现完全离线运行：
+> **首次会下载约 22~86MB 模型权重**（视所选精度，见下方实测表）。若所在环境访问 HuggingFace 困难，
+> 可以先把权重抓到本地，实现完全离线运行：
 > ```bash
-> node tools/fetch-model.mjs                      # 或 --host https://hf-mirror.com
-> node tools/fetch-model.mjs --only int8          # 只下量化版，体积最小
+> node tools/fetch-model.mjs                        # 默认 HuggingFace
+> node tools/fetch-model.mjs --host https://hf-mirror.com   # 国内镜像
+> node tools/fetch-model.mjs --source modelscope    # 境外站不可达时用这个（推荐）
+> node tools/fetch-model.mjs --only int8            # 只下量化版，体积最小
 > ```
 > 权重落在 `web/public/models/` 后，页面会**优先读本地**，不再需要外网。
+>
+> `--source modelscope` 是为"DNS 能解析但 TCP 443 握手超时"这类环境准备的：
+> 它会从 ModelScope 拉同模型并把文件名映射成 Transformers.js 需要的命名，
+> 具体映射与来源说明见 `docs/TECHNICAL.md` §4.3。
 
 ## 验证（本机实测结果）
 
@@ -53,8 +59,21 @@ node tools/http-check.mjs         # 打完整 HTTP 链路（需先 npm start）
 |---|---|
 | 服务端自检 `npm run smoke` | **11 passed / 0 failed**（DIM=8 与 DIM=384 各跑一遍均通过） |
 | HTTP 链路 `http-check.mjs` | **10 passed / 0 failed** |
-| 前端生产构建 `vite build` | 38 modules，`822.60 kB`（gzip 202.54 kB） |
-| 页面渲染与服务连接 | 无头 Edge 抓 DOM 确认：`seekdb 已连接` / 示例 8 条 / 库内 `4 条 · 384 维` |
+| 前端生产构建 `npm run build` | 通过，主包 `566.60 kB`（gzip 168.83 kB） |
+| 页面渲染与服务连接 | CDP 抓 DOM 确认：`seekdb 已连接` / 示例 8 条 / `384 维` |
+| 全链路自动跑通 | `node tools/cdp-run.mjs <url>` → 加载模型 → 写库 → 检索 → 出量化表，无报错 |
+| 量化数据交叉验证 | `python tools/verify-onnx-dtypes.py` 与浏览器侧同量级 |
+
+### 量化实测（浏览器本地推理，WASM 后端）
+
+| 精度 | 权重体积 | 相对 FP32 | 句向量余弦相似度（vs FP32） |
+|---|---|---|---|
+| FP32 | 86.22 MB | 基准 | — |
+| FP16 | 43.12 MB | 50.0%（省 50.0%） | 平均 **0.999998** |
+| INT8 | 21.96 MB | 25.5%（省 74.5%） | 平均 **0.987285** |
+
+INT8 把体积压掉约四分之三，句向量相似度仍保持在 0.987 以上。
+两套运行时互相印证：Python ORT 1.31 独立复算得 FP16 `0.99999660` / INT8 `0.98966122`。
 
 实测检索样例（4 条文档，Top-3）：
 
@@ -143,10 +162,9 @@ stepfun/
 
 ## 已知限制
 
-- **浏览器端真实推理未在本机验证**：当前环境无法访问外网（HuggingFace 与镜像均不可达），
-  所以"下载权重 → 浏览器内 forward"这一步没能实跑。
-  代码层面已通过 `vite build` 与页面加载（确认服务连通、降级逻辑正确）验证；
-  联网环境下按上方「离线权重」准备后即可完整运行。
 - 混合检索的召回质量依赖 ik 分词与 HNSW 索引构建；数据量很小（数十条）时，
   向量路基本等价于暴力搜索，这是正常的。
 - 单次写入上限 32MB / 每批 200 条；更大规模需要分片。
+- 升级到 `@huggingface/transformers@4` 之后，`ORT wasm 运行时`与`模型权重`都会被
+  `npm run build` 同步进 `dist/`（约 240MB）。若不希望产物这么大，可只下 INT8 权重
+  并在 `.gitignore` 里放宽 `public/ort/` —— 运行时本身来自 CDN，离线才需要本地副本。

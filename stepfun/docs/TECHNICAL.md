@@ -107,19 +107,53 @@ ORDER BY fused.rrf DESC LIMIT ?
 | FP16 | `fp16` | `onnx/model_fp16.onnx` |
 | INT8 | `q8` | `onnx/model_quantized.onnx` |
 
-**体积**：页面运行时从 HuggingFace 仓库 API 读取三个文件的真实字节数并算压缩比，
-不在代码里写死数字（避免文档与实际不一致）。也可以离线取：
+### 4.1 体积（真实磁盘字节数）
 
-```bash
-node tools/fetch-model.mjs          # 下载后终端会直接打印三种精度的体积与压缩比
-```
+数字由 `tools/record-model-sizes.mjs` 在构建前直接 stat 磁盘生成 `sizes.json`，页面读它。
 
-**质量**：同一批文本分别用参考精度（FP32）与待测精度各算一次向量，
-比较余弦相似度，越接近 1 说明损失越小。页面「3 · 量化评估」面板即为此。
-注意两次前向都固定跑在 WASM 上，保证基线一致。
+> **为什么不读 HTTP 的 Content-Length**：静态服务器一旦开了 gzip，它给的是**压缩后**大小。
+> 实测 INT8 权重值域小、压缩率高，21.96 MB 被报成 16.32 MB；而 FP32/FP16 几乎压不动，
+> 数字又恰好是对的。这种"部分正确"最难发现，所以干脆绕开传输编码。
 
-**本机未能产出的部分**：当前环境无外网访问权限，权重无法下载，
-因此体积与质量的实测数字**留待联网环境补齐**，此处不以估算值填充。
+| 精度 | 字节数 | 体积 | 相对 FP32 |
+|---|---|---|---|
+| FP32 | 90,405,214 | 86.22 MB | 基准 |
+| FP16 | 45,212,349 | 43.12 MB | 为 FP32 的 50.0%，省 50.0% |
+| INT8 | 23,026,053 | 21.96 MB | 为 FP32 的 25.5%，省 74.5% |
+
+### 4.2 质量（句向量余弦相似度，以 FP32 为基准）
+
+评测文本 8 条（短句、技术术语、中英夹杂各若干），两次前向都固定跑在 WASM 上以保证基线一致。
+
+| 文本 | FP16 vs FP32 | INT8 vs FP32 |
+|---|---|---|
+| 混合检索融合了向量召回与关键词召回 | 0.999997 | 0.979867 |
+| seekdb 支持 HNSW 向量索引与 ik 中文全文索引 | 0.999999 | 0.992363 |
+| INT8 量化可以显著减小模型体积 | 0.999997 | 0.992370 |
+| 浏览器端推理使用 Transformers.js 与 onnxruntime-web | 0.999998 | 0.990808 |
+| WebGPU 不可用时降级到 WASM 后端 | 0.999998 | 0.982038 |
+| 混合检索的结果在库内用 RRF 融合排序 | 0.999997 | 0.986846 |
+| Hybrid search combines dense retrieval and sparse retrieval | 0.999998 | 0.991307 |
+| 知识库检索要求低延迟与高精度 | 0.999998 | 0.982682 |
+| **平均** | **0.999998** | **0.987285** |
+
+**交叉验证**：换个运行时独立复算一遍（`tools/verify-onnx-dtypes.py`，Python ORT 1.31，
+不走浏览器），得到 FP16 `cos=0.99999660`、INT8 `cos=0.98966122` —— 与浏览器侧同量级，
+说明这些数字不是某个运行时的偶发结果。
+
+**结论**：INT8 把 86.22 MB 压到 21.96 MB（-74.5%），句向量相似度仍保持在 0.987 以上，
+是体积敏感场景的首选；FP16 体积只省一半但几乎无损（≥0.9999），适合既要精度又要减半体积。
+
+### 4.3 数据来源说明（如实标注）
+
+权重来自 **ModelScope（`AI-ModelScope/all-MiniLM-L6-v2`）** 而非 HuggingFace 官方仓库，
+原因是本机无法访问境外站点（DNS 可解析但 TCP 443 不通，详见 §7）。两者是同一模型
+（`config.json` 完全一致：bert / hidden_size 384 / 6 层），但需说明：
+
+- FP32、INT8 为仓库内的官方 sentence-transformers 导出版本，语义与 `Xenova/all-MiniLM-L6-v2` 对应；
+- FP16 该仓库未提供同名文件，取的是档内的 ORT O4 优化版本（`model_O4.onnx`）。
+  其体积恰为 FP32 的一半（45,212,349 ≈ 90,405,214/2），且前向结果与 FP32 有 ~1e-4 量级差异、
+  与 INT8 差异明显不同，**确认是真实半精度权重而非原样副本**（若为 FP32 副本则差异应严格为 0）。
 
 ## 5. 验收证据（均为实跑结果）
 
@@ -127,9 +161,15 @@ node tools/fetch-model.mjs          # 下载后终端会直接打印三种精度
 |---|---|---|
 | db 层自检 | `cd server && npm run smoke` | 11 passed / 0 failed（DIM=8 与 384 双跑通过） |
 | HTTP 链路 | `node tools/http-check.mjs` | 10 passed / 0 failed |
-| 前端构建 | `cd web && npx vite build` | 38 modules，822.60 kB（gzip 202.54 kB） |
-| 页面连通 | 无头浏览器抓 DOM | `seekdb 已连接`、示例 8 条、库内 `4 条 · 384 维` |
-| 降级标注 | 无头浏览器抓 DOM | 「WebGPU 存在但拿不到 adapter…已降级到 WASM」 |
+| 前端构建 | `cd web && npm run build` | 通过，主包 566.60 kB（gzip 168.83 kB） |
+| 页面连通 | CDP 抓 DOM | `seekdb 已连接`、示例 8 条、库内 `N 条 · 384 维` |
+| 降级标注 | CDP 抓 DOM | 「WebGPU 存在但拿不到 adapter…已降级到 WASM」 |
+| 全链路自动跑 | `node tools/cdp-run.mjs <url>` | 加载模型 → 写入 → 检索 → 出量化两张表，无报错 |
+| 量化体积/质量 | 同上 + `tools/verify-onnx-dtypes.py` | 见 §4.1 / §4.2，两套运行时互相印证 |
+
+> 无头验证**不用** `--virtual-time-budget`：它会把 `setTimeout` 快进，
+> 页面里那些超时提示会被瞬间触发，跑出来的失败是假的。改用 CDP 轮询页面挂的
+> `window.__AUTO_STATE__`（`tools/cdp-run.mjs`），"跑完了没有"是确定的，不靠猜时长。
 
 检索实测（4 条文档，Top-3）：混合检索 `rrf=0.03252`（双命中项居首）、
 纯向量 `cosine=0.00000`、纯全文 `score=0.8834`。
@@ -145,13 +185,32 @@ node tools/fetch-model.mjs          # 下载后终端会直接打印三种精度
 | npm 在 Windows 漏装原生 optional 包 | 显式按版本号补装 `@rollup/rollup-win32-x64-msvc`、`@esbuild/win32-x64` |
 | 离线环境下模型加载静默卡死 | 加载超过 30 秒给出明确提示与离线方案指引 |
 | seekdb 本地进程未优雅关闭会留下文件锁 | 服务端注册 SIGINT/SIGTERM 优雅关闭 |
+| **v2 的 `dtype` 参数被静默忽略，量化对比全是假数据** | `@xenova/transformers@2.17.2` 不支持该选项，三个精度其实都加载了同一个 `model.onnx`，结果相似度恰好 `1.000000`。改用 `@huggingface/transformers@4`（`dtype` 生效），并交叉验证兜底 |
+| ORT 1.14 加载不了新版 INT8 图（`protobuf parsing failed`） | 随 v4 一起升到 onnxruntime-web 1.31；文件本身没问题（Python ORT 1.31 能正常加载） |
+| ORT 的 wasm 默认从 jsdelivr CDN 拉，离线永远加载不出来 | `tools/sync-ort-wasm.mjs` 同步到本地并设 `wasmPaths`；且**全量**同步（曾漏 asyncify 变体，Edge 156 直接报取不到模块） |
+| 静态服务器开 gzip 使 `Content-Length` 给出压缩后大小 | 构建前 stat 磁盘生成 `sizes.json`，页面优先读它（§4.1） |
+| 用 `--virtual-time-budget` 做无头验证会得到假失败 | 它快进 `setTimeout`，页面超时提示被瞬间触发；改为 CDP 轮询 `window.__AUTO_STATE__` |
 
-## 7. 联网环境下补齐验证的一步清单
+## 7. 权重获取与离线复现
 
-1. `node tools/fetch-model.mjs`（或 `--only int8`）下载权重；
-2. `cd server && npm start`；
-3. `cd web && npm run dev`；
-4. 打开 `http://127.0.0.1:5173/?auto=1&dtype=int8&q=混合检索`
-   即可自动完成「加载模型 → 建索引 → 检索」并留在页面上；
-5. 点「读取各精度体积」「跑质量对比」取得量化报告；
-6. 把实测数字回填到本文档第 4 节。
+**为什么需要这一段**：本机到 HuggingFace / hf-mirror 均不可达。
+DNS 能解析（`huggingface.co` → 31.13.68.169），但 **TCP 443 握手超时**，
+而百度、npmmirror、ModelScope 都正常 200 —— 属于"国内网通、境外站被挡"，不是没网。
+因此权重改从 **ModelScope** 获取（详见 §4.3 的来源标注）。
+
+```bash
+cd web
+node tools/fetch-model.mjs --host https://modelscope.cn   # 拉取三个精度 + tokenizer
+npm run build                                             # 内含 ort-wasm 同步与 sizes.json 生成
+cd ../server && npm start                                 # 后端 8787，自动拉起 seekdb
+node ../../stepfun/tools/cdp-run.mjs "http://127.0.0.1:5177/?auto=1&quant=1&dtype=int8" 600000
+```
+
+一键自动演示（人工演示用这个）：
+
+```
+http://127.0.0.1:5173/?auto=1&quant=1&dtype=int8&q=混合检索
+```
+
+会自动完成「加载模型 → 写库建索引 → 混合检索 → 出体积表/质量表」并把结果留在页面上，
+不需要点任何按钮。

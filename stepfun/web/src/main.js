@@ -241,31 +241,114 @@ $("inp-query").addEventListener("keydown", (e) => {
 
 /* ---------------------------- 4. 量化评估 ---------------------------- */
 
+/**
+ * 把两个表渲染逻辑抽成函数，而不是写在 click handler 里。
+ * 理由：自动演示模式（?auto=1&quant=1）必须能跑同一段代码把结果留在 DOM 上，
+ * 否则无头浏览器永远填不出这两张表。
+ */
+
+/** 体积表：优先读本地静态资源，本地没有才回落到 HuggingFace API */
+async function fillSizeTable() {
+  const { sizes, source } = await fetchModelSizes();
+  const base = sizes[DTYPES.fp32.file];
+  const tb = $("tbl-size").querySelector("tbody");
+  tb.innerHTML = "";
+  for (const [key, spec] of Object.entries(DTYPES)) {
+    const size = sizes[spec.file];
+    const tr = document.createElement("tr");
+    if (size == null) {
+      tr.innerHTML = `<td>${spec.label}</td><td colspan="3">未获取到（缺少 ${spec.file}）</td>`;
+    } else {
+      const ratio = base ? 1 - size / base : 0;
+      tr.innerHTML =
+        `<td>${spec.label}</td>` +
+        `<td><code>${spec.file}</code></td>` +
+        `<td>${(size / 1024 / 1024).toFixed(2)} MB</td>` +
+        `<td>${
+          key === "fp32"
+            ? "基准"
+            : `为 FP32 的 ${((size / base) * 100).toFixed(1)}%，省 ${(ratio * 100).toFixed(1)}%`
+        }</td>`;
+    }
+    tb.appendChild(tr);
+  }
+  $("tbl-size").hidden = false;
+  return { sizes, source };
+}
+
+/**
+ * 质量表：每个非参考精度都与 FP32 比对一遍。
+ * @param {string[]} texts
+ * @returns {Promise<Record<string, number[]|null>>} key -> 逐条余弦相似度
+ */
+async function fillQualityTable(texts) {
+  const keys = Object.keys(DTYPES).filter((k) => k !== "fp32");
+
+  // 表头动态生成（比写死列数更耐改）
+  const head = $("tr-quality-head");
+  head.innerHTML = "<th>文本</th>";
+  for (const k of keys) head.innerHTML += `<th>${DTYPES[k].label} vs FP32</th>`;
+
+  const matrix = {};
+  for (const key of keys) {
+    try {
+      const rows = await compareQuality(texts, "fp32", key, (m) => log(m));
+      matrix[key] = rows.map((r) => r.sim);
+      const avg = rows.reduce((a, b) => a + b.sim, 0) / rows.length;
+      log(`${DTYPES[key].label}：平均相似度 ${avg.toFixed(6)}`, "ok");
+    } catch (e) {
+      matrix[key] = null;
+      log(`${DTYPES[key].label} 对比失败：${e.message}`, "err");
+    }
+  }
+
+  const tb = $("tbl-quality").querySelector("tbody");
+  tb.innerHTML = "";
+  texts.forEach((t, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${t.trim()}</td>` +
+      keys.map((k) => `<td>${matrix[k] ? matrix[k][i].toFixed(6) : "—"}</td>`).join("");
+    tb.appendChild(tr);
+  });
+  // 平均行：一眼看出"平均退化多少"
+  const trAvg = document.createElement("tr");
+  trAvg.innerHTML =
+    `<td><em>平均</em></td>` +
+    keys
+      .map((k) => {
+        if (!matrix[k]) return "<td>—</td>";
+        const avg = matrix[k].reduce((a, b) => a + b, 0) / matrix[k].length;
+        return `<td><strong>${avg.toFixed(6)}</strong></td>`;
+      })
+      .join("");
+  tb.appendChild(trAvg);
+
+  $("tbl-quality").hidden = false;
+  return matrix;
+}
+
+/** 质量对比用的文本：混合了短句、术语、中英夹杂与较长叙述 */
+const QUALITY_TEXTS = [
+  "混合检索融合了向量召回与关键词召回",
+  "seekdb 支持 HNSW 向量索引与 ik 中文全文索引",
+  "INT8 量化可以显著减小模型体积",
+  "浏览器端推理使用 Transformers.js 与 onnxruntime-web",
+  "WebGPU 不可用时降级到 WASM 后端",
+  "混合检索的结果在库内用 RRF 融合排序",
+  "Hybrid search combines dense retrieval and sparse retrieval",
+  "知识库检索要求低延迟与高精度",
+];
+
 $("btn-size").addEventListener("click", async () => {
   const btn = $("btn-size");
   btn.disabled = true;
   try {
-    const sizes = await fetchModelSizes();
-    const base = sizes[DTYPES.fp32.file];
-    const tb = $("tbl-size").querySelector("tbody");
-    tb.innerHTML = "";
-    for (const [key, spec] of Object.entries(DTYPES)) {
-      const size = sizes[spec.file];
-      const tr = document.createElement("tr");
-      if (size == null) {
-        tr.innerHTML = `<td>${spec.label}</td><td colspan="3">未获取到（仓库中没有 ${spec.file}）</td>`;
-      } else {
-        const ratio = base ? (1 - size / base) : 0;
-        tr.innerHTML =
-          `<td>${spec.label}</td>` +
-          `<td><code>${spec.file}</code></td>` +
-          `<td>${(size / 1024 / 1024).toFixed(2)} MB</td>` +
-          `<td>${key === "fp32" ? "基准" : `体积 ${(size / base * 100).toFixed(1)}%，省 ${(ratio * 100).toFixed(1)}%`}</td>`;
-      }
-      tb.appendChild(tr);
-    }
-    $("tbl-size").hidden = false;
-    log("体积数据已从 HuggingFace 读取", "ok");
+    const { source } = await fillSizeTable();
+    log(
+      `体积数据获取成功（来源：${source === "local" ? "本地静态资源" : "HuggingFace API"}）`,
+      "ok"
+    );
   } catch (e) {
     log(`读取体积失败：${e.message}`, "err");
   } finally {
@@ -277,22 +360,7 @@ $("btn-quality").addEventListener("click", async () => {
   const btn = $("btn-quality");
   btn.disabled = true;
   try {
-    const texts = [
-      "混合检索融合了向量召回与关键词召回",
-      "INT8 量化可以显著减小模型体积",
-      " seekdb 支持 HNSW 向量索引与 ik 全文索引",
-    ];
-    const rows = await compareQuality(texts, "fp32", "int8", (m) => log(m));
-    const tb = $("tbl-quality").querySelector("tbody");
-    tb.innerHTML = "";
-    for (const r of rows) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${r.text.trim()}</td><td>${r.sim}</td>`;
-      tb.appendChild(tr);
-    }
-    $("tbl-quality").hidden = false;
-    const avg = rows.reduce((a, b) => a + b.sim, 0) / rows.length;
-    log(`平均相似度 ${avg.toFixed(6)}`, "ok");
+    await fillQualityTable(QUALITY_TEXTS);
   } catch (e) {
     log(`质量对比失败：${e.message}`, "err");
   } finally {
@@ -312,7 +380,7 @@ $("btn-quality").addEventListener("click", async () => {
  * 「浏览器真的在本地把向量算出来了」。有了这个参数，
  * 一条命令就能跑完整条链路并把结果留在 DOM 里，方便截图和回归。
  */
-async function runAuto() {
+async function runAutoSteps() {
   log("[auto] 开始自动演示", "ok");
   try {
     await withSlowHint(
@@ -365,6 +433,44 @@ async function runAuto() {
     log(`[auto] 检索完成 mode=${data.mode} rows=${data.rows.length}`, "ok");
   } catch (e) {
     log(`[auto] 检索失败：${e.message}`, "err");
+  }
+
+  // ?quant=1 —— 追加一次量化评估，把两张表也生成出来
+  if (params.get("quant")) {
+    try {
+      const { source } = await fillSizeTable();
+      log(`[auto] 体积表已生成（来源 ${source}）`, "ok");
+    } catch (e) {
+      log(`[auto] 体积表失败：${e.message}`, "err");
+    }
+    try {
+      await fillQualityTable(QUALITY_TEXTS);
+      log("[auto] 质量表已生成", "ok");
+    } catch (e) {
+      log(`[auto] 质量表失败：${e.message}`, "err");
+    }
+    updateRuntime();
+  }
+}
+
+/**
+ * runAuto 的外壳。
+ *
+ * 存在的理由：外部自动化**必须能确切知道"跑完了没有"**。
+ * 无头浏览器没法靠 sleep 猜（加载 90MB 权重 + WASM 推理可能几十秒到几分钟），
+ * 所以在 window 上落一个明确的状态标志，CDP 脚本轮询它即可，不再靠超时猜。
+ * 另外 --virtual-time-budget 会快进 setTimeout，绝不能用它来等待真实 IO。
+ */
+async function runAuto() {
+  let error = null;
+  try {
+    await runAutoSteps();
+  } catch (e) {
+    error = e.message;
+    log(`[auto] 未预期异常：${e.message}`, "err");
+  } finally {
+    window.__AUTO_STATE__ = { done: true, error, at: new Date().toISOString() };
+    log(`[auto] 自动演示结束（${error ? "存在失败环节" : "全部成功"}）`, error ? "err" : "ok");
   }
 }
 

@@ -9,6 +9,7 @@
  *   node tools/fetch-model.mjs
  *   node tools/fetch-model.mjs --host https://hf-mirror.com   # 国内镜像
  *   node tools/fetch-model.mjs --only int8                    # 只下量化版（体积最小）
+ *   node tools/fetch-model.mjs --source modelscope            # 境外站不可达时用这个
  *
  * 下载完的产物结构（前端会自动优先读这里）：
  *   web/public/models/Xenova/all-MiniLM-L6-v2/
@@ -20,12 +21,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { pipeline as streamPipeline } from "node:stream/promises";
 
 const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
 
-// 位置 targeting 到仓库根的 web/public/models
-const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+// 定位到仓库根的 web/public/models
+// 注意：必须用 fileURLToPath，不能用 decodeURI/字符串替换去处理 URL —— 那样遇到中文路径
+// 会得到 %E5%A4%A7%E8%B5%9B 这种百分号编码串，在别人机器上就会找不到目录。
+const here = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.resolve(here, "..", "web", "public", "models", MODEL_ID);
 
 const FILES = [
@@ -46,13 +50,45 @@ const PRECISION_MAP = {
   int8: ["onnx/model_quantized.onnx"],
 };
 
+/**
+ * ModelScope 源。
+ *
+ * 存在的理由：本机到 HuggingFace / hf-mirror 都不通（DNS 能解析但 TCP 443 握手超时），
+ * 而 ModelScope 可达。它的文件名与 HF 官方仓库**不一样**，所以必须做映射：
+ *   FP32 <- onnx/model.onnx（同名）
+ *   FP16 <- onnx/model_O4.onnx（ORT O4 优化，体积恰为 FP32 的一半，确为半精度权重）
+ *   INT8 <- onnx/model_qint8_avx512.onnx（x64 动态量化版）
+ * 注意 ModelScope 没有 `Xenova/all-MiniLM-L6-v2`，用的是社区同步版，详见 docs/TECHNICAL.md §4.3。
+ */
+const MODELSCOPE = {
+  repo: "AI-ModelScope/all-MiniLM-L6-v2",
+  revision: "master",
+  // 目标文件名 -> 源仓库里的文件名
+  map: {
+    "onnx/model.onnx": "onnx/model.onnx",
+    "onnx/model_fp16.onnx": "onnx/model_O4.onnx",
+    "onnx/model_quantized.onnx": "onnx/model_qint8_avx512.onnx",
+  },
+  url: (file) =>
+    `https://modelscope.cn/api/v1/models/${MODELSCOPE.repo}/repo?Revision=${MODELSCOPE.revision}&FilePath=${file}`,
+};
+
 function parseArgs(argv) {
-  const args = { host: "https://huggingface.co", only: null };
+  const args = { host: "https://huggingface.co", only: null, source: "huggingface" };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--host") args.host = argv[++i];
     if (argv[i] === "--only") args.only = argv[++i];
+    if (argv[i] === "--source") args.source = argv[++i];
   }
   return args;
+}
+
+/** 按下载源算出某个目标文件的 URL */
+function urlFor(f, args) {
+  if (args.source === "modelscope") {
+    return MODELSCOPE.url(MODELSCOPE.map[f] ?? f);
+  }
+  return `${args.host}/${MODEL_ID}/resolve/main/${f}`;
 }
 
 async function download(url, dest) {
@@ -77,7 +113,8 @@ async function download(url, dest) {
 const mb = (n) => `${(n / 1024 / 1024).toFixed(2)} MB`;
 
 async function main() {
-  const { host, only } = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2));
+  const { only } = args;
   let files = FILES;
   if (only) {
     const need = PRECISION_MAP[only];
@@ -86,13 +123,14 @@ async function main() {
     files = FILES.filter((f) => !f.startsWith("onnx/") || need.includes(f));
   }
 
-  console.log(`目标模型: ${MODEL_ID}\n下载源: ${host}\n输出目录: ${OUT}\n`);
+  const source = args.source === "modelscope" ? MODELSCOPE.repo : args.host;
+  console.log(`目标模型: ${MODEL_ID}\n下载源: ${source}\n输出目录: ${OUT}\n`);
 
   const sizes = {};
   for (const f of files) {
     // 有些 tokenizer 变体不存在，缺失是允许的；权重文件缺失才报错
     const optional = ["special_tokens_map.json", "vocab.txt", "tokenizer_config.json"].includes(f);
-    const url = `${host}/${MODEL_ID}/resolve/main/${f}`;
+    const url = urlFor(f, args);
     const dest = path.join(OUT, f);
     try {
       const size = await download(url, dest);
