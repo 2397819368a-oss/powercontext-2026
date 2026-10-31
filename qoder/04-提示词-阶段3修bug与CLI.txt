@@ -1,0 +1,51 @@
+检索功能验过了：SQL 单列 MATCH 正确、21 passed、ngram 对照（0 命中 vs 19 命中）我独立复现成功。
+但我在抽查行号时发现一个**致命 bug**，它直接摧毁"带出处"这个核心卖点，必须先修：
+
+【问题】所有带 frontmatter 的文件，入库行号整体偏小 11 行。
+
+实测证据（文件 11-赛题归档/2026-10-29-PowerContext-11题攻关手册.md）：
+  - 原文件里 `## T4 · 检索重排` 在**第 99 行**
+  - 数据库里该块的 line_start = **88**，line_end = 105
+  - 真实应为 99-115（下一个 H2 `## T5` 在第 117 行）
+  - 偏移 = 11 行 = frontmatter 的 10 行（1..10 含两个 ---）+ 1 行分隔空行
+
+【根因】parse_frontmatter() 返回的 body 是 text[m.end():]，即**已剥离 frontmatter**。
+chunk_body(body) 在 body 内部从 0 开始数行，算出的行号是"body 相对行号"，
+而数据库字段的含义是"原文件绝对行号"。两者差了一个 frontmatter 长度。
+
+【为什么 5 个 chunker 测试没发现】因为测试用的假 md 没有 frontmatter，
+chunker 与断言都基于同一份"无 frontmatter 的 body"，自洽所以全绿。
+**这正是"测试通过 ≠ 功能正确"的典型案例。**
+
+【修复方案】
+1. parse_frontmatter() 改为返回三元组 (fm_dict, body_text, frontmatter_line_count)，
+   或在 ParsedNote 里增加 body_line_offset 字段（推荐后者，改动面小）。
+2. chunk_body(body, line_offset: int = 0)，内部 line_start = line_offset + h2_idx + 1，
+   line_end 同理。line_offset 默认 0 保持向后兼容。
+3. parse_note() 负责把 offset 传进 chunk_body。
+4. **测试必须加一条新的**：构造一个**带 frontmatter 的假 md**（例如 frontmatter 占 7 行），
+   断言第一个 H2 块的 line_start 等于该标题在原始文本中的真实行号（用 text.split('\n')
+   重新数一遍来对照）。这条测试如果通不过，说明 bug 还在。
+
+【修复后要做的事】
+- 因为 ingest 有 file_hash 去重（hash 未变会跳过），改完行号不会自动更新。
+  请提供一个重建方式：python -m backend.app.ingest.cli ingest --rebuild
+  （--rebuild 时先清空 note_chunks 与 notes 再全量重灌，不要删库目录）
+- 重灌后自检三条：
+  a) 上面那个文件里 heading 含 "T4" 的块，line_start 是否为 99
+  b) 随机抽 3 个块，按 line_start-line_end 从原文件截取，内容是否与库里的 content 一致
+  c) 行号不再有负数或超过文件总行数的情况
+
+修完并自检通过后，再做 CLI（三条命令，都能直接跑）：
+  python -m backend.app.cli index <目录>          重建索引，打印文件数/块数/耗时
+  python -m backend.app.cli search "词" [--type card|code|exam] [--tag xxx] [--year 2026] [--top-k N]
+                                                   表格输出：序号/score/文件/小节/行号
+  python -m backend.app.cli show <chunk_id>        打印该块原文，带行号前缀，前后各带 2 行上下文
+
+要求：出错给可操作提示而不是堆栈；表格对齐（中文宽度要处理，用 unicodedata.east_asian_width）。
+
+做完停下，贴给我：
+(a) 修复前后的行号对比（同一个块）
+(b) 新增的那条 frontmatter 测试的运行输出
+(c) pytest 全量结果
+(d) index / search / show 三条命令的真实输出各一段

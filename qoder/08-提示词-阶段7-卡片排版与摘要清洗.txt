@@ -1,0 +1,56 @@
+这轮我先说验证结果，再说两个必须改的显示问题。
+
+【这轮做对的，我逐条实跑确认】
+- escapeAttr 生效。我用无头浏览器导出渲染后 DOM（不是看源码）：
+  搜 policy"id → data-keyword="policy&quot;id"，值完整保留；
+  搜 " onmouseover="alert(1) → data-keyword="&quot; onmouseover=&quot;alert(1)"，
+  载荷整段被关在属性值里，DOM 里没有多出 onmouseover 属性，XSS 成立不了。
+- verify_chunks 现在是真严格。我反向测了三种坏数据，全部能抓出来：
+  行号 +1 → "内容不匹配（严格比对），首个差异位置 0"；
+  line_end 多算 5 行 → 首个差异位置 184；
+  heading 改错 → "起始行非 H2"。
+  这比上一版"包含即可"强太多——上一版这三种情况全会判 OK。
+  全量跑：219 OK / 0 BAD。
+- /api/search 返回 {sql, took_ms, results}，页面 SQL 折叠条显示真实耗时（22.9 ms / 51.6 ms 都见过）。
+- pytest 23 passed；README 数字、chunk id、qoder/ 目录、截图占位都改对了；cli.py 的 hasattr hack 删了。
+
+【问题 1：结果卡片头部三个元素挤在中间，标签漂在正中】
+.result-header 用了 justify-content: space-between 直接放三个子元素（score、类型标签、行号），
+空间按间隙均分，于是「赛题 / 代码 / 卡片」这个小标签落在卡片正中间，看着像悬空。
+修法：加一层左侧分组，左右各一列。
+  HTML:  <div class="result-header">
+           <div class="result-meta">
+             <span class="result-score">…</span>
+             <span class="result-type-tag">…</span>
+           </div>
+           <span class="result-lines">行 …</span>
+         </div>
+  CSS:   .result-meta { display: flex; gap: 8px; align-items: center; }
+         .result-header 保留 space-between 即可（现在只有两组子元素了）。
+
+【问题 2：摘要直接吐 Markdown 原文】
+截图里卡片摘要是这样：
+  ## 六、`policy_id` ```python self.policy_id = policy_id # 默认 "http-cross-encoder-v1" ...
+  ## 一、接口契约 新增 `powercontext builtin runtime source lifecycle`…
+问题有三层：
+  a) 行首的 ## 原样出现；
+  b) ** 加粗、` 反引号、``` 代码围栏、- 列表符全留着；
+  c) 摘要开头重复了卡片上方已经显示过的小节标题（content 第一行就是 H2，heading 字段也是它）。
+修法：在 engine.py 里加一个 clean_snippet(text) 清洗函数，snippet 先清洗再截窗口：
+  - 去掉行首的 #+ 空格、> 、- / * / + 空格、数字加点（如 "1. "）
+  - 去掉 ** __ ` 这些装饰符（注意是去掉符号本身，不是去掉里面的字）
+  - ``` 代码围栏整行去掉
+  - 把换行和连续空格折叠成单个空格
+顺序很关键：先在原始 content 上 find 命中位置，再清洗；清洗后重新 find 一次定位，
+找不到就退回清洗后文本的开头截取。别用清洗前的下标去切清洗后的字符串。
+  - 如果首行清洗后等于 heading（或清洗后为空），把首行整行丢掉，摘要不要重复标题。
+最后仍按 width=120 截，两端补 "..."。
+
+【改完贴给我】
+(a) 一张 ?q=policy"id&top_k=2 的整页截图：要求能看到 ① 卡片头部是"左 score+标签 / 右行号"两列对齐
+    ② 摘要里没有 ##、**、反引号、``` ③ 摘要开头不是小节标题
+(b) 一张 ?q=重排&type=exam&top_k=3 的截图，确认示例按钮区和三张卡片排版正常
+(c) pytest 全量结果 + python tools/verify_chunks.py --all 的最后一行
+
+只改 index.html 的卡片结构/CSS 和 engine.py 的 snippet 生成，别动表结构、别动检索 SQL、
+不用重灌数据，也别动 docs/screenshots/（截图我来放）。

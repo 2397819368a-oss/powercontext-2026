@@ -1,0 +1,112 @@
+这轮我在本机全量复核过，先给结论，再说要改什么。
+
+【已确认通过（我实跑，不看你的自述）】
+1. pytest 23 passed（7 chunker + 16 search），末尾块测试确实存在。
+2. 数据层真修好了。我写了独立脚本，不抽样、全量 219 个 chunk 逐个比对：
+   - 行号范围全部合法（无越界 / 无倒置 / 无 <=0）
+   - 去掉尾部空行后，"文件行区间内容" 与 "DB content" 219/219 逐字完全相等
+   - 每块起始行确实是 "## " 开头且与 heading 字段一致
+   - 同文件相邻块首尾严格衔接（上一块 end + 1 == 本块 start）
+   - 末尾越界块 0 个
+3. 卡片已显示纯文件名、title 保留全路径、无内联 onclick（已改 data-* + 事件委托）、URL 参数自动搜索都对。
+
+【不成立的一条：你说的「双引号也不会破坏 JS」】
+(d) 你验证的是 /api/search 这个接口，接口通了不等于页面点击能用。
+当前的写法是：data-keyword="${escapeHtml(q)}"
+escapeHtml 走的是 div.textContent → innerHTML，只转义 & < >，不转义双引号。
+把它放进双引号属性里就会截断。我用 HTML 解析器实测：
+  关键词 policy'id              → data-keyword = "policy'id"   一致（单引号是运气好）
+  关键词 policy"id              → 生成 data-keyword="policy"id"  → 浏览器取到 "policy"
+  关键词 " onmouseover="alert(1) → 属性直接断开，注入出一个真的 onmouseover 事件
+也就是说：带双引号的关键词，点击卡片后用来高亮的关键词是错的；再往前一步就是 XSS。
+这个页面的卖点之一就是"带特殊字符不乱"，这条必须修掉，不能留。
+
+下面 4 条必修 + 3 条收尾，一次做完停下等我确认。
+
+────────────────────────────────
+【必修 1：属性值转义】
+在 index.html 里新增一个专门给属性用的转义函数（不要改 escapeHtml 的语义，它还要用于文本）：
+
+  function escapeAttr(text) {
+    return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+然后把所有"插到 attr=\"...\" 里"的位置换成 escapeAttr：
+  - data-keyword="${escapeAttr(q)}"
+  - title="${escapeAttr(r.file_path)}"
+文本节点（小节标题、摘要、文件名显示、标签）继续用 escapeHtml，不要混。
+判断标准很简单：这个值是不是落在引号里面。是 → escapeAttr。
+
+【必修 2：verify_chunks.py 的判定太宽松，不能作为交付证据】
+现在是：
+  if db_content not in actual and actual not in db_content: 报错
+这是"包含即可"，行号偏 1 行也照样判 OK——而我们这一路修的就是行号偏移。
+改成严格判定，并支持全量：
+
+  # 截取区间，去掉尾部空行（content 入库时 strip 过，会少掉末尾空行）
+  seg = [ln.rstrip("\n") for ln in lines[line_start-1:line_end]]
+  while seg and seg[-1].strip() == "":
+      seg.pop()
+  expected = "\n".join(seg).strip()
+  if expected != db_content:  # 必须逐字相等
+      报 BAD，并打印首个差异位置前后 20 字
+
+再加两条硬检查：
+  - line_start 那行必须以 "## " 开头，且 lstrip("#").strip() == heading（heading 非空时）
+  - line_end 不得超过文件总行数
+
+参数改成 --sample N 和 --all 二选一（--all 扫全库）；有任意 BAD 就 exit 1。
+改完跑 python tools/verify_chunks.py --all，必须 219 OK / 0 BAD。
+
+【必修 3：页面要真的显示执行过的 SQL——提测表里已经写了，页面里没有】
+提交材料里写的是"网页右侧展示实际执行的 SQL 供核对"，但当前页面只有搜索区和结果区，
+评审一点开就发现说的和做的不一致。这条要落到代码里，不要让文字去迁就页面：
+
+后端：
+  - search/engine.py 抽出 build_sql(keyword, filters, top_k) -> str，search() 内部改调它（对外签名不变，16 个测试不用改）
+  - main.py 的 /api/search 返回结构改为对象：
+        { "sql": "...", "took_ms": 12.3, "results": [ ...原来的列表... ] }
+    新增 SearchResponse 模型；took_ms 用 time.perf_counter 量。参数非法（q 为空）也要返回同样的结构。
+前端：
+  - 取数改成 data.results
+  - 结果区上方加一行「实际执行的 SQL · 12.3 ms」的折叠条，点开显示 SQL
+    （用 textContent 或 escapeHtml 渲染，别直接 innerHTML 拼）
+  - 判空逻辑同步改成 data.results.length === 0
+
+【必修 4：详情面板行号和卡片对不上】
+卡片写「行 135-143」，展开后最后一行编号只到 142（content 入库时尾部空行被 strip 掉了）。
+不影响内容正确性，但一个主打"精确出处"的工具，出处数字前后不一致会被抓。
+修法：渲染完 content 后，补画空白行直到 line_end：
+  for (let n = data.line_start + contentLines.length; n <= data.line_end; n++) 画一个空行（带行号）
+
+────────────────────────────────
+【收尾 1：摘要片段经常不含关键词】
+snippet 现在是 content[:120]，关键词在后面出现时，卡片上根本看不到高亮。
+改成以首个命中位置为中心的窗口：命中点前约 1/3 宽度开始截 120 字，两端截断处补 "…"。
+关键词小写后 find，找不到再退回前 120 字。
+
+【收尾 2：cli.py 有一行必须删的 hack】
+  stats = database.run_ingest(directory) if hasattr(database, 'run_ingest') else __import__(...).run_ingest(directory)
+database 里根本没有 run_ingest，这行是在用 hasattr 兜一个不存在的分支，还带 __import__ 魔术字符串。
+改成文件顶部 from backend.app.ingest.pipeline import run_ingest，直接调用。比赛仓库里不留这种东西。
+
+【收尾 3：README 刷新为真实数据】
+现在 README 里写的是 22 passed / 6 tests、chunk id 1000xxx、sample 5——全是上一轮的旧数据。
+改成：23 passed（7 chunker + 16 search）、chunk id 2000xxx、verify --all 219 OK / 0 BAD，
+目录结构根改成 qoder/（不是 qoder-lab/），并加两节：
+  - 「功能」：中文检索 / 目录+年份+标签过滤 / 每条结果带文件+小节+行号 / 点击展开原文带上下文 / URL 可复现
+  - 「界面」：留一行 ![界面](docs/screenshots/web.png) 占位（截图我来放）
+不要夸大成"语义检索"，已知限制那节保持现在的诚实表述。
+
+────────────────────────────────
+【改完贴给我这 4 样】
+(a) python tools/verify_chunks.py --all 的最后几行（必须是 219 OK / 0 BAD）
+(b) pytest 全量结果
+(c) 首页截图：地址栏带 ?q=policy%22id 打开 → 点开一张卡片 → 展开 SQL 折叠条。
+    要求截图里能同时看到：SQL 面板、卡片「行 x-y」、展开的原文行号
+(d) 控制台证据：搜 policy"id 后执行
+      document.querySelector('.result-card').dataset.keyword
+    输出必须和输入完全一致（含那个双引号）；再搜 " onmouseover="alert(1) 确认不弹窗、卡片正常。
+
+注意：这轮只改前端脚本、verify 工具、engine/main 的返回结构、cli.py、README。
+不要动表结构，不需要 --rebuild 重灌，不要动 C:/Temp/mmkb_db 里的数据。

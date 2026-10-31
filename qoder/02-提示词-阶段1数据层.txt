@@ -1,0 +1,44 @@
+先读一下项目里的 docs/design.md，那是上一轮确认过的设计方案，本轮以它为准。
+
+方案整体通过。但开始写代码前必须先修正下面 5 点——这些是我在这台机器上实测踩过的，不修正的话代码写出来会直接报错，或者演示时被一眼看穿：
+
+1. 【必须】seekdb 的 execute 不支持参数绑定。
+不要用 db.execute(sql, params) 这种写法，也不要用 %s 占位符。
+所有 SQL 必须先把值拼进字符串，并自己写一个 escape_literal() 函数处理
+单引号、双引号、反斜杠（例如把 ' 替换成 ''）。这一条不照做，第一条 INSERT 就会失败。
+
+2. 【必须】seekdb 打不开含非 ASCII 字符的路径。
+我们的项目路径 D:/OceanBase大赛/qoder-lab/qoder 含有中文，
+所以数据库目录不能放在项目里。必须固定到 C:/Temp/mmkb_db（首次运行自动创建），
+并在 config.py 里写明原因。笔记源目录（含中文）只是被读取，不受影响。
+
+3. 【重要】不要用 IN BOOLEAN MODE。
+请改用默认自然语言模式：MATCH(content, heading) AGAINST('关键词')，
+这样返回的 score 才有排序意义。BOOLEAN MODE 在 ngram 下行为不确定，
+且 score 不可用作相关性排序。
+
+4. 【重要】不要宣称“搜‘重新排序’能命中只写了‘重排’的笔记”。
+ngram 只解决“中文能被分词、因而可被检索”的问题，它不解决同义词或用词差异：
+查询“重新排序”被切成 bigram [重新, 新排, 排序]，而文本“重排”只产生 [重排]，
+两者没有交集，照样命中不了。这条不澄清，演示时一搜就穿帮。
+请把它写进 README 的「已知限制」：ngram 提供的是字符级可检索性，不是语义检索。
+核心卖点改为：中文可检索 + 结构化过滤 + 每条结果带精确出处。
+
+5. 所有文件都写到 D:/OceanBase大赛/qoder-lab/qoder 目录下，
+按你设计里的 backend/、frontend/ 布局，README.md 放在该目录根。
+
+修正完这 5 点后，请只做下面这一件事，做完停下等我确认：
+
+【第 1 步：数据层】
+- 建 requirements.txt（pylibseekdb、pyyaml、fastapi、uvicorn、pytest）
+- 建 backend/app/database.py：连 C:/Temp/mmkb_db，建 notes / note_chunks 两张表，
+  含 4 个 WITH PARSER ngram 的全文索引，按你设计里的字段
+- 建 backend/app/ingest/：scanner（排除 .obsidian / .workbuddy / .git）
+  + frontmatter 解析（date 和 created 两种字段名都要支持）
+  + 按 H2 切块并记录 1-based 行号
+- 建 backend/tests/test_chunker.py：用 3 个假 md 验证块数和行号正确
+
+做完先不要往下走。把这三样贴给我看：
+(a) 实际执行的建表 SQL
+(b) pytest 的运行结果
+(c) 对真实笔记库跑一次 ingest 后的统计（文件数、块数）

@@ -1,0 +1,49 @@
+index 统计这次对了：库内合计是真的 COUNT（26 篇 / 219 块），无内容文件也单独列了。Web 也能跑，
+/api/stats、/api/search、过滤都通，首页无任何外部资源（离线可用），转义顺序也对（先 escape 再包 <mark>）。
+
+但 verify_chunks 报的 2 个 BAD 不是"边界可忽略"，是真错，我有证据：
+
+【问题 1，必须修：末尾块 line_end 越界】
+两个 BAD 文件都以换行符结尾：
+  2026-10-30-赛题十原文证据选择契约清单.md  真实 143 行，库里 line_end=144
+  2026-10-29-OceanBase大赛MOC.md            真实 197 行，库里 line_end=198
+根因：chunker 用 body.split("\n")，文件以 "\n" 结尾时会多出一个空元素，
+最后一个块 end_idx = len(lines)-1 就指向了"第 N+1 行"这个不存在的位置。
+你上一轮的解释说反了——不是"末尾无换行符时多计"，恰恰是"末尾有换行符时多计"。
+
+这是"带出处"项目里最不能留的瑕疵：评审点 144 行会跳到空处。
+修法：chunker 里改为按物理行数封顶。建议同时算一个 total_lines：
+  若 body 以 "\n" 结尾，实际行数 = len(lines) - 1，否则 = len(lines)
+最后一个块的 line_end = min(end_idx + 1, total_lines) + offset
+并新增一条单元测试：构造"以换行结尾 + 有 frontmatter"的假 md，
+断言最后一个块的 line_end == len(原始文本.splitlines())，且 <= 文件总行数。
+改完必须 --rebuild 重灌，然后 tools/verify_chunks.py --sample 20 必须 0 BAD。
+
+【问题 2，必须修：结果卡片显示完整绝对路径】
+模板里是 r.file_path.split('/').pop().split('\\\\').pop()。
+那个分隔符运行时是 2 个反斜杠，而 Windows 路径是单反斜杠，所以永远匹配不到，
+卡片会显示 D:/新建文件夹/Obsidian/吉米/11-赛题归档/xxx.md 这么一长串。
+改为按正则分割：r.file_path.split(/[\\/]/).pop()，并在卡片上用 title 属性保留完整路径（鼠标悬停可见）。
+
+【问题 3，必须修：onclick 里拼关键词字符串】
+现在写成 onclick="toggleDetail(${r.chunk_id}, '${escapeHtml(q)}')"。
+escapeHtml 只处理 & < >，不处理单引号；关键词里带 ' 时这行 JS 直接坏掉，点击无反应。
+改为不用内联 onclick：卡片上放 data-chunk-id / data-keyword 属性，
+在 results 容器上做一次事件委托监听，从 dataset 取值。
+
+【问题 4，作品完成度】首页现在是一大片空白，只有搜索框，不像交付物。补：
+- 标题下一行说明：一句话讲清"把 Obsidian 笔记按小节切块存入 seekdb，中文可检索，每条结果带文件+小节+行号"
+- 搜索框下方放 4 个示例查询快捷按钮：重排 / 缓存 / 混合检索 / ngram，点击即搜（评审不用想搜什么）
+- 空状态文案从"输入关键词开始搜索"改成一句引导 + 提示可以点上面的示例
+- 结果卡片加一个目录类型小标签（如「原子卡片」），让人一眼看出过滤生效
+
+【问题 5，便于演示与复现】首页支持 URL 参数自动搜索：
+  /?q=重排&type=exam&year=2026&top_k=5
+打开即填充并自动执行搜索，同时把参数写回地址栏（history.replaceState）。
+这样演示时可以直接给一个能复现的链接，评审点开就看到结果，不用手打关键词。
+
+以上 5 条一次做完，停下等我确认。贴给我：
+(a) verify_chunks.py --sample 20 的输出（必须是 0 BAD）
+(b) pytest 全量结果（要包含新增的末尾块测试）
+(c) 一张首页截图：带 ?q=重排&type=exam&top_k=3 打开的效果（要能看到示例按钮、结果卡片、目录标签）
+(d) 一个含单引号的关键词（例如 policy'id）的搜索截图或说明，证明点击卡片不再报错

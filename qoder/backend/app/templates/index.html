@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>笔记检索系统</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #f5f5f5;
+  color: #333;
+  line-height: 1.6;
+}
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+header {
+  background: #2c3e50;
+  color: white;
+  padding: 20px 0;
+  margin-bottom: 20px;
+}
+header h1 {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+header .description {
+  font-size: 14px;
+  opacity: 0.9;
+  margin-bottom: 8px;
+}
+.stats {
+  font-size: 14px;
+  opacity: 0.9;
+}
+.search-box {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+}
+.search-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.search-input {
+  flex: 1;
+  min-width: 200px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 16px;
+}
+.filter-select, .filter-input {
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+}
+.search-btn {
+  padding: 10px 20px;
+  background: #3498db;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+}
+.search-btn:hover { background: #2980b9; }
+.example-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.example-btn {
+  padding: 6px 12px;
+  background: #ecf0f1;
+  color: #2c3e50;
+  border: 1px solid #bdc3c7;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.example-btn:hover { background: #d5dbdb; }
+.sql-panel {
+  background: white;
+  padding: 12px 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+  display: none;
+}
+.sql-panel.active { display: block; }
+.sql-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+  color: #666;
+}
+.sql-header:hover { color: #333; }
+.sql-toggle {
+  font-size: 12px;
+  color: #999;
+}
+.sql-body {
+  display: none;
+  margin-top: 10px;
+  padding: 10px;
+  background: #f8f9fa;
+  border-radius: 4px;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #555;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.sql-body.active { display: block; }
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+.result-card {
+  background: white;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  cursor: pointer;
+  transition: box-shadow 0.2s;
+}
+.result-card:hover {
+  box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+.result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.result-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.result-score {
+  background: #e74c3c;
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: bold;
+}
+.result-type-tag {
+  background: #3498db;
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.result-lines {
+  font-size: 12px;
+  color: #999;
+}
+.result-file {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 5px;
+  word-break: break-all;
+}
+.result-heading {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+.result-snippet {
+  font-size: 14px;
+  color: #555;
+  margin-top: 10px;
+  padding: 10px;
+  background: #f9f9f9;
+  border-left: 3px solid #3498db;
+}
+.detail-panel {
+  display: none;
+  margin-top: 15px;
+  padding: 15px;
+  background: #f9f9f9;
+  border-radius: 4px;
+}
+.detail-panel.active { display: block; }
+.detail-content {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.detail-line {
+  display: flex;
+}
+.line-num {
+  color: #999;
+  min-width: 50px;
+  text-align: right;
+  padding-right: 10px;
+  user-select: none;
+}
+.line-text {
+  flex: 1;
+}
+.context-line { opacity: 0.6; }
+.chunk-line { background: #fff3cd; }
+.chunk-line-empty { background: #fff3cd; min-height: 1.5em; }
+mark {
+  background: #ffeb3b;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+.empty {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+.empty .hint {
+  margin-top: 12px;
+  font-size: 13px;
+}
+@media (max-width: 768px) {
+  .search-row { flex-direction: column; }
+  .search-input, .filter-select, .filter-input, .search-btn { width: 100%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="container">
+    <h1>笔记检索系统</h1>
+    <div class="description">把 Obsidian 笔记按小节切块存入 seekdb，中文可检索，每条结果带文件 + 小节 + 行号</div>
+    <div class="stats" id="stats">加载中...</div>
+  </div>
+</header>
+
+<div class="container">
+  <div class="search-box">
+    <div class="search-row">
+      <input type="text" class="search-input" id="searchInput" placeholder="输入关键词搜索..." />
+      <select class="filter-select" id="typeFilter">
+        <option value="">全部目录</option>
+        <option value="moc">10-MOC与索引</option>
+        <option value="exam">11-赛题归档</option>
+        <option value="card">12-原子卡片</option>
+        <option value="code">13-代码片段</option>
+        <option value="literature">14-文献卡片</option>
+      </select>
+      <input type="number" class="filter-input" id="yearFilter" placeholder="年份" style="width: 100px;" />
+      <input type="number" class="filter-input" id="topKInput" placeholder="Top K" value="10" style="width: 80px;" />
+      <button class="search-btn" id="searchBtn">搜索</button>
+    </div>
+    <div class="example-buttons">
+      <span style="font-size: 13px; color: #666; line-height: 28px;">示例：</span>
+      <button class="example-btn" data-q="重排">重排</button>
+      <button class="example-btn" data-q="缓存">缓存</button>
+      <button class="example-btn" data-q="混合检索">混合检索</button>
+      <button class="example-btn" data-q="ngram">ngram</button>
+    </div>
+  </div>
+
+  <div class="sql-panel" id="sqlPanel">
+    <div class="sql-header" id="sqlHeader">
+      <span id="sqlSummary">实际执行的 SQL</span>
+      <span class="sql-toggle" id="sqlToggle">[展开]</span>
+    </div>
+    <div class="sql-body" id="sqlBody"></div>
+  </div>
+
+  <div class="results" id="results">
+    <div class="empty">
+      <div>输入关键词开始搜索，或点击上面的示例按钮</div>
+      <div class="hint">支持按目录类型、年份过滤，结果按相关性排序</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// HTML 转义函数（用于文本节点）
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// 属性值转义函数（用于 attr="..." 内）
+function escapeAttr(text) {
+  return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// 高亮关键词
+function highlightKeyword(text, keyword) {
+  if (!keyword) return escapeHtml(text);
+  const escaped = escapeHtml(text);
+  const regex = new RegExp(`(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+  return escaped.replace(regex, '<mark>$1</mark>');
+}
+
+// 提取文件名（兼容 Windows 和 Unix 路径）
+function getFileName(filePath) {
+  return filePath.split(/[\\/]/).pop();
+}
+
+// dir_type 到中文标签的映射
+function getTypeTag(dirType) {
+  const map = {
+    '10-MOC与索引': 'MOC',
+    '11-赛题归档': '赛题',
+    '12-原子卡片': '卡片',
+    '13-代码片段': '代码',
+    '14-文献卡片': '文献',
+  };
+  return map[dirType] || dirType;
+}
+
+// 加载统计
+async function loadStats() {
+  try {
+    const res = await fetch('/api/stats');
+    const data = await res.json();
+    document.getElementById('stats').textContent = `库内统计: ${data.notes_count} 篇 / ${data.chunks_count} 块`;
+  } catch (e) {
+    document.getElementById('stats').textContent = '统计加载失败';
+  }
+}
+
+// 更新 SQL 面板（搜索成功后自动展开）
+function updateSqlPanel(sql, tookMs) {
+  const panel = document.getElementById('sqlPanel');
+  const summary = document.getElementById('sqlSummary');
+  const body = document.getElementById('sqlBody');
+  const toggle = document.getElementById('sqlToggle');
+  
+  summary.textContent = `实际执行的 SQL · ${tookMs.toFixed(1)} ms`;
+  body.textContent = sql;
+  panel.classList.add('active');
+  body.classList.add('active');
+  toggle.textContent = '[收起]';
+}
+
+// 搜索
+async function doSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) {
+    document.getElementById('results').innerHTML = '<div class="empty">请输入关键词</div>';
+    document.getElementById('sqlPanel').classList.remove('active');
+    return;
+  }
+
+  const type = document.getElementById('typeFilter').value;
+  const year = document.getElementById('yearFilter').value;
+  const topK = document.getElementById('topKInput').value || 10;
+
+  let url = `/api/search?q=${encodeURIComponent(q)}&top_k=${topK}`;
+  if (type) url += `&type=${encodeURIComponent(type)}`;
+  if (year) url += `&year=${encodeURIComponent(year)}`;
+
+  // 更新 URL 参数
+  const params = new URLSearchParams();
+  params.set('q', q);
+  if (type) params.set('type', type);
+  if (year) params.set('year', year);
+  params.set('top_k', topK);
+  history.replaceState(null, '', '?' + params.toString());
+
+  document.getElementById('results').innerHTML = '<div class="loading">搜索中...</div>';
+
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    
+    // 更新 SQL 面板
+    updateSqlPanel(data.sql, data.took_ms);
+    
+    const results = data.results;
+    if (results.length === 0) {
+      document.getElementById('results').innerHTML = '<div class="empty">未找到结果</div>';
+      return;
+    }
+
+    const html = results.map((r, i) => `
+      <div class="result-card" data-chunk-id="${r.chunk_id}" data-keyword="${escapeAttr(q)}">
+        <div class="result-header">
+          <div class="result-meta">
+            <span class="result-score">score: ${r.score.toFixed(4)}</span>
+            <span class="result-type-tag">${escapeHtml(getTypeTag(r.dir_type))}</span>
+          </div>
+          <span class="result-lines">行 ${r.line_start}-${r.line_end}</span>
+        </div>
+        <div class="result-file" title="${escapeAttr(r.file_path)}">${escapeHtml(getFileName(r.file_path))}</div>
+        <div class="result-heading">${highlightKeyword(r.heading || '(前言)', q)}</div>
+        <div class="result-snippet">${highlightKeyword(r.snippet, q)}</div>
+        <div class="detail-panel" id="detail-${r.chunk_id}"></div>
+      </div>
+    `).join('');
+    
+    document.getElementById('results').innerHTML = html;
+  } catch (e) {
+    document.getElementById('results').innerHTML = '<div class="empty">搜索失败: ' + escapeHtml(e.message) + '</div>';
+    document.getElementById('sqlPanel').classList.remove('active');
+  }
+}
+
+// 展开详情
+async function toggleDetail(chunkId, keyword) {
+  const panel = document.getElementById(`detail-${chunkId}`);
+  if (panel.classList.contains('active')) {
+    panel.classList.remove('active');
+    return;
+  }
+
+  panel.innerHTML = '<div class="loading">加载中...</div>';
+  panel.classList.add('active');
+
+  try {
+    const res = await fetch(`/api/chunk/${chunkId}`);
+    const data = await res.json();
+
+    const lines = [];
+    
+    // 上下文前
+    data.context_before.forEach(l => {
+      lines.push(`<div class="detail-line context-line"><span class="line-num">${escapeHtml(l.split('|')[0])}</span><span class="line-text">${highlightKeyword(l.split('|').slice(1).join('|'), keyword)}</span></div>`);
+    });
+    
+    // 主内容
+    const contentLines = data.content.split('\n');
+    for (let i = 0; i < contentLines.length; i++) {
+      const lineNum = data.line_start + i;
+      lines.push(`<div class="detail-line chunk-line"><span class="line-num">${lineNum}</span><span class="line-text">${highlightKeyword(contentLines[i], keyword)}</span></div>`);
+    }
+    
+    // 补齐空行到 line_end（content 入库时尾部空行被 strip，但行号范围包含它们）
+    for (let n = data.line_start + contentLines.length; n <= data.line_end; n++) {
+      lines.push(`<div class="detail-line chunk-line-empty"><span class="line-num">${n}</span><span class="line-text"></span></div>`);
+    }
+    
+    // 上下文后
+    data.context_after.forEach(l => {
+      lines.push(`<div class="detail-line context-line"><span class="line-num">${escapeHtml(l.split('|')[0])}</span><span class="line-text">${highlightKeyword(l.split('|').slice(1).join('|'), keyword)}</span></div>`);
+    });
+
+    panel.innerHTML = `<div class="detail-content">${lines.join('')}</div>`;
+  } catch (e) {
+    panel.innerHTML = '<div class="empty">加载失败</div>';
+  }
+}
+
+// SQL 面板折叠/展开
+document.getElementById('sqlHeader').addEventListener('click', () => {
+  const body = document.getElementById('sqlBody');
+  const toggle = document.getElementById('sqlToggle');
+  if (body.classList.contains('active')) {
+    body.classList.remove('active');
+    toggle.textContent = '[展开]';
+  } else {
+    body.classList.add('active');
+    toggle.textContent = '[收起]';
+  }
+});
+
+// 事件委托：处理卡片点击
+document.getElementById('results').addEventListener('click', (e) => {
+  const card = e.target.closest('.result-card');
+  if (!card) return;
+  const chunkId = card.dataset.chunkId;
+  const keyword = card.dataset.keyword;
+  if (chunkId && keyword !== undefined) {
+    toggleDetail(parseInt(chunkId), keyword);
+  }
+});
+
+// 示例按钮点击
+document.querySelectorAll('.example-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.getElementById('searchInput').value = btn.dataset.q;
+    doSearch();
+  });
+});
+
+// 搜索按钮和回车
+document.getElementById('searchBtn').addEventListener('click', doSearch);
+document.getElementById('searchInput').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') doSearch();
+});
+
+// 从 URL 参数恢复搜索
+function loadFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const q = params.get('q');
+  if (q) {
+    document.getElementById('searchInput').value = q;
+    if (params.get('type')) document.getElementById('typeFilter').value = params.get('type');
+    if (params.get('year')) document.getElementById('yearFilter').value = params.get('year');
+    if (params.get('top_k')) document.getElementById('topKInput').value = params.get('top_k');
+    doSearch();
+  }
+}
+
+// 初始化
+loadStats();
+loadFromUrl();
+</script>
+</body>
+</html>

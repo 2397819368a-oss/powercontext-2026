@@ -1,0 +1,57 @@
+数据层验收通过：pytest 5 passed，真实库 ingest 得到 26 notes / 219 chunks，
+escape_literal 的实现也是对的。但我在本机实跑时发现一个必须修的问题，原因在我上一轮给的指令：
+
+【问题】我让你写 MATCH(content, heading) AGAINST(...)，实际会报错：
+  SeekdbError: Can't find FULLTEXT index matching the column list  failed: code=1191
+
+根因：ft_content 和 ft_heading 是两个**独立的单列**全文索引，
+而 MATCH(a, b) 要求存在一个**联合**全文索引 FULLTEXT KEY (a, b)。两者不匹配。
+
+【修正方案】统一改用单列 MATCH(content) AGAINST(...)。
+理由：chunker.py 第 80 行 `chunk_lines = lines[h2_idx:end_idx + 1]` 说明
+content 里**已经包含 H2 标题行本身**，所以标题文字同样能被 content 索引检索到，
+不需要再单独 MATCH heading。ft_heading 索引保留不删，但检索主路径不用它。
+
+我已实测单列可用，数据是同一份 219 chunks：
+  MATCH(content) AGAINST('重排')   -> 19 命中
+  MATCH(content) AGAINST('混合检索') -> 38 命中
+  MATCH(content) AGAINST('缓存')   -> 21 命中
+  MATCH(content) AGAINST('ngram')  -> 142 命中
+
+现在做检索，三件事：
+
+1. 实现 backend/app/search/engine.py，暴露一个**纯函数**：
+     search(conn, keyword: str, filters: dict, top_k: int = 10) -> list[dict]
+   不依赖全局状态，方便测试。返回每条包含：
+     chunk_id, file_path, heading, line_start, line_end, score, snippet(正文前120字)
+
+   主查询形如（注意单列 MATCH、无参数绑定、全部 escape 后拼串）：
+     SELECT c.id, c.heading, c.line_start, c.line_end, c.content,
+            n.file_path, c.dir_type, c.year, c.tags,
+            MATCH(c.content) AGAINST('关键词') AS score
+     FROM note_chunks c JOIN notes n ON n.id = c.note_id
+     WHERE MATCH(c.content) AGAINST('关键词')
+       [AND c.dir_type = '...'] [AND c.year = ...] [AND c.tags LIKE '%...%']
+     ORDER BY score DESC LIMIT N
+
+   如果 seekdb 对 JOIN 或 MATCH 在 SELECT 子句有兼容问题，先跑 EXPLAIN
+   或退化成两步查询（先查 note_chunks 拿 note_id，再查 notes 拿 file_path），
+   **不要为了让 SQL 好看而牺牲能跑通**。遇到兼容性问题就把报错原文写进代码注释。
+
+2. 结构化过滤：dir_type（moc/exam/card/code/literature）、year、tags 三个维度，
+   必须能与关键词叠加。不传就不过滤。
+
+3. 写测试 backend/tests/test_search.py，至少覆盖：
+   a) 关键词能命中（用 重排 / 缓存 / 混合检索 各断言 >0）
+   b) 过滤真正生效（加 dir_type=card 后，结果的 dir_type 全是 card）
+   c) top_k 生效（结果条数 <= top_k）
+   d) **ngram 必要性对照**：另建一张临时表（同样的数据，但全文索引用默认分词器，
+      不写 WITH PARSER ngram），断言中文关键词在该表上命中 0 条，
+      而在 ngram 表上命中 >= 3 条。这条是整个项目"为什么必须用 ngram"的
+      唯一硬证据，必须真的跑出来，不要只写注释。
+
+做完停下，把下面三样贴给我：
+(a) 实际执行的主检索 SQL 原文（打印出来的，不是伪代码）
+(b) pytest 结果
+(c) 用 重排 / 缓存 / 混合检索 三个词各搜一次，把 top-3 的
+    「文件路径 + 小节 + 行号 + score」列出来，我要看结果是否真相关
