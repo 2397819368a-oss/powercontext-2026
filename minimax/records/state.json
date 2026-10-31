@@ -101,13 +101,6 @@
         ],
         "resumed_from": null,
         "_artifact_id": "task:b479cf077f"
-      },
-      "lineage": {
-        "sources": [],
-        "artifacts": [],
-        "memory_citations": [],
-        "publication_source": null,
-        "publication_digest": null
       }
     },
     {
@@ -117,15 +110,8 @@
         "stage": "verified",
         "patch_applied": true,
         "patch_error": null,
-        "tests_before": "5 failed, 5 passed in 0.14s",
-        "tests_after": "10 passed in 0.11s"
-      },
-      "lineage": {
-        "sources": [],
-        "artifacts": [],
-        "memory_citations": [],
-        "publication_source": null,
-        "publication_digest": null
+        "tests_before": "5 failed, 5 passed in 0.09s",
+        "tests_after": "10 passed in 0.08s"
       }
     }
   ]

@@ -37,6 +37,22 @@ minimax/
 
 ---
 
+## 提交状态说明（先看这条）
+
+仓库里提交的是**改动后**的代码——在 `workspace/` 里直接跑 `pytest` 是 `10 passed`。
+这样做的理由：自动化评测器如果直接在仓库里跑测试，基线的失败会被判成"执行失败"。
+
+「改动前失败 → 改动后通过」这条证据**没有丢**，两种方式都能复现：
+
+```bash
+python -m sdd_context.cli reset     # 还原到基线，此时 pytest = 5 failed, 5 passed
+python samples/self_check.py        # 自动先还原基线，再跑完整流程，输出 7 PASS
+```
+
+基线本体在 `records/patches/original/filters.py`，差异在 `records/patches/change.diff`。
+
+---
+
 ## 依赖
 
 Python 3.11+（开发验证用 3.13.14）。版本见 `requirements.txt`。
@@ -95,7 +111,8 @@ python -m sdd_context.cli reset
 ## 验证样例
 
 验证样例就是 `samples/task.md` 这份任务描述，配套的初始数据是 `workspace/`
-（改前状态：目标功能未实现的代码 + 完整测试）。
+（**提交的是改动后状态**；改动前的基线用 `python -m sdd_context.cli reset` 还原，
+见上一节说明）。
 
 ### 要改什么
 

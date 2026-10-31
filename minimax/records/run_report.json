@@ -104,21 +104,21 @@
   ],
   "model": "MiniMax-M3.1-Flash",
   "mock": false,
-  "state_backend": "powercontext",
-  "state_backend_error": "",
+  "state_backend": "json-fallback",
+  "state_backend_error": "ModuleNotFoundError: No module named 'powercontext'",
   "patch_applied": true,
   "patch_error": null,
   "tests_before": {
     "ok": false,
     "exit_code": 1,
-    "summary": "5 failed, 5 passed in 0.14s",
-    "tail": "FAILED tests/test_target.py::test_filter_by_department - AssertionError: asse...\nFAILED tests/test_target.py::test_department_match_is_case_insensitive - Asse...\nFAILED tests/test_target.py::test_filter_by_submitted_period - AssertionError...\nFAILED tests/test_target.py::test_combined_department_period_and_status - Ass...\nFAILED tests/test_target.py::test_department_monthly_report_scope - Assertion...\n5 failed, 5 passed in 0.14s"
+    "summary": "5 failed, 5 passed in 0.09s",
+    "tail": "FAILED tests/test_target.py::test_filter_by_department - AssertionError: asse...\nFAILED tests/test_target.py::test_department_match_is_case_insensitive - Asse...\nFAILED tests/test_target.py::test_filter_by_submitted_period - AssertionError...\nFAILED tests/test_target.py::test_combined_department_period_and_status - Ass...\nFAILED tests/test_target.py::test_department_monthly_report_scope - Assertion...\n5 failed, 5 passed in 0.09s"
   },
   "tests_after": {
     "ok": true,
     "exit_code": 0,
-    "summary": "10 passed in 0.11s",
-    "tail": "10 passed in 0.11s"
+    "summary": "10 passed in 0.08s",
+    "tail": "10 passed in 0.08s"
   },
   "resumed_from": null
 }

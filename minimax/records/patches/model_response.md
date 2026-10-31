@@ -22,6 +22,10 @@ def filter_expenses(
     ):
         return []
 
+    normalized_department = (
+        department.casefold() if department is not None else None
+    )
+
     selected = [
         expense
         for expense in expenses
@@ -29,8 +33,8 @@ def filter_expenses(
         and (max_amount is None or expense.amount <= max_amount)
         and (status is None or expense.status == status)
         and (
-            department is None
-            or expense.department.casefold() == department.casefold()
+            normalized_department is None
+            or expense.department.casefold() == normalized_department
         )
         and (submitted_from is None or expense.submitted_at >= submitted_from)
         and (submitted_to is None or expense.submitted_at <= submitted_to)

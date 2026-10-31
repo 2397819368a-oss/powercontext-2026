@@ -1,6 +1,6 @@
 [
   {
-    "at": "2026-10-30T23:30:33",
+    "at": "2026-10-31T17:25:44",
     "query": "# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n",
     "kind": "spec",
     "limit": 4,
@@ -29,7 +29,7 @@
     ]
   },
   {
-    "at": "2026-10-30T23:30:33",
+    "at": "2026-10-31T17:25:44",
     "query": "# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n",
     "kind": "code",
     "limit": 4,
@@ -58,7 +58,7 @@
     ]
   },
   {
-    "at": "2026-10-30T23:30:33",
+    "at": "2026-10-31T17:25:44",
     "query": "# 任务：为报销单筛选补上部门与提交日期条件\n\n## 背景\n\n`expense.filters.filter_expenses` 的函数签名已经按新接口扩展，调用方\n（部门月度报表 `department_monthly_report`）也已经在传 `department` 和\n`submitted_from` / `submitted_to`，但筛选实现还没接上，导致报表把别的部门、\n别的月份的报销单一并算进来。\n\n## 要改什么\n\n让 `filter_expenses` 真正按部门、按提交日期区间筛选：\n\n- 部门：整值匹配，忽略大小写\n- 提交日期：闭区间，两端都包含\n- 多个条件之间是 AND\n\n## 不能破坏什么\n\n- 金额区间仍是闭区间\n- `status` 仍是精确匹配\n- 结果仍按 `(submitted_at, expense_id)` 升序\n- 不得就地修改调用方传入的序列\n- 不得改变函数签名\n",
     "kind": "test",
     "limit": 4,
@@ -87,7 +87,7 @@
     ]
   },
   {
-    "at": "2026-10-30T23:30:33",
+    "at": "2026-10-31T17:25:44",
     "query": "必须保持不变 回归 既有行为 不得",
     "kind": "spec",
     "limit": 2,

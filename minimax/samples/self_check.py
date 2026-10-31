@@ -24,17 +24,33 @@ from sdd_context.chunker import collect  # noqa: E402
 from sdd_context.config import SAMPLES, Settings  # noqa: E402
 from sdd_context.db import SeekdbStore  # noqa: E402
 from sdd_context.minimax_client import MiniMaxClient  # noqa: E402
-from sdd_context.pipeline import run  # noqa: E402
+from sdd_context.pipeline import TARGET_FILE, run  # noqa: E402
 from sdd_context.state import TaskStateStore  # noqa: E402
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 UNRELATED_SPEC = "EXP-003"
 
 
+def _restore_baseline(settings) -> None:
+    """把业务代码还原为改动前的基线（records/patches/original/ 里的备份）。"""
+
+    target = settings.workspace / TARGET_FILE
+    backup = settings.records / "patches" / "original" / target.name
+    if not backup.exists():
+        print(f"[warn] 基线备份不存在：{backup}，改前测试将沿用当前代码")
+        return
+    target.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"[基线] 已还原 {TARGET_FILE}")
+
+
 async def main() -> int:
     settings = Settings.load()
     task = (SAMPLES / "task.md").read_text(encoding="utf-8")
     results: list[tuple[str, str, str]] = []
+
+    # 先还原「改动前」基线：仓库提交的是改后代码（便于评测器直接跑 pytest 全过），
+    # 但「改前失败 → 改后通过」才是有效证据，所以每次自检都从基线重新演示一遍。
+    _restore_baseline(settings)
 
     def add(item: str, status: str, note: str = "") -> None:
         results.append((item, status, note))

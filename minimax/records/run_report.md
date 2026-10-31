@@ -5,15 +5,15 @@
 - 阶段：indexed:39 → context_ready → patched → verified
 - 上下文：5963 字符，引用 13 处来源
 - 模型：`MiniMax-M3.1-Flash`
-- 状态后端：`powercontext`
+- 状态后端：`json-fallback`（本机缺少 powercontext，已降级：ModuleNotFoundError: No module named 'powercontext'）
 - 补丁：已应用
 
 ## 测试
 
 | | 结果 |
 |---|---|
-| 改动前 | 5 failed, 5 passed in 0.14s |
-| 改动后 | 10 passed in 0.11s |
+| 改动前 | 5 failed, 5 passed in 0.09s |
+| 改动后 | 10 passed in 0.08s |
 
 ## 引用的来源
 

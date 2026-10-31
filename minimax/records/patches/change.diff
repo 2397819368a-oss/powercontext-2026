@@ -1,6 +1,6 @@
 --- a/filters.py
 +++ b/filters.py
-@@ -28,10 +28,16 @@
+@@ -28,10 +28,20 @@
  ) -> list[Expense]:
      """按条件筛选报销单，结果按 (submitted_at, expense_id) 升序返回。
  
@@ -17,16 +17,20 @@
 +        and submitted_from > submitted_to
 +    ):
 +        return []
++
++    normalized_department = (
++        department.casefold() if department is not None else None
++    )
  
      selected = [
          expense
-@@ -39,8 +45,12 @@
+@@ -39,8 +49,12 @@
          if (min_amount is None or expense.amount >= min_amount)
          and (max_amount is None or expense.amount <= max_amount)
          and (status is None or expense.status == status)
 +        and (
-+            department is None
-+            or expense.department.casefold() == department.casefold()
++            normalized_department is None
++            or expense.department.casefold() == normalized_department
 +        )
 +        and (submitted_from is None or expense.submitted_at >= submitted_from)
 +        and (submitted_to is None or expense.submitted_at <= submitted_to)
