@@ -213,7 +213,7 @@ function updateConditionsPanel(keyword, filters, topK, matchedCount, totalCount)
     <div><strong>目录</strong> = ${escapeHtml(dirTypeText)}</div>
     <div><strong>年份</strong> = ${escapeHtml(yearText)}</div>
     <div><strong>Top K</strong> = ${topK}</div>
-    <div><strong>候选池</strong> ${totalCount} 块 → 命中 ${matchedCount} 块</div>
+    <div><strong>候选池</strong> ${totalCount} 块（按目录/年份过滤后）→ 命中 ${matchedCount} 块</div>
     <div class="note">静态版无 SQL 执行，以上为等价检索条件；本地版对应语句见仓库 docs/样例.md</div>
   `;
   panel.classList.add('active');
@@ -253,12 +253,16 @@ async function doSearch() {
 
   const results = searchChunks(q, filters, topK);
 
-  // 更新检索条件面板
-  const matchedCount = allChunks.filter(c =>
+  // 更新检索条件面板（候选池按目录/年份过滤后计算）
+  const pool = allChunks.filter(c =>
+    (!filters.dirType || c.dir_type === filters.dirType) &&
+    (!filters.year || c.year === filters.year)
+  );
+  const matchedCount = pool.filter(c =>
     c.content.toLowerCase().includes(q.toLowerCase()) ||
     c.heading.toLowerCase().includes(q.toLowerCase())
   ).length;
-  updateConditionsPanel(q, filters, topK, matchedCount, allChunks.length);
+  updateConditionsPanel(q, filters, topK, matchedCount, pool.length);
 
   if (results.length === 0) {
     document.getElementById('results').innerHTML = '<div class="empty">未找到结果</div>';

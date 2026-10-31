@@ -1,0 +1,75 @@
+这轮先说验证结果：下拉框改对了；但条件面板的数字口径错了，而且文档里把这个错数字抄了进去。只改这三处，改完定稿。
+
+【我实跑确认，这轮做对的】
+- 线上 index.html 已去掉 multiple，第一个 option 是「全部目录」，无参数打开显示「全部目录」，样式是正常单选，不再是「已选择 0 项」。
+- URL 回填生效：?type=11-赛题归档 打开后下拉确实选中 11-赛题归档。
+- 过滤逻辑正确：?q=重排&type=11-赛题归档&top_k=3 的三张卡片标签全是「赛题」，都来自 11-赛题归档目录。
+- 数据未受影响：线上 chunks.json 仍 219 条、file_path 为相对路径（含盘符 0 条、含用户名 0 条），meta 26 篇 / 219 块。
+
+【问题：条件面板里的「候选池 / 命中」是全库口径，跟上面的过滤条件自相矛盾】
+现在 ?q=重排&type=11-赛题归档&top_k=3 面板显示：
+  关键词 = 重排
+  目录 = 11-赛题归档
+  年份 = 不限
+  Top K = 3
+  候选池 219 块 → 命中 19 块
+
+上面写着「目录 = 11-赛题归档」，下面两个数字却是全库的。我从 chunks.json 直接算过真实值：
+  全库              219 块，含「重排」19 块
+  11-赛题归档        36 块，含「重排」 4 块
+  10-MOC与索引        6 块
+  12-原子卡片       130 块
+  13-代码片段        39 块
+  14-文献卡片         8 块
+（6+36+130+39+8 = 219，与 meta 一致）
+
+所以这一屏的正确读法应该是「候选池 36 块 → 命中 4 块」。现在写成 219/19，等于告诉读者赛题目录里有 19 条命中，实际只有 4 条。这是评委一眼能抓的自相矛盾。
+
+原因在 site/app.js 第 257~261 行附近：
+  const matchedCount = allChunks.filter(c =>
+    c.content.toLowerCase().includes(q.toLowerCase()) ||
+    c.heading.toLowerCase().includes(q.toLowerCase())
+  ).length;
+  updateConditionsPanel(q, filters, topK, matchedCount, allChunks.length);
+matchedCount 和 totalCount 都直接基于 allChunks，完全没有应用 filters。
+
+【修法，只改这一处计算】
+  const pool = allChunks.filter(c =>
+    (!filters.dirType || c.dir_type === filters.dirType) &&
+    (!filters.year || c.year === filters.year)
+  );
+  const matchedCount = pool.filter(c =>
+    c.content.toLowerCase().includes(q.toLowerCase()) ||
+    c.heading.toLowerCase().includes(q.toLowerCase())
+  ).length;
+  updateConditionsPanel(q, filters, topK, matchedCount, pool.length);
+
+同时把面板里那一行文案写清口径，避免以后再被误读，例如：
+  <div><strong>候选池</strong> ${pool.length} 块（按目录/年份过滤后）→ 命中 ${matchedCount} 块</div>
+（措辞你定，但必须让人看出 219→36 这一步是怎么来的）
+
+注意：searchChunks 里的检索逻辑不要动，排序公式不要动，只改「用于展示的统计」。
+
+【同步改掉文档里抄错的数字】
+- docs/样例.md 第 300 行附近：
+    「检索条件面板显示：关键词 = 重排；目录 = 11-赛题归档；年份不限；Top 3；候选池 219 块 → 命中 19 块」
+  这一行是错的，改成 候选池 36 块 → 命中 4 块，并在旁边补一句：219 是全库块数，加目录过滤后候选池为 36。
+- README.md 第 42 行附近：
+    「「检索条件」面板（关键词/目录/年份/TopK/候选池 219 → 命中 19）以及带行号的结果卡片。」
+  改成不带具体数字的表述，例如「「检索条件」面板（关键词/目录/年份/TopK/候选池→命中，候选池按过滤条件动态计算）」，
+  避免以后界面一改数字又对不上。
+
+【改完重新发布站点，然后贴给我】
+(a) ?q=重排&type=11-赛题归档&top_k=3 的整页截图，面板必须是「候选池 36 块 → 命中 4 块」
+(b) ?q=重排&top_k=3 的整页截图，面板必须是「候选池 219 块 → 命中 19 块」（无过滤时才该是 219/19）
+(c) ?q=ngram&type=11-赛题归档&top_k=3 的截图，这一组真实是 36 块命中 0 块，
+    页面应显示「未找到结果」而面板写 0，不能出现「候选池 219」
+(d) 浏览器控制台执行下面三行，把输出贴给我，用来核对目录分布：
+      fetch('data/chunks.json').then(r=>r.json()).then(d=>{
+        const m={}; d.forEach(x=>m[x.dir_type]=(m[x.dir_type]||0)+1);
+        console.log(d.length, JSON.stringify(m));});
+
+【本轮不要做】
+- 不要动 backend/、不要重新导出 chunks.json、不要改站点数据文件
+- 不要改检索逻辑与打分公式，不要加新的过滤维度
+- 不要删免责横幅，不要伪造 SQL 面板
