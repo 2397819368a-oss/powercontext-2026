@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>笔记检索系统（静态镜像版）</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="container">
+    <h1>笔记检索系统</h1>
+    <div class="description">把 Obsidian 笔记按小节切块，中文可检索，每条结果带文件 + 小节 + 行号</div>
+    <div class="stats" id="stats">加载中...</div>
+  </div>
+</header>
+
+<div class="container">
+  <!-- 免责声明横幅 -->
+  <div class="disclaimer-banner">
+    <strong>这是静态镜像版：</strong>检索在浏览器内完成，数据由本机 seekdb 导出的快照生成。
+    完整实现（seekdb ngram 全文索引 + SQL 过滤）见
+    <a href="https://github.com/2397819368a-oss/powercontext-2026/tree/2026-competition-ecosystem/qoder" target="_blank">GitHub 仓库</a>，
+    可本地复现。
+  </div>
+
+  <div class="search-box">
+    <div class="search-row">
+      <input type="text" class="search-input" id="searchInput" placeholder="输入关键词搜索..." />
+      <select class="filter-select" id="typeFilter" multiple size="1">
+        <option value="">全部目录</option>
+        <option value="10-MOC与索引">10-MOC与索引</option>
+        <option value="11-赛题归档">11-赛题归档</option>
+        <option value="12-原子卡片">12-原子卡片</option>
+        <option value="13-代码片段">13-代码片段</option>
+        <option value="14-文献卡片">14-文献卡片</option>
+      </select>
+      <input type="number" class="filter-input" id="yearFilter" placeholder="年份" style="width: 100px;" />
+      <input type="number" class="filter-input" id="topKInput" placeholder="Top K" value="10" style="width: 80px;" />
+      <button class="search-btn" id="searchBtn">搜索</button>
+    </div>
+    <div class="example-buttons">
+      <span style="font-size: 13px; color: #666; line-height: 28px;">示例：</span>
+      <button class="example-btn" data-q="重排">重排</button>
+      <button class="example-btn" data-q="缓存">缓存</button>
+      <button class="example-btn" data-q="混合检索">混合检索</button>
+      <button class="example-btn" data-q="ngram">ngram</button>
+    </div>
+  </div>
+
+  <!-- 检索条件面板 -->
+  <div class="conditions-panel" id="conditionsPanel">
+    <div class="conditions-header" id="conditionsHeader">
+      <span id="conditionsSummary">检索条件</span>
+      <span class="conditions-toggle" id="conditionsToggle">[展开]</span>
+    </div>
+    <div class="conditions-body" id="conditionsBody"></div>
+  </div>
+
+  <div class="results" id="results">
+    <div class="empty">
+      <div>输入关键词开始搜索，或点击上面的示例按钮</div>
+      <div class="hint">支持按目录类型、年份过滤，结果按相关性排序</div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

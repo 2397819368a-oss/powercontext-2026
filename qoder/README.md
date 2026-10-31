@@ -29,6 +29,45 @@ Obsidian 自带搜索对中文支持差（默认分词器把整句中文当一�
 
 ![双引号关键词](docs/screenshots/web-quote.png)
 
+## 在线演示版
+
+**地址**：https://note-search-static-h0zjlo7hdwv.qoder.zone
+
+这是**静态镜像版**：检索在浏览器内完成，数据由本机 seekdb 导出的快照生成（`site/data/chunks.json`，
+219 块 / 约 296 KB）。页面顶部有常驻免责横幅，明确标注它不是 seekdb 在跑，并指向本仓库。
+
+![在线版](docs/screenshots/web-online.png)
+
+> 截图取自线上地址 `?q=重排&type=11-赛题归档&top_k=3`。可以看到常驻免责横幅、
+> 「检索条件」面板（关键词/目录/年份/TopK/候选池 219 → 命中 19）以及带行号的结果卡片。
+> 静态版**没有** SQL 面板——那是本地完整版才有的，页面此处显示的是等价检索条件，并注明
+> 「静态版无 SQL 执行，本地版对应语句见仓库 docs/样例.md」，不伪造 SQL。
+
+### 为什么不能直接部署完整版
+
+Qoder Sites 平台有以下限制，无法直接运行本项目的完整 Python + seekdb 方案：
+
+1. **运行时只支持 TypeScript/Node.js**：后端函数必须是 `index.ts`，没有 Python 运行时
+2. **没有 pip 包安装机制**：依赖通过 `package.json` 管理（Node.js 生态），无法安装 `pylibseekdb`、`fastapi`、`uvicorn`
+3. **没有持久化本地文件系统**：函数运行在临时容器里，seekdb 的 `C:/Temp/mmkb_db` 数据库文件无法保存
+4. **数据库是云托管**：`databaseAccess` 选项指向平台托管的云数据库（需迁移脚本），不是嵌入式文件数据库
+
+### 在线版与本地版的差异
+
+| 项目 | 在线版 | 本地版 |
+|---|---|---|
+| 检索位置 | 浏览器内（JS 线性扫描） | seekdb 进程内（ngram 全文索引） |
+| 打分公式 | `2.0×次数 + 3.0×标题命中 − 0.001×长度` | seekdb 自然语言模式 relevance score |
+| SQL 执行 | 无（显示等价检索条件） | 真实 SQL 执行并展示 |
+| Top-5 重合率 | — | 中文查询 5 组：4.2/5（84%）<br>ngram 组：1/5（seekdb 过度召回 vs 静态版严格子串，非质量差异）<br>合计 3.7/5（73.3%） |
+
+**本地复现命令**：
+```bash
+pip install -r requirements.txt
+python -m backend.app.cli index
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
 ## 数据流
 
 ```
@@ -223,15 +262,24 @@ qoder/
 │   └── tests/
 │       ├── test_chunker.py
 │       └── test_search.py
+├── site/                        # 在线演示版（静态镜像，零外部依赖）
+│   ├── index.html
+│   ├── app.js                   # 浏览器内检索 + 摘要清洗 + 属性转义
+│   ├── style.css
+│   └── data/                    # 由 seekdb 导出的快照（已脱敏为相对路径）
+│       ├── chunks.json          # 219 块 / 约 296 KB
+│       └── meta.json
 ├── tools/
-│   ├── verify_chunks.py         # chunk 一致性验证
-│   └── ngram_compare.py         # ngram 必要性对照实验
+│   ├── verify_chunks.py         # chunk 一致性验证（严格判定 + --all）
+│   ├── ngram_compare.py         # ngram 必要性对照实验
+│   ├── export_static.py         # 导出静态站点数据（脱敏）
+│   └── check_static_parity.py   # 静态版 vs seekdb 的 Top-5 重合率
 ├── docs/
 │   ├── design.md                # 设计说明
 │   ├── 样例.md                  # 验证样例（初始数据/输入/步骤/预期结果）
 │   ├── screenshots/             # 界面截图
-│   └── records/                 # Qoder 开发过程截图
-├── 01~09-提示词-*.txt           # 各轮交给 Qoder 的提示词
+│   └── records/                 # Qoder 开发过程截图 / 录屏
+├── 01~11-提示词-*               # 各轮交给 Qoder 的提示词
 ├── requirements.txt
 └── README.md
 ```
