@@ -43,6 +43,30 @@ search（关键词 + 结构化过滤）
 Web / CLI
 ```
 
+## 运行环境
+
+**实测环境**：Windows 11 + Python 3.13.5（未在其他平台验证）。
+
+| 依赖 | requirements 约束 | 实测版本 |
+|---|---|---|
+| Python | — | 3.13.5 |
+| pylibseekdb | `>=1.4.0` | 1.4.0.post2 |
+| pyyaml | `>=6.0` | 6.0.3 |
+| fastapi | `>=0.100.0` | 0.162.0 |
+| uvicorn | `>=0.23.0` | 0.54.0 |
+| pytest | `>=7.4.0` | 9.2.0 |
+
+### seekdb 的部署与接入方式
+
+**不需要单独部署 seekdb 服务，也不需要连远端实例。** seekdb 以嵌入式方式接入：
+
+- 通过 `pylibseekdb` 在进程内直接打开一个本地库目录，无独立 server、无端口、无账号密码；
+- 库目录固定在 `backend/app/config.py` 的 `DB_DIR`，默认 `C:/Temp/mmkb_db`；
+- 首次运行 `index` 时自动建库、建表、建索引，无需手工执行 DDL；
+- 库目录必须是**纯 ASCII 路径**（seekdb 无法打开含中文的路径，而本项目路径含"大赛"，故不能放项目内）。
+
+因为是进程内嵌入式库，**同一个库目录同时只能被一个进程打开**：跑 CLI 或 pytest 前先停掉 Web 服务。
+
 ## 快速开始
 
 ### 1. 安装依赖
@@ -118,6 +142,9 @@ seekdb 报错 `Can't find FULLTEXT index matching the column list` (code=1191)�
 4. **Windows 下 seekdb 库目录不可删（文件锁）**，重建只能清空表数据（`DELETE FROM note_chunks; DELETE FROM notes`），不能删 `C:/Temp/mmkb_db` 目录。
 
 ## 验证证据
+
+> 完整的分步验证样例（初始数据 / 输入 / 操作步骤 / 预期结果 / seekdb 发挥作用的记录）见
+> **[docs/样例.md](docs/样例.md)**，其中每条命令与输出均可直接照做复现。
 
 ### pytest 全量结果
 
@@ -197,9 +224,11 @@ qoder/
 │       ├── test_chunker.py
 │       └── test_search.py
 ├── tools/
-│   └── verify_chunks.py         # chunk 一致性验证
+│   ├── verify_chunks.py         # chunk 一致性验证
+│   └── ngram_compare.py         # ngram 必要性对照实验
 ├── docs/
 │   ├── design.md                # 设计说明
+│   ├── 样例.md                  # 验证样例（初始数据/输入/步骤/预期结果）
 │   ├── screenshots/             # 界面截图
 │   └── records/                 # Qoder 开发过程截图
 ├── 01~09-提示词-*.txt           # 各轮交给 Qoder 的提示词
