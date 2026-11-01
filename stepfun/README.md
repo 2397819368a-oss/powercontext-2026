@@ -57,10 +57,10 @@ node tools/http-check.mjs         # 打完整 HTTP 链路（需先 npm start）
 
 | 验证 | 结果 |
 |---|---|
-| 服务端自检 `npm run smoke` | **11 passed / 0 failed**（DIM=8 与 DIM=384 各跑一遍均通过） |
+| 服务端自检 `npm run smoke` | **12 passed / 0 failed**（DIM=8 与 DIM=384 各跑一遍均通过） |
 | HTTP 链路 `http-check.mjs` | **10 passed / 0 failed** |
-| 前端生产构建 `npm run build` | 通过，主包 `566.60 kB`（gzip 168.83 kB） |
-| 页面渲染与服务连接 | CDP 抓 DOM 确认：`seekdb 已连接` / 示例 8 条 / `384 维` |
+| 前端生产构建 `npm run build` | 通过，主包 `569.09 kB`（gzip 168.67 kB） |
+| 页面渲染与服务连接 | CDP 抓 DOM 确认：`seekdb 已连接` / 示例 8 条 / 库内 `8 条 · 384 维`（重复运行仍是 8 条） |
 | 全链路自动跑通 | `node tools/cdp-run.mjs <url>` → 加载模型 → 写库 → 检索 → 出量化表，无报错 |
 | 量化数据交叉验证 | `python tools/verify-onnx-dtypes.py` 与浏览器侧同量级 |
 
@@ -159,6 +159,11 @@ stepfun/
 - **npm 的 optional dependencies bug**：Windows 上可能漏装平台原生包
   （`@rollup/rollup-win32-x64-msvc`、`@esbuild/win32-x64`）。
   报错里会提示；本项目用显式安装版本号的方式补上。
+- **重复建索引会堆出重复文档**：早期 id 用 `doc-${Date.now()}-${i}` 生成，
+  同一批示例点两次"建索引"就从 8 条变 28 条，检索结果里出现三条一模一样的记录。
+  现在 id 由内容 SHA-256 派生（`web/src/ids.js`），服务端用
+  `INSERT ... ON DUPLICATE KEY UPDATE`，重复建索引只会覆盖，
+  界面会如实显示"新增 0 条，覆盖 8 条"。
 
 ## 已知限制
 

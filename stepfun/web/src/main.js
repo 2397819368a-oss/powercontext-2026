@@ -18,6 +18,7 @@ import {
   compareQuality,
 } from "./embed.js";
 import * as api from "./api.js";
+import { contentIds } from "./ids.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -55,7 +56,9 @@ function updateRuntime() {
   $("rt-dtype").textContent = session.loaded
     ? (session.dtypeLabel ?? session.dtype)
     : "—";
-  $("rt-load").textContent = session.loaded ? `${session.loadMs} ms` : "—";
+  $("rt-load").textContent = session.loaded
+    ? `${session.loadMs} ms${session.reused ? "（缓存复用）" : ""}`
+    : "—";
 
   const warn = $("rt-warn");
   if (session.degraded && session.degradedReason) {
@@ -134,15 +137,20 @@ $("btn-index").addEventListener("click", async () => {
     const ms = Math.round(performance.now() - t0);
     log(`向量化完成，${ms}ms（平均每条约 ${Math.round(ms / docs.length)}ms）`);
 
+    const ids = await contentIds(docs);
     const items = docs.map((content, i) => ({
-      id: `doc-${Date.now()}-${i}`,
+      id: ids[i],
       content,
       embedding: vecs[i],
       meta: { idx: i },
     }));
 
     const r = await api.ingest(items);
-    log(`已写入 seekdb：${r.inserted} 条`, "ok");
+    log(
+      `已写入 seekdb：新增 ${r.inserted} 条` +
+        (r.updated ? `，覆盖 ${r.updated} 条（内容相同，未产生重复）` : ""),
+      "ok"
+    );
     await refreshCount();
   } catch (e) {
     log(`写入失败：${e.message}`, "err");
@@ -405,14 +413,19 @@ async function runAutoSteps() {
     const t0 = performance.now();
     const vecs = await embed(docs);
     log(`[auto] 向量化 ${docs.length} 条，${Math.round(performance.now() - t0)}ms，维度=${vecs[0].length}`);
+    const ids = await contentIds(docs);
     const items = docs.map((content, i) => ({
-      id: `doc-${Date.now()}-${i}`,
+      id: ids[i],
       content,
       embedding: vecs[i],
       meta: { idx: i },
     }));
     const r = await api.ingest(items);
-    log(`[auto] 写入 seekdb ${r.inserted} 条`, "ok");
+    log(
+      `[auto] 写入 seekdb：新增 ${r.inserted} 条` +
+        (r.updated ? `，覆盖 ${r.updated} 条` : ""),
+      "ok"
+    );
     await refreshCount();
   } catch (e) {
     log(`[auto] 建索引失败：${e.message}`, "err");

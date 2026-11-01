@@ -212,16 +212,37 @@ export async function insertDocs(items) {
   const { conn } = await open();
   // 分批提交，避免单条 SQL 过大
   const BATCH = 200;
-  let affected = 0;
+  let inserted = 0;
+  let updated = 0;
   for (let i = 0; i < rows.length; i += BATCH) {
     const part = rows.slice(i, i + BATCH);
-    const [r] = await conn.query(
-      `INSERT INTO ${TB_DOC} (id, content, embedding, metadata) VALUES ?`,
+
+    // 先查这批 id 是否已存在，才能如实区分"新增"与"覆盖"。
+    // 注意 ORDER BY 无用：只关心集合。id 是 VARBINARY，统一用字符串比较。
+    const [exist] = await conn.query(
+      `SELECT id FROM ${TB_DOC} WHERE id IN (?)`,
+      [part.map((r) => r[0])]
+    );
+    const existSet = new Set(
+      exist.map((r) => (Buffer.isBuffer(r.id) ? r.id.toString("utf8") : String(r.id)))
+    );
+    for (const r of part) {
+      if (existSet.has(r[0].toString("utf8"))) updated += 1;
+      else inserted += 1;
+    }
+
+    // 幂等写入：id 由内容哈希派生，同一条文本重复建索引只会覆盖，不会堆出多份。
+    // 之前用 Date.now() 拼 id，连点两次"建索引"就会让同一段文字在检索结果里重复出现。
+    await conn.query(
+      `INSERT INTO ${TB_DOC} (id, content, embedding, metadata) VALUES ?
+       ON DUPLICATE KEY UPDATE
+         content = VALUES(content),
+         embedding = VALUES(embedding),
+         metadata = VALUES(metadata)`,
       [part]
     );
-    affected += r.affectedRows;
   }
-  return { inserted: affected };
+  return { inserted, updated };
 }
 
 export async function clearDocs() {

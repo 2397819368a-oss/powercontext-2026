@@ -130,8 +130,11 @@ export async function loadModel(dtypeKey = "fp32", devicePref = "auto", onProgre
 
   const key = `${device}:${dtypeKey}`;
   if (cache.has(key)) {
-    session = { ...cache.get(key), loaded: true, loadMs: 0, degraded, degradedReason: reason };
-    onProgress("复用已加载模型");
+    // 命中缓存时保留该精度首次加载的耗时，而不是记 0 ——
+    // 页面上写"0 ms"会让人以为没加载成功。reused 交给 UI 标注"（缓存复用）"。
+    const hit = cache.get(key);
+    session = { ...hit, loaded: true, degraded, degradedReason: reason, reused: true };
+    onProgress(`复用已加载模型（${spec.label}，首次加载 ${hit.loadMs}ms）`);
     return session;
   }
 

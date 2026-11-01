@@ -159,10 +159,10 @@ ORDER BY fused.rrf DESC LIMIT ?
 
 | 项 | 命令 | 结果 |
 |---|---|---|
-| db 层自检 | `cd server && npm run smoke` | 11 passed / 0 failed（DIM=8 与 384 双跑通过） |
+| db 层自检 | `cd server && npm run smoke` | 12 passed / 0 failed（DIM=8 与 384 双跑通过） |
 | HTTP 链路 | `node tools/http-check.mjs` | 10 passed / 0 failed |
-| 前端构建 | `cd web && npm run build` | 通过，主包 566.60 kB（gzip 168.83 kB） |
-| 页面连通 | CDP 抓 DOM | `seekdb 已连接`、示例 8 条、库内 `N 条 · 384 维` |
+| 前端构建 | `cd web && npm run build` | 通过，主包 569.09 kB（gzip 168.67 kB） |
+| 页面连通 | CDP 抓 DOM | `seekdb 已连接`、示例 8 条、库内 `8 条 · 384 维`（重复运行仍是 8 条） |
 | 降级标注 | CDP 抓 DOM | 「WebGPU 存在但拿不到 adapter…已降级到 WASM」 |
 | 全链路自动跑 | `node tools/cdp-run.mjs <url>` | 加载模型 → 写入 → 检索 → 出量化两张表，无报错 |
 | 量化体积/质量 | 同上 + `tools/verify-onnx-dtypes.py` | 见 §4.1 / §4.2，两套运行时互相印证 |
@@ -190,6 +190,7 @@ ORDER BY fused.rrf DESC LIMIT ?
 | ORT 的 wasm 默认从 jsdelivr CDN 拉，离线永远加载不出来 | `tools/sync-ort-wasm.mjs` 同步到本地并设 `wasmPaths`；且**全量**同步（曾漏 asyncify 变体，Edge 156 直接报取不到模块） |
 | 静态服务器开 gzip 使 `Content-Length` 给出压缩后大小 | 构建前 stat 磁盘生成 `sizes.json`，页面优先读它（§4.1） |
 | 用 `--virtual-time-budget` 做无头验证会得到假失败 | 它快进 `setTimeout`，页面超时提示被瞬间触发；改为 CDP 轮询 `window.__AUTO_STATE__` |
+| 文档 id 用 `Date.now()` 派生，重复建索引把同一段文字堆成多份 | 实测 8 条示例点两次就变 28 条，检索结果里出现三条完全相同的记录。改为按内容 SHA-256 派生 id（`web/src/ids.js`），服务端 `INSERT ... ON DUPLICATE KEY UPDATE` 覆盖写入，自检有断言守着 |
 
 ## 7. 权重获取与离线复现
 

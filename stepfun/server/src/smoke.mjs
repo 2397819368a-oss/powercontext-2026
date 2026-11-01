@@ -88,6 +88,18 @@ await check("统计", async () => {
   return `count=${s.count}`;
 });
 
+// 幂等写入：同一批 id 再写一次应只覆盖、不新增。
+// 之前 id 由 Date.now() 派生，重复建索引会把同一段文字堆成多份，
+// 检索结果里出现三条一模一样的记录。
+await check("幂等：重复写同一批 id 不产生重复行", async () => {
+  const r = await db.insertDocs(DOCS.map((d, i) => ({ ...d, embedding: vec(i) })));
+  if (r.inserted !== 0) throw new Error(`期望 inserted=0，实际 ${r.inserted}`);
+  if (r.updated !== DOCS.length) throw new Error(`期望 updated=${DOCS.length}，实际 ${r.updated}`);
+  const s = await db.stats();
+  if (s.count !== DOCS.length) throw new Error(`重复写入后总数变成 ${s.count}，应为 ${DOCS.length}`);
+  return `inserted=0 updated=${r.updated} count=${s.count}`;
+});
+
 await check("红线：拒绝无向量的写入", async () => {
   try {
     await db.insertDocs([{ id: "bad", content: "服务端不该替我算向量" }]);

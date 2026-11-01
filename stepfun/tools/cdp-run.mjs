@@ -199,6 +199,31 @@ try {
   );
 
   if (dom) fs.writeFileSync(path.join(OUT_DIR, "dom.html"), dom, "utf8");
+
+  // 截图：交付要的是"跑出数据之后"的界面，而不是空表占位。
+  // 高度不能用 cssContentSize —— 页面容器带 min-height:100vh，它会等于视口高度，
+  // 截出来底部会有一大块空白。取所有区块底边的最大值才准。
+  try {
+    const metrics = await send("Page.getLayoutMetrics", {}, 30000);
+    const vpWidth = Math.ceil(metrics?.result?.cssContentSize?.width ?? 1400);
+    const bottomRaw = await grab(
+      "String(Math.ceil(Math.max(0, ...[...document.querySelectorAll('header,section,main,footer')].map(e=>e.getBoundingClientRect().bottom+window.scrollY))))",
+      "内容底边"
+    );
+    const contentH = Number(bottomRaw) || 0;
+    const clip =
+      contentH > 50
+        ? { x: 0, y: 0, width: vpWidth, height: Math.ceil(contentH) + 24, scale: 1 }
+        : undefined;
+    const shot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip }, 60000);
+    if (shot?.result?.data) {
+      fs.writeFileSync(path.join(OUT_DIR, "ui.png"), Buffer.from(shot.result.data, "base64"));
+      console.log(`已截图 tools/cdp-out/ui.png（${clip ? `${clip.width}×${clip.height}` : "窗口默认"}）`);
+    }
+  } catch (e) {
+    console.log(`截图失败: ${e.message}`);
+  }
+
   if (logsJson) fs.writeFileSync(path.join(OUT_DIR, "logs.txt"), JSON.parse(logsJson).join("\n"), "utf8");
   if (tablesJson) {
     const parsed = JSON.parse(tablesJson);

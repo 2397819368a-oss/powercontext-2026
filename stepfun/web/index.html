@@ -102,8 +102,9 @@
     <section class="panel">
       <h2>3 · 量化评估</h2>
       <p class="hint">
-        体积取 HuggingFace 仓库记录的真实字节数；质量用同一批文本在 FP32 与
-        目标精度下各自算一次向量，比较余弦相似度（越接近 1 越好）。
+        体积取权重文件的<b>真实磁盘字节数</b>（离线时读本地 <code>sizes.json</code>，不走 HTTP 头，
+        避免被 gzip 后的 Content-Length 误导）；质量是同一批文本在 FP32 与目标精度下
+        各算一次向量，比较余弦相似度（越接近 1 越好）。
       </p>
       <div class="row">
         <button id="btn-size">读取各精度体积</button>
