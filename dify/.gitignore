@@ -1,0 +1,19 @@
+# 运行时生成的凭据与 id —— 每次重新部署都会变，不进仓库
+app/.difykey
+app/.appid
+app/.scope
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Dify 源码与本机数据目录体量太大，不随本仓库分发（见 README「获取 Dify 源码」）
+dify-source/
+pc-data*/
+
+# 编辑器 / 系统
+.vscode/
+.DS_Store
+Thumbs.db

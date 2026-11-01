@@ -1,0 +1,582 @@
+app:
+  description: 一个真的记得你的酒馆老板。Dify 负责编排，PowerContext 负责长期记忆，模型只负责说话。
+  icon: 🍶
+  icon_background: '#FEF7C3'
+  mode: advanced-chat
+  name: 记仇酒馆
+  use_icon_as_answer_icon: false
+kind: app
+version: 0.3.0
+workflow:
+  environment_variables:
+  - description: PowerContext 服务地址（容器内访问宿主机用 host.docker.internal）
+    id: env-pc-base
+    name: PC_BASE
+    selector:
+    - env
+    - PC_BASE
+    value: http://host.docker.internal:8000
+    value_type: string
+  - description: 记忆作用域 id，由 app/seed/seed.mjs 创建后写入 app/.scope
+    id: env-pc-scope
+    name: PC_SCOPE
+    selector:
+    - env
+    - PC_SCOPE
+    value: REPLACE_WITH_YOUR_PC_SCOPE
+    value_type: string
+  - description: PowerContext Bearer Token（ACCESS_MODE=enforced 时必填）
+    id: env-pc-token
+    name: PC_TOKEN
+    selector:
+    - env
+    - PC_TOKEN
+    value: REPLACE_WITH_YOUR_PC_TOKEN
+    value_type: string
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        image_file_size_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      number_limits: 3
+    opening_statement: "雨下了三天没停。你推开「漏雨酒馆」的木门，屋里只有一盏灯，柜台后站着个五十来岁的男人，右手背上有一道旧疤。\n\n\
+      他没抬头：「喝什么？」\n\n\
+      你能点酒、赊账、吹牛、打听消息，也可以试试跟他开个玩笑——他记性好得吓人。\n"
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions:
+    - 老板，来碗酒，先记着，回头一起结
+    - 上次那碗酒钱，我今天还你
+    - 镇上最近有什么新鲜事
+    - 你这猫怎么一直盯着我
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: e-1-2
+      source: '1'
+      sourceHandle: source
+      target: '2'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: e-2-3
+      source: '2'
+      sourceHandle: source
+      target: '3'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: e-3-4
+      source: '3'
+      sourceHandle: source
+      target: '4'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: e-4-5
+      source: '4'
+      sourceHandle: source
+      target: '5'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: code
+      id: e-5-6
+      source: '5'
+      sourceHandle: source
+      target: '6'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: e-6-7
+      source: '6'
+      sourceHandle: source
+      target: '7'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: answer
+      id: e-7-8
+      source: '7'
+      sourceHandle: source
+      target: '8'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: 玩家这一轮说的话，走 sys.query
+        selected: false
+        title: 开始
+        type: start
+        variables: []
+      height: 90
+      id: '1'
+      position:
+        x: 40
+        y: 300
+      positionAbsolute:
+        x: 40
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        code: |
+          // 把玩家输入转成「已经带引号的 JSON 字符串字面量」。
+          // 直接把它拼进 HTTP 请求的 JSON body 里，避免用户输入包含引号/换行时把 body 弄坏。
+          function main({ query }) {
+            const q = String(query || '').trim();
+            return {
+              query_json: JSON.stringify(q),
+              player: '阿七',
+            };
+          }
+        code_language: javascript
+        desc: 清洗输入，避免引号破坏 JSON body
+        outputs:
+          query_json:
+            children: null
+            type: string
+          player:
+            children: null
+            type: string
+        selected: false
+        title: ① 准备输入
+        type: code
+        variables:
+        - value_selector:
+          - sys
+          - query
+          variable: query
+      height: 90
+      id: '2'
+      position:
+        x: 340
+        y: 300
+      positionAbsolute:
+        x: 340
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: '{"scope_id":"{{#env.PC_SCOPE#}}","query":{{#2.query_json#}},"limit":6,"mode":"auto"}'
+          type: json
+        desc: 拿玩家这句话去记忆库里翻旧账（PowerContext /v1/memory/search）
+        headers: |
+          Content-Type: application/json
+          Authorization: Bearer {{#env.PC_TOKEN#}}
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 100
+        selected: false
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 30
+          max_write_timeout: 30
+        title: ② 召回旧账
+        type: http-request
+        url: '{{#env.PC_BASE#}}/v1/memory/search'
+        ssl_verify: true
+        variables: []
+      height: 90
+      id: '3'
+      position:
+        x: 640
+        y: 300
+      positionAbsolute:
+        x: 640
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        code: |
+          // 把 /v1/memory/search 的响应整理成「喂给模型的账本摘录」，
+          // 顺便从记忆里读出上一轮的信任度（记忆即状态，不需要额外存会话变量）。
+          function main({ hits }) {
+            let data = hits;
+            if (typeof data === 'string') {
+              try { data = JSON.parse(data); } catch (e) { data = {}; }
+            }
+            const list = (data && data.hits) || [];
+            const clean = (t) => String(t || '').replace(/^\[seed:[^\]]+\]\s*/, '');
+
+            const lines = list.map((h, i) => {
+              const m = h.memory || {};
+              return (i + 1) + '. [' + (m.kind || '?') + '] ' + clean(m.text);
+            });
+
+            // 从命中记忆里找最后出现的「信任度 N / 信任度=N」，作为本轮起点
+            const all = list.map((h) => clean((h.memory || {}).text)).join('\n');
+            const matches = [...all.matchAll(/信任度\s*[=:：]?\s*(-?\d+)/g)];
+            const prev = matches.length ? parseInt(matches[matches.length - 1][1], 10) : 0;
+
+            return {
+              memory_text: lines.length ? lines.join('\n') : '（这次什么都没想起来）',
+              hit_count: list.length,
+              prev_trust: Number.isFinite(prev) ? prev : 0,
+              mode: String((data && data.mode) || 'text'),
+            };
+          }
+        code_language: javascript
+        desc: 拼「你记得的事」并读出上一轮信任度
+        outputs:
+          memory_text:
+            children: null
+            type: string
+          hit_count:
+            children: null
+            type: number
+          prev_trust:
+            children: null
+            type: number
+          mode:
+            children: null
+            type: string
+        selected: false
+        title: ③ 整理账本
+        type: code
+        variables:
+        - value_selector:
+          - '3'
+          - body
+          variable: hits
+      height: 90
+      id: '4'
+      position:
+        x: 940
+        y: 300
+      positionAbsolute:
+        x: 940
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 扮演老陈。必须引用真实记忆，不许编。
+        model:
+          completion_params:
+            max_tokens: 500
+            response_format:
+              type: json_object
+            temperature: 0.5
+          mode: chat
+          name: qwen2.5-3b-instruct
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - role: system
+          text: |
+            你是「老陈」，乌云镇唯一一家酒馆「漏雨酒馆」的老板，52 岁，早年走镖，右手背有一道刀疤。
+            你说话短、爱用比喻、认账不认脸。你不讨好客人，也不无故刁难——你按账本说话。
+
+            【在场的人】旅人{{#2.player#}}
+            【当前关系】你对他的信任度：{{#4.prev_trust#}}（范围 -5 到 5）
+
+            规矩：
+            1. 先回答他问的那件事，再考虑搭话。他问伞就说伞，不要岔开话题。
+            2. 从【你记得的事】里挑出**跟他这个问题最直接相关**的那条来用，按顺序往下扫，别只盯着开头。
+               引用时必须说**那个东西本来的名字**（比如"蓝色油纸伞""十七碗酒""那碗醋"），
+               严禁说"东西""那件事""这个"这种泛称——叫不出名字，就等于你没想起来。
+               实在翻不出相关的，就老实承认记不清，绝不许编。
+            3. 语气跟着信任度走：<= -2 冷淡、话里带刺；-1 到 1 公事公办；>= 2 熟络、会多说一句。
+            4. reply 写 2-4 句，口语短句。不要书面腔，不要解释设定，不要括号里的动作描写。
+            5. trust 是本轮之后的新信任度，只能在上一轮基础上动 1 格（-5 到 5 的整数）：
+               还钱、给出有用情报 +1；撒谎、闹事、赖账 -1；纯闲聊不动。
+            6. memory 用第三人称一句话，写「他这一轮刚发生了什么」，
+               必须带上他提到的那个关键物件或金额。不要写你的心情和评价。
+
+            【示例】
+            他说：老板，上回那碗酒钱，我今天还你。
+            你输出：{"reply":"钱放柜上就行，别蹭花我的记账纸。十七碗那事儿我还记着，你倒是第一个回头给钱的。","trust":1,"memory":"阿七还清了欠的一碗酒钱"}
+
+            【你记得的事】（从账本里翻出来的，按相关度排序，里面可能有跟这一轮不相干的）
+            {{#4.memory_text#}}
+        - role: user
+          text: |
+            旅人{{#2.player#}}对你说：「{{#sys.query#}}」
+
+            只输出一个 JSON 对象，不要 markdown 代码块，不要任何解释文字：
+            {"reply": "你的台词", "trust": 0, "memory": "第三人称一句话，记录他这一轮发生了什么"}
+        selected: false
+        title: ④ 老陈开口
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 90
+      id: '5'
+      position:
+        x: 1240
+        y: 300
+      positionAbsolute:
+        x: 1240
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        code: |
+          // 解析模型输出：优先 JSON，失败再退回到「标签 / 中文前缀」兜底。
+          // 同时把这一轮整理成一句可写回记忆库的第三人称记录。
+          function main({ raw, prev_trust, player, user_text }) {
+            const text = String(raw || '').trim();
+            const clamp = (n) => Math.max(-5, Math.min(5, n));
+            const tryJSON = (s) => { try { const o = JSON.parse(s); return (o && typeof o === 'object') ? o : null; } catch (e) { return null; } };
+
+            let obj = tryJSON(text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, ''));
+            if (!obj) { const m = /\{[\s\S]*\}/.exec(text); if (m) obj = tryJSON(m[0]); }
+
+            let reply = '', trust = null, memory = '', format = 'json';
+
+            if (obj && typeof obj.reply === 'string' && obj.reply.trim()) {
+              reply = obj.reply.trim();
+              const n = parseInt(String(obj.trust).replace(/[^\d-]/g, ''), 10);
+              trust = Number.isFinite(n) ? clamp(n) : null;
+              memory = String(obj.memory || '').trim();
+            } else {
+              format = 'tag-fallback';
+              const tag = (t) => { const m = new RegExp('<' + t + '>([\\s\\S]*?)</' + t + '>').exec(text); return m ? m[1].trim() : ''; };
+              const line = (ls) => {
+                for (let i = 0; i < ls.length; i++) {
+                  const m = new RegExp(ls[i] + '\\s*[：:]\\s*(.+)').exec(text);
+                  if (m) return m[1].trim();
+                }
+                return '';
+              };
+              reply = tag('回应') || line(['回应', '你的台词', '台词', '老陈']);
+              const tr = tag('信任度') || line(['信任度', '信任']);
+              memory = tag('记住') || line(['记住', '记下', '记录']);
+              if (reply) reply = reply.split(/信任度\s*[：:]|记住\s*[：:]/)[0].trim();
+              const n = parseInt(String(tr).replace(/[^\d-]/g, ''), 10);
+              trust = Number.isFinite(n) ? clamp(n) : null;
+            }
+
+            const prev = Number(prev_trust || 0);
+            const now = (trust === null) ? prev : trust;
+            const finalReply = reply || text.slice(0, 200);
+            const playerName = String(player || '阿七');
+            const note = memory || (playerName + '在酒馆里说了句话，没留下什么值得记的。');
+
+            // 关键取舍：**不要把整句原话和台词回进去**。
+            // 早期版本写的是「玩家说 A → 老陈说 B；记下 C」，结果同一个问题多问几次时，
+            // 检索会被自己上一轮的回声占满，真正要找的旧账被挤到后面去。
+            // 这里只存第三人称摘要 + 状态，让它既短又关键词密集。
+            const writeback = playerName + '：' + note + '（信任度=' + now + '）';
+
+            return {
+              reply: finalReply,
+              trust: String(now),
+              trust_delta: String(now - prev),
+              hit_note: memory || '（本轮无新记忆）',
+              writeback_json: JSON.stringify(writeback),
+              parse_mode: format,
+            };
+          }
+        code_language: javascript
+        desc: JSON 优先、标签兜底；生成写回记忆的句子
+        outputs:
+          reply:
+            children: null
+            type: string
+          trust:
+            children: null
+            type: string
+          trust_delta:
+            children: null
+            type: string
+          hit_note:
+            children: null
+            type: string
+          writeback_json:
+            children: null
+            type: string
+          parse_mode:
+            children: null
+            type: string
+        selected: false
+        title: ⑤ 解析一轮
+        type: code
+        variables:
+        - value_selector:
+          - '5'
+          - text
+          variable: raw
+        - value_selector:
+          - '4'
+          - prev_trust
+          variable: prev_trust
+        - value_selector:
+          - '2'
+          - player
+          variable: player
+        - value_selector:
+          - sys
+          - query
+          variable: user_text
+      height: 90
+      id: '6'
+      position:
+        x: 1540
+        y: 300
+      positionAbsolute:
+        x: 1540
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: '{"scope_id":"{{#env.PC_SCOPE#}}","kind":"episode","text":{{#6.writeback_json#}},"reason":"记仇酒馆：一轮互动"}'
+          type: json
+        desc: 把这一轮写回记忆库，下一轮/下次会话都能翻到
+        headers: |
+          Content-Type: application/json
+          Authorization: Bearer {{#env.PC_TOKEN#}}
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 100
+        selected: false
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 30
+          max_write_timeout: 30
+        title: ⑥ 记账
+        type: http-request
+        url: '{{#env.PC_BASE#}}/v1/memory/remember'
+        ssl_verify: true
+        variables: []
+      height: 90
+      id: '7'
+      position:
+        x: 1840
+        y: 300
+      positionAbsolute:
+        x: 1840
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        answer: |
+          {{#6.reply#}}
+
+          ---
+          账本：信任度 {{#6.trust#}}（本轮变化 {{#6.trust_delta#}}）· 翻到旧账 {{#4.hit_count#}} 条
+          本轮记下：{{#6.hit_note#}}
+
+          记忆回响 —— 老陈这次翻到的是：
+          {{#4.memory_text#}}
+        desc: 台词 + 账本状态 + 记忆回响
+        selected: false
+        title: ⑦ 回答
+        type: answer
+        variables: []
+      height: 90
+      id: '8'
+      position:
+        x: 2140
+        y: 300
+      positionAbsolute:
+        x: 2140
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.7
+  conversation_variables: []
+dependencies: []

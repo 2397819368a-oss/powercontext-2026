@@ -1,0 +1,66 @@
+# docker-compose.override.yaml
+#
+# 作用：把官方 compose 里的镜像全部换成国内可达的镜像站。
+# 原因：本机 registry-1.docker.io 不可达（TCP 被挡），但 docker.m.daocloud.io 可用。
+#       cr.weaviate.io 经 curl 探测返回 401（说明可达，保留官方源）。
+#
+# 用法（在 dify/docker 目录下执行，override 会被自动合并）：
+#   cp ../../deploy/docker-compose.override.yaml ./docker-compose.override.yaml
+#   docker compose up -d
+#
+# 注意：官方镜像名带 namespace（langgenius/xxx）的，镜像站路径要保留 namespace；
+#      官方库镜像（postgres/redis/nginx/busybox）要补上 library/ 前缀。
+# 注意：这里只允许出现 docker-compose.yaml 中真实存在的服务名，否则 compose 校验直接报错
+#      （例如 certbot 在 1.18.0 的 compose 中已移除，故本文件不再覆盖它）。
+
+services:
+  init_permissions:
+    image: docker.1ms.run/library/busybox:latest
+
+  api:
+    image: docker.1ms.run/langgenius/dify-api:1.18.0
+
+  api_websocket:
+    image: docker.1ms.run/langgenius/dify-api:1.18.0
+
+  worker:
+    image: docker.1ms.run/langgenius/dify-api:1.18.0
+
+  worker_beat:
+    image: docker.1ms.run/langgenius/dify-api:1.18.0
+
+  web:
+    image: docker.1ms.run/langgenius/dify-web:1.18.0
+
+  db_postgres:
+    image: docker.1ms.run/library/postgres:15-alpine
+
+  redis:
+    image: docker.1ms.run/library/redis:6-alpine
+
+  sandbox:
+    image: docker.1ms.run/langgenius/dify-sandbox:0.2.15
+
+  local_sandbox:
+    image: docker.1ms.run/langgenius/dify-agent-local-sandbox:1.18.0
+
+  plugin_daemon:
+    image: docker.1ms.run/langgenius/dify-plugin-daemon:0.6.11-local
+
+  agent_backend:
+    image: docker.1ms.run/langgenius/dify-agent-backend:1.18.0
+
+  ssrf_proxy:
+    image: docker.1ms.run/ubuntu/squid:latest
+
+  agent_ssrf_proxy:
+    image: docker.1ms.run/ubuntu/squid:latest
+
+  nginx:
+    image: docker.1ms.run/library/nginx:latest
+
+  # cr.weaviate.io 在 WSL2 daemon 侧解析失败（curl 从宿主机可达，但 daemon 走 NAT 后不通），
+  # 且失败后会被 Docker Desktop 回落成 registry-1.docker.io，因此一并换到 daocloud。
+  # 实测该源可直接拉到 1.39.13，digest sha256:ad2b986bbe46...
+  weaviate:
+    image: docker.m.daocloud.io/semitechnologies/weaviate:1.39.13
